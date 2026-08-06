@@ -7,7 +7,7 @@ import { StaffUser } from "@/types";
 export default function StaffTab() {
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [name, setName] = useState("");
-  const [role, setRole] = useState<"waiter" | "cashier">("waiter");
+  const [role, setRole] = useState<"waiter" | "cashier" | "barista" | "kitchen" | "admin">("waiter");
   const [pin, setPin] = useState("");
 
   const load = async () => {
@@ -63,11 +63,14 @@ export default function StaffTab() {
           />
           <select
             value={role}
-            onChange={(e) => setRole(e.target.value as "waiter" | "cashier")}
+            onChange={(e) => setRole(e.target.value as "waiter" | "cashier" | "barista" | "kitchen" | "admin")}
             className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
           >
-            <option value="waiter">Waiter (mobile)</option>
-            <option value="cashier">Cashier (desktop)</option>
+            <option value="waiter">Waiter (/waiter)</option>
+            <option value="cashier">Cashier (/cashier)</option>
+            <option value="barista">Barista (/barista)</option>
+            <option value="kitchen">Kitchen/Chef (/kitchen)</option>
+            <option value="admin">Admin (owner dashboard)</option>
           </select>
           <input
             value={pin}

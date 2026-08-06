@@ -100,7 +100,7 @@ export default function Navbar({ settings, onOpenAdmin, isAdminLoggedIn }: Navba
               <span className="font-semibold">{phone}</span>
             </a>
 
-            {/* Staff entries */}
+            {/* Staff entries — ALL station doors so every crew member can log in */}
             <Link
               href="/waiter"
               className="hidden sm:inline-flex items-center gap-1.5 bg-[#4E342E] hover:bg-[#3D2314] text-amber-200 border border-[#C9A227]/30 text-xs font-bold px-3 py-2 rounded-full"
@@ -116,6 +116,22 @@ export default function Navbar({ settings, onOpenAdmin, isAdminLoggedIn }: Navba
             >
               <Monitor className="w-3.5 h-3.5 text-[#C9A227]" />
               <span>Cashier</span>
+            </Link>
+            <Link
+              href="/barista"
+              className="hidden sm:inline-flex items-center gap-1.5 bg-[#C9A227]/20 hover:bg-[#C9A227]/30 text-amber-200 border border-[#C9A227]/40 text-xs font-bold px-3 py-2 rounded-full"
+              title="Barista Station"
+            >
+              <span className="text-[#C9A227]">☕</span>
+              <span>Barista</span>
+            </Link>
+            <Link
+              href="/kitchen"
+              className="hidden sm:inline-flex items-center gap-1.5 bg-emerald-700/30 hover:bg-emerald-700/50 text-emerald-100 border border-emerald-500/40 text-xs font-bold px-3 py-2 rounded-full"
+              title="Kitchen (Chef) Station"
+            >
+              <span>🍳</span>
+              <span>Kitchen</span>
             </Link>
 
             <button
@@ -169,7 +185,15 @@ export default function Navbar({ settings, onOpenAdmin, isAdminLoggedIn }: Navba
               <Link href="/cashier" className="flex items-center justify-center gap-1.5 bg-purple-700 text-white font-bold text-[11px] py-2.5 rounded-xl">
                 <Monitor className="w-3.5 h-3.5" /> Cashier
               </Link>
-              <Link href="/admin" className="flex items-center justify-center gap-1.5 bg-emerald-700 text-white font-bold text-[11px] py-2.5 rounded-xl">
+              <Link href="/barista" className="flex items-center justify-center gap-1.5 bg-amber-700 text-white font-bold text-[11px] py-2.5 rounded-xl">
+                <span>☕</span> Barista
+              </Link>
+            </div>
+            <div className="grid grid-cols-2 gap-2 px-2">
+              <Link href="/kitchen" className="flex items-center justify-center gap-1.5 bg-emerald-700 text-white font-bold text-[11px] py-2.5 rounded-xl">
+                <span>🍳</span> Kitchen
+              </Link>
+              <Link href="/admin" className="flex items-center justify-center gap-1.5 bg-sky-700 text-white font-bold text-[11px] py-2.5 rounded-xl">
                 <LayoutDashboard className="w-3.5 h-3.5" /> Admin
               </Link>
             </div>

@@ -34,7 +34,7 @@ export async function POST(request: Request) {
       .insert(staffUsers)
       .values({
         name: body.name,
-        role: body.role === "cashier" ? "cashier" : "waiter",
+        role: ["waiter","cashier","barista","kitchen","admin"].includes(body.role) ? body.role : "waiter",
         pin: String(body.pin),
       })
       .returning();

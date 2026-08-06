@@ -566,6 +566,52 @@ export default function AdminPanel({
               </form>
             </div>
 
+            {/* 📋 BULK MENU IMPORT — paste your entire dish list at once */}
+            <div className="bg-[#2C1B17] rounded-2xl border border-emerald-700/40 p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-emerald-300">📋 Bulk Menu Import</h3>
+                  <p className="text-[11px] text-stone-400 mt-0.5">Paste your full dish list — one line per item in the format below. Duplicates by name are skipped automatically.</p>
+                </div>
+                <button
+                  id="bulk-import-btn"
+                  onClick={async () => {
+                    const ta = document.getElementById("bulk-menu-text") as HTMLTextAreaElement | null;
+                    if (!ta?.value?.trim()) return alert("Paste your menu text first");
+                    const btn = ta.closest("div")?.querySelector("#bulk-import-btn") as HTMLButtonElement | null;
+                    if (btn) btn.disabled = true;
+                    try {
+                      const r = await fetch("/api/menu-bulk", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ text: ta.value }),
+                      });
+                      const d = await r.json();
+                      alert(d.message || d.error || "Import done");
+                      ta.value = "";
+                      onRefreshData();
+                    } catch (e) {
+                      alert("Import failed: " + String(e));
+                    } finally {
+                      if (btn) btn.disabled = false;
+                    }
+                  }}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase px-5 py-3 rounded-xl flex items-center gap-2 disabled:opacity-40"
+                >
+                  <Upload className="w-4 h-4" /> Import Items
+                </button>
+              </div>
+              <textarea
+                id="bulk-menu-text"
+                rows={5}
+                placeholder="Fresh Mango Juice | juices | 150 | Pure mango blended with honey & lime&#10;Chicken Shawarma | snack-and-wrap | 380 | Grilled chicken wrap with garlic sauce&#10;Classic Margherita | pizza | 420 | mozzarella, basil & tomato sauce&#10;...paste more lines..."
+                className="w-full bg-black/30 border border-stone-700 rounded-xl p-3 text-xs text-stone-200 font-mono leading-relaxed"
+              />
+              <p className="text-[10px] text-stone-500">
+                Format per line: <code className="text-[#C9A227]">Name | Category-slug | Price | Description(optional)</code>. Categories: soup, burger, pasta, salad, pizza, rice, ethiopian-traditional-meals, sandwich, snack-and-wrap, juices, hot-drinks, soft-drinks, pastry-and-cakes. Description optional.
+              </p>
+            </div>
+
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-serif font-bold text-amber-100">Menu Manager</h2>

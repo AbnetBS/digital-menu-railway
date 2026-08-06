@@ -107,5 +107,8 @@ export const ticketItems = pgTable("ticket_items", {
   quantity: integer("quantity").notNull().default(1),
   notes: text("notes"), // per-item notes: "No Sugar", "Extra Mayonnaise"
   removed: boolean("removed").default(false), // cashier removed (unavailable)
+  // Station routing: which crew handles this item (barista for drinks/juice, kitchen for food/pastry)
+  stationName: varchar("station_name", { length: 20 }).default("kitchen"),
+  stationStatus: varchar("station_status", { length: 20 }).default("pending"), // pending | accepted | done
   createdAt: timestamp("created_at").defaultNow(),
 });

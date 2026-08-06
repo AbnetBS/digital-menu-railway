@@ -28,6 +28,11 @@ export async function ensureDbSeeded(force = false) {
     const annReset = force ? false : await flagOn("announcements_reset_flag");
     const galReset = force ? false : await flagOn("gallery_reset_flag");
 
+    // Deduplicate accidental pairs (menu items repeating by name, staff repeating by name+role) —
+    // happens from legacy save flows; keep the OLDEST, delete the rest.
+    await db.execute(sql`DELETE FROM menu_items t1 USING menu_items t2 WHERE t1.name = t2.name AND t1.id > t2.id`);
+    await db.execute(sql`DELETE FROM staff_users t1 USING staff_users t2 WHERE t1.name = t2.name AND t1.role = t2.role AND t1.id > t2.id`);
+
     const existingSettings = await db.select().from(siteSettings);
     if (existingSettings.length === 0) {
       const settingsToInsert = Object.entries(DEFAULT_SETTINGS).map(([key, value]) => ({

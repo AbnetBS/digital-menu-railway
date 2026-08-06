@@ -228,6 +228,8 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
   },
   ticket_items: {
     ticket_id: { type: "integer", def: "0", castText: true },
+    station_name: { type: "text", def: "'kitchen'" },
+    station_status: { type: "text", def: "'pending'" },
     menu_item_id: { type: "integer", castText: true },
     name: { type: "text", def: "'Item'" },
     category: { type: "text" },

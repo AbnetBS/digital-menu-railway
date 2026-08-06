@@ -12,6 +12,7 @@ import StaffTab from "@/components/rms/StaffTab";
 import TablesQrTab from "@/components/rms/TablesQrTab";
 import OrderHistoryTab from "@/components/rms/OrderHistoryTab";
 import DailyBoardTab from "@/components/rms/DailyBoardTab";
+import StationsTab from "@/components/rms/StationsTab";
 
 interface AdminPanelProps {
   settings: SiteSettings;
@@ -23,7 +24,7 @@ interface AdminPanelProps {
   onLogout: () => void;
 }
 
-type Tab = "reports" | "menu" | "board" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
+type Tab = "reports" | "menu" | "board" | "stations" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
 
 export default function AdminPanel({
   settings,
@@ -204,6 +205,7 @@ export default function AdminPanel({
     { key: "reports", label: "Reports", icon: <TrendingUp className="w-4 h-4" /> },
     { key: "menu", label: `Menu (${menuItems.length})`, icon: <Utensils className="w-4 h-4" /> },
     { key: "board", label: "Daily Board", icon: <TrendingUp className="w-4 h-4" /> },
+    { key: "stations", label: "Stations", icon: <Users className="w-4 h-4" /> },
     { key: "tables", label: "Tables & QR", icon: <QrCode className="w-4 h-4" /> },
     { key: "staff", label: "Staff", icon: <Users className="w-4 h-4" /> },
     { key: "gallery", label: `Gallery (${galleryItems.length})`, icon: <Camera className="w-4 h-4" /> },
@@ -261,6 +263,9 @@ export default function AdminPanel({
 
         {/* DAILY BOARD */}
         {activeTab === "board" && <DailyBoardTab />}
+
+        {/* STATIONS */}
+        {activeTab === "stations" && <StationsTab />}
 
         {/* ORDER HISTORY */}
         {activeTab === "history" && <OrderHistoryTab />}

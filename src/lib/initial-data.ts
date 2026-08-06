@@ -25,10 +25,35 @@ export const DEFAULT_TABLES = Array.from({ length: 10 }, (_, i) => ({
   sortOrder: i + 1,
 }));
 
+export const DEFAULT_CATEGORY_ROUTING: Record<string, "barista" | "kitchen"> = {
+  // drinks & juices go to BARISTA
+  "hot-drinks": "barista",
+  "soft-drinks": "barista",
+  juices: "barista",
+  "juices-fresh": "barista",
+  coffee: "barista",
+  "juices-fresh-punches": "barista",
+  // everything food-tier goes to KITCHEN (chef)
+  "ethiopian-traditional-meals": "kitchen",
+  sandwich: "kitchen",
+  "snack-and-wrap": "kitchen",
+  burger: "kitchen",
+  pasta: "kitchen",
+  pizza: "kitchen",
+  rice: "kitchen",
+  salad: "kitchen",
+  soup: "kitchen",
+  "pastry-and-cakes": "kitchen",
+  "sides-meals": "kitchen",
+  "main-meal": "kitchen",
+};
+
 export const DEFAULT_STAFF = [
   { name: "Samuel (Waiter)", role: "waiter", pin: "1111" },
   { name: "Tigist (Waiter)", role: "waiter", pin: "3333" },
   { name: "Hanna (Cashier)", role: "cashier", pin: "2222" },
+  { name: "Tesfaye (Barista)", role: "barista", pin: "4444" },
+  { name: "Kumneger (Chef)", role: "kitchen", pin: "5555" },
 ];
 
 export const DEFAULT_CATEGORIES = [

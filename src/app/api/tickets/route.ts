@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { tickets, ticketItems, cafeTables } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
+import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { eq, asc, desc, and, notInArray } from "drizzle-orm";
 
 async function recomputeTotal(ticketId: number) {
@@ -93,7 +94,20 @@ export async function POST(request: Request) {
       ticketId = created[0].id;
     }
 
+    // Read category → station routing (owner-configured in admin, fallback to defaults)
+    let routing: Record<string, "barista" | "kitchen"> = DEFAULT_CATEGORY_ROUTING;
+    try {
+      const { siteSettings } = await import("@/db/schema");
+      const { eq: eqSet } = await import("drizzle-orm");
+      const rows = await db.select().from(siteSettings).where(eqSet(siteSettings.key, "category_routing"));
+      if (rows.length > 0 && rows[0].value) routing = JSON.parse(rows[0].value);
+    } catch {
+      /* fallback to defaults */
+    }
+
     for (const it of items) {
+      const catSlug = String(it.category || "").toLowerCase();
+      const stationName = routing[catSlug] || "kitchen";
       await db.insert(ticketItems).values({
         ticketId,
         menuItemId: it.menuItemId ?? null,
@@ -102,6 +116,8 @@ export async function POST(request: Request) {
         price: Number(it.price),
         quantity: Number(it.quantity || 1),
         notes: it.notes || "",
+        stationName,
+        stationStatus: "pending",
       });
     }
 

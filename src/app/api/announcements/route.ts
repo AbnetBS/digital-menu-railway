@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     const onlyActive = searchParams.get("active") === "1";
     let list = await db.select().from(announcements).orderBy(asc(announcements.priority), asc(announcements.id));
     if (onlyActive) list = list.filter(isActiveToday);
-    return NextResponse.json(list, { status: 200, headers: { "Cache-Control": "public, max-age=60, stale-while-revalidate=300" } });
+    return NextResponse.json(list, { status: 200, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

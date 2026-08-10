@@ -211,7 +211,13 @@ export default function CashierDashboard() {
     await fetch("/api/tickets", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: t.id, status: "paid", paymentStatus: derived }),
+      body: JSON.stringify({
+        id: t.id,
+        status: "paid",
+        paymentStatus: derived,
+        // GROUP 5 audit: record WHICH cashier verified & released this bill.
+        verifiedBy: staffName || "(cashier)",
+      }),
     });
     loadAll();
   };

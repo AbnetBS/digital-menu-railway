@@ -139,6 +139,8 @@ export interface Ticket {
   createdAt?: string;
   updatedAt?: string;
   orderNumber?: string | null;
+  verifiedBy?: string | null;
+  verifiedAt?: string | null;
   items?: TicketItem[];
 }
 

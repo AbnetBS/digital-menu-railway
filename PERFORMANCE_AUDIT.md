@@ -380,7 +380,97 @@ stash-diff verified) · all pages load (/, /menu, /cashier, /waiter, /kitchen, /
 3. `cdn_images` orphan cleanup — proposed, not implemented (destructive).
 Group 5 NOT started.
 
-## 5j. How to measure after deploying (Group 4)
+## 5k. Group 5 — real restaurant workflow / order / payment correctness (2026-08-10)
+
+Worked one item at a time; verified against the CURRENT code; fixed only genuine gaps.
+
+### ITEM 1 — Table / active-bill relationship
+**Status:** **Fixed (DB-level one-active-bill-per-table).**
+**Found:** the merge model already exists (new orders for a table join its active
+ticket; combined total; payment closes it; table reopens after). BUT there was a
+check-then-insert race: two CONCURRENT first orders at the same table could each see
+"no active ticket" and create TWO active bills.
+**Fix:** partial UNIQUE index `tickets_one_active_per_table_idx ON tickets (table_id)
+WHERE status NOT IN ('paid','cancelled')` + a migration that first dedupes any
+legacy duplicates (moves the newer tickets' items onto the oldest, deletes the newer
+rows — nothing lost) + POST fallback: on 23505, merge into the winner's bill.
+**After (real Postgres/PGlite + workflow test):** 3 concurrent first orders at one
+table → exactly 1 bill; duplicate legacy tickets collapsed with all items preserved;
+second-active-ticket insert rejected; paid insert for same table still allowed.
+**Database impact:** one partial unique index; no data loss (verified).
+
+### ITEM 2 — Order status model
+**Status:** **Already solved — verified.**
+**Found:** lifecycle `pending_waiter → confirmed → preparing → ready_for_payment →
+completed → paid` (cancellable), enforced server-side since Group 1; food status
+(`status`) is fully separate from payment status (`paymentStatus`).
+**Tests:** valid chain OK; skipping states rejected (400); backwards moves rejected;
+concurrent status updates → stale one rejected, final state consistent (no corruption).
+
+### ITEM 3 — Payment state model
+**Status:** **Already solved — verified.**
+**Found:** `paymentStatus` (unpaid | paid_cash | paid_telebirr | paid_cbe |
+paid_card) independent of `status`. `completed + unpaid` is possible (food done ≠ paid).
+**Tests:** completed/unpaid ✓; completed + paid (telebirr/card/cash) ✓; already-paid
+order → idempotent no-op; invalid payment status rejected (400).
+
+### ITEM 4 — Payment method
+**Status:** **Fixed (validation).**
+**Found:** methods cash/telebirr/cbe/card (+legacy online) existed, but `PUT` accepted
+ANY string — "bitcoin" would have been stored.
+**Fix:** validate `paymentMethod` against the allowed set (400 otherwise).
+**Tests:** cash recorded ✓; invalid method rejected ✓.
+
+### ITEM 5 — Receipt / payment verification workflow
+**Status:** **Already solved — verified (+ audit stamping).**
+**Found:** waiter attaches compressed receipt for digital/card and marks
+completed+paid_<method>; cashier views receipt on demand and "Mark PAID & Release"
+verifies. No money transfer (records only). Missing: WHO verified / WHEN.
+**Fix (shared with ITEM 8):** `verifiedBy`/`verifiedAt` stamped on the paid transition
+(cashier's markPaid now sends their name).
+**Tests:** receipt attached on digital payment ✓; cashier verification stamps
+verifiedBy/verifiedAt ✓.
+
+### ITEM 6 — Payment concurrency / double payment
+**Status:** **Already solved — verified (single-row model).**
+**Found:** no separate payments table — one ticket row holds payment state, so
+double-payment records are structurally impossible; mark-paid is idempotent.
+**Tests:** 3 concurrent mark-paid attempts → single paid row, consistent total,
+verifiedBy stamped once. No double totals.
+
+### ITEM 7 — Table closing / reopening
+**Status:** **Already solved — verified.**
+**Found:** paid/cancelled tickets drop out of the active set → table shows available;
+new order creates a fresh bill; tickets are per-table (paying one never touches others).
+**Tests (5 tables):** paid tables 1–4 became available; ACTIVE table 5 remained active;
+table 1 reopened with a NEW bill ≠ old; historical paid bills still listed.
+
+### ITEM 8 — Order / payment auditability
+**Status:** **Fixed (verification audit fields).**
+**Found:** createdBy/tableId/tableName/createdAt/items/orderNumber/totalAmount/
+closedAt already recorded. Missing: who marked paid and when.
+**Fix:** `verifiedBy` (varchar 100) + `verifiedAt` (timestamp) on tickets; stamped only
+by the paid transition; migration backfills nothing destructive (existing paid rows
+keep NULL → treated as legacy). Surfaced through ticket payloads/reports/history.
+**Database impact:** 2 columns on tickets; backward-safe.
+
+### ITEM 9 — Final restaurant workflow test
+**Status:** **All checks passed.**
+**Scenario:** 5 tables × multiple orders; concurrent first-orders at one table;
+status chains; payments (cash/telebirr/card + receipt); concurrent mark-paid; table
+close/reopen; duplicate submissions; station visibility.
+**Results:** all merged bills correct (totals 390/420 ETB verified); no duplicate
+orders; no mixed totals; no double payment; no unrelated table closed; historical
+bills intact; stations see active items; every invalid transition rejected; Group
+1–4 performance intact (tests ran against the same hardened routes).
+
+### Group 5 verification
+`tsc --noEmit` clean · `next build` compiles · lint identical to baseline (0 new —
+stash-diff verified) · migration dedupe + unique index proven on real Postgres
+(PGlite) · workflow test: ALL checks passed.
+Group 6 NOT started.
+
+## 5l. How to measure after deploying (Group 5)
 
 1. After deploy, the FIRST request to any data route (or `/api/setup`) performs the
    one-time seed + migration; every subsequent request in the same server process

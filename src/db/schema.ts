@@ -104,6 +104,11 @@ export const tickets = pgTable("tickets", {
   // Idempotency key: a client-generated UUID per order submission. The unique index
   // on (ticket_id, idempotency_key) makes retries/double-taps safe server-side.
   idempotencyKey: varchar("idempotency_key", { length: 64 }),
+  // Payment verification audit (Group 5): who marked the bill PAID and when.
+  // Set by the cashier's "Mark PAID & Release Table" action (the receipt
+  // verification step for digital/card payments). Null for unpaid/cancelled.
+  verifiedBy: varchar("verified_by", { length: 100 }),
+  verifiedAt: timestamp("verified_at"),
 });
 
 export const ticketItems = pgTable("ticket_items", {

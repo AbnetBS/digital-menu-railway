@@ -229,6 +229,9 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     // Group 1: guaranteed-unique order number + idempotent order submission
     order_number: { type: "text" },
     idempotency_key: { type: "text" },
+    // Group 5: payment verification audit
+    verified_by: { type: "text" },
+    verified_at: { type: "timestamp", dropNotNull: true },
   },
   ticket_items: {
     ticket_id: { type: "integer", def: "0", castText: true },
@@ -424,6 +427,39 @@ async function runFullMigrate(force: boolean) {
   );
   await run(
     `CREATE UNIQUE INDEX IF NOT EXISTS ticket_items_idempotency_key_key ON ticket_items (ticket_id, idempotency_key) WHERE idempotency_key IS NOT NULL`
+  );
+
+  //  • GROUP 5 — one active bill per table, enforced at the DATABASE level.
+  //    Before creating the partial unique index, repair any duplicate active
+  //    tickets left by the old check-then-insert race: move the newer tickets'
+  //    items onto the OLDEST active ticket, then delete the newer ticket rows
+  //    (nothing lost — items are preserved). This makes concurrent first orders
+  //    at the same table impossible to split into two bills.
+  await run(`
+    WITH dups AS (
+      SELECT table_id, min(id) AS keep_id, array_agg(id ORDER BY id) AS ids
+      FROM tickets
+      WHERE status NOT IN ('paid','cancelled')
+      GROUP BY table_id HAVING count(*) > 1
+    )
+    UPDATE ticket_items ti
+    SET ticket_id = d.keep_id
+    FROM dups d
+    WHERE ti.ticket_id = ANY(d.ids) AND ti.ticket_id <> d.keep_id
+  `);
+  await run(`
+    DELETE FROM tickets t
+    USING (
+      SELECT table_id, min(id) AS keep_id, array_agg(id ORDER BY id) AS ids
+      FROM tickets
+      WHERE status NOT IN ('paid','cancelled')
+      GROUP BY table_id HAVING count(*) > 1
+    ) d
+    WHERE t.table_id = d.table_id AND t.id <> d.keep_id
+      AND t.status NOT IN ('paid','cancelled')
+  `);
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS tickets_one_active_per_table_idx ON tickets (table_id) WHERE status NOT IN ('paid','cancelled')`
   );
 
   //  • GROUP 3 indexes — each justified by a real query pattern:

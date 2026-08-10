@@ -30,6 +30,9 @@ const TICKET_STATUS_TRANSITIONS: Record<string, string[]> = {
 /** Payment status is separate from order status (food done ≠ paid). */
 const PAYMENT_STATUSES = ["unpaid", "paid_cash", "paid_telebirr", "paid_cbe", "paid_card"] as const;
 
+/** Payment methods this cafe records. "online" kept for legacy rows. */
+const PAYMENT_METHODS = ["cash", "telebirr", "cbe", "card", "online"] as const;
+
 // GET: ?active=1 → active tickets (with items); ?all=1 → everything
 //      ?paid=1&limit=N → ONLY the N most recent PAID tickets, WITHOUT items —
 //      the lightweight payload for the cashier's "Recently Paid" panel
@@ -161,23 +164,45 @@ export async function POST(request: Request) {
         await db.update(tickets).set({ status: "confirmed" }).where(eq(tickets.id, ticketId));
       }
     } else {
-      const created = await db
-        .insert(tickets)
-        .values({
-          tableId: Number(tableId),
-          tableName,
-          status: initialStatus,
-          totalAmount: 0,
-          createdBy: waiterName || (isCustomer ? "Customer (QR)" : "Waiter"),
-        })
-        .returning();
-      ticketId = created[0].id;
-      // Guaranteed-unique order number — derived from the DB serial (FANA-<id>),
-      // never random, so collisions are impossible by construction.
-      await db
-        .update(tickets)
-        .set({ orderNumber: `FANA-${ticketId}` })
-        .where(eq(tickets.id, ticketId));
+      try {
+        const created = await db
+          .insert(tickets)
+          .values({
+            tableId: Number(tableId),
+            tableName,
+            status: initialStatus,
+            totalAmount: 0,
+            createdBy: waiterName || (isCustomer ? "Customer (QR)" : "Waiter"),
+          })
+          .returning();
+        ticketId = created[0].id;
+        // Guaranteed-unique order number — derived from the DB serial (FANA-<id>),
+        // never random, so collisions are impossible by construction.
+        await db
+          .update(tickets)
+          .set({ orderNumber: `FANA-${ticketId}` })
+          .where(eq(tickets.id, ticketId));
+      } catch (err) {
+        // GROUP 5 — one-active-bill-per-table is enforced by a partial UNIQUE
+        // index. If a CONCURRENT first order for this table won the race, our
+        // insert is rejected (23505) → fall back to merging into that bill
+        // instead of creating a second active ticket for the same table.
+        const pgErr = (err as { code?: string; cause?: { code?: string } }) ?? {};
+        if (pgErr.code === "23505" || pgErr.cause?.code === "23505") {
+          const existing = await db
+            .select()
+            .from(tickets)
+            .where(and(eq(tickets.tableId, Number(tableId)), notInArray(tickets.status, ["paid", "cancelled"])))
+            .limit(1);
+          if (existing.length > 0) {
+            ticketId = existing[0].id;
+          } else {
+            throw err; // not a duplicate-active-ticket error → surface it
+          }
+        } else {
+          throw err;
+        }
+      }
     }
 
     // Read category → station routing (owner-configured in admin, fallback to defaults)
@@ -273,7 +298,14 @@ export async function PUT(request: Request) {
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (body.status) updates.status = body.status;
-    if (body.paymentMethod !== undefined) updates.paymentMethod = body.paymentMethod;
+    // Payment method is validated (GROUP 5) — only the methods this cafe actually
+    // records may be stored; an invalid value is rejected instead of silently saved.
+    if (body.paymentMethod !== undefined) {
+      if (body.paymentMethod !== null && !PAYMENT_METHODS.includes(body.paymentMethod)) {
+        return NextResponse.json({ error: "Invalid payment method" }, { status: 400 });
+      }
+      updates.paymentMethod = body.paymentMethod || null;
+    }
     // Payment status is validated against the allowed set (independent of order status).
     if (body.paymentStatus !== undefined) {
       if (!PAYMENT_STATUSES.includes(body.paymentStatus)) {
@@ -283,6 +315,13 @@ export async function PUT(request: Request) {
     }
     if (body.receiptImage !== undefined) updates.receiptImage = body.receiptImage;
     if (body.status === "paid" || body.status === "cancelled") updates.closedAt = new Date();
+    // GROUP 5 — payment verification audit: record WHO marked the bill paid and
+    // WHEN (the cashier's receipt-verification step for digital/card payments).
+    // Only the paid transition stamps these; nothing else can overwrite them.
+    if (body.status === "paid") {
+      updates.verifiedBy = body.verifiedBy ? String(body.verifiedBy).slice(0, 100) : cur.verifiedBy || "(cashier)";
+      updates.verifiedAt = new Date();
+    }
 
     const updated = await db.update(tickets).set(updates).where(eq(tickets.id, body.id)).returning();
     return NextResponse.json(updated[0]);

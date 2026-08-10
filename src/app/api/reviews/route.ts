@@ -6,11 +6,22 @@ import { ensureTablesExist } from "@/db/migrate";
 import { eq, desc } from "drizzle-orm";
 import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
 
-export async function GET() {
+export async function GET(request: Request) {
   await ensureTablesExist();
   await ensureDbSeeded();
   try {
-    const list = await db.select().from(reviews).orderBy(desc(reviews.createdAt));
+    // GROUP 4 / ITEM 3 — bound the public payload. Reviews grow with every
+    // customer submission; the homepage/menu pages only show recent approved
+    // ones, so the default is the newest 100. The admin moderation screen
+    // passes ?all=1 to see the full list (rare, on-demand).
+    const { searchParams } = new URL(request.url);
+    const all = searchParams.get("all") === "1";
+    const limit = Math.min(1000, Math.max(1, Number(searchParams.get("limit") || 100)));
+    const list = await db
+      .select()
+      .from(reviews)
+      .orderBy(desc(reviews.createdAt))
+      .limit(all ? 1000 : limit);
     return NextResponse.json(list, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

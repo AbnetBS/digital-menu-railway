@@ -268,7 +268,119 @@ Worked strictly one item at a time: inspect → verify → fix only if the probl
 
 None within scope. (Group 4 explicitly not started.)
 
-## 5h. How to measure after deploying (Group 3)
+## 5i. Group 4 — database usage, storage & historical performance (2026-08-10)
+
+Worked one item at a time with the required report format. All measurements used the
+real route handlers with a faithful pg stub (array-mode rows, real drizzle mapping)
+or PGlite (real Postgres engine).
+
+### ITEM 1 — Database image storage
+**Found:** images ARE stored in Postgres — `cdn_images.data` (base64 text, menu/gallery
+uploads via `/api/images` POST) and `tickets.receipt_image` (base64 text). Menu/gallery
+payloads carry only short `/api/images/{id}` URLs; receipts are excluded from polling.
+**Evidence (PGlite, incompressible data):** one menu-image column ≈ 45 KB, one receipt
+≈ 75 KB; 230 uploads ≈ 11.6 MB total.
+**Projections (labeled estimates):** 200 menu + 30 gallery ≈ 10.8 MB (small, fine).
+Receipts are the real growth driver: 7.5–22.5 MB/day → **~330 MB steady-state WITH the
+30-day cleanup job, ~8 GB/year WITHOUT it** — the cleanup job is essential.
+**Fix:** none in code (the smallest-safe-improvement — client-side compression, short
+immutable URLs, receipts excluded, cleanup job — is already in place). The real fix is
+object storage (S3/R2/Vercel Blob) behind the same `/api/images/{id}` endpoint so URLs
+never break; **requires a provider decision** → reported, not implemented (no
+credentials/infrastructure to invent).
+**Remaining concern:** `cdn_images` orphans (replaced/deleted items' photos) accumulate
+~45 KB each; a safe orphan-cleanup query is proposed but not executed (destructive).
+
+### ITEM 2 — Historical ticket queries
+**Found:** `/api/reports` loaded items for ALL 30-day tickets (~27k rows at 9k
+tickets/month) but only used items for (a) today's revenue tickets (popular/category
+stats) and (b) the newest 200 history tickets.
+**Before:** 1 item query, 9,000 ids scanned → 27,000 item rows read.
+**Fix:** two scoped item queries (today's revenue tickets + 200 history tickets),
+run in parallel; order-history stays bounded at 200 (bounded, not paginated further —
+admin UI shows the newest 200).
+**After:** 2 item queries, 308 ids scanned → 924 item rows read (**97% reduction**).
+**Tests:** identical output (todayOrders 108, popular 3, history 200); typecheck + build clean.
+
+### ITEM 3 — Large API payloads
+**Inventory (real routes, realistic volumes):** reports 125.7 KB, tickets?all=1 124.5 KB,
+**reviews 114 KB for 500 rows (NO limit)**, menu 53.4 KB, tickets?active=1 24.9 KB,
+tables 5.3 KB, paid-history 4.0 KB, gallery 3.3 KB, announcements 1.8 KB.
+**Offender:** `/api/reviews` — unbounded, fetched by the public homepage on every visit.
+**Fix:** default limit 100 (newest first); admin moderation passes `?all=1` for the full
+list (rare, on-demand).
+**After (measured):** public reviews 114 KB → **22.6 KB**; admin unchanged (114 KB on demand).
+Other endpoints already bounded (tickets limits, active-only, URLs-only menu) — left alone.
+
+### ITEM 4 — N+1 query audit
+**Evidence (statement counts at 20 vs 200 rows):** tickets?active=1: 2→2 · tables: 2→2
+(warm) · station-items: 1→1 · reports: batched (scoped IN queries). **No N+1 exists** —
+all operational routes batch with `IN (...)` + Map grouping (done in earlier groups).
+**Fix:** none needed. Verified, not modified.
+
+### ITEM 5 — Database connection / query pressure
+**Evidence:** `src/db/index.ts` — single `pg.Pool` singleton memoized on `globalThis`
+(one per server instance; survives dev reloads), `connectionTimeoutMillis: 5000`, pool
+error handler. **Only one `new Pool()` in the codebase**; no per-request pools/clients.
+**Fix:** none — already correct. (Pool sizing per the Neon plan is a deployment decision,
+not invented here.)
+
+### ITEM 6 — Query result limits / safety bounds
+**Found:** reviews unbounded (fixed in ITEM 3). Gallery and announcements were the other
+unbounded GETs (owner-managed, small in practice).
+**Fix:** safety caps — gallery `.limit(500)`, announcements `.limit(200)` — far beyond
+realistic cafe usage, purely protective. Tickets/menu/categories/staff/tables already
+bounded by design (100/200/13/11/40). Reports bounded by 30-day scope + 200 history + 30 receipts.
+
+### ITEM 7 — Database growth / retention analysis (no code change)
+**Estimates (labeled; assume 300 tickets/day busy season, 3.5 items/ticket):**
+| Table | 1 yr | 3 yr | 5 yr |
+|---|---|---|---|
+| tickets (rows) | 109,500 (~27 MB) | 328,500 (~82 MB) | 547,500 (~137 MB) |
+| ticket_items | 383k (~77 MB) | 1.15M (~230 MB) | 1.9M (~383 MB) |
+| receipts WITH 30-day cleanup | ~330 MB steady | ~330 MB steady | ~330 MB steady |
+| receipts WITHOUT cleanup | ~8 GB | ~24 GB | ~40 GB |
+| cdn_images (owner uploads) | ~11 MB + small growth | small | small |
+| reviews | ~2 MB | ~6 MB | ~10 MB |
+**Key finding:** receipts are the dominant growth driver; the cleanup job exists but is
+only triggered manually (admin "Free up storage" button). **Recommended retention
+design (not implemented — needs a deployment decision):** schedule `POST
+/api/tickets/cleanup` automatically (e.g. Vercel Cron / Neon scheduled job) so receipt
+storage stays bounded without manual action. No business data deleted.
+
+### ITEM 8 — Final database load measurement (synthetic workload)
+Simulated the real workload against the REAL route handlers with an in-memory DB:
+10,000 historical tickets + 30k items, 40 tables, 11 staff; concurrent orders, 40-way
+duplicate race, cashier/waiter/station polling, payment flows, reports, menu.
+**Results:**
+- 8 simultaneous customer orders → all created, unique order numbers (2 correctly
+  merged into existing active table bills)
+- **40 concurrent duplicate submissions of one order → exactly 1 order created, 39
+  returned as replay** (idempotency bulletproof under a true race)
+- Cashier poll cycle = 2 statements · history refresh = 1 · station poll = 2 ·
+  order POST = 8 · report over 10k tickets = 4 · menu = 1
+- ≈ **1,861 statements per simulated minute** of restaurant activity (8s polls × 2
+  screens + stations + orders), ~74k rows read, **0 failures**
+- **Found & fixed a real bug:** the 23505 (unique-violation) catch only checked
+  `err.code`, but drizzle wraps pg errors in `DrizzleQueryError` WITHOUT copying
+  `code` — a true concurrent duplicate would have returned HTTP 500 instead of a
+  graceful replay. Now checks `err.cause?.code` too (verified: 1 created / 39 replays).
+- "Duplicate order numbers: 46" = intentional response-level repeats (merges into the
+  same table's active bill + replay responses); genuine collisions are impossible
+  (order_number = FANA-<DB serial> + partial UNIQUE index).
+
+### Group 4 verification
+`tsc --noEmit` clean · `next build` compiles · lint identical to baseline (0 new —
+stash-diff verified) · all pages load (/, /menu, /cashier, /waiter, /kitchen, /admin = 200).
+
+### Remaining Group 4 concerns
+1. Object storage for receipts/images — requires a storage-provider decision (migration
+   boundary documented; existing `/api/images/{id}` URLs keep working if adopted).
+2. Automatic receipt-cleanup scheduling (cron) — deployment decision, recommended.
+3. `cdn_images` orphan cleanup — proposed, not implemented (destructive).
+Group 5 NOT started.
+
+## 5j. How to measure after deploying (Group 4)
 
 1. After deploy, the FIRST request to any data route (or `/api/setup`) performs the
    one-time seed + migration; every subsequent request in the same server process

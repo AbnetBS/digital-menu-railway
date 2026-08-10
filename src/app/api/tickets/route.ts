@@ -213,8 +213,11 @@ export async function POST(request: Request) {
         });
       }
     } catch (err) {
-      // 23505 = unique_violation → this submission was already recorded
-      if (idemKey && (err as { code?: string })?.code === "23505") {
+      // 23505 = unique_violation → this submission was already recorded.
+      // Drizzle wraps pg errors in DrizzleQueryError WITHOUT copying `code`,
+      // so the violation code may live on err.cause (or err itself for raw pg).
+      const pgErr = (err as { code?: string; cause?: { code?: string } }) ?? {};
+      if (idemKey && (pgErr.code === "23505" || pgErr.cause?.code === "23505")) {
         const dup = await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1);
         if (dup.length > 0) {
           const dupItems = await db

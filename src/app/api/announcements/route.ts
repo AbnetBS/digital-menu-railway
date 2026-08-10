@@ -18,7 +18,9 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const onlyActive = searchParams.get("active") === "1";
-    let list = await db.select().from(announcements).orderBy(asc(announcements.priority), asc(announcements.id));
+    // GROUP 4 / ITEM 6 — safety cap on the owner-managed board (200 is far
+    // beyond realistic usage; a real board is a handful of active items).
+    let list = await db.select().from(announcements).orderBy(asc(announcements.priority), asc(announcements.id)).limit(200);
     if (onlyActive) list = list.filter(isActiveToday);
     return NextResponse.json(list, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {

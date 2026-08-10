@@ -29,7 +29,7 @@ export default function DedicatedAdminPage() {
         fetch(`/api/settings?v=${v}`),
         fetch(`/api/categories?v=${v}`),
         fetch(`/api/menu?v=${v}`),
-        fetch(`/api/reviews?v=${v}`),
+        fetch(`/api/reviews?v=${v}&all=1`), // full list for moderation (approve/reject)
         fetch(`/api/gallery?v=${v}`),
       ]);
 

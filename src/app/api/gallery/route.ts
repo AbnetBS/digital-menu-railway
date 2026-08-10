@@ -10,7 +10,9 @@ export async function GET() {
   await ensureTablesExist();
   await ensureDbSeeded();
   try {
-    const list = await db.select().from(galleryItems).orderBy(asc(galleryItems.sortOrder), asc(galleryItems.id));
+    // GROUP 4 / ITEM 6 — safety cap: gallery is owner-managed, but never allow
+    // an unbounded response (500 is far beyond realistic cafe usage).
+    const list = await db.select().from(galleryItems).orderBy(asc(galleryItems.sortOrder), asc(galleryItems.id)).limit(500);
     return NextResponse.json(list, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

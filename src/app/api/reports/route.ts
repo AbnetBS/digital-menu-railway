@@ -47,14 +47,6 @@ export async function GET() {
         )
       );
 
-    const allItems =
-      allTickets.length > 0
-        ? await db
-            .select()
-            .from(ticketItems)
-            .where(inArray(ticketItems.ticketId, allTickets.map((t) => t.id)))
-        : [];
-
     const cats = await db.select().from(categories);
 
     // Revenue counts tickets that reached payment confirmation (completed/paid)
@@ -73,6 +65,29 @@ export async function GET() {
     const todayOrders = todayTickets.length;
     const averageOrderValue = todayOrders > 0 ? Math.round(todayRevenue / todayOrders) : 0;
 
+    // GROUP 4 / ITEM 2 — scope item reads to what the report ACTUALLY uses:
+    //  • popular-items & category-sales need items of TODAY'S revenue tickets only
+    //  • order history needs items of the newest 200 closed tickets only
+    // (Previously ALL 30-day tickets' items were loaded into memory just to filter
+    //  down to these two subsets — e.g. ~27k rows for a 9k-ticket month when ~2k
+    //  were used.)
+    const todayTicketIds = new Set(todayTickets.map((t) => t.id));
+
+    const orderHistoryTickets = allTickets
+      .filter((t) => t.status === "paid" || t.status === "completed" || t.status === "cancelled")
+      .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
+      .slice(0, 200);
+    const historyTicketIds = orderHistoryTickets.map((t) => t.id);
+
+    const [todayItems, historyItems] = await Promise.all([
+      todayTicketIds.size > 0
+        ? db.select().from(ticketItems).where(inArray(ticketItems.ticketId, [...todayTicketIds]))
+        : Promise.resolve([]),
+      historyTicketIds.length > 0
+        ? db.select().from(ticketItems).where(inArray(ticketItems.ticketId, historyTicketIds))
+        : Promise.resolve([]),
+    ]);
+
     // Peak selling hours — orders grouped by hour of the day (today)
     const hourAgg: Array<{ hour: number; orders: number; revenue: number }> = Array.from({ length: 24 }, (_, h) => ({
       hour: h,
@@ -90,9 +105,8 @@ export async function GET() {
       hourlySales.length > 0 ? hourlySales.reduce((a, b) => (b.revenue > a.revenue ? b : a), hourlySales[0]) : null;
 
     // Popular items (from today's revenue tickets, non-removed)
-    const todayTicketIds = new Set(todayTickets.map((t) => t.id));
     const itemAgg = new Map<string, { quantity: number; revenue: number }>();
-    for (const it of allItems) {
+    for (const it of todayItems) {
       if (!todayTicketIds.has(it.ticketId) || it.removed) continue;
       const cur = itemAgg.get(it.name) || { quantity: 0, revenue: 0 };
       cur.quantity += it.quantity;
@@ -110,7 +124,7 @@ export async function GET() {
 
     // Sales by category
     const catAgg = new Map<string, number>();
-    for (const it of allItems) {
+    for (const it of todayItems) {
       if (!todayTicketIds.has(it.ticketId) || it.removed) continue;
       const cName = itemToCatName(it.category);
       catAgg.set(cName, (catAgg.get(cName) || 0) + it.price * it.quantity);
@@ -147,14 +161,11 @@ export async function GET() {
       .slice(0, 30);
 
     // Full order history (completed/paid/cancelled), newest first, with items + payment + receipt
-    const orderHistory = allTickets
-      .filter((t) => t.status === "paid" || t.status === "completed" || t.status === "cancelled")
-      .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime())
-      .slice(0, 200)
-      .map((t) => ({
-        ...t,
-        items: allItems.filter((i) => i.ticketId === t.id),
-      }));
+    // Items come from the scoped historyItems query (bounded to these 200 tickets).
+    const orderHistory = orderHistoryTickets.map((t) => ({
+      ...t,
+      items: historyItems.filter((i) => i.ticketId === t.id),
+    }));
 
     return NextResponse.json({
       todayRevenue,

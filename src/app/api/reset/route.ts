@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { tickets, ticketItems, menuItems, announcements, galleryItems, cafeTables, siteSettings } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
+import { invalidateDbSeeded } from "@/lib/seed-db";
 import { DEFAULT_TABLES } from "@/lib/initial-data";
 import { eq } from "drizzle-orm";
 
@@ -23,6 +24,10 @@ export async function POST(request: Request) {
   await ensureTablesExist();
   try {
     const { action } = await request.json();
+
+    // Tables may have been emptied → let the seed memo re-run on the next read
+    // (it respects the *_reset_flag settings this route sets).
+    invalidateDbSeeded();
 
     switch (action) {
       case "orders": {

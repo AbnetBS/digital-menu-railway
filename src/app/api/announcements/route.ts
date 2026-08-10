@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { announcements } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
+import { invalidateDbSeeded } from "@/lib/seed-db";
 import { eq, asc } from "drizzle-orm";
+import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
 
 function isActiveToday(a: { startDate?: string | null; endDate?: string | null }): boolean {
   const today = new Date().toISOString().slice(0, 10);
@@ -18,7 +20,7 @@ export async function GET(request: Request) {
     const onlyActive = searchParams.get("active") === "1";
     let list = await db.select().from(announcements).orderBy(asc(announcements.priority), asc(announcements.id));
     if (onlyActive) list = list.filter(isActiveToday);
-    return NextResponse.json(list, { status: 200, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(list, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -76,6 +78,7 @@ export async function DELETE(request: Request) {
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });
     await db.delete(announcements).where(eq(announcements.id, Number(id)));
+    invalidateDbSeeded(); // table may now be empty → self-heal on next read
     return NextResponse.json({ success: true, id: Number(id) });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

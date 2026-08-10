@@ -1,16 +1,17 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { menuItems } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
+import { ensureDbSeeded, invalidateDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc } from "drizzle-orm";
+import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
 
 export async function GET() {
   await ensureTablesExist();
   await ensureDbSeeded();
   try {
     const items = await db.select().from(menuItems).orderBy(asc(menuItems.sortOrder), asc(menuItems.id));
-    return NextResponse.json(items, { status: 200, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(items, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -95,6 +96,7 @@ export async function DELETE(request: Request) {
     }
 
     await db.delete(menuItems).where(eq(menuItems.id, Number(id)));
+    invalidateDbSeeded(); // table may now be empty → self-heal on next read
     return NextResponse.json({ success: true, id: Number(id) });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

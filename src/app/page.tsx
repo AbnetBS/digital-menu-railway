@@ -28,28 +28,31 @@ export default function HomePage() {
 
   const loadSiteData = async () => {
     try {
-      // don't await the seed — it runs lazily in the background
-      fetch("/api/seed");
+      // PERFORMANCE: no /api/seed call — data routes self-initialize on first read
+      // (seed runs once per server process). All data fetches run in parallel.
+      const [settingsRes, catRes, menuRes, revRes, galRes] = await Promise.all([
+        fetch("/api/settings"),
+        fetch("/api/categories"),
+        fetch("/api/menu"),
+        fetch("/api/reviews"),
+        fetch("/api/gallery"),
+      ]);
 
-      const settingsRes = await fetch("/api/settings");
       if (settingsRes.ok) {
         const sData = await settingsRes.json();
         if (Object.keys(sData).length > 0) setSettings(sData);
       }
 
-      const catRes = await fetch("/api/categories");
       if (catRes.ok) {
         const cData = await catRes.json();
         if (cData.length > 0) setCategories(cData);
       }
 
-      const menuRes = await fetch("/api/menu");
       if (menuRes.ok) {
         const mData = await menuRes.json();
         if (mData.length > 0) setMenuItems(mData);
       }
 
-      const revRes = await fetch("/api/reviews");
       if (revRes.ok) {
         const rData: Review[] = await revRes.json();
         // only approved reviews are publicly visible
@@ -57,7 +60,6 @@ export default function HomePage() {
         if (approved.length > 0) setReviews(approved);
       }
 
-      const galRes = await fetch("/api/gallery");
       if (galRes.ok) {
         const gData = await galRes.json();
         if (gData.length > 0) setGallery(gData);

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { staffUsers } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
+import { ensureDbSeeded, invalidateDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc } from "drizzle-orm";
 
@@ -71,6 +71,7 @@ export async function DELETE(request: Request) {
     const id = searchParams.get("id");
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });
     await db.delete(staffUsers).where(eq(staffUsers.id, Number(id)));
+    invalidateDbSeeded(); // table may now be empty → self-heal on next read
     return NextResponse.json({ success: true, id: Number(id) });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { tickets, ticketItems, categories } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { inArray } from "drizzle-orm";
+import { inArray, or, gt } from "drizzle-orm";
 
 function isToday(d: Date | string | null | undefined): boolean {
   if (!d) return false;
@@ -30,8 +30,31 @@ function isWithinDays(d: Date | string | null | undefined, days: number): boolea
 export async function GET() {
   await ensureTablesExist();
   try {
-    const allTickets = await db.select().from(tickets);
-    const allItems = await db.select().from(ticketItems);
+    // PERFORMANCE: every figure in this report only spans the last 30 days —
+    // scope the tickets query in SQL (instead of loading the entire table forever)
+    // and fetch items ONLY for those tickets.
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 30);
+
+    const allTickets = await db
+      .select()
+      .from(tickets)
+      .where(
+        or(
+          gt(tickets.createdAt, cutoff),
+          gt(tickets.updatedAt, cutoff),
+          gt(tickets.closedAt, cutoff)
+        )
+      );
+
+    const allItems =
+      allTickets.length > 0
+        ? await db
+            .select()
+            .from(ticketItems)
+            .where(inArray(ticketItems.ticketId, allTickets.map((t) => t.id)))
+        : [];
+
     const cats = await db.select().from(categories);
 
     // Revenue counts tickets that reached payment confirmation (completed/paid)

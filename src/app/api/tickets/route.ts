@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { tickets, ticketItems, cafeTables } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
-import { eq, asc, desc, and, notInArray } from "drizzle-orm";
+import { eq, asc, desc, and, notInArray, inArray } from "drizzle-orm";
 
 async function recomputeTotal(ticketId: number) {
   const items = await db.select().from(ticketItems).where(and(eq(ticketItems.ticketId, ticketId), eq(ticketItems.removed, false)));
@@ -32,12 +32,23 @@ export async function GET(request: Request) {
       return clone;
     });
 
-    const items = await db.select().from(ticketItems).orderBy(asc(ticketItems.id));
+    // PERFORMANCE: only fetch items for the tickets being returned — never the
+    // whole ticket_items table (it grows forever). Group by ticketId once.
+    const ticketIds = slim.map((t) => (t as { id: number }).id);
+    const items = ticketIds.length > 0
+      ? await db.select().from(ticketItems).where(inArray(ticketItems.ticketId, ticketIds)).orderBy(asc(ticketItems.id))
+      : [];
+
+    const itemsByTicket = new Map<number, typeof items>();
+    for (const it of items) {
+      if (!itemsByTicket.has(it.ticketId)) itemsByTicket.set(it.ticketId, []);
+      itemsByTicket.get(it.ticketId)!.push(it);
+    }
 
     const result = slim.map((t) => ({
       ...t,
       receiptImage: null, // keep field defined so clients know it needs fetching on demand
-      items: items.filter((i) => i.ticketId === (t as { id: number }).id),
+      items: itemsByTicket.get((t as { id: number }).id) || [],
     }));
 
     return NextResponse.json(result);

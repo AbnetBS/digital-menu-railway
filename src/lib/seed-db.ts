@@ -17,11 +17,24 @@ async function flagOn(key: string): Promise<boolean> {
   return rows.length > 0 && rows[0].value === "on";
 }
 
-export async function ensureDbSeeded(force = false) {
-  // NOTE: runs on every call — the 7 tiny SELECTs cost ~50ms total, but this is the ONLY
-  // safe way to guarantee data self-heals: if a table ever becomes EMPTY (items deleted by
-  // mistake), the defaults are restored on the very next request instead of never coming back.
-  // (Force parameter kept for /api/setup compatibility.)
+/**
+ * PERFORMANCE (Group 1): the full seed pipeline used to run on EVERY data-route
+ * request (~20–35 statements, including two full-table DELETE dedups). It now runs
+ * exactly ONCE per server process; subsequent calls return the memoized result with
+ * zero SQL. Concurrent first requests (e.g. 10 visitors right after deploy) all await
+ * the same shared promise, so only one full seed ever runs.
+ *
+ * Self-healing contract preserved: destructive endpoints (admin deletes / factory
+ * resets) call invalidateDbSeeded(), so the next read re-verifies and restores default
+ * data if a table was emptied. Plain reads never pay that cost again.
+ */
+const globalForSeed = globalThis as typeof globalThis & {
+  __fanaSeedDone?: boolean;
+  __fanaSeedPromise?: Promise<{ success: boolean; error?: string }> | null;
+};
+
+/** Full seed + migration normalization. Only runs once per process (or on force/invalidate). */
+async function runFullSeed(force = false) {
   try {
     // When the owner Factory-Resets a section, flags stop the demo seed from restoring it
     const menuReset = force ? false : await flagOn("menu_reset_flag");
@@ -151,4 +164,42 @@ export async function ensureDbSeeded(force = false) {
     console.error("Db Seed Error:", error);
     return { success: false, error: String(error) };
   }
+}
+
+export async function ensureDbSeeded(force = false) {
+  if (force) {
+    // /api/setup and explicit repair paths bypass the memo completely.
+    globalForSeed.__fanaSeedDone = false;
+    globalForSeed.__fanaSeedPromise = null;
+    return runFullSeed(true);
+  }
+
+  if (globalForSeed.__fanaSeedDone) {
+    return { success: true };
+  }
+
+  // One shared promise per process: concurrent callers collapse into a single run.
+  if (!globalForSeed.__fanaSeedPromise) {
+    globalForSeed.__fanaSeedPromise = runFullSeed(false)
+      .then((res) => {
+        if (res.success) globalForSeed.__fanaSeedDone = true;
+        return res;
+      })
+      .finally(() => {
+        // Clear on completion so a FAILED run is retried by the next caller;
+        // a successful run is short-circuited by __fanaSeedDone above.
+        globalForSeed.__fanaSeedPromise = null;
+      });
+  }
+  return globalForSeed.__fanaSeedPromise;
+}
+
+/**
+ * Call after any write that can empty a seeded table (admin DELETE handlers,
+ * factory resets). The next read then re-runs the seed once to self-heal defaults —
+ * the documented behavior, without paying for it on every request.
+ */
+export function invalidateDbSeeded() {
+  globalForSeed.__fanaSeedDone = false;
+  globalForSeed.__fanaSeedPromise = null;
 }

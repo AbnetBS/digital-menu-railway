@@ -1,16 +1,17 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { categories } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
+import { ensureDbSeeded, invalidateDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc, sql } from "drizzle-orm";
+import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
 
 export async function GET() {
   await ensureTablesExist();
   await ensureDbSeeded();
   try {
     const list = await db.select().from(categories).orderBy(asc(categories.sortOrder), asc(categories.id));
-    return NextResponse.json(list, { status: 200, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(list, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -83,6 +84,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "ID required" }, { status: 400 });
     }
     await db.delete(categories).where(eq(categories.id, Number(id)));
+    invalidateDbSeeded(); // table may now be empty → self-heal on next read
     return NextResponse.json({ success: true, id: Number(id) });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

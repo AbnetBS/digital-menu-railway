@@ -121,7 +121,39 @@ Still open from the advisor plan (later groups, as agreed — one group at a tim
 Group 2 table sessions & payment-status separation, Group 3 offline indicator / indexes /
 image pipeline, Group 4 explicitly deferred (WebSockets not needed at this scale).
 
-## 5c. How to measure after deploying (Group 1 follow-up)
+## 5c. Group 1 prompt cross-check (2026-08-10) — payment status added
+
+The advisor's official GROUP 1 prompt was checked item-by-item against the real code:
+
+| Prompt item | Status | Evidence / action |
+|---|---|---|
+| 1. PUT /api/orders | **Not applicable — no such route in this repo** | Verified: `src/app/api/orders/` does not exist and nothing references `api/orders` or `OrderCartModal.tsx` (advisor described a different version). The real equivalent — `PUT /api/tickets` — already existed and was hardened with status-transition validation (pending_waiter→confirmed→preparing→ready_for_payment→completed→paid, cancellable, terminal states protected) + 400/404 handling. |
+| 2. Unique order numbers | **Done (previous pass)** | `tickets.order_number = FANA-<DB serial id>` (never random → collisions impossible by construction), partial UNIQUE index as second layer, backfill for existing rows, conflict-safe. |
+| 3. Table number on dine-in orders | **Already satisfied by architecture** | `tickets.table_id` (NOT NULL) + `table_name`; QR flow reads `?table=` and sends `tableId`; server validates (`400` if missing); cashier/waiter display table name. Takeaway doesn't exist in this system (all orders are table-based). |
+| 4. Payment status | **NEW — implemented this pass** | See below. |
+| 5. Duplicate orders from retries | **Done (previous pass)** | Client UUID idempotency keys (reused on retry, regenerated on cart edit), per-item derived keys `K#<i>`, UNIQUE index on `(ticket_id, idempotency_key)`, DB-level rejection under concurrency, single-flight buttons. |
+| 6. No unrelated changes | Followed | Only payment-status related files touched this pass. |
+| 7. Migrations | Followed | Uses the project's own `ensureTablesExist()` DDL pattern (no drizzle-kit migration files exist in this repo); backward-safe: `ADD COLUMN IF NOT EXISTS`, default, backfill, nothing dropped. |
+| 8. Verify everything | Done | See test evidence below. |
+
+### Payment status (prompt item 4) — what was added
+
+- **Schema:** `tickets.payment_status` text, NOT NULL default `'unpaid'` — values `unpaid | paid_cash | paid_telebirr | paid_cbe | paid_card`. Fully separate from `status` (order/food status). No split billing.
+- **Migration:** column auto-added by `ensureTablesExist`; backfill derives concrete status for existing paid/completed bills from their stored method (`cash→paid_cash`, `card→paid_card`, `online/telebirr→paid_telebirr`, `cbe→paid_cbe`), then any remaining NULL → `unpaid`. Old data preserved.
+- **Waiter payment screen:** options split from `cash | card | online` into **Cash · Telebirr · CBE Birr · Card** (Ethiopian mobile-money reality). Confirming payment records `paymentMethod` AND `paymentStatus: paid_<method>` (order status stays `completed` until the cashier verifies & releases).
+- **Cashier:** each bill in the payment stage shows a colored **PAID/UNPAID** chip plus a dropdown to correct/record the payment status (PUTs `/api/tickets`). "Mark PAID & Release Table" derives the status if still unpaid.
+- **PUT /api/tickets** now validates `paymentStatus` against the allowed set (400 on anything else).
+- **Reports/history:** payment-stat cards now cover cash/telebirr/cbe/card (plus legacy "online"); filters and icons updated; "online" legacy rows still display.
+
+### Test evidence (this pass)
+
+- `tsc --noEmit` clean; `next build` compiles; lint identical to baseline (42 pre-existing errors, 0 new — verified by stash diff; only line numbers shifted).
+- **PGlite (real Postgres engine) tests:**
+  - Migration: column added to legacy table without touching data ✓; backfill maps paid/completed by method ✓; active bills and unknown methods → `unpaid` ✓; new tickets default `unpaid` ✓ (initial attempt exposed a NULL-backfill bug → fixed with `IS NULL` guard + final normalize; all assertions now pass).
+  - Regression: unique order numbers ✓, replay probe ✓, concurrent-duplicate rejection ✓, second submission on same bill allowed ✓, collision blocked ✓.
+- UI: dev server compiles all touched screens (cashier, waiter, kitchen, menu, reports).
+
+## 5d. How to measure after deploying (Group 1 follow-up)
 
 1. Cashier: open DevTools → Network, watch the 8s poll — it now hits only
    `/api/tickets?active=1` + `/api/tables` (small JSON, no paid history).

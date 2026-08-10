@@ -219,6 +219,7 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     table_name: { type: "text", def: "'Table'" },
     status: { type: "text", def: "'new'" },
     payment_method: { type: "text" },
+    payment_status: { type: "text", def: "'unpaid'" },
     receipt_image: { type: "text" },
     total_amount: { type: "integer", def: "0", castText: true },
     created_by: { type: "text" },
@@ -422,6 +423,18 @@ export async function ensureTablesExist(force = false) {
   await run(
     `CREATE UNIQUE INDEX IF NOT EXISTS ticket_items_idempotency_key_key ON ticket_items (ticket_id, idempotency_key) WHERE idempotency_key IS NOT NULL`
   );
+
+  //  • payment_status backfill: existing paid/completed bills get a concrete
+  //    status derived from their stored method so reports/history stay correct
+  //    ("online" historically meant Telebirr/wallet in this cafe). Note: SET
+  //    DEFAULT only affects NEW rows, so existing rows are NULL until backfilled —
+  //    the (payment_status IS NULL OR ...) guard covers that.
+  await run(`UPDATE tickets SET payment_status = 'paid_cash' WHERE (payment_status IS NULL OR payment_status = 'unpaid') AND status IN ('paid','completed') AND payment_method = 'cash'`);
+  await run(`UPDATE tickets SET payment_status = 'paid_card' WHERE (payment_status IS NULL OR payment_status = 'unpaid') AND status IN ('paid','completed') AND payment_method = 'card'`);
+  await run(`UPDATE tickets SET payment_status = 'paid_telebirr' WHERE (payment_status IS NULL OR payment_status = 'unpaid') AND status IN ('paid','completed') AND payment_method IN ('online','telebirr')`);
+  await run(`UPDATE tickets SET payment_status = 'paid_cbe' WHERE (payment_status IS NULL OR payment_status = 'unpaid') AND status IN ('paid','completed') AND payment_method = 'cbe'`);
+  // Whatever remains (active bills, unknown methods) is definitively unpaid.
+  await run(`UPDATE tickets SET payment_status = 'unpaid' WHERE payment_status IS NULL`);
 
   if (errors.length > 0) {
     console.error("ensureTablesExist errors:", errors);

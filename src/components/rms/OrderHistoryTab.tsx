@@ -57,7 +57,10 @@ export default function OrderHistoryTab() {
   );
 
   const methodIcon = (m?: string | null) =>
-    m === "card" ? <CreditCard className="w-3.5 h-3.5 text-sky-400" /> : m === "online" ? <Smartphone className="w-3.5 h-3.5 text-amber-400" /> : <Banknote className="w-3.5 h-3.5 text-emerald-400" />;
+    m === "card" ? <CreditCard className="w-3.5 h-3.5 text-sky-400" />
+    : m === "online" || m === "telebirr" ? <Smartphone className="w-3.5 h-3.5 text-amber-400" />
+    : m === "cbe" ? <Smartphone className="w-3.5 h-3.5 text-violet-400" />
+    : <Banknote className="w-3.5 h-3.5 text-emerald-400" />;
 
   const fmtTime = (t: Ticket) => {
     const d = t.closedAt || t.updatedAt;
@@ -99,8 +102,10 @@ export default function OrderHistoryTab() {
         <select value={methodFilter} onChange={(e) => setMethodFilter(e.target.value)} className="bg-[#2C1B17] border border-stone-700 rounded-xl p-2.5 text-xs text-white">
           <option value="all">All Payment Methods</option>
           <option value="cash">Cash</option>
+          <option value="telebirr">Telebirr</option>
+          <option value="cbe">CBE Birr</option>
           <option value="card">Card</option>
-          <option value="online">Online / Telebirr</option>
+          <option value="online">Online (legacy)</option>
         </select>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-[#2C1B17] border border-stone-700 rounded-xl p-2.5 text-xs text-white">
           <option value="all">All Statuses</option>

@@ -103,7 +103,13 @@ export interface CafeTable {
   activeTicketTotal?: number;
 }
 
-export type PaymentMethod = "cash" | "card" | "online";
+export type PaymentMethod = "cash" | "card" | "online" | "telebirr" | "cbe";
+
+/**
+ * Payment status is tracked SEPARATELY from order status (food ready ≠ paid).
+ * Values match the cafe's real payment options; "online" is kept for legacy rows.
+ */
+export type PaymentStatus = "unpaid" | "paid_cash" | "paid_telebirr" | "paid_cbe" | "paid_card";
 
 export interface TicketItem {
   id: number;
@@ -125,6 +131,7 @@ export interface Ticket {
   tableName: string;
   status: TicketStatus;
   paymentMethod?: PaymentMethod | null;
+  paymentStatus?: PaymentStatus | null;
   receiptImage?: string | null;
   totalAmount: number;
   createdBy?: string | null;

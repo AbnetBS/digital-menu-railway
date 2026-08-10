@@ -88,7 +88,10 @@ export const tickets = pgTable("tickets", {
   tableId: integer("table_id").notNull(),
   tableName: varchar("table_name", { length: 50 }).notNull(),
   status: varchar("status", { length: 30 }).notNull().default("new"), // new | preparing | ready_for_payment | completed | paid | cancelled
-  paymentMethod: varchar("payment_method", { length: 20 }), // cash | card | online
+  paymentMethod: varchar("payment_method", { length: 20 }), // cash | card | online | telebirr | cbe
+  // Payment status is SEPARATE from order status (food done ≠ paid).
+  // unpaid | paid_cash | paid_telebirr | paid_cbe | paid_card
+  paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("unpaid"),
   receiptImage: text("receipt_image"), // base64 photo of card/online payment receipt
   totalAmount: integer("total_amount").notNull().default(0),
   createdBy: varchar("created_by", { length: 100 }), // waiter name

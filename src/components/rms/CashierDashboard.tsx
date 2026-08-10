@@ -169,6 +169,27 @@ export default function CashierDashboard() {
     loadAll();
   };
 
+  const markPaid = async (t: Ticket) => {
+    // Release the table AND record the payment status. If it wasn't set yet
+    // (legacy bills / cash verified at the counter), derive it from the method.
+    const derived =
+      t.paymentStatus && t.paymentStatus !== "unpaid"
+        ? t.paymentStatus
+        : t.paymentMethod === "cash"
+        ? "paid_cash"
+        : t.paymentMethod === "card"
+        ? "paid_card"
+        : t.paymentMethod === "cbe"
+        ? "paid_cbe"
+        : "paid_telebirr"; // online / telebirr / unknown digital
+    await fetch("/api/tickets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: t.id, status: "paid", paymentStatus: derived }),
+    });
+    loadAll();
+  };
+
   const cancelTicket = async (id: number) => {
     if (confirm("Cancel this whole order/bill?")) await setStatus(id, "cancelled");
   };
@@ -235,7 +256,30 @@ export default function CashierDashboard() {
   };
 
   const methodIcon = (m?: string | null) =>
-    m === "card" ? <CreditCard className="w-4 h-4 text-sky-400" /> : m === "online" ? <Smartphone className="w-4 h-4 text-amber-400" /> : <Banknote className="w-4 h-4 text-emerald-400" />;
+    m === "card" ? <CreditCard className="w-4 h-4 text-sky-400" />
+    : m === "online" || m === "telebirr" ? <Smartphone className="w-4 h-4 text-amber-400" />
+    : m === "cbe" ? <Smartphone className="w-4 h-4 text-violet-400" />
+    : <Banknote className="w-4 h-4 text-emerald-400" />;
+
+  const paymentStatusLabel = (s?: string | null) =>
+    s === "paid_cash" ? "✓ PAID — CASH"
+    : s === "paid_telebirr" ? "✓ PAID — TELEBIRR"
+    : s === "paid_cbe" ? "✓ PAID — CBE BIRR"
+    : s === "paid_card" ? "✓ PAID — CARD"
+    : "✗ UNPAID";
+
+  const paymentStatusCls = (s?: string | null) =>
+    s && s !== "unpaid" ? "bg-emerald-600 text-white" : "bg-rose-600 text-white";
+
+  // Cashier can correct/record how the bill was paid (separate from order status).
+  const setPaymentStatus = async (id: number, paymentStatus: string) => {
+    await fetch("/api/tickets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, paymentStatus }),
+    });
+    loadAll();
+  };
 
   return (
     <div className="min-h-screen bg-[#14100C] text-white pb-10">
@@ -401,26 +445,45 @@ export default function CashierDashboard() {
                       {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">All items removed.</p>}
                     </div>
 
-                    {/* payment info */}
+                    {/* payment info — method + payment status (separate from order status) */}
                     {(t.status === "ready_for_payment" || t.status === "completed") && (
-                      <div className="flex items-center justify-between bg-black/30 rounded-xl p-3 border border-stone-700">
-                        <div className="flex items-center gap-2 text-xs">
-                          {methodIcon(t.paymentMethod)}
-                          <span className="font-bold capitalize">{t.paymentMethod ? `${t.paymentMethod} payment` : "Awaiting payment method"}</span>
+                      <div className="bg-black/30 rounded-xl p-3 border border-stone-700 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 text-xs">
+                            {methodIcon(t.paymentMethod)}
+                            <span className="font-bold capitalize">{t.paymentMethod ? `${t.paymentMethod} payment` : "Awaiting payment method"}</span>
+                          </div>
+                          <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${paymentStatusCls(t.paymentStatus)}`}>
+                            {paymentStatusLabel(t.paymentStatus)}
+                          </span>
                         </div>
-                        {t.status === "completed" && t.paymentMethod !== "cash" && (
-                          <button
-                            onClick={async () => {
-                              // fetch receipt photo ON DEMAND — saves ~70KB × 100s of polling transfers per day
-                              const r = await fetch(`/api/tickets/receipt?id=${t.id}`);
-                              const d = await r.json();
-                              if (d.receiptImage) setReceiptModal(d.receiptImage);
-                            }}
-                            className="flex items-center gap-1 text-[11px] font-bold text-sky-300 bg-sky-900/40 px-2.5 py-1 rounded-lg hover:bg-sky-800"
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={t.paymentStatus || "unpaid"}
+                            onChange={(e) => setPaymentStatus(t.id, e.target.value)}
+                            className="bg-[#2C1B17] border border-stone-700 rounded-lg px-2 py-1.5 text-[11px] font-bold text-white flex-1"
+                            title="Record how this bill was paid (order status is separate)"
                           >
-                            <ImageIcon className="w-3.5 h-3.5" /> Receipt Photo
-                          </button>
-                        )}
+                            <option value="unpaid">Unpaid</option>
+                            <option value="paid_cash">Paid — Cash</option>
+                            <option value="paid_telebirr">Paid — Telebirr</option>
+                            <option value="paid_cbe">Paid — CBE Birr</option>
+                            <option value="paid_card">Paid — Card</option>
+                          </select>
+                          {t.status === "completed" && t.paymentMethod !== "cash" && (
+                            <button
+                              onClick={async () => {
+                                // fetch receipt photo ON DEMAND — saves ~70KB × 100s of polling transfers per day
+                                const r = await fetch(`/api/tickets/receipt?id=${t.id}`);
+                                const d = await r.json();
+                                if (d.receiptImage) setReceiptModal(d.receiptImage);
+                              }}
+                              className="flex items-center gap-1 text-[11px] font-bold text-sky-300 bg-sky-900/40 px-2.5 py-1.5 rounded-lg hover:bg-sky-800 shrink-0"
+                            >
+                              <ImageIcon className="w-3.5 h-3.5" /> Receipt Photo
+                            </button>
+                          )}
+                        </div>
                       </div>
                     )}
 
@@ -450,7 +513,7 @@ export default function CashierDashboard() {
                         </span>
                       )}
                       {t.status === "completed" && (
-                        <button onClick={() => setStatus(t.id, "paid")} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black py-2.5 rounded-xl flex items-center justify-center gap-2">
+                        <button onClick={() => markPaid(t)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black py-2.5 rounded-xl flex items-center justify-center gap-2">
                           <CheckCircle2 className="w-4 h-4" /> Mark PAID & Release Table
                         </button>
                       )}

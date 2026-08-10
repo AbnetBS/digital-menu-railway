@@ -69,7 +69,7 @@ export default function WaiterApp() {
       : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   // Payment
-  const [payMethod, setPayMethod] = useState<"cash" | "card" | "online" | null>(null);
+  const [payMethod, setPayMethod] = useState<"cash" | "telebirr" | "cbe" | "card" | null>(null);
   const [receiptImage, setReceiptImage] = useState("");
   const [receiptEnabled, setReceiptEnabled] = useState(true);
   const [categories, setCategories] = useState<Array<{ slug: string; name: string }>>([
@@ -288,6 +288,9 @@ export default function WaiterApp() {
         id: activeTicket.id,
         status: "completed",
         paymentMethod: payMethod,
+        // Payment status is separate from order status: record HOW it was paid now;
+        // the cashier still verifies (for digital) and releases the table.
+        paymentStatus: `paid_${payMethod}` as const,
         receiptImage: receiptImage || "",
       }),
     });
@@ -685,7 +688,12 @@ export default function WaiterApp() {
 
           <div className="space-y-2">
             <p className="text-xs font-bold text-amber-200">Ask the customer — payment method:</p>
-            {(["cash", "card", "online"] as const).map((m) => (
+            {([
+              { m: "cash", icon: <Banknote className="w-5 h-5 text-emerald-400" />, label: "Cash" },
+              { m: "telebirr", icon: <Smartphone className="w-5 h-5 text-amber-400" />, label: "Telebirr" },
+              { m: "cbe", icon: <Smartphone className="w-5 h-5 text-violet-400" />, label: "CBE Birr" },
+              { m: "card", icon: <CreditCard className="w-5 h-5 text-sky-400" />, label: "Card" },
+            ] as const).map(({ m, icon, label }) => (
               <button
                 key={m}
                 onClick={() => setPayMethod(m)}
@@ -693,9 +701,9 @@ export default function WaiterApp() {
                   payMethod === m ? "border-[#C9A227] bg-[#C9A227]/10" : "border-stone-700 bg-[#2C1B17]"
                 }`}
               >
-                {m === "cash" ? <Banknote className="w-5 h-5 text-emerald-400" /> : m === "card" ? <CreditCard className="w-5 h-5 text-sky-400" /> : <Smartphone className="w-5 h-5 text-amber-400" />}
+                {icon}
                 <div className="flex-1">
-                  <p className="text-sm font-bold text-white capitalize">{m === "online" ? "Online (Telebirr / Wallet)" : m}</p>
+                  <p className="text-sm font-bold text-white">{label}</p>
                   <p className="text-[11px] text-stone-400">
                     {m === "cash" ? "Collect cash and confirm" : "Take receipt photo after payment (optional)"}
                   </p>
@@ -753,7 +761,11 @@ export default function WaiterApp() {
             disabled={!payMethod || sending}
             className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl disabled:opacity-40"
           >
-            {sending ? "Confirming..." : `Confirm ${payMethod ? payMethod.charAt(0).toUpperCase() + payMethod.slice(1) : ""} Payment`}
+            {sending
+              ? "Confirming..."
+              : `Confirm ${
+                  payMethod === "cbe" ? "CBE Birr" : payMethod ? payMethod.charAt(0).toUpperCase() + payMethod.slice(1) : ""
+                } Payment`}
           </button>
 
           <div className="flex items-center gap-2 text-[11px] text-stone-400 bg-[#2C1B17] rounded-xl p-3">

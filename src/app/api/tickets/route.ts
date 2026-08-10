@@ -27,6 +27,9 @@ const TICKET_STATUS_TRANSITIONS: Record<string, string[]> = {
   cancelled: [],
 };
 
+/** Payment status is separate from order status (food done ≠ paid). */
+const PAYMENT_STATUSES = ["unpaid", "paid_cash", "paid_telebirr", "paid_cbe", "paid_card"] as const;
+
 // GET: ?active=1 → active tickets (with items); ?all=1 → everything
 // TRAFFIC FIX: list responses EXCLUDE receipt photos (they're heavy base64 polygons).
 // Receipts are fetched on-demand via /api/tickets/receipt?id=X when someone clicks "View Receipt".
@@ -254,6 +257,13 @@ export async function PUT(request: Request) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (body.status) updates.status = body.status;
     if (body.paymentMethod !== undefined) updates.paymentMethod = body.paymentMethod;
+    // Payment status is validated against the allowed set (independent of order status).
+    if (body.paymentStatus !== undefined) {
+      if (!PAYMENT_STATUSES.includes(body.paymentStatus)) {
+        return NextResponse.json({ error: "Invalid payment status" }, { status: 400 });
+      }
+      updates.paymentStatus = body.paymentStatus;
+    }
     if (body.receiptImage !== undefined) updates.receiptImage = body.receiptImage;
     if (body.status === "paid" || body.status === "cancelled") updates.closedAt = new Date();
 

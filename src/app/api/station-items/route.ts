@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { ticketItems, tickets } from "@/db/schema";
-import { and, eq, notInArray, asc } from "drizzle-orm";
+import { and, eq, notInArray, asc, inArray } from "drizzle-orm";
 
 type Station = "barista" | "kitchen";
 
@@ -15,15 +15,31 @@ export async function GET(request: Request) {
     const stationQuery = (searchParams.get("station") || "kitchen").toLowerCase();
     const station: Station = stationQuery === "barista" ? "barista" : "kitchen";
 
+    // GROUP 6 — bound the item read to OPEN tickets only. Previously this
+    // fetched EVERY historical item for the station (e.g. ~15k rows at 10k
+    // tickets) every 8s and then filtered in JS. Now: read the small set of
+    // open ticket ids first, then fetch only THEIR items for this station.
+    const open = await db
+      .select({ id: tickets.id, tableName: tickets.tableName, orderNumber: tickets.orderNumber, status: tickets.status, totalAmount: tickets.totalAmount })
+      .from(tickets)
+      .where(notInArray(tickets.status, ["paid", "cancelled"]));
+
+    if (open.length === 0) return NextResponse.json([], { headers: { "Cache-Control": "no-store" } });
+
+    const openIds = open.map((t) => t.id);
     const allItems = await db
       .select()
       .from(ticketItems)
-      .where(and(eq(ticketItems.stationName, station), eq(ticketItems.removed, false)))
+      .where(
+        and(
+          eq(ticketItems.stationName, station),
+          eq(ticketItems.removed, false),
+          inArray(ticketItems.ticketId, openIds)
+        )
+      )
       .orderBy(asc(ticketItems.id));
 
     if (allItems.length === 0) return NextResponse.json([], { headers: { "Cache-Control": "no-store" } });
-
-    const open = await db.select().from(tickets).where(notInArray(tickets.status, ["paid", "cancelled"]));
 
     const map = new Map<number, any[]>();
     for (const it of allItems) {

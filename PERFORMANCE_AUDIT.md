@@ -153,7 +153,79 @@ The advisor's official GROUP 1 prompt was checked item-by-item against the real 
   - Regression: unique order numbers ✓, replay probe ✓, concurrent-duplicate rejection ✓, second submission on same bill allowed ✓, collision blocked ✓.
 - UI: dev server compiles all touched screens (cashier, waiter, kitchen, menu, reports).
 
-## 5d. How to measure after deploying (Group 1 follow-up)
+## 5e. Group 2 — seeding & redundant requests (2026-08-10)
+
+**Task:** verify the old audit's claim that `ensureDbSeeded()` runs on normal GET
+requests, remove redundant seeding, measure before/after, and stop.
+
+### What the current code actually does (inspected first)
+
+- `ensureDbSeeded()` is still *called* by 9 data routes (settings, categories, menu,
+  reviews, gallery, staff, tables) + 2 login routes + the intentional init routes
+  (`/api/seed`, `/api/setup`).
+- But since the first Group 1 pass it is **memoized per server process**:
+  `__fanaSeedDone` + a shared promise collapse concurrent first calls; warm calls
+  return instantly with **zero SQL** (verified by code reading and by counting).
+- `ensureTablesExist()` was already memoized (`__fanaMigrateDone`) — but only a
+  *flag*, so concurrent cold-start requests each ran the full migration until the
+  flag was set at the end.
+- Zero `fetch("/api/seed")` calls remain in client code; `/api/admin/verify` does no
+  DB work (cookie check only).
+
+### What was measured (real route handlers, stubbed `pg` Pool that counts every statement)
+
+| Scenario (warm = 2nd request in same process) | BEFORE (original commit) | AFTER (start of this pass) | AFTER (end of this pass) |
+|---|---|---|---|
+| `GET /api/menu` warm | 94 (81 seed writes) | 1 | 1 |
+| `GET /api/staff?public=1` warm | 94 (81 seed writes) | 1 | 1 |
+| `GET /api/categories` warm | 94 (81 seed writes) | 1 | 1 |
+| Homepage 5 routes, parallel, warm | 470 (405 seed writes) | 5 | 5 |
+| Homepage 5 routes, parallel, COLD | 2300 (migrate ran 5×) | 2033 (migrate 5×) | **485 (migrate 1×)** |
+
+(Stub returns empty rows, so the one-time init does its maximum work — real cold
+cost on a healthy DB is the 1-query health probe + a few seed writes.)
+
+### Changes made
+
+**`src/db/migrate.ts` — `ensureTablesExist()` now uses a shared promise** (same
+pattern as the seed memo): the first caller runs the migration/health probe; any
+concurrent first callers await the same result instead of each executing the full
+CREATE/ALTER storm. `force` paths (`/api/setup?force=1`, image uploads) still run a
+fresh migration. Failure does NOT set the memo → next call retries (verified).
+
+**Deliberately NOT done:** `ensureDbSeeded()` was **not stripped from GET routes**.
+With the memo, warm cost is provably zero (measured: 1 query = the data SELECT), and
+the one-time first-request auto-init is the project's documented self-heal mechanism
+(fresh Neon DB works without the owner remembering to visit `/api/setup`). Removing
+the call would break first-time setup — the prompt explicitly says not to remove
+genuinely-required initialization.
+
+### Verification
+
+- `tsc --noEmit` clean; `next build` compiles; lint identical to baseline (42
+  pre-existing errors, 0 new — verified by stash-diff).
+- Memo behavior tests (stubbed pool): healthy DB → 1 probe query then 0;
+  3 concurrent broken-DB calls → ONE migration (387 statements, not 3×); failed
+  migration → memo does not stick, retry succeeds; `force=true` bypasses memo.
+- Pages still load (dev server: /, /menu, /cashier, /waiter, /kitchen, /admin all 200).
+
+### Remaining Group 2 issues
+
+None. (Items excluded by the prompt — polling intervals, historical filtering,
+Base64 images, WebSockets, etc. — untouched.)
+
+## 5f. How to measure after deploying (Group 2)
+
+1. After deploy, the FIRST request to any data route (or `/api/setup`) performs the
+   one-time seed + migration; every subsequent request in the same server process
+   executes only its data SELECT (1 query for `/api/menu`, `/api/categories`, …).
+2. Open the site with 5+ parallel tabs right after a cold start — the migration runs
+   once, not once per request (observable via Neon's query log / `pg_stat_statements`).
+3. Repeated menu/category/settings requests produce no `INSERT`/`UPDATE`/`DELETE`
+   against `menu_items`, `categories`, `site_settings` etc. (previously ~81 seed
+   statements per warm request).
+
+### Group 1 measurement (retained from earlier pass)
 
 1. Cashier: open DevTools → Network, watch the 8s poll — it now hits only
    `/api/tickets?active=1` + `/api/tables` (small JSON, no paid history).

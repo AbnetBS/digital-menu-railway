@@ -331,12 +331,14 @@ const TABLE_COLUMNS: Record<string, Record<string, ColSpec>> = {
 // It only needs to run ONCE per server instance; /api/setup?force=1 re-runs it.
 const globalForMigrate = globalThis as typeof globalThis & {
   __fanaMigrateDone?: boolean;
+  // Shared promise so CONCURRENT first requests (e.g. the homepage's 5 parallel
+  // fetches right after a cold start) collapse into ONE migration run instead of
+  // each running the full CREATE/ALTER storm.
+  __fanaMigratePromise?: Promise<{ success: boolean; errors: string[] }> | null;
 };
 
-export async function ensureTablesExist(force = false) {
-  if (globalForMigrate.__fanaMigrateDone && !force) {
-    return { success: true, errors: [] as string[] };
-  }
+/** The actual migration body (health probe + full CREATE/ALTER/sequence repair). */
+async function runFullMigrate(force: boolean) {
   const errors: string[] = [];
 
   // TRAFFIC BOAT-FIX: test DB health with ONE light query first.
@@ -442,6 +444,35 @@ export async function ensureTablesExist(force = false) {
   }
   globalForMigrate.__fanaMigrateDone = true;
   return { success: true, errors: [] as string[] };
+}
+
+export async function ensureTablesExist(force = false) {
+  if (globalForMigrate.__fanaMigrateDone && !force) {
+    return { success: true, errors: [] as string[] };
+  }
+
+  if (force) {
+    // Explicit repair paths (/api/setup?force=1, image uploads) bypass the memo
+    // and run a fresh migration, independent of any in-flight run.
+    globalForMigrate.__fanaMigrateDone = false;
+    globalForMigrate.__fanaMigratePromise = null;
+    return runFullMigrate(true);
+  }
+
+  // Shared promise: the FIRST caller runs the migration (or the one-query health
+  // probe on a healthy DB); concurrent first callers await the same result instead
+  // of each executing the full CREATE/ALTER storm.
+  if (!globalForMigrate.__fanaMigratePromise) {
+    globalForMigrate.__fanaMigratePromise = runFullMigrate(false)
+      .then((res) => {
+        if (res.success) globalForMigrate.__fanaMigrateDone = true;
+        return res;
+      })
+      .finally(() => {
+        globalForMigrate.__fanaMigratePromise = null;
+      });
+  }
+  return globalForMigrate.__fanaMigratePromise;
 }
 
 /** Report per-table health for /api/setup. */

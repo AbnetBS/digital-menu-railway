@@ -31,6 +31,9 @@ const TICKET_STATUS_TRANSITIONS: Record<string, string[]> = {
 const PAYMENT_STATUSES = ["unpaid", "paid_cash", "paid_telebirr", "paid_cbe", "paid_card"] as const;
 
 // GET: ?active=1 → active tickets (with items); ?all=1 → everything
+//      ?paid=1&limit=N → ONLY the N most recent PAID tickets, WITHOUT items —
+//      the lightweight payload for the cashier's "Recently Paid" panel
+//      (history cards render only table/method/total, so items are wasted bytes).
 // TRAFFIC FIX: list responses EXCLUDE receipt photos (they're heavy base64 polygons).
 // Receipts are fetched on-demand via /api/tickets/receipt?id=X when someone clicks "View Receipt".
 export async function GET(request: Request) {
@@ -38,10 +41,18 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const activeOnly = searchParams.get("active") === "1";
+    const paidOnly = searchParams.get("paid") === "1";
+    const limit = Math.min(200, Math.max(1, Number(searchParams.get("limit") || 100)));
 
-    const list = activeOnly
-      ? await db.select().from(tickets).where(notInArray(tickets.status, ["paid", "cancelled"])).orderBy(desc(tickets.updatedAt))
-      : await db.select().from(tickets).orderBy(desc(tickets.updatedAt)).limit(100);
+    let list;
+    if (activeOnly) {
+      list = await db.select().from(tickets).where(notInArray(tickets.status, ["paid", "cancelled"])).orderBy(desc(tickets.updatedAt));
+    } else if (paidOnly) {
+      // Only the most recent paid bills — no items, no receipt, small response.
+      list = await db.select().from(tickets).where(eq(tickets.status, "paid")).orderBy(desc(tickets.updatedAt)).limit(limit);
+    } else {
+      list = await db.select().from(tickets).orderBy(desc(tickets.updatedAt)).limit(limit);
+    }
 
     // list WITHOUT the receiptImage column (heavy payload), kept for CSV missing fallback key
     const slim = list.map((t) => {
@@ -50,10 +61,13 @@ export async function GET(request: Request) {
       return clone;
     });
 
+    // Paid-history payload doesn't need items at all (cards show table/method/total only).
+    const needItems = !paidOnly;
+
     // PERFORMANCE: only fetch items for the tickets being returned — never the
     // whole ticket_items table (it grows forever). Group by ticketId once.
     const ticketIds = slim.map((t) => (t as { id: number }).id);
-    const items = ticketIds.length > 0
+    const items = needItems && ticketIds.length > 0
       ? await db.select().from(ticketItems).where(inArray(ticketItems.ticketId, ticketIds)).orderBy(asc(ticketItems.id))
       : [];
 

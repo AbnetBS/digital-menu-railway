@@ -101,7 +101,15 @@ export default function WaiterApp() {
     if (staffName) {
       loadAll();
       const t = setInterval(loadTables, 8000);
-      return () => clearInterval(t);
+      // GROUP 3: refresh immediately when the tab becomes visible again.
+      const onVisible = () => {
+        if (!document.hidden) loadTables();
+      };
+      document.addEventListener("visibilitychange", onVisible);
+      return () => {
+        clearInterval(t);
+        document.removeEventListener("visibilitychange", onVisible);
+      };
     }
   }, [staffName]);
 

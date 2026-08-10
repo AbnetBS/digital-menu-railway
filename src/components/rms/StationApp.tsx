@@ -121,7 +121,15 @@ export default function StationApp({ station }: { station: Station }) {
     if (staffName) {
       load();
       const t = setInterval(load, 8000);
-      return () => clearInterval(t);
+      // GROUP 3: refresh immediately when the tab becomes visible again.
+      const onVisible = () => {
+        if (!document.hidden) load();
+      };
+      document.addEventListener("visibilitychange", onVisible);
+      return () => {
+        clearInterval(t);
+        document.removeEventListener("visibilitychange", onVisible);
+      };
     }
   }, [staffName]);
 

@@ -214,7 +214,61 @@ genuinely-required initialization.
 None. (Items excluded by the prompt — polling intervals, historical filtering,
 Base64 images, WebSockets, etc. — untouched.)
 
-## 5f. How to measure after deploying (Group 2)
+## 5g. Group 3 — performance & long-term reliability (2026-08-10)
+
+Worked strictly one item at a time: inspect → verify → fix only if the problem exists → test → measure → report.
+
+### ITEM 1 — Polling / active orders
+
+**Inspection:** cashier polls `/api/tables` + `/api/tickets?active=1` every 8s; waiter same; station polls `/api/station-items?station=X` every 8s — all active-only, receipts excluded, items scoped in SQL. ✅ The one remaining issue was the cashier's "Recently Paid" refresh: it fetched `?all=1` (up to 100 tickets **with items**) every 60s just to render 12 cards showing only table/method/total.
+**Fix:** `/api/tickets` GET gained `?paid=1&limit=N` → only the N most recent paid tickets, **no items query, no receipt**; cashier `loadHistory` now uses `?paid=1&limit=12` and renders the response directly.
+**Measured (counting stub):** per history refresh 2→1 SQL, 100→12 tickets, items query eliminated, response ~0.4 KB.
+
+### ITEM 2 — Cashier unrelated polling
+
+**Inspection:** full fetch inventory of the cashier — polls ONLY `/api/tables` + `/api/tickets?active=1` (8s) and `/api/tickets?paid=1&limit=12` (60s); staff list fetched once on mount; everything else is on-demand (PUT/DELETE/receipt-on-click). **No gallery/reviews/categories/settings/menu polling exists** — nothing to remove.
+**Measured (simulated 60s cashier window, original commit vs current):** statements/min 770→33 (seeding removal from Groups 1–2), rows/min 2505→1140, KB/min 217→85 (active-only + lightweight history).
+
+### ITEM 3 — Database indexes
+
+**Inspection:** verified each hot query's WHERE/ORDER BY in the current code, then added only justified indexes in `ensureTablesExist` (Step 4, `CREATE INDEX IF NOT EXISTS` — backward-safe, idempotent):
+1. `ticket_items(ticket_id)` — items attach on every tickets/reports fetch
+2. `ticket_items(station_name, removed)` — kitchen/barista 8s polling
+3. `tickets(status, updated_at)` — active poll + paid history + all=1 sort
+4. `tickets(table_id, status)` — "one active bill per table" merge lookup on every order
+5. `tickets(created_at)` — reports 30-day scoping
+6. `tickets(updated_at)` — reports OR + bare `ORDER BY updated_at DESC LIMIT 100`
+7. `tickets(status, closed_at)` — receipt-cleanup job
+
+**Verified (PGlite, 8k tickets / 24k items):** all 5 representative query patterns went **Seq Scan → Index/Bitmap Index Scan** after adding the indexes.
+
+### ITEM 4 — Pause polling when page is inactive
+
+**Inspection:** all three RMS apps already skip poll work while `document.hidden`. Missing: immediate refresh on return to the tab (waited up to one 8s tick).
+**Fix:** added `visibilitychange` listeners (with cleanup) to cashier, waiter, and station apps — the moment the tab becomes visible, the poll runs immediately. No duplicate timers (single interval + single listener, both cleaned up).
+
+### ITEM 5 — Cashier offline / connection indicator
+
+**Inspection:** none existed.
+**Fix:** added a header indicator driven by **real backend communication** (fetch success/failure of the polled endpoints, with a try/catch around the whole poll — also fixes a latent unhandled-rejection): 🟢 `ONLINE` + `last updated HH:MM:SS`, or 🔴 `OFFLINE — RECONNECTING` (pulsing). Reflects the backend, not the browser's internet status.
+
+### ITEM 6 — Base64 / menu images
+
+**Inspection:** uploads are compressed on-device (`compressImage` 640px/0.6 for menu, 800/0.65 for receipts) then stored once in `cdn_images` (base64 text) with a short `/api/images/{id}` URL; served with `Cache-Control: public, max-age=31536000, immutable` (downloaded once per device); receipts excluded from all polling payloads; defaults use external Pexels URLs (0 self-hosted in seed data).
+**Verdict:** the "smallest safe improvement" from the plan is **already implemented** — report, no change. A full move to object storage is explicitly a later-group item; suggested one-time check on the real DB to size `cdn_images` (`SELECT pg_size_pretty(pg_total_relation_size('cdn_images'))`).
+
+### Group 3 verification
+
+- `tsc --noEmit` clean; `next build` compiles; lint identical to baseline (42 pre-existing, 0 new — verified by stash-diff; only line numbers shifted).
+- Pages load: /, /menu, /cashier, /waiter, /kitchen, /admin all 200.
+- Index behavior proven on a real Postgres engine (Seq Scan → Index).
+- Polling payloads/statements measured before/after (items 1–2 tables above).
+
+### Remaining Group 3 issues
+
+None within scope. (Group 4 explicitly not started.)
+
+## 5h. How to measure after deploying (Group 3)
 
 1. After deploy, the FIRST request to any data route (or `/api/setup`) performs the
    one-time seed + migration; every subsequent request in the same server process

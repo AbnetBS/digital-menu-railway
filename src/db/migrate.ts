@@ -426,6 +426,30 @@ async function runFullMigrate(force: boolean) {
     `CREATE UNIQUE INDEX IF NOT EXISTS ticket_items_idempotency_key_key ON ticket_items (ticket_id, idempotency_key) WHERE idempotency_key IS NOT NULL`
   );
 
+  //  • GROUP 3 indexes — each justified by a real query pattern:
+  //    1. ticket_items(ticket_id): items attach on EVERY tickets/reports fetch
+  //       (`WHERE ticket_id IN (...)`); also recomputeTotal per ticket.
+  //    2. ticket_items(station_name, removed): kitchen/barista polling every 8s
+  //       (`WHERE station_name = ? AND removed = false`).
+  //    3. tickets(status, updated_at): active poll every 8s
+  //       (`WHERE status NOT IN ('paid','cancelled') ORDER BY updated_at DESC`),
+  //       paid-history (`WHERE status='paid' ORDER BY updated_at DESC LIMIT n`).
+  //    4. tickets(table_id, status): "one active bill per table" merge lookup on
+  //       every order submission (`WHERE table_id = ? AND status NOT IN (...)`).
+  //    5. tickets(created_at) & 6. tickets(updated_at): reports 30-day scoping
+  //       (`WHERE created_at > ? OR updated_at > ? OR closed_at > ?`); bare
+  //       updated_at also serves the ?all=1 `ORDER BY updated_at DESC LIMIT 100`
+  //       (a composite leading with status can't serve a bare updated_at sort).
+  //    7. tickets(status, closed_at): receipt-cleanup job
+  //       (`WHERE status='paid' AND receipt_image IS NOT NULL AND closed_at < ?`).
+  await run(`CREATE INDEX IF NOT EXISTS ticket_items_ticket_id_idx ON ticket_items (ticket_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS ticket_items_station_name_removed_idx ON ticket_items (station_name, removed)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_status_updated_at_idx ON tickets (status, updated_at)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_table_id_status_idx ON tickets (table_id, status)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_created_at_idx ON tickets (created_at)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_updated_at_idx ON tickets (updated_at)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_status_closed_at_idx ON tickets (status, closed_at)`);
+
   //  • payment_status backfill: existing paid/completed bills get a concrete
   //    status derived from their stored method so reports/history stay correct
   //    ("online" historically meant Telebirr/wallet in this cafe). Note: SET

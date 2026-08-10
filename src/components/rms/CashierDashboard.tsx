@@ -28,6 +28,13 @@ export default function CashierDashboard() {
   const [receiptModal, setReceiptModal] = useState<string | null>(null);
   const prevCountRef = useRef(0);
 
+  // ── CONNECTION INDICATOR (Group 3) ──
+  // Reflects REAL backend communication (fetch success/failure), NOT the browser's
+  // internet status. Lets the cashier tell "no new orders" from "we're not talking
+  // to the server" at a glance.
+  const [connStatus, setConnStatus] = useState<"online" | "offline">("online");
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+
   // ── RING BELL + DESKTOP POPUP ALERT SYSTEM ──
   const [alertsOn, setAlertsOn] = useState(false);
   const seenEventsRef = useRef<Set<string>>(new Set());
@@ -69,9 +76,15 @@ export default function CashierDashboard() {
   const loadAll = async () => {
     // TRAFFIC FIX: don't poll when this browser tab isn't on-screen (TikTok breaks don't cost data)
     if (typeof document !== "undefined" && document.hidden) return;
-    const [tRes, tkRes] = await Promise.all([fetch("/api/tables"), fetch("/api/tickets?active=1")]);
-    if (tRes.ok) setTables(await tRes.json());
-    if (tkRes.ok) {
+    try {
+      const [tRes, tkRes] = await Promise.all([fetch("/api/tables"), fetch("/api/tickets?active=1")]);
+      // Connection indicator: ONLINE only when the backend actually answered both
+      // polled endpoints; a failed/thrown fetch flips it to OFFLINE immediately.
+      const backendOk = tRes.ok && tkRes.ok;
+      setConnStatus(backendOk ? "online" : "offline");
+      if (backendOk) setLastUpdated(new Date().toLocaleTimeString());
+      if (tRes.ok) setTables(await tRes.json());
+      if (tkRes.ok) {
       // PERFORMANCE (Group 1): poll ONLY the small active-orders payload every 8s —
       // paid history is fetched separately on a slow 60s timer (loadHistory below),
       // so we never re-download hundreds of old bills just to find new orders.
@@ -98,16 +111,21 @@ export default function CashierDashboard() {
       initializedRef.current = true;
 
       setTickets(active);
+      }
+    } catch {
+      // Fetch threw (network down, backend unreachable) → show OFFLINE clearly.
+      setConnStatus("offline");
     }
   };
 
   // "Recently Paid" panel — loaded on login + every 60s (NOT on the 8s hot loop).
+  // Group 3: uses the lightweight ?paid=1 endpoint (only the 12 most recent paid
+  // bills, no items/receipts) instead of re-downloading up to 100 tickets + items.
   const loadHistory = async () => {
     if (typeof document !== "undefined" && document.hidden) return;
-    const r = await fetch("/api/tickets?all=1");
+    const r = await fetch("/api/tickets?paid=1&limit=12");
     if (r.ok) {
-      const all: Ticket[] = await r.json();
-      setHistory(all.filter((t) => t.status === "paid").slice(0, 12));
+      setHistory(await r.json());
     }
   };
 
@@ -117,9 +135,17 @@ export default function CashierDashboard() {
       loadHistory();
       const t = setInterval(loadAll, 8000);
       const h = setInterval(loadHistory, 60000);
+      // GROUP 3: refresh IMMEDIATELY when the tab becomes visible again
+      // (polling is skipped while hidden; without this the first refresh
+      // waits up to one full 8s interval).
+      const onVisible = () => {
+        if (!document.hidden) loadAll();
+      };
+      document.addEventListener("visibilitychange", onVisible);
       return () => {
         clearInterval(t);
         clearInterval(h);
+        document.removeEventListener("visibilitychange", onVisible);
       };
     }
   }, [staffName]);
@@ -295,6 +321,27 @@ export default function CashierDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* CONNECTION INDICATOR (Group 3) — real backend communication, not browser internet */}
+          <div
+            className={`flex flex-col items-end ${
+              connStatus === "online"
+                ? "text-emerald-300"
+                : "text-rose-300"
+            }`}
+            title={connStatus === "online" ? `Connected — last updated ${lastUpdated || "—"}` : "Lost contact with the server — reconnecting"}
+          >
+            <span className={`flex items-center gap-1.5 text-[10px] font-black px-2.5 py-1 rounded-full border ${
+              connStatus === "online"
+                ? "bg-emerald-900/40 border-emerald-500/40"
+                : "bg-rose-900/60 border-rose-500/60 animate-pulse"
+            }`}>
+              <span className={`w-2 h-2 rounded-full ${connStatus === "online" ? "bg-emerald-400" : "bg-rose-400"}`} />
+              {connStatus === "online" ? "ONLINE" : "OFFLINE — RECONNECTING"}
+            </span>
+            {lastUpdated && (
+              <span className="text-[9px] text-stone-500 mt-0.5">last updated {lastUpdated}</span>
+            )}
+          </div>
           {/* RING BELL enable button — click once on each cashier device */}
           <button
             onClick={enableAlerts}

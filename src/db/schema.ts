@@ -95,6 +95,12 @@ export const tickets = pgTable("tickets", {
   closedAt: timestamp("closed_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
+  // Guaranteed-unique order number shown to staff/customers (FANA-<ticket id>).
+  // Populated at insert from the DB serial → never random → never collides.
+  orderNumber: varchar("order_number", { length: 32 }),
+  // Idempotency key: a client-generated UUID per order submission. The unique index
+  // on (ticket_id, idempotency_key) makes retries/double-taps safe server-side.
+  idempotencyKey: varchar("idempotency_key", { length: 64 }),
 });
 
 export const ticketItems = pgTable("ticket_items", {
@@ -111,4 +117,6 @@ export const ticketItems = pgTable("ticket_items", {
   stationName: varchar("station_name", { length: 20 }).default("kitchen"),
   stationStatus: varchar("station_status", { length: 20 }).default("pending"), // pending | accepted | done
   createdAt: timestamp("created_at").defaultNow(),
+  // Shared by all rows of one order submission (see tickets.idempotencyKey).
+  idempotencyKey: varchar("idempotency_key", { length: 64 }),
 });

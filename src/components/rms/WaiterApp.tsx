@@ -51,6 +51,23 @@ export default function WaiterApp() {
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
 
+  // ── IDEMPOTENCY (Group 1): one key per order submission, reused on retries so a
+  //    double-tap / WiFi retry can NEVER duplicate items on the table bill.
+  const pendingKeyRef = useRef("");
+  const lastCartSigRef = useRef("");
+
+  useEffect(() => {
+    const sig = JSON.stringify(cart);
+    if (pendingKeyRef.current && lastCartSigRef.current && sig !== lastCartSigRef.current) {
+      pendingKeyRef.current = ""; // cart edited after a failure → new submission
+    }
+  }, [cart]);
+
+  const newSubmissionKey = () =>
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
   // Payment
   const [payMethod, setPayMethod] = useState<"cash" | "card" | "online" | null>(null);
   const [receiptImage, setReceiptImage] = useState("");
@@ -197,7 +214,9 @@ export default function WaiterApp() {
   const cartTotal = cart.reduce((s, c) => s + c.price * c.quantity, 0);
 
   const sendOrder = async () => {
-    if (cart.length === 0 || !selectedTable) return;
+    if (cart.length === 0 || !selectedTable || sending) return;
+    if (!pendingKeyRef.current) pendingKeyRef.current = newSubmissionKey();
+    lastCartSigRef.current = JSON.stringify(cart);
     setSending(true);
     const r = await fetch("/api/tickets", {
       method: "POST",
@@ -205,6 +224,7 @@ export default function WaiterApp() {
       body: JSON.stringify({
         tableId: selectedTable.id,
         waiterName: staffName,
+        idempotencyKey: pendingKeyRef.current,
         items: cart.map((c) => ({
           menuItemId: c.menuItemId,
           name: c.name,
@@ -218,12 +238,13 @@ export default function WaiterApp() {
     setSending(false);
     if (r.ok) {
       const d = await r.json();
+      pendingKeyRef.current = "";
       setCart([]);
-      showToast(d.merged ? "✓ Items added to the table bill" : "✓ Order sent to cashier");
+      showToast(d.duplicate ? "✓ Already sent — not sent twice" : d.merged ? "✓ Items added to the table bill" : "✓ Order sent to cashier");
       await loadTables();
       onGoBack();
     } else {
-      showToast("Failed to send order. Try again.");
+      showToast("Failed to send order — press Send again, it will not duplicate.");
     }
   };
 

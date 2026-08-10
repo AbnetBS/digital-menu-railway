@@ -36,6 +36,7 @@ export async function GET(request: Request) {
       .map((t) => ({
         id: t.id,
         tableName: t.tableName,
+        orderNumber: t.orderNumber,
         status: t.status,
         totalAmount: t.totalAmount,
         items: map.get(t.id) || [],

@@ -69,14 +69,13 @@ export default function CashierDashboard() {
   const loadAll = async () => {
     // TRAFFIC FIX: don't poll when this browser tab isn't on-screen (TikTok breaks don't cost data)
     if (typeof document !== "undefined" && document.hidden) return;
-    const [tRes, tkRes] = await Promise.all([fetch("/api/tables"), fetch("/api/tickets?all=1")]);
+    const [tRes, tkRes] = await Promise.all([fetch("/api/tables"), fetch("/api/tickets?active=1")]);
     if (tRes.ok) setTables(await tRes.json());
     if (tkRes.ok) {
-      const all: Ticket[] = await tkRes.json();
-      // Cashier sees ALL active orders — including customer QR orders waiting for confirmation,
-      // so he can dispatch a waiter ("go to Table N and confirm this") or confirm instantly himself.
-      const active = all.filter((t) => t.status !== "paid" && t.status !== "cancelled");
-      const done = all.filter((t) => t.status === "paid").slice(0, 12);
+      // PERFORMANCE (Group 1): poll ONLY the small active-orders payload every 8s —
+      // paid history is fetched separately on a slow 60s timer (loadHistory below),
+      // so we never re-download hundreds of old bills just to find new orders.
+      const active: Ticket[] = await tkRes.json();
 
       // ── EVENT DETECTION: any order action (QR order, confirmation, payment request, payment done)
       const newEvents: Ticket[] = [];
@@ -99,15 +98,29 @@ export default function CashierDashboard() {
       initializedRef.current = true;
 
       setTickets(active);
-      setHistory(done);
+    }
+  };
+
+  // "Recently Paid" panel — loaded on login + every 60s (NOT on the 8s hot loop).
+  const loadHistory = async () => {
+    if (typeof document !== "undefined" && document.hidden) return;
+    const r = await fetch("/api/tickets?all=1");
+    if (r.ok) {
+      const all: Ticket[] = await r.json();
+      setHistory(all.filter((t) => t.status === "paid").slice(0, 12));
     }
   };
 
   useEffect(() => {
     if (staffName) {
       loadAll();
+      loadHistory();
       const t = setInterval(loadAll, 8000);
-      return () => clearInterval(t);
+      const h = setInterval(loadHistory, 60000);
+      return () => {
+        clearInterval(t);
+        clearInterval(h);
+      };
     }
   }, [staffName]);
 
@@ -264,7 +277,7 @@ export default function CashierDashboard() {
           {payCount > 0 && (
             <span className="bg-purple-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full">{payCount} PAY</span>
           )}
-          <button onClick={loadAll} className="p-2 rounded-xl bg-white/10 text-amber-200" title="Refresh">
+          <button onClick={() => { loadAll(); loadHistory(); }} className="p-2 rounded-xl bg-white/10 text-amber-200" title="Refresh">
             <RefreshCw className="w-4 h-4" />
           </button>
           <button onClick={logout} className="p-2 rounded-xl bg-rose-600/80 text-white" title="Logout">
@@ -341,7 +354,14 @@ export default function CashierDashboard() {
                     {/* header */}
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="font-serif font-bold text-lg text-amber-100">{t.tableName}</p>
+                        <p className="font-serif font-bold text-lg text-amber-100">
+                          {t.tableName}
+                          {t.orderNumber && (
+                            <span className="ml-2 align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
+                              #{t.orderNumber}
+                            </span>
+                          )}
+                        </p>
                         <p className="text-[10px] text-stone-500 flex items-center gap-1">
                           <Clock className="w-3 h-3" /> by {t.createdBy || "waiter"}
                         </p>

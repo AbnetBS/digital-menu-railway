@@ -88,6 +88,49 @@ After Group 1: the seed pipeline runs **once per server process** (then 0 extra 
 
 ---
 
+## 5b. Group 1 follow-up — advisor plan reality-check (2026-08-10)
+
+A second review plan was received (external advisor, 4 priority groups). Each Group 1
+item was checked against the **actual** code — several claims referred to a different
+system version (it mentions `/api/orders` and random `FANA-ORD-xxxxxx` numbers, which
+do not exist in this codebase — ordering here is `tickets`/`ticket_items`, and status
+updates go through `PUT /api/tickets`). The underlying operational concerns are real
+and were fixed:
+
+| Advisor item | Reality in this codebase | Fix applied |
+|---|---|---|
+| 1. "PUT /api/orders broken" | No `/api/orders` route exists; `PUT /api/tickets` works but accepted ANY status | **Added server-side status-transition validation** (pending_waiter → confirmed → preparing → ready_for_payment → completed → paid; cancellable at any active step; paid/cancelled terminal). Invalid moves now get 400 instead of silently corrupting state. |
+| 2. Duplicate orders on retry | Real: a retry after WiFi loss re-added the same cart items to the bill | **Idempotency keys**: customer + waiter apps generate one UUID per submission (kept across retries, discarded on cart edit). Server stores per-item derived keys `<key>#<i>` and a UNIQUE index on `(ticket_id, idempotency_key)` rejects re-inserts even under concurrency; replays return the existing bill with `duplicate: true`. |
+| 3. Order number collisions | No random generator in the real flow (legacy `orders` table only) | **`order_number` column = `FANA-<ticket id>`** (DB serial → unique by construction), partial UNIQUE index as a second layer, backfill for existing rows, displayed on customer confirmation, cashier cards and station screens. |
+| 4. Runtime seeding on every request | Already fixed in the first Group 1 pass (seed runs once per server process; 0 statements afterwards) | No further change needed. |
+| 5. Polling the entire order history | Real: cashier polled `/api/tickets?all=1` every 8s → re-downloaded last 100 bills incl. paid | **Cashier now polls `/api/tickets?active=1` only** (small live payload); the "Recently Paid" panel loads on login + every 60s instead. |
+| 6. "Cashier polls 8 endpoints" | Exaggerated (cashier polled 2, station 1); pause-on-hidden-tab already implemented everywhere | Covered by item 5. |
+
+### Group 1 fix verification
+
+- `tsc --noEmit` clean, `next build` passes, zero new lint issues (baseline unchanged: 42 pre-existing errors in untouched files).
+- Drizzle-generated SQL verified for every new query.
+- **Real database-level test (PGlite/Postgres WASM)** of the migration DDL + constraints:
+  ✅ order_number = FANA-<id> on insert · ✅ retry probe returns the existing ticket ·
+  ✅ concurrent duplicate submission blocked by unique index · ✅ second submission on
+  the same table bill allowed · ✅ order_number collision blocked · ✅ backfill of old rows.
+- Client single-flight guards (`disabled` while submitting) + key reuse across retries,
+  so a double-tap cannot double-cook.
+
+Still open from the advisor plan (later groups, as agreed — one group at a time):
+Group 2 table sessions & payment-status separation, Group 3 offline indicator / indexes /
+image pipeline, Group 4 explicitly deferred (WebSockets not needed at this scale).
+
+## 5c. How to measure after deploying (Group 1 follow-up)
+
+1. Cashier: open DevTools → Network, watch the 8s poll — it now hits only
+   `/api/tickets?active=1` + `/api/tables` (small JSON, no paid history).
+2. Customer: submit an order, then press Submit again with WiFi off and on — the second
+   press shows the same bill (never a second ticket).
+3. Kitchen: a ticket now shows `Order #FANA-<n>`; the number never repeats.
+4. Try `PUT /api/tickets` with an illegal transition (e.g. `paid` → `preparing`) — it
+   returns 400.
+
 ## 5. How to measure after deploying
 
 1. Open the deployed homepage in Chrome DevTools → Network: confirm `settings/categories/menu/reviews/gallery` load **in parallel** and return `Cache-Control: public, max-age=60, stale-while-revalidate=300` (no `no-store`).

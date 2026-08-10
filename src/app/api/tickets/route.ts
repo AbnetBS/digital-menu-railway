@@ -12,6 +12,21 @@ async function recomputeTotal(ticketId: number) {
   return total;
 }
 
+/**
+ * Allowed ticket status transitions (Group 1) — prevents accidental, skipped or
+ * backwards moves (e.g. paid → preparing, or double-paid). Same-status updates are
+ * allowed as an idempotent no-op; paid/cancelled are terminal.
+ */
+const TICKET_STATUS_TRANSITIONS: Record<string, string[]> = {
+  pending_waiter: ["confirmed", "cancelled"],
+  confirmed: ["preparing", "ready_for_payment", "cancelled"],
+  preparing: ["ready_for_payment", "cancelled"],
+  ready_for_payment: ["completed", "cancelled"],
+  completed: ["paid", "cancelled"],
+  paid: [],
+  cancelled: [],
+};
+
 // GET: ?active=1 → active tickets (with items); ?all=1 → everything
 // TRAFFIC FIX: list responses EXCLUDE receipt photos (they're heavy base64 polygons).
 // Receipts are fetched on-demand via /api/tickets/receipt?id=X when someone clicks "View Receipt".
@@ -64,6 +79,14 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const { tableId, items, waiterName, source } = body;
+    // Idempotency key: unique per submission, generated client-side. Same key =
+    // same submission → replays are returned as-is, never re-applied.
+    const idemKey = body.idempotencyKey ? String(body.idempotencyKey).slice(0, 64) : "";
+    // Each ITEM row stores a derived key (<key>#<index>) so the UNIQUE index on
+    // (ticket_id, idempotency_key) accepts every row of one submission while still
+    // rejecting a second insert of the same submission. The first row's derived
+    // key (<key>#0) is the canonical "has this submission been recorded?" probe.
+    const idemProbe = idemKey ? `${idemKey}#0` : "";
 
     if (!tableId || !items || items.length === 0) {
       return NextResponse.json({ error: "Table and items required" }, { status: 400 });
@@ -71,6 +94,35 @@ export async function POST(request: Request) {
 
     const isCustomer = source === "customer";
     const initialStatus = isCustomer ? "pending_waiter" : "confirmed";
+
+    // ── IDEMPOTENCY CHECK (Group 1) ──
+    // A retry/double-tap of the SAME submission must never duplicate the order.
+    // If the first item of this submission is already recorded, the whole order
+    // was already applied → return it unchanged (the kitchen won't cook twice).
+    if (idemKey) {
+      const keyRow = await db
+        .select({ ticketId: ticketItems.ticketId })
+        .from(ticketItems)
+        .where(eq(ticketItems.idempotencyKey, idemProbe))
+        .limit(1);
+      if (keyRow.length > 0) {
+        const existing = await db.select().from(tickets).where(eq(tickets.id, keyRow[0].ticketId)).limit(1);
+        if (existing.length > 0) {
+          const replayItems = await db
+            .select()
+            .from(ticketItems)
+            .where(eq(ticketItems.ticketId, existing[0].id))
+            .orderBy(asc(ticketItems.id));
+          return NextResponse.json({
+            ...existing[0],
+            items: replayItems,
+            totalAmount: existing[0].totalAmount,
+            merged: false,
+            duplicate: true,
+          });
+        }
+      }
+    }
 
     const tableRows = await db.select().from(cafeTables).where(eq(cafeTables.id, Number(tableId)));
     const tableName = tableRows[0]?.name || `Table ${tableId}`;
@@ -103,6 +155,12 @@ export async function POST(request: Request) {
         })
         .returning();
       ticketId = created[0].id;
+      // Guaranteed-unique order number — derived from the DB serial (FANA-<id>),
+      // never random, so collisions are impossible by construction.
+      await db
+        .update(tickets)
+        .set({ orderNumber: `FANA-${ticketId}` })
+        .where(eq(tickets.id, ticketId));
     }
 
     // Read category → station routing (owner-configured in admin, fallback to defaults)
@@ -116,20 +174,47 @@ export async function POST(request: Request) {
       /* fallback to defaults */
     }
 
-    for (const it of items) {
-      const catSlug = String(it.category || "").toLowerCase();
-      const stationName = routing[catSlug] || "kitchen";
-      await db.insert(ticketItems).values({
-        ticketId,
-        menuItemId: it.menuItemId ?? null,
-        name: it.name,
-        category: it.category || "",
-        price: Number(it.price),
-        quantity: Number(it.quantity || 1),
-        notes: it.notes || "",
-        stationName,
-        stationStatus: "pending",
-      });
+    // Insert the submission's items. If a CONCURRENT duplicate of this exact
+    // submission already inserted rows, the UNIQUE index on (ticket_id, key)
+    // rejects ours → we return the already-recorded bill instead.
+    try {
+      for (let idx = 0; idx < items.length; idx++) {
+        const it = items[idx];
+        const catSlug = String(it.category || "").toLowerCase();
+        const stationName = routing[catSlug] || "kitchen";
+        await db.insert(ticketItems).values({
+          ticketId,
+          menuItemId: it.menuItemId ?? null,
+          name: it.name,
+          category: it.category || "",
+          price: Number(it.price),
+          quantity: Number(it.quantity || 1),
+          notes: it.notes || "",
+          stationName,
+          stationStatus: "pending",
+          idempotencyKey: idemKey ? `${idemKey}#${idx}` : null,
+        });
+      }
+    } catch (err) {
+      // 23505 = unique_violation → this submission was already recorded
+      if (idemKey && (err as { code?: string })?.code === "23505") {
+        const dup = await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1);
+        if (dup.length > 0) {
+          const dupItems = await db
+            .select()
+            .from(ticketItems)
+            .where(eq(ticketItems.ticketId, ticketId))
+            .orderBy(asc(ticketItems.id));
+          return NextResponse.json({
+            ...dup[0],
+            items: dupItems,
+            totalAmount: dup[0].totalAmount,
+            merged: activeTickets.length > 0,
+            duplicate: true,
+          });
+        }
+      }
+      throw err;
     }
 
     const total = await recomputeTotal(ticketId);
@@ -147,6 +232,24 @@ export async function PUT(request: Request) {
   try {
     const body = await request.json();
     if (!body.id) return NextResponse.json({ error: "Ticket ID required" }, { status: 400 });
+
+    const rows = await db.select().from(tickets).where(eq(tickets.id, Number(body.id)));
+    if (rows.length === 0) return NextResponse.json({ error: "Ticket not found" }, { status: 404 });
+    const cur = rows[0];
+
+    // ── STATUS TRANSITION GUARD (Group 1) ──
+    // Only allow the real workflow: pending_waiter → confirmed → preparing →
+    // ready_for_payment → completed → paid (cancellable at any active step).
+    // Prevents accidents like skipping states or double-marking paid.
+    if (body.status && body.status !== cur.status) {
+      const allowed = TICKET_STATUS_TRANSITIONS[cur.status] || [];
+      if (!allowed.includes(body.status)) {
+        return NextResponse.json(
+          { error: `Cannot change order status from "${cur.status}" to "${body.status}"` },
+          { status: 400 }
+        );
+      }
+    }
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (body.status) updates.status = body.status;

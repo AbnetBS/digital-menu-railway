@@ -116,6 +116,7 @@ export interface TicketItem {
   notes?: string | null;
   removed: boolean;
   createdAt?: string;
+  idempotencyKey?: string | null;
 }
 
 export interface Ticket {
@@ -130,6 +131,7 @@ export interface Ticket {
   closedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
+  orderNumber?: string | null;
   items?: TicketItem[];
 }
 

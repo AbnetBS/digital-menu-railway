@@ -225,6 +225,9 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     closed_at: { type: "timestamp", dropNotNull: true },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
     updated_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    // Group 1: guaranteed-unique order number + idempotent order submission
+    order_number: { type: "text" },
+    idempotency_key: { type: "text" },
   },
   ticket_items: {
     ticket_id: { type: "integer", def: "0", castText: true },
@@ -238,6 +241,8 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     notes: { type: "text" },
     removed: { type: "boolean", def: "false" },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    // Group 1: idempotent order submission (unique per ticket + key)
+    idempotency_key: { type: "text" },
   },
 };
 
@@ -403,6 +408,20 @@ export async function ensureTablesExist(force = false) {
       `SELECT setval('${t}_id_seq', COALESCE((SELECT MAX(id) FROM ${t}), 0) + 1, false)`
     );
   }
+
+  // Step 4 — Group 1 integrity constraints:
+  //  • order_number = FANA-<id> (guaranteed unique — derived from the DB serial, never random)
+  //  • unique (ticket_id, idempotency_key) on ticket_items: each submission stores
+  //    per-item derived keys (<key>#<index>), so a retry/double-tap of the same
+  //    submission can never be inserted twice, while separate submissions of the
+  //    same table bill (customer orders again) stay allowed.
+  await run(`UPDATE tickets SET order_number = 'FANA-' || id WHERE order_number IS NULL OR order_number = ''`);
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS tickets_order_number_key ON tickets (order_number) WHERE order_number IS NOT NULL AND order_number <> ''`
+  );
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS ticket_items_idempotency_key_key ON ticket_items (ticket_id, idempotency_key) WHERE idempotency_key IS NOT NULL`
+  );
 
   if (errors.length > 0) {
     console.error("ensureTablesExist errors:", errors);

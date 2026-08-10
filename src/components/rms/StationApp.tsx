@@ -27,6 +27,7 @@ interface StationItem {
 interface StationTicket {
   id: number;
   tableName: string;
+  orderNumber?: string | null;
   status: string;
   items: StationItem[];
 }
@@ -251,7 +252,14 @@ export default function StationApp({ station }: { station: Station }) {
             <div key={t.id} className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-serif font-bold text-lg text-amber-100">{t.tableName}</p>
+                  <p className="font-serif font-bold text-lg text-amber-100">
+                    {t.tableName}
+                    {t.orderNumber && (
+                      <span className="ml-2 align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
+                        Order #{t.orderNumber}
+                      </span>
+                    )}
+                  </p>
                   <p className="text-[10px] text-stone-500 flex items-center gap-1.5 uppercase font-bold">
                     <Clock className="w-3 h-3 text-[#C9A227]" /> {t.status.replace(/_/g, " ")}
                   </p>

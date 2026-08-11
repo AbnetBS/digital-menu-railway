@@ -40,6 +40,9 @@ async function runFullSeed(force = false) {
     const menuReset = force ? false : await flagOn("menu_reset_flag");
     const annReset = force ? false : await flagOn("announcements_reset_flag");
     const galReset = force ? false : await flagOn("gallery_reset_flag");
+    // Categories: once the owner deletes a category, stop re-inserting the
+    // 13 default categories on every seed run (they used to "come back").
+    const catReset = force ? false : await flagOn("categories_reset_flag");
 
     // Deduplicate accidental pairs (menu items repeating by name, staff repeating by name+role) —
     // happens from legacy save flows; keep the OLDEST, delete the rest.
@@ -85,15 +88,19 @@ async function runFullSeed(force = false) {
       }
     }
 
-    // 3) Insert any of the 13 default categories that don't exist yet
+    // 3) Insert any of the 13 default categories that don't exist yet —
+    //    UNLESS the owner has deleted categories (categories_reset_flag),
+    //    in which case their curation is respected and nothing is restored.
     const afterMigrationCats = await db.select().from(categories);
     const haveSlugs = new Set(afterMigrationCats.map((c) => c.slug));
-    for (const cat of DEFAULT_CATEGORIES) {
-      if (cat.slug === "all" && haveSlugs.has("all")) continue;
-      if (!haveSlugs.has(cat.slug)) {
-        await db.execute(
-          sql`INSERT INTO categories (name, slug, icon, sort_order) VALUES (${cat.name}, ${cat.slug}, ${cat.icon}, ${cat.sortOrder ?? 0})`
-        );
+    if (!catReset) {
+      for (const cat of DEFAULT_CATEGORIES) {
+        if (cat.slug === "all" && haveSlugs.has("all")) continue;
+        if (!haveSlugs.has(cat.slug)) {
+          await db.execute(
+            sql`INSERT INTO categories (name, slug, icon, sort_order) VALUES (${cat.name}, ${cat.slug}, ${cat.icon}, ${cat.sortOrder ?? 0})`
+          );
+        }
       }
     }
 

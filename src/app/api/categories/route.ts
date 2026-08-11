@@ -85,6 +85,18 @@ export async function DELETE(request: Request) {
     }
     await db.delete(categories).where(eq(categories.id, Number(id)));
     invalidateDbSeeded(); // table may now be empty → self-heal on next read
+
+    // FIX: once the owner deletes a category, set the flag so the seed never
+    // re-inserts the default categories (they used to "come back" on refresh).
+    const { siteSettings } = await import("@/db/schema");
+    const { eq: eqSetting } = await import("drizzle-orm");
+    const rows = await db.select().from(siteSettings).where(eqSetting(siteSettings.key, "categories_reset_flag"));
+    if (rows.length > 0) {
+      await db.update(siteSettings).set({ value: "on" }).where(eqSetting(siteSettings.key, "categories_reset_flag"));
+    } else {
+      await db.insert(siteSettings).values({ key: "categories_reset_flag", value: "on" });
+    }
+
     return NextResponse.json({ success: true, id: Number(id) });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

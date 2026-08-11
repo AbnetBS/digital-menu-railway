@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { reviews } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, desc } from "drizzle-orm";
 
 export async function GET() {
   await ensureTablesExist();
-  await ensureDbSeeded();
   try {
     const list = await db.select().from(reviews).orderBy(desc(reviews.createdAt));
     return NextResponse.json(list);

@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { categories } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc, sql } from "drizzle-orm";
 
 export async function GET() {
   await ensureTablesExist();
-  await ensureDbSeeded();
   try {
     const list = await db.select().from(categories).orderBy(asc(categories.sortOrder), asc(categories.id));
     return NextResponse.json(list, { status: 200, headers: { "Cache-Control": "no-store" } });

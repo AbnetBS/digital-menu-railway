@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { staffUsers } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { and, eq } from "drizzle-orm";
 
 export async function POST(request: Request) {
   await ensureTablesExist();
-  await ensureDbSeeded();
   try {
     const { name, pin, role } = await request.json();
 

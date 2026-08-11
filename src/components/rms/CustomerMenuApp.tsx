@@ -78,8 +78,7 @@ export default function CustomerMenuApp() {
   useEffect(() => {
     (async () => {
       try {
-        // don't await the seed — routes initialize themselves; fetching immediately is faster
-        fetch("/api/seed");
+        // routes initialize themselves; fetching immediately is faster
         const [s, c, m, t, anns, gal, revs] = await Promise.all([
           fetch("/api/settings"),
           fetch("/api/categories"),

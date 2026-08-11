@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { staffUsers } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc } from "drizzle-orm";
 
 export async function GET(request: Request) {
   await ensureTablesExist();
-  await ensureDbSeeded();
   try {
     const { searchParams } = new URL(request.url);
     const pub = searchParams.get("public"); // for waiter/cashier login screens

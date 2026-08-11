@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { siteSettings } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq } from "drizzle-orm";
 import { fixBrandText } from "@/lib/brand";
 
 export async function GET() {
   await ensureTablesExist();
-  await ensureDbSeeded();
   try {
     const allSettings = await db.select().from(siteSettings);
     const settingsMap: Record<string, string> = {};

@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { cafeTables, tickets } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc, and, notInArray } from "drizzle-orm";
 
 // Tables joined with their live status derived from active tickets
 export async function GET() {
   await ensureTablesExist();
-  await ensureDbSeeded();
   try {
     const tables = await db.select().from(cafeTables).orderBy(asc(cafeTables.sortOrder), asc(cafeTables.id));
 

@@ -21,8 +21,6 @@ export default function DedicatedAdminPage() {
 
   const loadAdminData = async () => {
     try {
-      await fetch("/api/seed");
-
       const sRes = await fetch("/api/settings");
       if (sRes.ok) setSettings(await sRes.json());
 

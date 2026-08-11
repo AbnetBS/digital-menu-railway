@@ -6,6 +6,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "test": "node scripts/verify-no-runtime-seeding.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

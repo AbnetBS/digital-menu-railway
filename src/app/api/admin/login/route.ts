@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { siteSettings } from "@/db/schema";
-import { ensureDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq } from "drizzle-orm";
 
@@ -15,7 +14,9 @@ export async function POST(request: Request) {
 
     if (!storedPassword) {
       try {
-        await ensureDbSeeded();
+        // Read the owner-chosen password from settings WITHOUT running any seeding.
+        // site_settings is created by ensureTablesExist above; a missing row just
+        // falls through to the built-in default below.
         const pwdRecord = await db
           .select()
           .from(siteSettings)

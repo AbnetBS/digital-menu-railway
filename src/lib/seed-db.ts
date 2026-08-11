@@ -9,6 +9,7 @@ import {
   DEFAULT_TABLES,
   DEFAULT_STAFF,
   CATEGORY_SLUG_MAP,
+  REMOVED_DEFAULT_CATEGORY_SLUGS,
 } from "@/lib/initial-data";
 import { sql, eq } from "drizzle-orm";
 
@@ -58,12 +59,14 @@ async function runFullSeed(force = false) {
       await db.insert(siteSettings).values(settingsToInsert);
     }
 
-    // ── Category migration: move legacy slugs to the 13-type list, keep nothing orphaned ──
+    // ── Category migration: move legacy slugs to the curated list, keep nothing orphaned ──
     const existingCategories = await db.select().from(categories);
     const existingSlugs = new Set(existingCategories.map((c) => c.slug));
 
     // 1) Move existing menu items to new slugs (legacy category names map → new ones)
+    //    SKIP targets the owner removed — never migrate INTO a removed category.
     for (const [oldSlug, newSlug] of Object.entries(CATEGORY_SLUG_MAP)) {
+      if (REMOVED_DEFAULT_CATEGORY_SLUGS.includes(newSlug)) continue;
       await db.execute(sql`UPDATE menu_items SET category = ${newSlug} WHERE category = ${oldSlug}`);
       await db.execute(sql`UPDATE categories SET slug = ${newSlug} WHERE slug = ${oldSlug}`);
     }
@@ -73,6 +76,7 @@ async function runFullSeed(force = false) {
     for (const legacy of legacyDefaultSlugs) {
       if (!CATEGORY_SLUG_MAP[legacy]) continue;
       const newSlug = CATEGORY_SLUG_MAP[legacy];
+      if (REMOVED_DEFAULT_CATEGORY_SLUGS.includes(newSlug)) continue; // owner removed it — skip
       const legacyRow = existingCategories.find((c) => c.slug === legacy);
       if (legacyRow) {
         await db.execute(sql`DELETE FROM categories WHERE slug = ${legacy} AND id = ${legacyRow.id}`);

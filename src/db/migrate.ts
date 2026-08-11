@@ -498,6 +498,27 @@ async function runFullMigrate(force: boolean) {
   // Whatever remains (active bills, unknown methods) is definitively unpaid.
   await run(`UPDATE tickets SET payment_status = 'unpaid' WHERE payment_status IS NULL`);
 
+  //  • OWNER REQUEST — remove the default categories they marked unnecessary
+  //    (Ethiopian Traditional … Pastry & Cakes). This is a ONE-TIME prune:
+  //    gated by a settings flag so it runs once and never deletes a category
+  //    the owner re-creates manually later. A category is only deleted when NO
+  //    menu item references it (real items are never orphaned); if items still
+  //    use one, that row is left in place for the owner to move/delete items first.
+  const prunedRows = await db.execute(
+    sql`SELECT value FROM site_settings WHERE key = 'default_cats_pruned' LIMIT 1`
+  );
+  const prunedList = (prunedRows as unknown as { rows?: Array<{ value: string }> }).rows ?? [];
+  if (prunedList.length === 0) {
+    await run(`
+      DELETE FROM categories
+      WHERE slug IN ('ethiopian-traditional-meals','sandwich','snack-and-wrap','juices','hot-drinks','soft-drinks','pastry-and-cakes')
+        AND NOT EXISTS (SELECT 1 FROM menu_items WHERE menu_items.category = categories.slug)
+    `);
+    await run(
+      `INSERT INTO site_settings (key, value, updated_at) VALUES ('default_cats_pruned', 'on', now()) ON CONFLICT (key) DO NOTHING`
+    );
+  }
+
   if (errors.length > 0) {
     console.error("ensureTablesExist errors:", errors);
     return { success: false, errors };

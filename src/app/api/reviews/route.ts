@@ -3,12 +3,28 @@ import { db } from "@/db";
 import { reviews } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, desc } from "drizzle-orm";
+import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
+import { requireAdmin, readAdminSession } from "@/lib/session";
 
-export async function GET() {
+export async function GET(request: Request) {
   await ensureTablesExist();
   try {
-    const list = await db.select().from(reviews).orderBy(desc(reviews.createdAt));
-    return NextResponse.json(list);
+    // Only approved reviews are public. Unapproved reviews are pending
+    // moderation and must never be served to unauthenticated callers (they may
+    // contain private/unwanted content the owner has not yet chosen to publish).
+    // The admin moderation screen is authenticated and passes ?all=1 to see the
+    // full list, including pending reviews.
+    const admin = await readAdminSession();
+    const { searchParams } = new URL(request.url);
+    const all = admin ? searchParams.get("all") === "1" : false;
+    const limit = Math.min(1000, Math.max(1, Number(searchParams.get("limit") || 100)));
+
+    // Public callers only ever see approved reviews; admins may see the full
+    // list (including pending) for moderation.
+    const list = admin
+      ? await db.select().from(reviews).orderBy(desc(reviews.createdAt)).limit(all ? 1000 : limit)
+      : await db.select().from(reviews).where(eq(reviews.isApproved, true)).orderBy(desc(reviews.createdAt)).limit(limit);
+    return NextResponse.json(list, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -18,8 +34,19 @@ export async function POST(request: Request) {
   await ensureTablesExist();
   try {
     const body = await request.json();
-    if (!body.customerName || !body.rating || !body.reviewText) {
-      return NextResponse.json({ error: "Name, rating and review text required" }, { status: 400 });
+
+    // Validate the star rating server-side: it must be an integer from 1 to 5.
+    const rating = Number(body.rating);
+    if (!Number.isFinite(rating) || !Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return NextResponse.json({ error: "Rating must be a whole number from 1 to 5" }, { status: 400 });
+    }
+
+    // Bound name and text so an unauthenticated client cannot store arbitrarily
+    // large rows (customer_name is varchar(100); review_text is unbounded text).
+    const customerName = String(body.customerName || "").trim().slice(0, 100);
+    const reviewText = String(body.reviewText || "").trim().slice(0, 2000);
+    if (!customerName || !reviewText) {
+      return NextResponse.json({ error: "Name and review text required" }, { status: 400 });
     }
 
     const todayStr = new Date().toLocaleDateString("en-US", {
@@ -31,9 +58,9 @@ export async function POST(request: Request) {
     const newRev = await db
       .insert(reviews)
       .values({
-        customerName: body.customerName,
-        rating: Number(body.rating),
-        reviewText: body.reviewText,
+        customerName,
+        rating,
+        reviewText,
         reviewDate: todayStr,
         isApproved: false, // pending admin approval before public display
         isVerified: true,
@@ -47,6 +74,8 @@ export async function POST(request: Request) {
 }
 
 export async function PUT(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const body = await request.json();
@@ -72,6 +101,8 @@ export async function PUT(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const { searchParams } = new URL(request.url);

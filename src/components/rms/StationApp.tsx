@@ -27,7 +27,10 @@ interface StationItem {
 interface StationTicket {
   id: number;
   tableName: string;
+  orderNumber?: string | null;
   status: string;
+  createdBy?: string | null;
+  confirmedBy?: string | null;
   items: StationItem[];
 }
 
@@ -81,6 +84,7 @@ export default function StationApp({ station }: { station: Station }) {
 
   const logout = () => {
     sessionStorage.removeItem(`fana_${station}`);
+    fetch("/api/staff/login", { method: "DELETE" }).catch(() => {});
     setStaffName("");
     setPin("");
   };
@@ -119,8 +123,20 @@ export default function StationApp({ station }: { station: Station }) {
   useEffect(() => {
     if (staffName) {
       load();
-      const t = setInterval(load, 8000);
-      return () => clearInterval(t);
+      // REALTIME (SSE): the server pushes a "refresh" signal only when an
+      // order/item changes, instead of polling every 8s.
+      const es = new EventSource("/api/realtime?channel=orders");
+      es.onmessage = () => load();
+      es.onerror = () => load();
+      // Refresh immediately when the tab becomes visible again (user action).
+      const onVisible = () => {
+        if (!document.hidden) load();
+      };
+      document.addEventListener("visibilitychange", onVisible);
+      return () => {
+        es.close();
+        document.removeEventListener("visibilitychange", onVisible);
+      };
     }
   }, [staffName]);
 
@@ -251,9 +267,20 @@ export default function StationApp({ station }: { station: Station }) {
             <div key={t.id} className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-serif font-bold text-lg text-amber-100">{t.tableName}</p>
+                  <p className="font-serif font-bold text-lg text-amber-100">
+                    {t.tableName}
+                    {t.orderNumber && (
+                      <span className="ml-2 align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
+                        Order #{t.orderNumber}
+                      </span>
+                    )}
+                  </p>
                   <p className="text-[10px] text-stone-500 flex items-center gap-1.5 uppercase font-bold">
                     <Clock className="w-3 h-3 text-[#C9A227]" /> {t.status.replace(/_/g, " ")}
+                  </p>
+                  <p className="text-[11px] text-[#C9A227] mt-0.5 font-semibold">
+                    👤 Ordered by {t.createdBy || "—"}
+                    {t.confirmedBy ? ` • Confirmed by ${t.confirmedBy}` : ""}
                   </p>
                 </div>
                 <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-[#C9A227]/20 text-[#C9A227]">
@@ -274,7 +301,7 @@ export default function StationApp({ station }: { station: Station }) {
                         {i.name} <span className="text-[#C9A227]">x{i.quantity}</span>
                       </p>
                       {i.notes && (
-                        <p className={`text-[10px] italic mt-0.5 ${i.stationStatus === "done" ? "text-stone-500 line-through" : "text-amber-300"}`}>
+                        <p className={`text-sm font-semibold mt-1 px-2 py-1 rounded-lg bg-amber-950/50 border border-amber-700/40 ${i.stationStatus === "done" ? "text-stone-500 line-through" : "text-amber-200"}`}>
                           📝 {i.notes}
                         </p>
                       )}

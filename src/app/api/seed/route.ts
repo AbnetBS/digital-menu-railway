@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { ensureDbSeeded } from "@/lib/seed-db";
 import { ensureTablesExist } from "@/db/migrate";
+import { requireAdmin } from "@/lib/session";
 
 export async function GET() {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   const result = await ensureDbSeeded();
   if (result.success) {
@@ -12,6 +15,8 @@ export async function GET() {
 }
 
 export async function POST() {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   const result = await ensureDbSeeded();
   return NextResponse.json(result);

@@ -8,8 +8,10 @@ import {
   DEFAULT_GALLERY,
   DEFAULT_TABLES,
   DEFAULT_STAFF,
+  REMOVED_DEFAULT_CATEGORY_SLUGS,
 } from "@/lib/initial-data";
 import { sql, eq } from "drizzle-orm";
+import { hashSecret } from "@/lib/auth";
 
 async function flagOn(key: string): Promise<boolean> {
   const rows = await db.select().from(siteSettings).where(eq(siteSettings.key, key));
@@ -27,7 +29,9 @@ async function flagOn(key: string): Promise<boolean> {
  * What it does (all operations are ADDITIVE — it only INSERTS default data when a
  * table is EMPTY, and it never deletes or rewrites existing rows):
  *   1. Inserts DEFAULT_SETTINGS if site_settings is empty.
- *   2. Inserts any missing DEFAULT_CATEGORIES (including the "All Items" tab).
+ *   2. Inserts any missing DEFAULT_CATEGORIES (including the "All Items" tab) —
+ *      UNLESS the owner deleted categories (categories_reset_flag) or a category
+ *      is in REMOVED_DEFAULT_CATEGORY_SLUGS (owner marked it unnecessary).
  *   3. Inserts DEFAULT_MENU_ITEMS only if menu_items is empty AND the owner has not
  *      factory-reset the menu (menu_reset_flag). Same for announcements/gallery flags.
  *   4. Inserts DEFAULT_REVIEWS, DEFAULT_GALLERY, DEFAULT_STAFF, DEFAULT_TABLES if
@@ -47,24 +51,40 @@ export async function ensureDbSeeded(force = false) {
     const menuReset = force ? false : await flagOn("menu_reset_flag");
     const annReset = force ? false : await flagOn("announcements_reset_flag");
     const galReset = force ? false : await flagOn("gallery_reset_flag");
+    // Categories: once the owner deletes a category, stop re-inserting the
+    // default categories on every seed run (they used to "come back").
+    const catReset = force ? false : await flagOn("categories_reset_flag");
 
     const existingSettings = await db.select().from(siteSettings);
     if (existingSettings.length === 0) {
-      const settingsToInsert = Object.entries(DEFAULT_SETTINGS).map(([key, value]) => ({
-        key,
-        value: typeof value === "object" ? JSON.stringify(value) : String(value),
-      }));
+      const settingsToInsert: Array<{ key: string; value: string }> = [];
+      for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+        // In production, never seed a predictable default admin password — the
+        // owner must configure ADMIN_PASSWORD explicitly. Login fails closed
+        // until then (see src/app/api/admin/login/route.ts).
+        if (key === "admin_password" && process.env.NODE_ENV === "production") continue;
+        let stringVal = typeof value === "object" ? JSON.stringify(value) : String(value);
+        // Passwords are seeded as bcrypt hashes only — never plaintext.
+        if (key === "admin_password" && stringVal) {
+          stringVal = await hashSecret(stringVal);
+        }
+        settingsToInsert.push({ key, value: stringVal });
+      }
       await db.insert(siteSettings).values(settingsToInsert);
     }
 
-    // Insert any of the default categories that don't exist yet (keeps the filter tabs working)
+    // Insert any of the default categories that don't exist yet (keeps the filter
+    // tabs working) — but never restore a category the owner removed.
     const currentCats = await db.select().from(categories);
     const haveSlugs = new Set(currentCats.map((c) => c.slug));
-    for (const cat of DEFAULT_CATEGORIES) {
-      if (!haveSlugs.has(cat.slug)) {
-        await db.execute(
-          sql`INSERT INTO categories (name, slug, icon, sort_order) VALUES (${cat.name}, ${cat.slug}, ${cat.icon}, ${cat.sortOrder ?? 0})`
-        );
+    if (!catReset) {
+      for (const cat of DEFAULT_CATEGORIES) {
+        if (REMOVED_DEFAULT_CATEGORY_SLUGS.includes(cat.slug)) continue;
+        if (!haveSlugs.has(cat.slug)) {
+          await db.execute(
+            sql`INSERT INTO categories (name, slug, icon, sort_order) VALUES (${cat.name}, ${cat.slug}, ${cat.icon}, ${cat.sortOrder ?? 0})`
+          );
+        }
       }
     }
 
@@ -122,7 +142,12 @@ export async function ensureDbSeeded(force = false) {
 
     const existingStaff = await db.select().from(staffUsers);
     if (existingStaff.length === 0) {
-      await db.insert(staffUsers).values(DEFAULT_STAFF);
+      // Seed default staff with bcrypt-hashed PINs only — never plaintext.
+      const staffToInsert = [];
+      for (const s of DEFAULT_STAFF) {
+        staffToInsert.push({ ...s, pin: await hashSecret(s.pin) });
+      }
+      await db.insert(staffUsers).values(staffToInsert);
     }
 
     const existingTables = await db.select().from(cafeTables);

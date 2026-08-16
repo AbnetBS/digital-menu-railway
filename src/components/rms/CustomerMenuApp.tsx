@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Coffee, Plus, Minus, Search, Send, CheckCircle2, Clock, X, Phone, Utensils, Loader2, QrCode,
@@ -41,6 +41,25 @@ export default function CustomerMenuApp() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
+  const [lastOrderNumber, setLastOrderNumber] = useState("");
+
+  // ── IDEMPOTENCY (Group 1): one key per submission attempt, reused on retries so
+  //    a double-tap or WiFi retry can NEVER create a duplicate order. If the cart
+  //    changes after a failed attempt, the next click is a NEW submission (new key).
+  const pendingKeyRef = useRef("");
+  const lastCartSigRef = useRef("");
+
+  useEffect(() => {
+    const sig = JSON.stringify(cart);
+    if (pendingKeyRef.current && lastCartSigRef.current && sig !== lastCartSigRef.current) {
+      pendingKeyRef.current = ""; // cart edited → next submit is a brand-new submission
+    }
+  }, [cart]);
+
+  const newSubmissionKey = () =>
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   // Daily Board + bottom content
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
@@ -78,7 +97,7 @@ export default function CustomerMenuApp() {
   useEffect(() => {
     (async () => {
       try {
-        // routes initialize themselves; fetching immediately is faster
+        // PERFORMANCE: no /api/seed call — routes initialize themselves on first read
         const [s, c, m, t, anns, gal, revs] = await Promise.all([
           fetch("/api/settings"),
           fetch("/api/categories"),
@@ -194,7 +213,9 @@ export default function CustomerMenuApp() {
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0);
 
   const submitOrder = async () => {
-    if (cart.length === 0 || !tableId) return;
+    if (cart.length === 0 || !tableId || submitting) return;
+    if (!pendingKeyRef.current) pendingKeyRef.current = newSubmissionKey();
+    lastCartSigRef.current = JSON.stringify(cart);
     setSubmitting(true);
     setError("");
     try {
@@ -204,6 +225,7 @@ export default function CustomerMenuApp() {
         body: JSON.stringify({
           tableId,
           source: "customer",
+          idempotencyKey: pendingKeyRef.current,
           items: cart.map((c) => ({
             menuItemId: c.menuItemId,
             name: c.name,
@@ -215,6 +237,9 @@ export default function CustomerMenuApp() {
         }),
       });
       if (r.ok) {
+        const d = await r.json();
+        setLastOrderNumber(d.orderNumber || "");
+        pendingKeyRef.current = ""; // submission recorded — next cart is a new order
         setSubmitted(true);
         setCart([]);
         setReviewMode(false);
@@ -223,7 +248,8 @@ export default function CustomerMenuApp() {
         setError(d.error || "Could not submit order. Please call your waiter.");
       }
     } catch {
-      setError("Connection issue. Please call your waiter.");
+      // Safe retry: the same key is reused, so the kitchen will never cook twice.
+      setError("Connection issue — press Submit again. Your order will NOT be sent twice.");
     } finally {
       setSubmitting(false);
     }
@@ -240,6 +266,11 @@ export default function CustomerMenuApp() {
             <CheckCircle2 className="w-9 h-9 text-emerald-600" />
           </div>
           <h1 className="font-serif text-2xl font-bold text-[#2C1B17]">Order Request Sent!</h1>
+          {lastOrderNumber && (
+            <p className="inline-block bg-[#2C1B17] text-[#C9A227] font-black text-sm px-4 py-1.5 rounded-full">
+              Order #{lastOrderNumber}
+            </p>
+          )}
           <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-1">
             <p className="text-sm font-bold text-[#2C1B17] flex items-center justify-center gap-1.5">
               <Clock className="w-4 h-4 text-[#C9A227]" /> Waiting for Waiter Confirmation

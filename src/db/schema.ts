@@ -71,7 +71,7 @@ export const staffUsers = pgTable("staff_users", {
   id: serial("id").primaryKey(),
   name: varchar("name", { length: 100 }).notNull(),
   role: varchar("role", { length: 20 }).notNull().default("waiter"), // waiter | cashier
-  pin: varchar("pin", { length: 20 }).notNull(),
+  pin: varchar("pin", { length: 100 }).notNull(), // bcrypt hash (60 chars) or legacy plaintext
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -88,13 +88,28 @@ export const tickets = pgTable("tickets", {
   tableId: integer("table_id").notNull(),
   tableName: varchar("table_name", { length: 50 }).notNull(),
   status: varchar("status", { length: 30 }).notNull().default("new"), // new | preparing | ready_for_payment | completed | paid | cancelled
-  paymentMethod: varchar("payment_method", { length: 20 }), // cash | card | online
+  paymentMethod: varchar("payment_method", { length: 20 }), // cash | card | online | telebirr | cbe
+  // Payment status is SEPARATE from order status (food done ≠ paid).
+  // unpaid | paid_cash | paid_telebirr | paid_cbe | paid_card
+  paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("unpaid"),
   receiptImage: text("receipt_image"), // base64 photo of card/online payment receipt
   totalAmount: integer("total_amount").notNull().default(0),
-  createdBy: varchar("created_by", { length: 100 }), // waiter name
+  createdBy: varchar("created_by", { length: 100 }), // waiter name / "Customer (QR)"
+  confirmedBy: varchar("confirmed_by", { length: 100 }), // who confirmed the order (waiter/cashier)
   closedAt: timestamp("closed_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
+  // Guaranteed-unique order number shown to staff/customers (FANA-<ticket id>).
+  // Populated at insert from the DB serial → never random → never collides.
+  orderNumber: varchar("order_number", { length: 32 }),
+  // Idempotency key: a client-generated UUID per order submission. The unique index
+  // on (ticket_id, idempotency_key) makes retries/double-taps safe server-side.
+  idempotencyKey: varchar("idempotency_key", { length: 64 }),
+  // Payment verification audit (Group 5): who marked the bill PAID and when.
+  // Set by the cashier's "Mark PAID & Release Table" action (the receipt
+  // verification step for digital/card payments). Null for unpaid/cancelled.
+  verifiedBy: varchar("verified_by", { length: 100 }),
+  verifiedAt: timestamp("verified_at"),
 });
 
 export const ticketItems = pgTable("ticket_items", {
@@ -111,4 +126,6 @@ export const ticketItems = pgTable("ticket_items", {
   stationName: varchar("station_name", { length: 20 }).default("kitchen"),
   stationStatus: varchar("station_status", { length: 20 }).default("pending"), // pending | accepted | done
   createdAt: timestamp("created_at").defaultNow(),
+  // Shared by all rows of one order submission (see tickets.idempotencyKey).
+  idempotencyKey: varchar("idempotency_key", { length: 64 }),
 });

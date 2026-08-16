@@ -3,25 +3,40 @@ import { db } from "@/db";
 import { staffUsers } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc } from "drizzle-orm";
+import { hashSecret } from "@/lib/auth";
+import { requireAdmin } from "@/lib/session";
 
 export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const pub = searchParams.get("public"); // for waiter/cashier login screens
+
+  // The public=1 list (names + roles for the staff login picker) stays open.
+  // The full admin list (with pinSet) requires an owner/admin session.
+  if (pub !== "1") {
+    const __auth = await requireAdmin();
+    if (!__auth.ok) return __auth.response;
+  }
+
   await ensureTablesExist();
   try {
-    const { searchParams } = new URL(request.url);
-    const pub = searchParams.get("public"); // for waiter/cashier login screens
     const list = await db.select().from(staffUsers).orderBy(asc(staffUsers.name));
 
     if (pub === "1") {
       // Never expose PINs on the public login picker
       return NextResponse.json(list.map((s) => ({ id: s.id, name: s.name, role: s.role })));
     }
-    return NextResponse.json(list);
+    // Admin list: never return the PIN or its hash — only whether one is set.
+    return NextResponse.json(
+      list.map((s) => ({ id: s.id, name: s.name, role: s.role, pinSet: Boolean(s.pin) }))
+    );
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const body = await request.json();
@@ -33,16 +48,20 @@ export async function POST(request: Request) {
       .values({
         name: body.name,
         role: ["waiter","cashier","barista","kitchen","admin"].includes(body.role) ? body.role : "waiter",
-        pin: String(body.pin),
+        pin: await hashSecret(String(body.pin)),
       })
       .returning();
-    return NextResponse.json(newStaff[0]);
+    // Strip the hash from the response — never echo credentials back.
+    const { pin: _pin, ...safe } = newStaff[0];
+    return NextResponse.json({ ...safe, pinSet: true });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
 
 export async function PUT(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const body = await request.json();
@@ -52,17 +71,21 @@ export async function PUT(request: Request) {
       .set({
         name: body.name,
         role: body.role,
-        pin: body.pin ? String(body.pin) : undefined,
+        pin: body.pin ? await hashSecret(String(body.pin)) : undefined,
       })
       .where(eq(staffUsers.id, body.id))
       .returning();
-    return NextResponse.json(updated[0]);
+    // Strip the hash from the response — never echo credentials back.
+    const { pin: _pin, ...safe } = updated[0];
+    return NextResponse.json({ ...safe, pinSet: Boolean(updated[0].pin) });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
 
 export async function DELETE(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const { searchParams } = new URL(request.url);

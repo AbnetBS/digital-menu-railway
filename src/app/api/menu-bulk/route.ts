@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { menuItems } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
+import { requireAdmin } from "@/lib/session";
 
 const STOCK_IMG = "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200";
 
@@ -12,6 +13,8 @@ const STOCK_IMG = "https://images.pexels.com/photos/16563658/pexels-photo-165636
  * Inserts many menu items at once (skips exact name duplicates automatically).
  */
 export async function POST(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const body = await request.json();
@@ -45,16 +48,17 @@ export async function POST(request: Request) {
     let insertedCount = 0;
     const skipped: string[] = [];
 
+    // Load existing menu item names ONCE (not once per row) and skip exact-name
+    // duplicates in memory — avoids 2 full-table queries per imported row.
+    const allNames = await db.select({ name: menuItems.name }).from(menuItems);
+    const names = new Set(allNames.map((x) => x.name.toLowerCase().trim()));
+
     for (const r of rows) {
-      const existing = await db.select({ id: menuItems.id }).from(menuItems);
-      const dup = existing.some((e) => e.id);
-      // skip exact-name duplicates to avoid pair creation again
-      const all = await db.select({ name: menuItems.name }).from(menuItems);
-      const names = new Set(all.map((x) => x.name.toLowerCase().trim()));
       if (names.has(r.name.toLowerCase().trim())) {
         skipped.push(r.name);
         continue;
       }
+      names.add(r.name.toLowerCase().trim());
 
       await db.insert(menuItems).values({
         name: r.name,

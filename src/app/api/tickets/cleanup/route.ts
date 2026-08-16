@@ -1,34 +1,30 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { tickets } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { and, eq, lt, isNotNull } from "drizzle-orm";
+import { requireAdmin } from "@/lib/session";
+import { cleanupOldReceipts } from "@/lib/receipt-cleanup";
 
 /**
- * POST: frees database storage by clearing receipt PHOTOS
- * for already-PAID bills older than N days.
- * The order record (items, amounts, method) stays — only the image goes.
- * Default: 30 days (add ?days=60 to change).
+ * POST: manually clears receipt PHOTOS for paid bills older than N days
+ * (the "Clean Old Receipts" button in the admin Order History tab).
+ * Default 30 days (?days=60 to change). The order record is always kept.
+ *
+ * This same cleanup also runs automatically every 24h via src/instrumentation.ts,
+ * so this endpoint is a manual override only.
  */
 export async function POST(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const { searchParams } = new URL(request.url);
     const days = Math.max(1, Number(searchParams.get("days") || 30));
 
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - days);
-
-    const cleared = await db
-      .update(tickets)
-      .set({ receiptImage: "" })
-      .where(and(eq(tickets.status, "paid"), isNotNull(tickets.receiptImage), lt(tickets.closedAt, cutoff)))
-      .returning({ id: tickets.id });
+    const clearedReceipts = await cleanupOldReceipts(days);
 
     return NextResponse.json({
       success: true,
-      clearedReceipts: cleared.length,
-      message: `Cleared receipt photos from ${cleared.length} paid bill(s) older than ${days} days. Order records are kept.`,
+      clearedReceipts,
+      message: `Cleared receipt photos from ${clearedReceipts} paid bill(s) older than ${days} days. Order records are kept.`,
     });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

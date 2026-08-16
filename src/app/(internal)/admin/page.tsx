@@ -21,19 +21,22 @@ export default function DedicatedAdminPage() {
 
   const loadAdminData = async () => {
     try {
-      const sRes = await fetch("/api/settings");
+      // PERFORMANCE: no /api/seed call (routes self-initialize); all reads parallel.
+      // The ?v= busts the public HTTP cache so the owner ALWAYS sees fresh data
+      // after saving (public GETs are now `Cache-Control: max-age=60`).
+      const v = Date.now();
+      const [sRes, cRes, mRes, rRes, gRes] = await Promise.all([
+        fetch(`/api/settings?v=${v}`),
+        fetch(`/api/categories?v=${v}`),
+        fetch(`/api/menu?v=${v}`),
+        fetch(`/api/reviews?v=${v}&all=1`), // full list for moderation (approve/reject)
+        fetch(`/api/gallery?v=${v}`),
+      ]);
+
       if (sRes.ok) setSettings(await sRes.json());
-
-      const cRes = await fetch("/api/categories");
       if (cRes.ok) setCategories(await cRes.json());
-
-      const mRes = await fetch("/api/menu");
       if (mRes.ok) setMenuItems(await mRes.json());
-
-      const rRes = await fetch("/api/reviews");
       if (rRes.ok) setReviews(await rRes.json());
-
-      const gRes = await fetch("/api/gallery");
       if (gRes.ok) setGallery(await gRes.json());
     } catch (err) {
       console.error(err);

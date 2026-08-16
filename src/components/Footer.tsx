@@ -1,6 +1,7 @@
 "use client";
 
 import { Coffee, MapPin, Phone, Clock, Lock, Heart, ShieldCheck } from "lucide-react";
+import Link from "next/link";
 import { SiteSettings } from "@/types";
 import { fixBrandText } from "@/lib/brand";
 
@@ -118,7 +119,18 @@ export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: Foote
 
         {/* Bottom copyright + developer signature */}
         <div className="pt-8 flex flex-col sm:flex-row items-center justify-between text-stone-500 text-xs gap-3">
-          <p>© {new Date().getFullYear()} {cafeName} Addis Ababa. All Rights Reserved.</p>
+          <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4">
+            <p>© {new Date().getFullYear()} {cafeName} Addis Ababa. All Rights Reserved.</p>
+            <div className="flex items-center gap-3">
+              <Link href="/privacy" className="hover:text-[#C9A227] transition">
+                Privacy Policy
+              </Link>
+              <span className="text-stone-700">•</span>
+              <Link href="/terms" className="hover:text-[#C9A227] transition">
+                Terms of Service
+              </Link>
+            </div>
+          </div>
           <a
             href="tel:+251919081802"
             className="flex items-center gap-2 bg-[#C9A227]/10 hover:bg-[#C9A227]/20 border border-[#C9A227]/30 px-3.5 py-2 rounded-xl transition"

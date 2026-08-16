@@ -3,18 +3,23 @@ import { db } from "@/db";
 import { menuItems } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc } from "drizzle-orm";
+import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
+import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
+import { requireAdmin } from "@/lib/session";
 
 export async function GET() {
   await ensureTablesExist();
   try {
     const items = await db.select().from(menuItems).orderBy(asc(menuItems.sortOrder), asc(menuItems.id));
-    return NextResponse.json(items, { status: 200, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(items, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const body = await request.json();
@@ -25,7 +30,9 @@ export async function POST(request: Request) {
         category: body.category,
         price: Number(body.price),
         description: body.description || "",
-        imageUrl: body.imageUrl || "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200",
+        imageUrl: body.imageUrl
+          ? await persistImageRef(String(body.imageUrl))
+          : "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200",
         isPopular: Boolean(body.isPopular),
         isAvailable: body.isAvailable !== undefined ? Boolean(body.isAvailable) : true,
         dietaryTags: body.dietaryTags || "",
@@ -44,6 +51,8 @@ export async function POST(request: Request) {
 }
 
 export async function PUT(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const body = await request.json();
@@ -63,7 +72,7 @@ export async function PUT(request: Request) {
         category: body.category ?? cur.category,
         price: body.price !== undefined && body.price !== null ? Number(body.price) : cur.price,
         description: body.description ?? cur.description,
-        imageUrl: body.imageUrl ?? cur.imageUrl,
+        imageUrl: body.imageUrl !== undefined ? await persistImageRef(String(body.imageUrl)) : cur.imageUrl,
         isPopular: body.isPopular !== undefined ? Boolean(body.isPopular) : cur.isPopular,
         isAvailable: body.isAvailable !== undefined ? Boolean(body.isAvailable) : cur.isAvailable,
         dietaryTags: body.dietaryTags ?? cur.dietaryTags,
@@ -77,6 +86,10 @@ export async function PUT(request: Request) {
       .where(eq(menuItems.id, body.id))
       .returning();
 
+    // If the item's photo was replaced/removed, drop the old cdn_images row
+    // (only if nothing else still references it).
+    await deleteOrphanedCdnImages([cur.imageUrl]);
+
     return NextResponse.json(updated[0]);
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
@@ -84,6 +97,8 @@ export async function PUT(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
   try {
     const { searchParams } = new URL(request.url);
@@ -92,7 +107,9 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Item ID required" }, { status: 400 });
     }
 
+    const existing = await db.select().from(menuItems).where(eq(menuItems.id, Number(id)));
     await db.delete(menuItems).where(eq(menuItems.id, Number(id)));
+    if (existing.length > 0) await deleteOrphanedCdnImages([existing[0].imageUrl]);
     return NextResponse.json({ success: true, id: Number(id) });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureTablesExist, checkTablesReport, insertSmokeTest } from "@/db/migrate";
+import { requireAdmin } from "@/lib/session";
 
 /**
  * Browser-friendly live database diagnostic.
@@ -8,6 +9,8 @@ import { ensureTablesExist, checkTablesReport, insertSmokeTest } from "@/db/migr
  * (then deletes the test rows) so you can see exactly which part fails.
  */
 export async function GET() {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   const migrate = await ensureTablesExist();
   const tables = await checkTablesReport();
   const inserts = await insertSmokeTest();
@@ -26,5 +29,7 @@ export async function GET() {
 }
 
 export async function POST() {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   return GET();
 }

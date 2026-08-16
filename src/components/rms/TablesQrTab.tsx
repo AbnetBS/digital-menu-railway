@@ -116,7 +116,7 @@ export default function TablesQrTab() {
         {savedMsg && <p className="text-xs text-emerald-400 font-bold">{savedMsg}</p>}
         {baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1") ? (
           <div className="bg-rose-950/60 border border-rose-600 text-rose-200 text-xs p-3 rounded-xl font-bold">
-            ⚠️ You're on localhost — customer phones CAN'T reach these QRs. Deploy to Vercel first, open the live site, then print.
+            ⚠️ You're on localhost — customer phones CAN'T reach these QRs. Deploy to your host (e.g. Railway) first, open the live site, then print.
           </div>
         ) : (
           <div className="bg-emerald-950/60 border border-emerald-700 text-emerald-200 text-xs p-3 rounded-xl font-bold">

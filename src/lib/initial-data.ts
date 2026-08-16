@@ -64,13 +64,24 @@ export const DEFAULT_CATEGORIES = [
   { id: 5, name: "Salad", slug: "salad", icon: "Salad", sortOrder: 4 },
   { id: 6, name: "Pizza", slug: "pizza", icon: "Pizza", sortOrder: 5 },
   { id: 7, name: "Rice", slug: "rice", icon: "CookingPot", sortOrder: 6 },
-  { id: 8, name: "Ethiopian Traditional Meals", slug: "ethiopian-traditional-meals", icon: "ChefHat", sortOrder: 7 },
-  { id: 9, name: "Sandwich", slug: "sandwich", icon: "Sandwich", sortOrder: 8 },
-  { id: 10, name: "Snack & Wrap", slug: "snack-and-wrap", icon: "Package", sortOrder: 9 },
-  { id: 11, name: "Juices", slug: "juices", icon: "GlassWater", sortOrder: 10 },
-  { id: 12, name: "Hot Drinks", slug: "hot-drinks", icon: "Coffee", sortOrder: 11 },
-  { id: 13, name: "Soft Drinks", slug: "soft-drinks", icon: "CupSoda", sortOrder: 12 },
-  { id: 14, name: "Pastry & Cakes", slug: "pastry-and-cakes", icon: "Cake", sortOrder: 13 },
+];
+
+/**
+ * Default categories the owner marked UNNECESSARY and wants gone
+ * ("Ethiopian Traditional" … "Pastry & Cakes"). Kept here so:
+ *  - the seed never re-inserts them,
+ *  - the legacy-slug migration never re-creates them,
+ *  - the one-time production prune knows exactly which rows to delete.
+ * The owner can still add any category manually later — nothing blocks that.
+ */
+export const REMOVED_DEFAULT_CATEGORY_SLUGS = [
+  "ethiopian-traditional-meals",
+  "sandwich",
+  "snack-and-wrap",
+  "juices",
+  "hot-drinks",
+  "soft-drinks",
+  "pastry-and-cakes",
 ];
 
 // Legacy slug → new category slug mapping (migration keeps existing items visible)

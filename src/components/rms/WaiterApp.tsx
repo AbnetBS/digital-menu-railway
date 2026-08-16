@@ -51,8 +51,25 @@ export default function WaiterApp() {
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
 
+  // ── IDEMPOTENCY (Group 1): one key per order submission, reused on retries so a
+  //    double-tap / WiFi retry can NEVER duplicate items on the table bill.
+  const pendingKeyRef = useRef("");
+  const lastCartSigRef = useRef("");
+
+  useEffect(() => {
+    const sig = JSON.stringify(cart);
+    if (pendingKeyRef.current && lastCartSigRef.current && sig !== lastCartSigRef.current) {
+      pendingKeyRef.current = ""; // cart edited after a failure → new submission
+    }
+  }, [cart]);
+
+  const newSubmissionKey = () =>
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
   // Payment
-  const [payMethod, setPayMethod] = useState<"cash" | "card" | "online" | null>(null);
+  const [payMethod, setPayMethod] = useState<"cash" | "telebirr" | "cbe" | "card" | null>(null);
   const [receiptImage, setReceiptImage] = useState("");
   const [receiptEnabled, setReceiptEnabled] = useState(true);
   const [categories, setCategories] = useState<Array<{ slug: string; name: string }>>([
@@ -83,8 +100,25 @@ export default function WaiterApp() {
   useEffect(() => {
     if (staffName) {
       loadAll();
-      const t = setInterval(loadTables, 8000);
-      return () => clearInterval(t);
+      // REALTIME (SSE): instead of polling every 8s, the server pushes a
+      // "refresh" signal only when an order/table actually changes. This keeps
+      // the network and database idle until something real happens.
+      const es = new EventSource("/api/realtime?channel=orders");
+      es.onmessage = () => loadTables();
+      es.onerror = () => {
+        // On a dropped connection the browser auto-reconnects; refresh once to
+        // make sure nothing was missed while disconnected.
+        loadTables();
+      };
+      // Refresh immediately when the tab becomes visible again (user action).
+      const onVisible = () => {
+        if (!document.hidden) loadTables();
+      };
+      document.addEventListener("visibilitychange", onVisible);
+      return () => {
+        es.close();
+        document.removeEventListener("visibilitychange", onVisible);
+      };
     }
   }, [staffName]);
 
@@ -161,6 +195,7 @@ export default function WaiterApp() {
 
   const logout = () => {
     sessionStorage.removeItem("fana_waiter");
+    fetch("/api/staff/login", { method: "DELETE" }).catch(() => {});
     setStaffName("");
     setView("login");
     setPin("");
@@ -197,7 +232,9 @@ export default function WaiterApp() {
   const cartTotal = cart.reduce((s, c) => s + c.price * c.quantity, 0);
 
   const sendOrder = async () => {
-    if (cart.length === 0 || !selectedTable) return;
+    if (cart.length === 0 || !selectedTable || sending) return;
+    if (!pendingKeyRef.current) pendingKeyRef.current = newSubmissionKey();
+    lastCartSigRef.current = JSON.stringify(cart);
     setSending(true);
     const r = await fetch("/api/tickets", {
       method: "POST",
@@ -205,6 +242,7 @@ export default function WaiterApp() {
       body: JSON.stringify({
         tableId: selectedTable.id,
         waiterName: staffName,
+        idempotencyKey: pendingKeyRef.current,
         items: cart.map((c) => ({
           menuItemId: c.menuItemId,
           name: c.name,
@@ -218,12 +256,13 @@ export default function WaiterApp() {
     setSending(false);
     if (r.ok) {
       const d = await r.json();
+      pendingKeyRef.current = "";
       setCart([]);
-      showToast(d.merged ? "✓ Items added to the table bill" : "✓ Order sent to cashier");
+      showToast(d.duplicate ? "✓ Already sent — not sent twice" : d.merged ? "✓ Items added to the table bill" : "✓ Order sent to cashier");
       await loadTables();
       onGoBack();
     } else {
-      showToast("Failed to send order. Try again.");
+      showToast("Failed to send order — press Send again, it will not duplicate.");
     }
   };
 
@@ -267,6 +306,9 @@ export default function WaiterApp() {
         id: activeTicket.id,
         status: "completed",
         paymentMethod: payMethod,
+        // Payment status is separate from order status: record HOW it was paid now;
+        // the cashier still verifies (for digital) and releases the table.
+        paymentStatus: `paid_${payMethod}` as const,
         receiptImage: receiptImage || "",
       }),
     });
@@ -327,7 +369,7 @@ export default function WaiterApp() {
     await fetch("/api/tickets", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: activeTicket.id, status: "confirmed" }),
+      body: JSON.stringify({ id: activeTicket.id, status: "confirmed", confirmedBy: staffName }),
     });
     showToast("✓ Order confirmed — sent to cashier & kitchen");
     onGoBack();
@@ -460,6 +502,9 @@ export default function WaiterApp() {
                 </span>
                 {t.activeTicketTotal ? (
                   <p className="text-[11px] text-stone-400 mt-1">{t.activeTicketTotal} ETB open</p>
+                ) : null}
+                {t.activeTicketBy ? (
+                  <p className="text-[10px] text-[#C9A227] mt-1 font-semibold">👤 {t.activeTicketBy}</p>
                 ) : null}
               </button>
             ))}
@@ -664,7 +709,12 @@ export default function WaiterApp() {
 
           <div className="space-y-2">
             <p className="text-xs font-bold text-amber-200">Ask the customer — payment method:</p>
-            {(["cash", "card", "online"] as const).map((m) => (
+            {([
+              { m: "cash", icon: <Banknote className="w-5 h-5 text-emerald-400" />, label: "Cash" },
+              { m: "telebirr", icon: <Smartphone className="w-5 h-5 text-amber-400" />, label: "Telebirr" },
+              { m: "cbe", icon: <Smartphone className="w-5 h-5 text-violet-400" />, label: "CBE Birr" },
+              { m: "card", icon: <CreditCard className="w-5 h-5 text-sky-400" />, label: "Card" },
+            ] as const).map(({ m, icon, label }) => (
               <button
                 key={m}
                 onClick={() => setPayMethod(m)}
@@ -672,9 +722,9 @@ export default function WaiterApp() {
                   payMethod === m ? "border-[#C9A227] bg-[#C9A227]/10" : "border-stone-700 bg-[#2C1B17]"
                 }`}
               >
-                {m === "cash" ? <Banknote className="w-5 h-5 text-emerald-400" /> : m === "card" ? <CreditCard className="w-5 h-5 text-sky-400" /> : <Smartphone className="w-5 h-5 text-amber-400" />}
+                {icon}
                 <div className="flex-1">
-                  <p className="text-sm font-bold text-white capitalize">{m === "online" ? "Online (Telebirr / Wallet)" : m}</p>
+                  <p className="text-sm font-bold text-white">{label}</p>
                   <p className="text-[11px] text-stone-400">
                     {m === "cash" ? "Collect cash and confirm" : "Take receipt photo after payment (optional)"}
                   </p>
@@ -702,21 +752,10 @@ export default function WaiterApp() {
                     const f = e.target.files?.[0];
                     if (!f) return;
                     try {
-                      // Compress on device: ~4MB camera photo → ~70KB, stored safely in Neon
+                      // Compress on device (~4MB → ~70KB). The data-URL stays in
+                      // state and is persisted by the server only when the bill is
+                      // actually paid — a canceled photo never touches the database.
                       const small = await compressImage(f, 800, 0.65);
-                      try {
-                        const res = await fetch("/api/images", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ dataUrl: small }),
-                        });
-                        if (res.ok) {
-                          const d = await res.json();
-                          if (d.url) { setReceiptImage(d.url); return; }
-                        }
-                      } catch {
-                        /* fallback below */
-                      }
                       setReceiptImage(small);
                     } catch {
                       showToast("Could not read that photo — try again");
@@ -732,7 +771,11 @@ export default function WaiterApp() {
             disabled={!payMethod || sending}
             className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl disabled:opacity-40"
           >
-            {sending ? "Confirming..." : `Confirm ${payMethod ? payMethod.charAt(0).toUpperCase() + payMethod.slice(1) : ""} Payment`}
+            {sending
+              ? "Confirming..."
+              : `Confirm ${
+                  payMethod === "cbe" ? "CBE Birr" : payMethod ? payMethod.charAt(0).toUpperCase() + payMethod.slice(1) : ""
+                } Payment`}
           </button>
 
           <div className="flex items-center gap-2 text-[11px] text-stone-400 bg-[#2C1B17] rounded-xl p-3">

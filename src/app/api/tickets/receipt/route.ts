@@ -2,12 +2,15 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { tickets } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { requireStaffOrAdmin } from "@/lib/session";
 
 /**
  * Lightweight: fetch ONLY the receipt photo for a specific order (on-demand when someone clicks "View Receipt").
  * Prevents receipt photos from re-transferring on every polling cycle.
  */
 export async function GET(request: Request) {
+  const __auth = await requireStaffOrAdmin();
+  if (!__auth.ok) return __auth.response;
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
   if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });

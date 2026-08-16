@@ -186,6 +186,8 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                     <img
                       src={item.imageUrl}
                       alt={item.name}
+                      loading="lazy"
+                      decoding="async"
                       className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-60" />
@@ -327,6 +329,8 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
               <img
                 src={activeItemModal.imageUrl}
                 alt={activeItemModal.name}
+                loading="lazy"
+                decoding="async"
                 className="w-full h-full object-cover"
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />

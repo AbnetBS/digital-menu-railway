@@ -169,15 +169,23 @@ export default function ReportsTab() {
             </div>
           </div>
 
-          {/* Payment stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {(["cash", "card", "online"] as const).map((m) => {
+          {/* Payment stats — covers cash / telebirr / cbe / card (and legacy "online") */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+            {(
+              [
+                { m: "cash", label: "Cash", icon: <Banknote className="w-6 h-6 text-emerald-400" /> },
+                { m: "telebirr", label: "Telebirr", icon: <Smartphone className="w-6 h-6 text-amber-400" /> },
+                { m: "cbe", label: "CBE Birr", icon: <Smartphone className="w-6 h-6 text-violet-400" /> },
+                { m: "card", label: "Card", icon: <CreditCard className="w-6 h-6 text-sky-400" /> },
+                { m: "online", label: "Online (legacy)", icon: <Smartphone className="w-6 h-6 text-amber-400" /> },
+              ] as const
+            ).map(({ m, label, icon }) => {
               const found = data.paymentStats.find((p) => p.method === m);
               return (
                 <div key={m} className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-4 flex items-center gap-3">
-                  {m === "cash" ? <Banknote className="w-6 h-6 text-emerald-400" /> : m === "card" ? <CreditCard className="w-6 h-6 text-sky-400" /> : <Smartphone className="w-6 h-6 text-amber-400" />}
+                  {icon}
                   <div>
-                    <p className="text-[10px] uppercase font-extrabold text-stone-400">{m === "online" ? "Online / Telebirr" : m}</p>
+                    <p className="text-[10px] uppercase font-extrabold text-stone-400">{label}</p>
                     <p className="font-serif font-black text-lg text-white">{found ? fmt(found.revenue) : "0 ETB"}</p>
                     <p className="text-[10px] text-stone-500">{found ? found.count : 0} payment(s)</p>
                   </div>
@@ -189,7 +197,7 @@ export default function ReportsTab() {
           {/* Receipt photos */}
           <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5">
             <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-4 flex items-center gap-2">
-              <ImageIcon className="w-4 h-4 text-[#C9A227]" /> Receipt Photos (Card/Online Verification)
+              <ImageIcon className="w-4 h-4 text-[#C9A227]" /> Receipt Photos (Digital Payment Verification)
             </h3>
             {data.receipts.length === 0 ? (
               <p className="text-xs text-stone-500">No receipt photos uploaded yet. They appear when waiters photograph card/online receipts.</p>

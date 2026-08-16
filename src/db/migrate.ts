@@ -219,12 +219,20 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     table_name: { type: "text", def: "'Table'" },
     status: { type: "text", def: "'new'" },
     payment_method: { type: "text" },
+    payment_status: { type: "text", def: "'unpaid'" },
     receipt_image: { type: "text" },
     total_amount: { type: "integer", def: "0", castText: true },
     created_by: { type: "text" },
+    confirmed_by: { type: "text" },
     closed_at: { type: "timestamp", dropNotNull: true },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
     updated_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    // Group 1: guaranteed-unique order number + idempotent order submission
+    order_number: { type: "text" },
+    idempotency_key: { type: "text" },
+    // Group 5: payment verification audit
+    verified_by: { type: "text" },
+    verified_at: { type: "timestamp", dropNotNull: true },
   },
   ticket_items: {
     ticket_id: { type: "integer", def: "0", castText: true },
@@ -238,6 +246,8 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     notes: { type: "text" },
     removed: { type: "boolean", def: "false" },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    // Group 1: idempotent order submission (unique per ticket + key)
+    idempotency_key: { type: "text" },
   },
 };
 
@@ -325,12 +335,14 @@ const TABLE_COLUMNS: Record<string, Record<string, ColSpec>> = {
 // It only needs to run ONCE per server instance; /api/setup?force=1 re-runs it.
 const globalForMigrate = globalThis as typeof globalThis & {
   __fanaMigrateDone?: boolean;
+  // Shared promise so CONCURRENT first requests (e.g. the homepage's 5 parallel
+  // fetches right after a cold start) collapse into ONE migration run instead of
+  // each running the full CREATE/ALTER storm.
+  __fanaMigratePromise?: Promise<{ success: boolean; errors: string[] }> | null;
 };
 
-export async function ensureTablesExist(force = false) {
-  if (globalForMigrate.__fanaMigrateDone && !force) {
-    return { success: true, errors: [] as string[] };
-  }
+/** The actual migration body (health probe + full CREATE/ALTER/sequence repair). */
+async function runFullMigrate(force: boolean) {
   const errors: string[] = [];
 
   // TRAFFIC BOAT-FIX: test DB health with ONE light query first.
@@ -404,12 +416,145 @@ export async function ensureTablesExist(force = false) {
     );
   }
 
+  // Step 4 — Group 1 integrity constraints:
+  //  • order_number = FANA-<id> (guaranteed unique — derived from the DB serial, never random)
+  //  • unique (ticket_id, idempotency_key) on ticket_items: each submission stores
+  //    per-item derived keys (<key>#<index>), so a retry/double-tap of the same
+  //    submission can never be inserted twice, while separate submissions of the
+  //    same table bill (customer orders again) stay allowed.
+  await run(`UPDATE tickets SET order_number = 'FANA-' || id WHERE order_number IS NULL OR order_number = ''`);
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS tickets_order_number_key ON tickets (order_number) WHERE order_number IS NOT NULL AND order_number <> ''`
+  );
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS ticket_items_idempotency_key_key ON ticket_items (ticket_id, idempotency_key) WHERE idempotency_key IS NOT NULL`
+  );
+
+  //  • GROUP 5 — one active bill per table, enforced at the DATABASE level.
+  //    Before creating the partial unique index, repair any duplicate active
+  //    tickets left by the old check-then-insert race: move the newer tickets'
+  //    items onto the OLDEST active ticket, then delete the newer ticket rows
+  //    (nothing lost — items are preserved). This makes concurrent first orders
+  //    at the same table impossible to split into two bills.
+  await run(`
+    WITH dups AS (
+      SELECT table_id, min(id) AS keep_id, array_agg(id ORDER BY id) AS ids
+      FROM tickets
+      WHERE status NOT IN ('paid','cancelled')
+      GROUP BY table_id HAVING count(*) > 1
+    )
+    UPDATE ticket_items ti
+    SET ticket_id = d.keep_id
+    FROM dups d
+    WHERE ti.ticket_id = ANY(d.ids) AND ti.ticket_id <> d.keep_id
+  `);
+  await run(`
+    DELETE FROM tickets t
+    USING (
+      SELECT table_id, min(id) AS keep_id, array_agg(id ORDER BY id) AS ids
+      FROM tickets
+      WHERE status NOT IN ('paid','cancelled')
+      GROUP BY table_id HAVING count(*) > 1
+    ) d
+    WHERE t.table_id = d.table_id AND t.id <> d.keep_id
+      AND t.status NOT IN ('paid','cancelled')
+  `);
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS tickets_one_active_per_table_idx ON tickets (table_id) WHERE status NOT IN ('paid','cancelled')`
+  );
+
+  //  • GROUP 3 indexes — each justified by a real query pattern:
+  //    1. ticket_items(ticket_id): items attach on EVERY tickets/reports fetch
+  //       (`WHERE ticket_id IN (...)`); also recomputeTotal per ticket.
+  //    2. ticket_items(station_name, removed): kitchen/barista polling every 8s
+  //       (`WHERE station_name = ? AND removed = false`).
+  //    3. tickets(status, updated_at): active poll every 8s
+  //       (`WHERE status NOT IN ('paid','cancelled') ORDER BY updated_at DESC`),
+  //       paid-history (`WHERE status='paid' ORDER BY updated_at DESC LIMIT n`).
+  //    4. tickets(table_id, status): "one active bill per table" merge lookup on
+  //       every order submission (`WHERE table_id = ? AND status NOT IN (...)`).
+  //    5. tickets(created_at) & 6. tickets(updated_at): reports 30-day scoping
+  //       (`WHERE created_at > ? OR updated_at > ? OR closed_at > ?`); bare
+  //       updated_at also serves the ?all=1 `ORDER BY updated_at DESC LIMIT 100`
+  //       (a composite leading with status can't serve a bare updated_at sort).
+  //    7. tickets(status, closed_at): receipt-cleanup job
+  //       (`WHERE status='paid' AND receipt_image IS NOT NULL AND closed_at < ?`).
+  await run(`CREATE INDEX IF NOT EXISTS ticket_items_ticket_id_idx ON ticket_items (ticket_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS ticket_items_station_name_removed_idx ON ticket_items (station_name, removed)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_status_updated_at_idx ON tickets (status, updated_at)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_table_id_status_idx ON tickets (table_id, status)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_created_at_idx ON tickets (created_at)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_updated_at_idx ON tickets (updated_at)`);
+  await run(`CREATE INDEX IF NOT EXISTS tickets_status_closed_at_idx ON tickets (status, closed_at)`);
+
+  //  • payment_status backfill: existing paid/completed bills get a concrete
+  //    status derived from their stored method so reports/history stay correct
+  //    ("online" historically meant Telebirr/wallet in this cafe). Note: SET
+  //    DEFAULT only affects NEW rows, so existing rows are NULL until backfilled —
+  //    the (payment_status IS NULL OR ...) guard covers that.
+  await run(`UPDATE tickets SET payment_status = 'paid_cash' WHERE (payment_status IS NULL OR payment_status = 'unpaid') AND status IN ('paid','completed') AND payment_method = 'cash'`);
+  await run(`UPDATE tickets SET payment_status = 'paid_card' WHERE (payment_status IS NULL OR payment_status = 'unpaid') AND status IN ('paid','completed') AND payment_method = 'card'`);
+  await run(`UPDATE tickets SET payment_status = 'paid_telebirr' WHERE (payment_status IS NULL OR payment_status = 'unpaid') AND status IN ('paid','completed') AND payment_method IN ('online','telebirr')`);
+  await run(`UPDATE tickets SET payment_status = 'paid_cbe' WHERE (payment_status IS NULL OR payment_status = 'unpaid') AND status IN ('paid','completed') AND payment_method = 'cbe'`);
+  // Whatever remains (active bills, unknown methods) is definitively unpaid.
+  await run(`UPDATE tickets SET payment_status = 'unpaid' WHERE payment_status IS NULL`);
+
+  //  • OWNER REQUEST — remove the default categories they marked unnecessary
+  //    (Ethiopian Traditional … Pastry & Cakes). This is a ONE-TIME prune:
+  //    gated by a settings flag so it runs once and never deletes a category
+  //    the owner re-creates manually later. A category is only deleted when NO
+  //    menu item references it (real items are never orphaned); if items still
+  //    use one, that row is left in place for the owner to move/delete items first.
+  const prunedRows = await db.execute(
+    sql`SELECT value FROM site_settings WHERE key = 'default_cats_pruned' LIMIT 1`
+  );
+  const prunedList = (prunedRows as unknown as { rows?: Array<{ value: string }> }).rows ?? [];
+  if (prunedList.length === 0) {
+    await run(`
+      DELETE FROM categories
+      WHERE slug IN ('ethiopian-traditional-meals','sandwich','snack-and-wrap','juices','hot-drinks','soft-drinks','pastry-and-cakes')
+        AND NOT EXISTS (SELECT 1 FROM menu_items WHERE menu_items.category = categories.slug)
+    `);
+    await run(
+      `INSERT INTO site_settings (key, value, updated_at) VALUES ('default_cats_pruned', 'on', now()) ON CONFLICT (key) DO NOTHING`
+    );
+  }
+
   if (errors.length > 0) {
     console.error("ensureTablesExist errors:", errors);
     return { success: false, errors };
   }
   globalForMigrate.__fanaMigrateDone = true;
   return { success: true, errors: [] as string[] };
+}
+
+export async function ensureTablesExist(force = false) {
+  if (globalForMigrate.__fanaMigrateDone && !force) {
+    return { success: true, errors: [] as string[] };
+  }
+
+  if (force) {
+    // Explicit repair paths (/api/setup?force=1, image uploads) bypass the memo
+    // and run a fresh migration, independent of any in-flight run.
+    globalForMigrate.__fanaMigrateDone = false;
+    globalForMigrate.__fanaMigratePromise = null;
+    return runFullMigrate(true);
+  }
+
+  // Shared promise: the FIRST caller runs the migration (or the one-query health
+  // probe on a healthy DB); concurrent first callers await the same result instead
+  // of each executing the full CREATE/ALTER storm.
+  if (!globalForMigrate.__fanaMigratePromise) {
+    globalForMigrate.__fanaMigratePromise = runFullMigrate(false)
+      .then((res) => {
+        if (res.success) globalForMigrate.__fanaMigrateDone = true;
+        return res;
+      })
+      .finally(() => {
+        globalForMigrate.__fanaMigratePromise = null;
+      });
+  }
+  return globalForMigrate.__fanaMigratePromise;
 }
 
 /** Report per-table health for /api/setup. */

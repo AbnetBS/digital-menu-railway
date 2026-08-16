@@ -68,23 +68,11 @@ export default function AdminPanel({
 
   const toBase64 = async (file: File, cb: (data: string) => void) => {
     try {
-      // NETWORK RESCUE: compress on device, save ONCE to internal image API → short URL,
-      // browsers download each photo ONE TIME forever (never through JSON again).
+      // Compress on device and keep the data-URL in form state. The SERVER
+      // persists it to cdn_images only when the record is actually saved, so a
+      // canceled upload/change never writes anything to the database.
       const small = await compressImage(file, 640, 0.6);
-      try {
-        const res = await fetch("/api/images", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ dataUrl: small }),
-        });
-        if (res.ok) {
-          const d = await res.json();
-          if (d.url) { cb(d.url); return; }
-        }
-      } catch {
-        /* silent fallback right below */
-      }
-      cb(small); // fallback: keep embedded-compressed photo if API lid shifts
+      cb(small);
     } catch {
       alert("Couldn't read that image. Please try a JPG/PNG under 10MB.");
     }

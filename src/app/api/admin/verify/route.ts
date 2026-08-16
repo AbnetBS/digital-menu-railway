@@ -1,19 +1,16 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { readAdminSession, ADMIN_COOKIE } from "@/lib/session";
 
 export async function GET() {
-  const cookieStore = await cookies();
-  const authCookie = cookieStore.get("fana_admin_auth");
-
-  if (authCookie && authCookie.value === "authenticated") {
+  const session = await readAdminSession();
+  if (session) {
     return NextResponse.json({ authenticated: true });
   }
-
   return NextResponse.json({ authenticated: false }, { status: 401 });
 }
 
 export async function DELETE() {
   const response = NextResponse.json({ success: true, message: "Logged out" });
-  response.cookies.delete("fana_admin_auth");
+  response.cookies.delete(ADMIN_COOKIE);
   return response;
 }

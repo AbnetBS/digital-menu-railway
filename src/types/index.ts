@@ -80,7 +80,10 @@ export interface StaffUser {
   id: number;
   name: string;
   role: StaffRole;
-  pin: string;
+  /** Present on legacy clients only; the API now returns `pinSet` instead. */
+  pin?: string;
+  /** True when a PIN is set (the raw PIN/hash is never returned). */
+  pinSet?: boolean;
 }
 
 export type TableStatus = "available" | "waiting" | "occupied" | "preparing" | "ready-for-payment";
@@ -101,9 +104,16 @@ export interface CafeTable {
   status?: TableStatus;
   activeTicketId?: number | null;
   activeTicketTotal?: number;
+  activeTicketBy?: string | null; // who is handling the open bill (createdBy / confirmedBy)
 }
 
-export type PaymentMethod = "cash" | "card" | "online";
+export type PaymentMethod = "cash" | "card" | "online" | "telebirr" | "cbe";
+
+/**
+ * Payment status is tracked SEPARATELY from order status (food ready ≠ paid).
+ * Values match the cafe's real payment options; "online" is kept for legacy rows.
+ */
+export type PaymentStatus = "unpaid" | "paid_cash" | "paid_telebirr" | "paid_cbe" | "paid_card";
 
 export interface TicketItem {
   id: number;
@@ -116,6 +126,7 @@ export interface TicketItem {
   notes?: string | null;
   removed: boolean;
   createdAt?: string;
+  idempotencyKey?: string | null;
 }
 
 export interface Ticket {
@@ -124,12 +135,17 @@ export interface Ticket {
   tableName: string;
   status: TicketStatus;
   paymentMethod?: PaymentMethod | null;
+  paymentStatus?: PaymentStatus | null;
   receiptImage?: string | null;
   totalAmount: number;
   createdBy?: string | null;
   closedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
+  orderNumber?: string | null;
+  confirmedBy?: string | null;
+  verifiedBy?: string | null;
+  verifiedAt?: string | null;
   items?: TicketItem[];
 }
 

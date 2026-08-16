@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ensureTablesExist, checkTablesReport, insertSmokeTest } from "@/db/migrate";
 import { ensureDbSeeded } from "@/lib/seed-db";
+import { requireAdmin } from "@/lib/session";
 
 /**
  * One-click database initializer/repair/verification.
@@ -9,6 +10,8 @@ import { ensureDbSeeded } from "@/lib/seed-db";
  * then PROVES inserts work with a live insert+delete smoke test.
  */
 export async function GET() {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   const migrateResult = await ensureTablesExist();
   const seedResult = await ensureDbSeeded();
 
@@ -51,13 +54,15 @@ export async function GET() {
       tables: tableReport,
       insert_smoke_test: insertTest,
       next_step: allOk
-        ? "Open /admin and log in with your admin password (set in Vercel env ADMIN_PASSWORD)."
-        : "Fix your DATABASE_URL (Vercel → Project → Settings → Environment Variables) to a working Postgres/Neon connection string, then visit this URL again.",
+        ? "Open /admin and log in with your admin password (the ADMIN_PASSWORD environment variable)."
+        : "Fix your DATABASE_URL (set in your host's environment variables, e.g. Railway → Variables or Supabase connection string) to a working PostgreSQL connection string, then visit this URL again.",
     },
     { status: allOk ? 200 : 500 }
   );
 }
 
 export async function POST() {
+  const __auth = await requireAdmin();
+  if (!__auth.ok) return __auth.response;
   return GET();
 }

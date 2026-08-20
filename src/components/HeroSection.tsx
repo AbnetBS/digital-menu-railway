@@ -2,6 +2,7 @@
 
 import { Coffee, Calendar, Utensils, Star, MapPin, Clock, ArrowRight, Sparkles } from "lucide-react";
 import { SiteSettings } from "@/types";
+import { useT } from "@/lib/i18n";
 
 interface HeroProps {
   settings: SiteSettings;
@@ -10,6 +11,7 @@ interface HeroProps {
 }
 
 export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: HeroProps) {
+  const t = useT();
   const title = settings.hero_title || "Where Great Coffee Meets Beautiful Moments";
   const subtitle =
     settings.hero_subtitle ||
@@ -45,7 +47,7 @@ export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: He
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
             </span>
-            Open Daily
+            {t("hero_open_daily")}
           </span>
           <span className="text-amber-200/50">•</span>
           <span className="flex items-center gap-1 text-stone-200">
@@ -80,7 +82,7 @@ export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: He
             className="w-full sm:w-auto inline-flex items-center justify-center gap-2 bg-gradient-to-r from-[#C9A227] to-[#B8921F] hover:from-[#d6ad2a] hover:to-[#c29b21] text-[#2C1B17] font-extrabold text-sm uppercase tracking-wider px-8 py-4 rounded-full shadow-xl hover:shadow-amber-500/20 hover:scale-105 transition duration-200"
           >
             <Utensils className="w-4 h-4" />
-            <span>Explore Menu & Prices</span>
+            <span>{t("hero_cta_menu")}</span>
             <ArrowRight className="w-4 h-4" />
           </a>
 
@@ -89,7 +91,7 @@ export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: He
             className="w-full sm:w-auto inline-flex items-center justify-center gap-2 bg-white/10 hover:bg-white/20 text-white font-bold text-sm uppercase tracking-wider px-8 py-4 rounded-full border border-amber-400/30 backdrop-blur-md transition hover:scale-105"
           >
             <MapPin className="w-4 h-4 text-[#C9A227]" />
-            <span>Find Us / Scan QR</span>
+            <span>{t("hero_cta_location")}</span>
           </button>
         </div>
 
@@ -101,8 +103,8 @@ export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: He
               <Coffee className="w-5 h-5" />
             </div>
             <div>
-              <p className="text-xs text-stone-400 font-medium">Specialty Brews</p>
-              <p className="text-sm font-bold text-stone-100">Famous Fana Macchiato</p>
+              <p className="text-xs text-stone-400 font-medium">{t("hero_hl_brews")}</p>
+              <p className="text-sm font-bold text-stone-100">{t("hero_hl_macchiato")}</p>
             </div>
           </div>
 
@@ -111,8 +113,8 @@ export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: He
               <Sparkles className="w-5 h-5" />
             </div>
             <div>
-              <p className="text-xs text-stone-400 font-medium">Fresh Fruit Punches</p>
-              <p className="text-sm font-bold text-stone-100">100% Pure Spris Juice</p>
+              <p className="text-xs text-stone-400 font-medium">{t("hero_hl_juices")}</p>
+              <p className="text-sm font-bold text-stone-100">{t("hero_hl_spris")}</p>
             </div>
           </div>
 
@@ -121,8 +123,8 @@ export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: He
               <Utensils className="w-5 h-5" />
             </div>
             <div>
-              <p className="text-xs text-stone-400 font-medium">Authentic Dining</p>
-              <p className="text-sm font-bold text-stone-100">Sandwiches & Beyaynet</p>
+              <p className="text-xs text-stone-400 font-medium">{t("hero_hl_dining")}</p>
+              <p className="text-sm font-bold text-stone-100">{t("hero_hl_sandwich")}</p>
             </div>
           </div>
 
@@ -131,7 +133,7 @@ export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: He
               <Star className="w-5 h-5 fill-[#C9A227] text-[#C9A227]" />
             </div>
             <div>
-              <p className="text-xs text-stone-400 font-medium">Google Reviews</p>
+              <p className="text-xs text-stone-400 font-medium">{t("hero_hl_reviews")}</p>
               <p className="text-sm font-bold text-stone-100">3.7 ★ (28 Reviews)</p>
             </div>
           </div>

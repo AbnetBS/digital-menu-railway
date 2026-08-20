@@ -1,8 +1,10 @@
 "use client";
 
 import { Coffee, Utensils, GlassWater, Sparkles, HeartHandshake, Briefcase, Heart, BookOpen, Users, Sun } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 export default function WhyChooseSection() {
+  const t = useT();
   const features = [
     {
       icon: Coffee,
@@ -60,7 +62,7 @@ export default function WhyChooseSection() {
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-serif font-bold text-amber-100">
-            Crafted For Quality, Flavor & Comfort
+            {t("sec_why")}
           </h2>
 
           <p className="text-stone-300 text-base sm:text-lg mt-4 font-light">

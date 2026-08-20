@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Coffee, Lock, Menu, X, Phone, ShieldCheck, LayoutDashboard, ClipboardList, Monitor } from "lucide-react";
 import { SiteSettings } from "@/types";
 import { fixBrandText } from "@/lib/brand";
+import { useT } from "@/lib/i18n";
 import Link from "next/link";
 
 interface NavbarProps {
@@ -15,19 +16,20 @@ interface NavbarProps {
 export default function Navbar({ settings, onOpenAdmin, isAdminLoggedIn }: NavbarProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showAnnouncement, setShowAnnouncement] = useState(true);
+  const t = useT();
 
   const phone = settings.phone || "0911 065 022";
   const cafeName = fixBrandText(settings.cafe_name || "FANA CAFE");
   const announcement = settings.announcement || "☕ Welcome to Fana Cafe!";
 
   const navLinks = [
-    { label: "Home", href: "#hero" },
-    { label: "About", href: "#about" },
-    { label: "Menu", href: "#menu" },
-    { label: "Services", href: "#services" },
-    { label: "Gallery", href: "#gallery" },
-    { label: "Reviews", href: "#reviews" },
-    { label: "Find Us", href: "#contact" },
+    { label: t("nav_home"), href: "#hero" },
+    { label: t("nav_about"), href: "#about" },
+    { label: t("nav_menu"), href: "#menu" },
+    { label: t("nav_services"), href: "#services" },
+    { label: t("nav_gallery"), href: "#gallery" },
+    { label: t("nav_reviews"), href: "#reviews" },
+    { label: t("nav_find_us"), href: "#contact" },
   ];
 
   const handleNavClick = (e: React.MouseEvent<HTMLAnchorElement>, href: string) => {

@@ -319,7 +319,14 @@ export async function POST(request: Request) {
     publish(CHANNELS.orders);
     return NextResponse.json({ ...finalTicket[0], totalAmount: total, merged: activeTickets.length > 0 });
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    // Never leak raw SQL/driver errors to customers (they were seeing strings
+    // like "column idempotency_key does not exist"). Log the full detail
+    // server-side and return one friendly, actionable message instead.
+    console.error("[tickets POST] order submission failed:", error);
+    return NextResponse.json(
+      { error: "Could not submit order. Please call your waiter." },
+      { status: 500 }
+    );
   }
 }
 

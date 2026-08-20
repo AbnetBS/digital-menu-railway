@@ -69,7 +69,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json(newRev[0]);
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    // Customer-facing endpoint: don't leak raw DB errors to guests.
+    console.error("[reviews POST] review submission failed:", error);
+    return NextResponse.json({ error: "Couldn't submit right now. Please tell a waiter." }, { status: 500 });
   }
 }
 

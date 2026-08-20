@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { Camera, Eye, X, Image as ImageIcon } from "lucide-react";
 import { GalleryItem } from "@/types";
+import { useT } from "@/lib/i18n";
 
 interface GalleryProps {
   items: GalleryItem[];
 }
 
 export default function GallerySection({ items }: GalleryProps) {
+  const t = useT();
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [lightboxItem, setLightboxItem] = useState<GalleryItem | null>(null);
 
@@ -30,7 +32,7 @@ export default function GallerySection({ items }: GalleryProps) {
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-serif font-bold text-amber-100">
-            Moments at Fana Cafe
+            {t("sec_gallery")}
           </h2>
 
           <p className="text-stone-300 text-sm sm:text-base mt-3 font-light">

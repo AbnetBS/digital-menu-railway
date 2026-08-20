@@ -11,24 +11,12 @@
  * persistent process).
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
+/**
+ * Deliberately does not start a timer here. Coolify/VPSDime can restart or
+ * replace the container at any time, which would reset an in-process timer.
+ * Schedule POST /api/tickets/cleanup from a Coolify scheduled task instead.
+ */
 export async function register() {
-  if (process.env.NODE_ENV !== "production") return;
-
-  const g = globalThis as typeof globalThis & { __fanaReceiptCleanupStarted?: boolean };
-  if (g.__fanaReceiptCleanupStarted) return;
-  g.__fanaReceiptCleanupStarted = true;
-
-  const { cleanupOldReceipts } = await import("@/lib/receipt-cleanup");
-
-  // Run once shortly after boot (in case the app was down and old receipts
-  // accumulated), then every 24 hours.
-  setTimeout(() => {
-    cleanupOldReceipts(30).catch(() => {});
-  }, 60_000);
-
-  setInterval(() => {
-    cleanupOldReceipts(30).catch(() => {});
-  }, DAY_MS);
+  // Keep the instrumentation hook valid for Next.js without starting a
+  // best-effort scheduler that cannot survive container restarts.
 }

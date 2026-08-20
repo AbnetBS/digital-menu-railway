@@ -13,8 +13,6 @@ const ADMIN_LOGIN_LIMIT = 10;
 const ADMIN_LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
 export async function POST(request: Request) {
-  await ensureTablesExist();
-
   const ip = getClientIp(request);
   const rl = checkRateLimit(`admin-login:${ip}`, ADMIN_LOGIN_LIMIT, ADMIN_LOGIN_WINDOW_MS);
   if (!rl.allowed) {
@@ -24,6 +22,7 @@ export async function POST(request: Request) {
     );
   }
 
+  await ensureTablesExist();
   try {
     const { password } = await request.json();
 

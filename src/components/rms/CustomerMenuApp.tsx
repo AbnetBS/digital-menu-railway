@@ -402,7 +402,7 @@ export default function CustomerMenuApp() {
 
   /* ── MAIN MENU ── */
   return (
-    <div className="min-h-screen bg-[#FAF6F0] pb-28 notranslate">
+    <div className="min-h-screen bg-[#FAF6F0] pb-28">
       <LanguageToggle />
       {/* Header with logo */}
       <header className="bg-[#2C1B17] text-white sticky top-0 z-40 shadow-xl">

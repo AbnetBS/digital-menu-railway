@@ -2,10 +2,17 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { ticketItems, tickets } from "@/db/schema";
 import { and, eq, notInArray, asc, inArray } from "drizzle-orm";
-import { requireStaffOrAdmin } from "@/lib/session";
+import { requireStaffOrAdmin, readStaffSession, readAdminSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 
 type Station = "barista" | "kitchen";
+
+async function authorizedStation(): Promise<Station | "admin" | null> {
+  if (await readAdminSession()) return "admin";
+  const staff = await readStaffSession();
+  if (staff?.role === "barista" || staff?.role === "kitchen") return staff.role;
+  return null;
+}
 
 /**
  * GET /api/station-items?station=barista|kitchen
@@ -14,10 +21,13 @@ type Station = "barista" | "kitchen";
 export async function GET(request: Request) {
   const __auth = await requireStaffOrAdmin();
   if (!__auth.ok) return __auth.response;
+  const stationRole = await authorizedStation();
+  if (!stationRole) return NextResponse.json({ error: "Station role required" }, { status: 403 });
   try {
     const { searchParams } = new URL(request.url);
     const stationQuery = (searchParams.get("station") || "kitchen").toLowerCase();
-    const station: Station = stationQuery === "barista" ? "barista" : "kitchen";
+    const requested: Station = stationQuery === "barista" ? "barista" : "kitchen";
+    const station: Station = stationRole === "admin" ? requested : stationRole;
 
     // GROUP 6 — bound the item read to OPEN tickets only. Previously this
     // fetched EVERY historical item for the station (e.g. ~15k rows at 10k
@@ -83,11 +93,23 @@ export async function GET(request: Request) {
 export async function PUT(request: Request) {
   const __auth = await requireStaffOrAdmin();
   if (!__auth.ok) return __auth.response;
+  const stationRole = await authorizedStation();
+  if (!stationRole) return NextResponse.json({ error: "Station role required" }, { status: 403 });
   try {
     const body = await request.json();
     if (!body.itemId || !body.stationStatus) {
       return NextResponse.json({ error: "itemId and stationStatus required" }, { status: 400 });
     }
+    const existing = await db
+      .select({ id: ticketItems.id, stationName: ticketItems.stationName })
+      .from(ticketItems)
+      .where(eq(ticketItems.id, Number(body.itemId)))
+      .limit(1);
+    if (existing.length === 0) return NextResponse.json({ error: "Item not found" }, { status: 404 });
+    if (stationRole !== "admin" && existing[0].stationName !== stationRole) {
+      return NextResponse.json({ error: "Item belongs to another station" }, { status: 403 });
+    }
+
     const updated = await db
       .update(ticketItems)
       .set({ stationStatus: String(body.stationStatus) })

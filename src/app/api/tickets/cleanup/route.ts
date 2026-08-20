@@ -12,8 +12,18 @@ import { cleanupOldReceipts } from "@/lib/receipt-cleanup";
  * so this endpoint is a manual override only.
  */
 export async function POST(request: Request) {
-  const __auth = await requireAdmin();
-  if (!__auth.ok) return __auth.response;
+  // Coolify's scheduled task cannot hold an admin browser cookie. It may use
+  // a separate deployment secret instead; requests without either credential
+  // remain rejected. Keep the normal admin path for the dashboard button.
+  const cronSecret = process.env.RECEIPT_CLEANUP_SECRET?.trim();
+  const bearer = request.headers.get("authorization")?.replace(/^Bearer\\s+/i, "").trim();
+  const cronAuthorized = Boolean(cronSecret && bearer && bearer === cronSecret);
+
+  if (!cronAuthorized) {
+    const __auth = await requireAdmin();
+    if (!__auth.ok) return __auth.response;
+  }
+
   await ensureTablesExist();
   try {
     const { searchParams } = new URL(request.url);

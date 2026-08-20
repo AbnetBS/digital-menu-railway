@@ -94,7 +94,7 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FAF6F0] text-[#2C1B17] font-sans selection:bg-[#C9A227] selection:text-[#2C1B17] notranslate">
+    <div className="min-h-screen bg-[#FAF6F0] text-[#2C1B17] font-sans selection:bg-[#C9A227] selection:text-[#2C1B17]">
       <Navbar settings={settings} onOpenAdmin={goToAdmin} isAdminLoggedIn={isAdminLoggedIn} />
       <LanguageToggle />
 

@@ -26,14 +26,30 @@ import { extractCdnImageId, cdnImageUrl, isInlineDataUrl } from "@/lib/image-ref
  * touches the database until the record is actually saved. Canceled edits and
  * canceled uploads therefore never create a row.
  */
-export async function persistImageRef(ref: string | null | undefined): Promise<string> {
+export async function persistImageRef(ref: string | null | undefined, client: any = db): Promise<string> {
   const s = typeof ref === "string" ? ref.trim() : "";
   if (s === "" || !isInlineDataUrl(s)) return s;
 
-  const mimeMatch = s.match(/^data:([^;]+);base64,/);
-  const mime = mimeMatch ? mimeMatch[1] : "image/jpeg";
+  const mimeMatch = s.match(/^data:([^;]+);base64,/i);
+  const mime = (mimeMatch ? mimeMatch[1] : "").toLowerCase();
+  const payload = s.slice(s.indexOf(",") + 1);
+  const allowedMime = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+  if (!mimeMatch || !allowedMime.has(mime) || !/^[a-z0-9+/=\\s]+$/i.test(payload)) {
+    throw new Error("Only JPEG, PNG, GIF, and WebP image uploads are allowed");
+  }
 
-  const inserted = await db.execute(
+  // Enforce the upload limit server-side too; the browser check is not a
+  // security boundary. Validate magic bytes so a text/HTML/SVG data URL cannot
+  // be stored and later served with an executable content type.
+  const bytes = Buffer.from(payload, "base64");
+  if (bytes.length > 10 * 1024 * 1024) throw new Error("Image upload exceeds the 10MB limit");
+  const isJpeg = mime === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng = mime === "image/png" && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const isGif = mime === "image/gif" && (bytes.subarray(0, 6).toString() === "GIF87a" || bytes.subarray(0, 6).toString() === "GIF89a");
+  const isWebp = mime === "image/webp" && bytes.subarray(0, 4).toString() === "RIFF" && bytes.subarray(8, 12).toString() === "WEBP";
+  if (!isJpeg && !isPng && !isGif && !isWebp) throw new Error("Image content does not match its MIME type");
+
+  const inserted = await client.execute(
     sql`INSERT INTO cdn_images (mime_type, data, created_at) VALUES (${mime}, ${s}, now()) RETURNING id`
   );
   const rows =

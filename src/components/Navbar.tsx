@@ -1,11 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Coffee, Lock, Menu, X, Phone, ShieldCheck, LayoutDashboard, ClipboardList, Monitor } from "lucide-react";
+import { Lock, Menu, X, Phone, ShieldCheck } from "lucide-react";
 import { SiteSettings } from "@/types";
 import { fixBrandText } from "@/lib/brand";
 import { useT } from "@/lib/i18n";
-import Link from "next/link";
 
 interface NavbarProps {
   settings: SiteSettings;
@@ -102,40 +101,6 @@ export default function Navbar({ settings, onOpenAdmin, isAdminLoggedIn }: Navba
               <span className="font-semibold">{phone}</span>
             </a>
 
-            {/* Staff entries — ALL station doors so every crew member can log in */}
-            <Link
-              href="/waiter"
-              className="hidden sm:inline-flex items-center gap-1.5 bg-[#4E342E] hover:bg-[#3D2314] text-amber-200 border border-[#C9A227]/30 text-xs font-bold px-3 py-2 rounded-full"
-              title="Waiter App"
-            >
-              <ClipboardList className="w-3.5 h-3.5 text-[#C9A227]" />
-              <span>Waiter</span>
-            </Link>
-            <Link
-              href="/cashier"
-              className="hidden sm:inline-flex items-center gap-1.5 bg-[#4E342E] hover:bg-[#3D2314] text-amber-200 border border-[#C9A227]/30 text-xs font-bold px-3 py-2 rounded-full"
-              title="Cashier Dashboard"
-            >
-              <Monitor className="w-3.5 h-3.5 text-[#C9A227]" />
-              <span>Cashier</span>
-            </Link>
-            <Link
-              href="/barista"
-              className="hidden sm:inline-flex items-center gap-1.5 bg-[#C9A227]/20 hover:bg-[#C9A227]/30 text-amber-200 border border-[#C9A227]/40 text-xs font-bold px-3 py-2 rounded-full"
-              title="Barista Station"
-            >
-              <span className="text-[#C9A227]">☕</span>
-              <span>Barista</span>
-            </Link>
-            <Link
-              href="/kitchen"
-              className="hidden sm:inline-flex items-center gap-1.5 bg-emerald-700/30 hover:bg-emerald-700/50 text-emerald-100 border border-emerald-500/40 text-xs font-bold px-3 py-2 rounded-full"
-              title="Kitchen (Chef) Station"
-            >
-              <span>🍳</span>
-              <span>Kitchen</span>
-            </Link>
-
             <button
               onClick={onOpenAdmin}
               className={`p-2 rounded-full transition flex items-center gap-1 text-xs font-semibold ${
@@ -168,37 +133,7 @@ export default function Navbar({ settings, onOpenAdmin, isAdminLoggedIn }: Navba
         {/* Mobile drawer */}
         {mobileMenuOpen && (
           <div className="lg:hidden mt-3 pt-3 border-t border-amber-900/40 space-y-3 pb-3">
-            <div className="grid grid-cols-2 gap-2 px-2">
-              {navLinks.map((link) => (
-                <a
-                  key={link.label}
-                  href={link.href}
-                  onClick={(e) => handleNavClick(e, link.href)}
-                  className="block px-3 py-2 text-xs text-stone-200 hover:bg-[#C9A227]/20 hover:text-[#C9A227] rounded-lg transition"
-                >
-                  {link.label}
-                </a>
-              ))}
-            </div>
-            <div className="grid grid-cols-3 gap-2 px-2 pt-2 border-t border-amber-900/40">
-              <Link href="/waiter" className="flex items-center justify-center gap-1.5 bg-[#C9A227] text-[#2C1B17] font-bold text-[11px] py-2.5 rounded-xl">
-                <ClipboardList className="w-3.5 h-3.5" /> Waiter
-              </Link>
-              <Link href="/cashier" className="flex items-center justify-center gap-1.5 bg-purple-700 text-white font-bold text-[11px] py-2.5 rounded-xl">
-                <Monitor className="w-3.5 h-3.5" /> Cashier
-              </Link>
-              <Link href="/barista" className="flex items-center justify-center gap-1.5 bg-amber-700 text-white font-bold text-[11px] py-2.5 rounded-xl">
-                <span>☕</span> Barista
-              </Link>
-            </div>
-            <div className="grid grid-cols-2 gap-2 px-2">
-              <Link href="/kitchen" className="flex items-center justify-center gap-1.5 bg-emerald-700 text-white font-bold text-[11px] py-2.5 rounded-xl">
-                <span>🍳</span> Kitchen
-              </Link>
-              <Link href="/admin" className="flex items-center justify-center gap-1.5 bg-sky-700 text-white font-bold text-[11px] py-2.5 rounded-xl">
-                <LayoutDashboard className="w-3.5 h-3.5" /> Admin
-              </Link>
-            </div>
+
           </div>
         )}
       </nav>

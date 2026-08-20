@@ -5,6 +5,10 @@ import { ensureTablesExist } from "@/db/migrate";
 import { eq, desc } from "drizzle-orm";
 import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
 import { requireAdmin, readAdminSession } from "@/lib/session";
+import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+
+const REVIEW_LIMIT = 5;
+const REVIEW_WINDOW_MS = 60 * 60 * 1000;
 
 export async function GET(request: Request) {
   await ensureTablesExist();
@@ -31,6 +35,14 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const rl = checkRateLimit(`review-submit:${getClientIp(request)}`, REVIEW_LIMIT, REVIEW_WINDOW_MS);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "Too many review submissions. Please try again later." },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } }
+    );
+  }
+
   await ensureTablesExist();
   try {
     const body = await request.json();

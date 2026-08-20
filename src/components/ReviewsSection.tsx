@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Star, CheckCircle2, ThumbsUp, Plus, UserCheck, MapPin, MessageSquareQuote } from "lucide-react";
 import { Review } from "@/types";
+import { useT } from "@/lib/i18n";
 
 interface ReviewsProps {
   reviews: Review[];
@@ -10,6 +11,7 @@ interface ReviewsProps {
 }
 
 export default function ReviewsSection({ reviews, onReviewSubmitted }: ReviewsProps) {
+  const t = useT();
   const [showAddModal, setShowAddModal] = useState(false);
   const [customerName, setCustomerName] = useState("");
   const [rating, setRating] = useState(5);
@@ -66,7 +68,7 @@ export default function ReviewsSection({ reviews, onReviewSubmitted }: ReviewsPr
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-serif font-bold text-[#2C1B17]">
-            What Visitors Say About Fana Cafe
+            {t("sec_reviews")}
           </h2>
 
           <p className="text-stone-600 text-sm sm:text-base mt-3">

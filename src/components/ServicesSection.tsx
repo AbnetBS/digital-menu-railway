@@ -1,8 +1,10 @@
 "use client";
 
 import { UtensilsCrossed, QrCode, Users, Briefcase, ArrowUpRight, ShieldCheck } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 export default function ServicesSection() {
+  const t = useT();
   const services = [
     {
       icon: UtensilsCrossed,
@@ -38,7 +40,7 @@ export default function ServicesSection() {
             <ShieldCheck className="w-3.5 h-3.5" />
             <span>Tailored Hospitality</span>
           </div>
-          <h2 className="text-3xl sm:text-5xl font-serif font-bold text-amber-100">How Service Works</h2>
+          <h2 className="text-3xl sm:text-5xl font-serif font-bold text-amber-100">{t("sec_how")}</h2>
           <p className="text-stone-300 text-sm sm:text-base mt-3 font-light">
             A modern table-service experience: scan, browse, order through your waiter, pay when you're done.
           </p>

@@ -2,6 +2,23 @@ import { db } from "@/db";
 import { sql } from "drizzle-orm";
 
 /**
+ * SCHEMA VERSION GATE — bump this every time new columns/indexes are added.
+ *
+ * The old warm-path probe only checked that `site_settings` exists, which
+ * meant databases created by an EARLIER version of the code silently SKIPPED
+ * every new migration forever (e.g. `ticket_items.idempotency_key`,
+ * `tickets.order_number`, `tickets.payment_status` were never added to a
+ * pre-existing production DB → every order submission crashed with
+ * "column does not exist").
+ *
+ * Now the fast path only skips when the recorded schema version matches this
+ * constant; any older (or missing) version runs the full idempotent migration
+ * once and stamps the new version. Existing DBs self-heal on the first
+ * request after a deploy — no manual action needed.
+ */
+const SCHEMA_VERSION = "2026-08-20-1";
+
+/**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
  * (Neon, local, Supabase, Railway, old broken local DBs, fresh empty DBs).
  *
@@ -345,16 +362,24 @@ const globalForMigrate = globalThis as typeof globalThis & {
 async function runFullMigrate(force: boolean) {
   const errors: string[] = [];
 
-  // TRAFFIC BOAT-FIX: test DB health with ONE light query first.
-  // If the DB is already healthy (it is, 99.99% of the time), skip the entire 100+ CREATE/ALTER storm
+  // TRAFFIC BOAT-FIX: test DB health + schema freshness with ONE light query.
+  // If the DB already carries the CURRENT schema version (it does 99.99% of
+  // the time), skip the entire 100+ CREATE/ALTER storm. An older DB (created
+  // by a previous release) falls through and self-heals below.
   returnOnWarm: {
     if (!force) {
       try {
-        await db.execute(sql`SELECT 1 FROM site_settings LIMIT 1`);
-        globalForMigrate.__fanaMigrateDone = true;
-        break returnOnWarm;
+        const probe = await db.execute(
+          sql`SELECT value FROM site_settings WHERE key = 'schema_version' LIMIT 1`
+        );
+        const rows = (probe as unknown as { rows?: Array<{ value: string }> }).rows ?? [];
+        if (rows.length > 0 && rows[0].value === SCHEMA_VERSION) {
+          globalForMigrate.__fanaMigrateDone = true;
+          break returnOnWarm;
+        }
+        // missing row OR stale version → run the full migration below
       } catch {
-        // table missing / DB broken → fall through to full migration below
+        // site_settings missing / DB broken → fall through to full migration below
       }
     }
   }
@@ -522,8 +547,17 @@ async function runFullMigrate(force: boolean) {
 
   if (errors.length > 0) {
     console.error("ensureTablesExist errors:", errors);
+    // Do NOT stamp the schema version on failure — the next cold start retries
+    // the full migration instead of believing the schema is current.
     return { success: false, errors };
   }
+
+  // Stamp the schema version so future requests take the one-query fast path,
+  // and future releases (with a bumped SCHEMA_VERSION) re-run the migration.
+  await run(
+    `INSERT INTO site_settings (key, value, updated_at) VALUES ('schema_version', '${SCHEMA_VERSION}', now()) ON CONFLICT (key) DO UPDATE SET value = '${SCHEMA_VERSION}', updated_at = now()`
+  );
+
   globalForMigrate.__fanaMigrateDone = true;
   return { success: true, errors: [] as string[] };
 }

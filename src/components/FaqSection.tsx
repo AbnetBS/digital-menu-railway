@@ -2,8 +2,10 @@
 
 import { useState } from "react";
 import { ChevronDown, HelpCircle } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 export default function FaqSection() {
+  const t = useT();
   const [openIdx, setOpenIdx] = useState<number | null>(0);
 
   const faqs = [
@@ -45,7 +47,7 @@ export default function FaqSection() {
           </div>
 
           <h2 className="text-3xl sm:text-4xl font-serif font-bold text-amber-100">
-            Frequently Asked Questions
+            {t("sec_faq")}
           </h2>
         </div>
 

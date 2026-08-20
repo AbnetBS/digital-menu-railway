@@ -6,6 +6,7 @@ import {
   Soup, Beef, Pizza, Salad, ChefHat, Package, CupSoda, Clock, Info,
 } from "lucide-react";
 import { MenuItem, Category } from "@/types";
+import { useT } from "@/lib/i18n";
 
 interface MenuSectionProps {
   items: MenuItem[];
@@ -17,6 +18,7 @@ interface MenuSectionProps {
 }
 
 export default function MenuSection({ items, categories, onAddToCart, cartMap = {}, browseOnly = false }: MenuSectionProps) {
+  const t = useT();
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [activeItemModal, setActiveItemModal] = useState<MenuItem | null>(null);
@@ -84,7 +86,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-serif font-bold text-[#2C1B17]">
-            Fresh Flavors & Specialty Brews
+            {t("sec_menu")}
           </h2>
 
           <p className="text-stone-600 text-sm sm:text-base mt-3">

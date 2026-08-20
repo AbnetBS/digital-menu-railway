@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Coffee, Plus, Minus, Search, Send, CheckCircle2, Clock, X, Phone, Utensils, Loader2, QrCode,
@@ -10,7 +10,8 @@ import { MenuItem, Category, CafeTable, SiteSettings, Announcement, GalleryItem,
 import { DEFAULT_SETTINGS, DEFAULT_CATEGORIES, DEFAULT_MENU_ITEMS } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
 import { fixBrandText } from "@/lib/brand";
-import GoogleTranslateToggle from "@/components/GoogleTranslateToggle";
+import { useT } from "@/lib/i18n";
+import LanguageToggle from "@/components/LanguageToggle";
 
 interface CartEntry {
   menuItemId: number;
@@ -24,6 +25,7 @@ interface CartEntry {
 export default function CustomerMenuApp() {
   const searchParams = useSearchParams();
   const tableId = Number(searchParams.get("table") || 0);
+  const t = useT();
 
   // Start with EMPTY states — NEVER flash the default demo items for those first seconds.
   // Customers now see a branded loading skeleton until real menu data arrives from the database.
@@ -94,63 +96,71 @@ export default function CustomerMenuApp() {
     } catch {}
   }, [tableId]);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        // PERFORMANCE: no /api/seed call — routes initialize themselves on first read
-        const [s, c, m, t, anns, gal, revs] = await Promise.all([
-          fetch("/api/settings"),
-          fetch("/api/categories"),
-          fetch("/api/menu"),
-          fetch("/api/tables"),
-          fetch("/api/announcements?active=1"),
-          fetch("/api/gallery"),
-          fetch("/api/reviews"),
-        ]);
-        const fresh: Record<string, unknown> = {};
-        if (s.ok) setSettings(await s.json());
-        if (c.ok) {
-          const allCats = await c.json();
-          setCategories(allCats);
-          fresh.categories = allCats;
-        }
-        if (m.ok) {
-          const allMenu = await m.json();
-          setMenuItems(allMenu);
-          fresh.menuItems = allMenu;
-        }
-        setMenuLoading(false); // skeleton disappears ONLY after real menu lands — no demo flash, no demo data
-        if (t.ok) {
-          const tables: CafeTable[] = await t.json();
-          const found = tables.find((x) => x.id === tableId);
-          if (found) setTableName(found.name);
-        }
-        if (anns.ok) {
-          const a = await anns.json();
-          setAnnouncements(a);
-          fresh.announcements = a;
-        }
-        if (gal.ok) {
-          const p = (await gal.json()).slice(0, 8);
-          setGalleryPhotos(p);
-          fresh.galleryPhotos = p;
-        }
-        if (revs.ok) {
-          const all: Review[] = await revs.json();
-          const ap = all.filter((r) => r.isApproved).slice(0, 5);
-          setApprovedReviews(ap);
-          fresh.approvedReviews = ap;
-        }
-
-        // update instant-cache for the next visit
-        try {
-          sessionStorage.setItem("fana_menu_cache", JSON.stringify({ t: Date.now(), data: fresh }));
-        } catch {}
-      } catch {
-        setMenuLoading(false);
+  // Extracted so a stale-cart submit ("Unknown menu item") can re-pull the menu.
+  // Returns the fresh menu items (used to prune a stale cart) or null on failure.
+  const loadAllData = useCallback(async (): Promise<MenuItem[] | null> => {
+    try {
+      // PERFORMANCE: no /api/seed call — routes initialize themselves on first read
+      const [s, c, m, tbl, anns, gal, revs] = await Promise.all([
+        fetch("/api/settings"),
+        fetch("/api/categories"),
+        fetch("/api/menu"),
+        fetch("/api/tables"),
+        fetch("/api/announcements?active=1"),
+        fetch("/api/gallery"),
+        fetch("/api/reviews"),
+      ]);
+      const fresh: Record<string, unknown> = {};
+      let freshMenu: MenuItem[] | null = null;
+      if (s.ok) setSettings(await s.json());
+      if (c.ok) {
+        const allCats = await c.json();
+        setCategories(allCats);
+        fresh.categories = allCats;
       }
-    })();
+      if (m.ok) {
+        const allMenu = await m.json();
+        setMenuItems(allMenu);
+        fresh.menuItems = allMenu;
+        freshMenu = allMenu;
+      }
+      setMenuLoading(false); // skeleton disappears ONLY after real menu lands — no demo flash, no demo data
+      if (tbl.ok) {
+        const tables: CafeTable[] = await tbl.json();
+        const found = tables.find((x) => x.id === tableId);
+        if (found) setTableName(found.name);
+      }
+      if (anns.ok) {
+        const a = await anns.json();
+        setAnnouncements(a);
+        fresh.announcements = a;
+      }
+      if (gal.ok) {
+        const p = (await gal.json()).slice(0, 8);
+        setGalleryPhotos(p);
+        fresh.galleryPhotos = p;
+      }
+      if (revs.ok) {
+        const all: Review[] = await revs.json();
+        const ap = all.filter((r) => r.isApproved).slice(0, 5);
+        setApprovedReviews(ap);
+        fresh.approvedReviews = ap;
+      }
+
+      // update instant-cache for the next visit
+      try {
+        sessionStorage.setItem("fana_menu_cache", JSON.stringify({ t: Date.now(), data: fresh }));
+      } catch {}
+      return freshMenu;
+    } catch {
+      setMenuLoading(false);
+      return null;
+    }
   }, [tableId]);
+
+  useEffect(() => {
+    loadAllData();
+  }, [loadAllData]);
 
   // Daily Board auto-slide when 2+ announcements (seconds interval), swipeable with arrows
   useEffect(() => {
@@ -165,7 +175,7 @@ export default function CustomerMenuApp() {
 
   const submitReview = async () => {
     if (!revName.trim() || !revText.trim()) {
-      setRevMsg("Please add your name and a short comment.");
+      setRevMsg(t("review_need_name"));
       return;
     }
     setRevSending(true);
@@ -178,8 +188,8 @@ export default function CustomerMenuApp() {
     if (r.ok) {
       setRevName("");
       setRevText("");
-      setRevMsg("✓ Thank you! Your review awaits admin approval before it appears.");
-    } else setRevMsg("Couldn't submit right now. Please tell a waiter.");
+      setRevMsg(t("review_thanks"));
+    } else setRevMsg(t("review_fail"));
   };
 
   const filteredMenu = useMemo(
@@ -244,12 +254,31 @@ export default function CustomerMenuApp() {
         setCart([]);
         setReviewMode(false);
       } else {
-        const d = await r.json();
-        setError(d.error || "Could not submit order. Please call your waiter.");
+        // Server returns customer-friendly messages (raw DB errors are logged
+        // server-side, never shown to guests). One special case: the tab holds
+        // a cached menu where an item was since removed/changed by the owner —
+        // silently refresh the menu instead of confusing the guest.
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 400 && String(d.error || "").includes("Unknown menu item")) {
+          try { sessionStorage.removeItem("fana_menu_cache"); } catch {}
+          setError("");
+          setReviewMode(false);
+          const freshMenu = await loadAllData();
+          if (freshMenu) {
+            // Drop cart rows whose item no longer exists on the (updated) menu,
+            // so the guest re-adds from what's actually available now.
+            const validIds = new Set(freshMenu.map((fm) => fm.id));
+            setCart((prev) => prev.filter((row) => validIds.has(row.menuItemId)));
+          }
+          pendingKeyRef.current = ""; // cart may change → fresh submission key
+          setError(t("err_menu_updated"));
+        } else {
+          setError(d.error || t("err_submit"));
+        }
       }
     } catch {
       // Safe retry: the same key is reused, so the kitchen will never cook twice.
-      setError("Connection issue — press Submit again. Your order will NOT be sent twice.");
+      setError(t("err_connection"));
     } finally {
       setSubmitting(false);
     }
@@ -265,7 +294,7 @@ export default function CustomerMenuApp() {
           <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto">
             <CheckCircle2 className="w-9 h-9 text-emerald-600" />
           </div>
-          <h1 className="font-serif text-2xl font-bold text-[#2C1B17]">Order Request Sent!</h1>
+          <h1 className="font-serif text-2xl font-bold text-[#2C1B17]">{t("order_sent_title")}</h1>
           {lastOrderNumber && (
             <p className="inline-block bg-[#2C1B17] text-[#C9A227] font-black text-sm px-4 py-1.5 rounded-full">
               Order #{lastOrderNumber}
@@ -273,18 +302,18 @@ export default function CustomerMenuApp() {
           )}
           <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-1">
             <p className="text-sm font-bold text-[#2C1B17] flex items-center justify-center gap-1.5">
-              <Clock className="w-4 h-4 text-[#C9A227]" /> Waiting for Waiter Confirmation
+              <Clock className="w-4 h-4 text-[#C9A227]" /> {t("waiting_confirmation")}
             </p>
             <p className="text-xs text-stone-600">
-              Your waiter is walking to <strong>{tableName}</strong> to confirm your order. Once confirmed, preparation starts immediately.
+              {t("waiter_walking", { table: tableName })}
             </p>
           </div>
-          <p className="text-xs text-stone-500">Want to add more? You can scan & order again anytime — it joins your table's bill automatically.</p>
+          <p className="text-xs text-stone-500">{t("add_more_note")}</p>
           <button
             onClick={() => setSubmitted(false)}
             className="w-full bg-[#4E342E] text-amber-200 font-bold text-sm py-3.5 rounded-xl"
           >
-            ← Back to Menu
+            {t("back_to_menu")}
           </button>
         </div>
       </div>
@@ -297,8 +326,8 @@ export default function CustomerMenuApp() {
       <div className="min-h-screen bg-[#FAF6F0] flex items-center justify-center p-6 text-center">
         <div className="bg-white rounded-3xl p-8 max-w-sm w-full border border-[#C9A227]/40 space-y-3">
           <QrCode className="w-10 h-10 text-[#C9A227] mx-auto" />
-          <h1 className="font-serif text-xl font-bold">Scan a Table QR Code</h1>
-          <p className="text-sm text-stone-600">Please scan the QR code on your table to open your table's ordering menu.</p>
+          <h1 className="font-serif text-xl font-bold">{t("scan_qr_title")}</h1>
+          <p className="text-sm text-stone-600">{t("scan_qr_sub")}</p>
         </div>
       </div>
     );
@@ -310,7 +339,7 @@ export default function CustomerMenuApp() {
       <div className="min-h-screen bg-[#FAF6F0] pb-32">
         <header className="bg-[#2C1B17] text-white sticky top-0 z-40 px-4 py-3 flex items-center gap-3 shadow-xl">
           <button onClick={() => setReviewMode(false)} className="text-amber-200"><X className="w-5 h-5" /></button>
-          <h1 className="font-serif font-bold">Review Your Order — {tableName}</h1>
+          <h1 className="font-serif font-bold">{t("review_your_order")} — {tableName}</h1>
         </header>
 
         <div className="max-w-lg mx-auto p-4 space-y-3">
@@ -337,13 +366,13 @@ export default function CustomerMenuApp() {
                   <Plus className="w-3.5 h-3.5" />
                 </button>
                 <button onClick={() => setCart(cart.filter((x) => x.menuItemId !== c.menuItemId))} className="ml-auto text-rose-500 text-xs font-bold">
-                  Remove
+                  {t("remove")}
                 </button>
               </div>
               <input
                 value={c.notes}
                 onChange={(e) => setCart(cart.map((x) => (x.menuItemId === c.menuItemId ? { ...x, notes: e.target.value } : x)))}
-                placeholder="📝 Note: No Sugar, Less Ice, Extra Mayo..."
+                placeholder={t("note_ph")}
                 className="w-full bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-[#2C1B17] placeholder-stone-400"
               />
             </div>
@@ -354,7 +383,7 @@ export default function CustomerMenuApp() {
         <div className="fixed bottom-0 left-0 right-0 bg-[#2C1B17] border-t-2 border-[#C9A227] p-4">
           <div className="max-w-lg mx-auto flex items-center gap-3">
             <div className="flex-1">
-              <p className="text-[10px] text-stone-400 uppercase font-bold">{cartCount} item(s)</p>
+              <p className="text-[10px] text-stone-400 uppercase font-bold">{cartCount} {t("items_label")}</p>
               <p className="font-serif font-black text-xl text-[#C9A227]">{cartTotal} ETB</p>
             </div>
             <button
@@ -363,7 +392,7 @@ export default function CustomerMenuApp() {
               className="flex-1 bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] font-black text-sm uppercase py-3.5 rounded-xl flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              {submitting ? "Sending..." : "Submit Order"}
+              {submitting ? t("sending") : t("submit_order")}
             </button>
           </div>
         </div>
@@ -373,8 +402,8 @@ export default function CustomerMenuApp() {
 
   /* ── MAIN MENU ── */
   return (
-    <div className="min-h-screen bg-[#FAF6F0] pb-28">
-      <GoogleTranslateToggle />
+    <div className="min-h-screen bg-[#FAF6F0] pb-28 notranslate">
+      <LanguageToggle />
       {/* Header with logo */}
       <header className="bg-[#2C1B17] text-white sticky top-0 z-40 shadow-xl">
         <div className="px-4 py-2.5 flex items-center justify-between max-w-lg mx-auto">
@@ -382,18 +411,18 @@ export default function CustomerMenuApp() {
             <img src={logoUrl} alt="Fana" className="w-10 h-10 rounded-full object-contain bg-white p-0.5" />
             <div>
               <p className="font-serif font-bold text-sm text-amber-100 leading-none">{brandName}</p>
-              <p className="text-[10px] text-[#C9A227] font-bold uppercase tracking-wider">Menu • {tableName}</p>
+              <p className="text-[10px] text-[#C9A227] font-bold uppercase tracking-wider">{t("menu_label")} • {tableName}</p>
             </div>
           </div>
           <a href={`tel:${phone.replace(/\s+/g, "")}`} className="flex items-center gap-1 bg-[#C9A227] text-[#2C1B17] text-[11px] font-extrabold px-3 py-1.5 rounded-full">
-            <Phone className="w-3 h-3" /> Waiter
+            <Phone className="w-3 h-3" /> {t("waiter")}
           </a>
         </div>
       </header>
 
       {/* intro */}
       <div className="bg-gradient-to-r from-[#4E342E] to-[#2C1B17] text-amber-100 text-center text-xs py-2.5 px-4">
-        Pick your items, add notes, then <strong>Submit Order</strong> — your waiter will confirm at your table.
+        {t("intro")}
       </div>
 
       {/* ── 📢 DAILY BOARD — rotating announcements (auto-slide every few seconds when 2+) ── */}
@@ -480,7 +509,7 @@ export default function CustomerMenuApp() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search drinks, meals, pastries..."
+            placeholder={t("search_ph")}
             className="w-full bg-white border border-[#C9A227]/40 rounded-xl pl-9 pr-3 py-2.5 text-sm shadow-sm"
           />
         </div>
@@ -507,8 +536,8 @@ export default function CustomerMenuApp() {
               <img src={logoUrl} alt="Loading" className="w-14 h-14 rounded-full object-contain bg-white border-2 border-[#C9A227] p-0.5 animate-pulse" />
               <span className="absolute inset-0 rounded-full border-2 border-[#C9A227] animate-ping opacity-30" />
             </div>
-            <p className="font-serif font-bold text-sm text-[#2C1B17]">Loading menu...</p>
-            <p className="text-[11px] text-stone-500">Your table's dishes are on the way ☕</p>
+            <p className="font-serif font-bold text-sm text-[#2C1B17]">{t("loading_menu")}</p>
+            <p className="text-[11px] text-stone-500">{t("loading_sub")}</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             {[...Array(6)].map((_, i) => (
@@ -543,11 +572,11 @@ export default function CustomerMenuApp() {
               >
                 <img src={m.imageUrl} alt={m.name} loading="lazy" decoding="async" className="w-full h-28 object-cover" />
                 <span className="absolute bottom-1.5 right-1.5 bg-black/60 text-white text-[9px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
-                  🔍 Details
+                  🔍 {t("details")}
                 </span>
                 {out && (
                   <span className="absolute top-2 left-2 bg-rose-600 text-white text-[9px] font-extrabold uppercase px-2 py-0.5 rounded-full">
-                    Out of Stock
+                    {t("out_of_stock")}
                   </span>
                 )}
               </button>
@@ -562,7 +591,7 @@ export default function CustomerMenuApp() {
                     return ep.onSale ? (
                       <span className="flex flex-col leading-none">
                         <span className="text-[10px] line-through text-stone-400 font-semibold">{m.price} ETB</span>
-                        <span className="font-extrabold text-emerald-700 text-sm">{ep.price} ETB <span className="text-[9px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-extrabold">SALE</span></span>
+                        <span className="font-extrabold text-emerald-700 text-sm">{ep.price} ETB <span className="text-[9px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-extrabold">{t("sale")}</span></span>
                       </span>
                     ) : (
                       <span className="font-extrabold text-[#4E342E] text-sm">{m.price} ETB</span>
@@ -594,7 +623,7 @@ export default function CustomerMenuApp() {
                       onClick={() => setQty(m, 1)}
                       className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg flex items-center gap-1 transition bg-[#C9A227] text-[#2C1B17]"
                     >
-                      <Plus className="w-3 h-3" /> Add
+                      <Plus className="w-3 h-3" /> {t("add")}
                     </button>
                   )}
                 </div>
@@ -605,7 +634,7 @@ export default function CustomerMenuApp() {
         {!menuLoading && filteredMenu.length === 0 && (
           <div className="col-span-2 text-center py-12 text-stone-400 text-sm">
             <Utensils className="w-8 h-8 mx-auto mb-2 text-stone-300" />
-            Nothing found in this category — please ask a waiter if the menu looks incomplete.
+            {t("nothing_found")}
           </div>
         )}
       </div>
@@ -642,9 +671,9 @@ export default function CustomerMenuApp() {
                     <span className="flex flex-col items-end leading-none whitespace-nowrap">
                       <span className="text-xs line-through text-stone-400 font-semibold">{detailItem.price} ETB</span>
                       <span className="font-serif font-black text-xl text-emerald-700">
-                        {ep.price} ETB <span className="text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-extrabold align-middle">SALE</span>
+                        {ep.price} ETB <span className="text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-extrabold align-middle">{t("sale")}</span>
                       </span>
-                      <span className="text-[10px] text-emerald-600 font-bold mt-0.5">You save {ep.savings} ETB{detailItem.saleEnd ? ` • until ${detailItem.saleEnd}` : ""}</span>
+                      <span className="text-[10px] text-emerald-600 font-bold mt-0.5">{t("you_save")} {ep.savings} ETB{detailItem.saleEnd ? ` • ${t("until")} ${detailItem.saleEnd}` : ""}</span>
                     </span>
                   ) : (
                     <span className="font-serif font-black text-xl text-[#4E342E] whitespace-nowrap">{detailItem.price} ETB</span>
@@ -654,7 +683,7 @@ export default function CustomerMenuApp() {
 
               {/* FULL description — nothing hidden */}
               <div>
-                <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-1">Description</p>
+                <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-1">{t("description")}</p>
                 <p className="text-sm text-stone-700 leading-relaxed">{detailItem.description}</p>
               </div>
 
@@ -689,13 +718,13 @@ export default function CustomerMenuApp() {
                       onClick={() => setQty(detailItem, 1)}
                       className="flex-1 bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] font-black text-sm uppercase py-3.5 rounded-xl flex items-center justify-center gap-2 shadow-lg"
                     >
-                      <Plus className="w-4 h-4" /> Add to Order — {effectivePrice(detailItem).price} ETB
+                      <Plus className="w-4 h-4" /> {t("add_to_order")} — {effectivePrice(detailItem).price} ETB
                     </button>
                   )}
                 </div>
               ) : (
                 <div className="pt-2 border-t border-stone-100">
-                  <span className="block text-center bg-rose-100 text-rose-700 font-bold text-sm py-3 rounded-xl">Out of Stock</span>
+                  <span className="block text-center bg-rose-100 text-rose-700 font-bold text-sm py-3 rounded-xl">{t("out_of_stock")}</span>
                 </div>
               )}
             </div>
@@ -708,7 +737,7 @@ export default function CustomerMenuApp() {
 
         {/* 3. ABOUT US — short, 2–3 sentences */}
         <section className="bg-white rounded-2xl p-5 border border-[#C9A227]/25 shadow-sm">
-          <h3 className="font-serif font-bold text-lg text-[#2C1B17] flex items-center gap-2">☕ About Us</h3>
+          <h3 className="font-serif font-bold text-lg text-[#2C1B17] flex items-center gap-2">{t("about_us")}</h3>
           <p className="text-sm text-stone-600 leading-relaxed mt-2">
             {settings.about_description?.split(".").slice(0, 2).join(".") ||
               "Since 2018, Fana Cafe has served premium Ethiopian coffee, fresh pastries, and traditional meals in a comfortable atmosphere. Made with love in Addis Ababa."}
@@ -719,7 +748,7 @@ export default function CustomerMenuApp() {
         {galleryPhotos.length > 0 && (
           <section>
             <h3 className="font-serif font-bold text-lg text-[#2C1B17] mb-3 flex items-center gap-2">
-              <Camera className="w-5 h-5 text-[#C9A227]" /> Gallery
+              <Camera className="w-5 h-5 text-[#C9A227]" /> {t("gallery")}
             </h3>
             <div className="grid grid-cols-3 gap-2">
               {galleryPhotos.slice(0, 6).map((g) => (
@@ -731,9 +760,9 @@ export default function CustomerMenuApp() {
 
         {/* 5. SERVICES — very short */}
         <section className="bg-[#2C1B17] rounded-2xl p-5">
-          <h3 className="font-serif font-bold text-lg text-amber-100 mb-3">✨ What We Serve</h3>
+          <h3 className="font-serif font-bold text-lg text-amber-100 mb-3">{t("what_we_serve")}</h3>
           <div className="grid grid-cols-2 gap-2 text-xs">
-            {["☕ Premium Coffee", "🍽 Ethiopian Meals", "🥐 Fresh Pastries", "🥤 Fresh Juices"].map((s) => (
+            {[t("premium_coffee"), t("ethiopian_meals"), t("fresh_pastries"), t("fresh_juices")].map((s) => (
               <div key={s} className="bg-[#3D2314] text-amber-100 font-bold px-3 py-2.5 rounded-xl text-center border border-[#C9A227]/20">
                 {s}
               </div>
@@ -744,7 +773,7 @@ export default function CustomerMenuApp() {
         {/* 6. FIND US — map, address, phone, hours (customers save/share) */}
         <section className="bg-white rounded-2xl p-5 border border-[#C9A227]/25 shadow-sm space-y-3">
           <h3 className="font-serif font-bold text-lg text-[#2C1B17] flex items-center gap-2">
-            <MapPin className="w-5 h-5 text-[#C9A227]" /> Find Us
+            <MapPin className="w-5 h-5 text-[#C9A227]" /> {t("find_us")}
           </h3>
           <iframe
             title="Fana Location"
@@ -764,14 +793,14 @@ export default function CustomerMenuApp() {
             rel="noreferrer"
             className="block text-center bg-[#4E342E] text-amber-200 font-bold text-xs py-2.5 rounded-xl"
           >
-            Open in Google Maps →
+            {t("open_maps")}
           </a>
         </section>
 
         {/* 7. REVIEWS — 3–5 recent + leave a review */}
         <section className="space-y-3">
           <h3 className="font-serif font-bold text-lg text-[#2C1B17] flex items-center gap-2">
-            <Star className="w-5 h-5 text-[#C9A227] fill-[#C9A227]" /> What Guests Say
+            <Star className="w-5 h-5 text-[#C9A227] fill-[#C9A227]" /> {t("what_guests_say")}
           </h3>
           {approvedReviews.map((r) => (
             <div key={r.id} className="bg-white rounded-2xl p-4 border border-stone-200 shadow-sm">
@@ -786,12 +815,12 @@ export default function CustomerMenuApp() {
           {/* leave a review — inline quick form */}
           <div className="bg-[#2C1B17] rounded-2xl p-5 space-y-3">
             <p className="font-bold text-sm text-amber-100 flex items-center gap-2">
-              <MessageSquare className="w-4 h-4 text-[#C9A227]" /> Leave a Review
+              <MessageSquare className="w-4 h-4 text-[#C9A227]" /> {t("leave_review")}
             </p>
             <input
               value={revName}
               onChange={(e) => setRevName(e.target.value)}
-              placeholder="Your name"
+              placeholder={t("your_name_ph")}
               className="w-full bg-[#3D2314] border border-stone-700 rounded-xl px-3 py-2.5 text-xs text-white"
             />
             <div className="flex gap-1.5">
@@ -810,7 +839,7 @@ export default function CustomerMenuApp() {
               rows={2}
               value={revText}
               onChange={(e) => setRevText(e.target.value)}
-              placeholder="How was your coffee today?"
+              placeholder={t("review_q_ph")}
               className="w-full bg-[#3D2314] border border-stone-700 rounded-xl px-3 py-2.5 text-xs text-white"
             />
             {revMsg && <p className="text-[11px] font-bold text-amber-300">{revMsg}</p>}
@@ -819,9 +848,9 @@ export default function CustomerMenuApp() {
               disabled={revSending}
               className="w-full bg-[#C9A227] text-[#2C1B17] font-black text-xs uppercase py-3 rounded-xl disabled:opacity-50"
             >
-              {revSending ? "Sending..." : "Submit Review"}
+              {revSending ? t("sending") : t("submit_review")}
             </button>
-            <p className="text-[10px] text-stone-500 text-center">Reviews appear after owner approval.</p>
+            <p className="text-[10px] text-stone-500 text-center">{t("reviews_note")}</p>
           </div>
         </section>
       </div>
@@ -862,14 +891,14 @@ export default function CustomerMenuApp() {
         <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#2C1B17] border-t-2 border-[#C9A227] p-4">
           <div className="max-w-lg mx-auto flex items-center gap-3">
             <div className="flex-1">
-              <p className="text-[10px] text-stone-400 uppercase font-bold">{cartCount} item(s)</p>
+              <p className="text-[10px] text-stone-400 uppercase font-bold">{cartCount} {t("items_label")}</p>
               <p className="font-serif font-black text-xl text-[#C9A227]">{cartTotal} ETB</p>
             </div>
             <button
               onClick={() => setReviewMode(true)}
               className="flex-1 bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] font-black text-sm uppercase py-3.5 rounded-xl flex items-center justify-center gap-2"
             >
-              <Coffee className="w-4 h-4" /> Review Order
+              <Coffee className="w-4 h-4" /> {t("review_order")}
             </button>
           </div>
         </div>

@@ -4,6 +4,7 @@ import { Coffee, MapPin, Phone, Clock, Lock, Heart, ShieldCheck } from "lucide-r
 import Link from "next/link";
 import { SiteSettings } from "@/types";
 import { fixBrandText } from "@/lib/brand";
+import { useT } from "@/lib/i18n";
 
 interface FooterProps {
   settings: SiteSettings;
@@ -12,6 +13,7 @@ interface FooterProps {
 }
 
 export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: FooterProps) {
+  const t = useT();
   const cafeName = fixBrandText(settings.cafe_name || "FANA CAFE");
   const tagline = settings.tagline || "Where Great Coffee Meets Beautiful Moments";
   const phone = settings.phone || "0911 065 022";
@@ -49,22 +51,22 @@ export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: Foote
           {/* Col 2: Navigation Shortcuts */}
           <div className="space-y-3">
             <h4 className="text-amber-100 font-serif font-bold uppercase tracking-wider text-xs border-b border-[#C9A227]/30 pb-2">
-              Quick Links
+              {t("footer_quick_links")}
             </h4>
             <ul className="space-y-2 text-stone-400">
-              <li><a href="#hero" className="hover:text-[#C9A227] transition">Home</a></li>
-              <li><a href="#about" className="hover:text-[#C9A227] transition">About Fana Cafe</a></li>
-              <li><a href="#why-us" className="hover:text-[#C9A227] transition">Why Choose Us</a></li>
-              <li><a href="#menu" className="hover:text-[#C9A227] transition">Full Menu & Prices</a></li>
-              <li><a href="#services" className="hover:text-[#C9A227] transition">Dine-In & Delivery</a></li>
-              <li><a href="#gallery" className="hover:text-[#C9A227] transition">Photo Gallery</a></li>
+              <li><a href="#hero" className="hover:text-[#C9A227] transition">{t("fl_home")}</a></li>
+              <li><a href="#about" className="hover:text-[#C9A227] transition">{t("fl_about")}</a></li>
+              <li><a href="#why-us" className="hover:text-[#C9A227] transition">{t("fl_why")}</a></li>
+              <li><a href="#menu" className="hover:text-[#C9A227] transition">{t("fl_menu")}</a></li>
+              <li><a href="#services" className="hover:text-[#C9A227] transition">{t("fl_services")}</a></li>
+              <li><a href="#gallery" className="hover:text-[#C9A227] transition">{t("fl_gallery")}</a></li>
             </ul>
           </div>
 
           {/* Col 3: Hours & Info */}
           <div className="space-y-3">
             <h4 className="text-amber-100 font-serif font-bold uppercase tracking-wider text-xs border-b border-[#C9A227]/30 pb-2">
-              Opening Hours & Contact
+              {t("footer_hours")}
             </h4>
             <div className="space-y-2 text-stone-400 text-xs">
               <p className="flex items-center gap-2">
@@ -120,14 +122,14 @@ export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: Foote
         {/* Bottom copyright + developer signature */}
         <div className="pt-8 flex flex-col sm:flex-row items-center justify-between text-stone-500 text-xs gap-3">
           <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4">
-            <p>© {new Date().getFullYear()} {cafeName} Addis Ababa. All Rights Reserved.</p>
+            <p>© {new Date().getFullYear()} {cafeName} Addis Ababa. {t("footer_rights")}</p>
             <div className="flex items-center gap-3">
               <Link href="/privacy" className="hover:text-[#C9A227] transition">
-                Privacy Policy
+                {t("footer_privacy")}
               </Link>
               <span className="text-stone-700">•</span>
               <Link href="/terms" className="hover:text-[#C9A227] transition">
-                Terms of Service
+                {t("footer_terms")}
               </Link>
             </div>
           </div>

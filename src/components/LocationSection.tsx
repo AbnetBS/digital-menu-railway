@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { MapPin, Phone, Clock, Navigation, Copy, Check, ExternalLink, Calendar } from "lucide-react";
 import { SiteSettings } from "@/types";
+import { useT } from "@/lib/i18n";
 
 interface LocationProps {
   settings: SiteSettings;
 }
 
 export default function LocationSection({ settings }: LocationProps) {
+  const t = useT();
   const [copiedCode, setCopiedCode] = useState(false);
 
   const phone = settings.phone || "0911 065 022";
@@ -36,7 +38,7 @@ export default function LocationSection({ settings }: LocationProps) {
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-serif font-bold text-[#2C1B17]">
-            Visit Fana Cafe at 22 Square
+            {t("sec_location")}
           </h2>
 
           <p className="text-stone-600 text-sm sm:text-base mt-3">

@@ -12,7 +12,7 @@ import ReviewsSection from "@/components/ReviewsSection";
 import LocationSection from "@/components/LocationSection";
 import FaqSection from "@/components/FaqSection";
 import CtaBanner from "@/components/CtaBanner";
-import GoogleTranslateToggle from "@/components/GoogleTranslateToggle";
+import LanguageToggle from "@/components/LanguageToggle";
 import Footer from "@/components/Footer";
 
 import { MenuItem, Category, SiteSettings, Review, GalleryItem } from "@/types";
@@ -94,9 +94,9 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FAF6F0] text-[#2C1B17] font-sans selection:bg-[#C9A227] selection:text-[#2C1B17]">
+    <div className="min-h-screen bg-[#FAF6F0] text-[#2C1B17] font-sans selection:bg-[#C9A227] selection:text-[#2C1B17] notranslate">
       <Navbar settings={settings} onOpenAdmin={goToAdmin} isAdminLoggedIn={isAdminLoggedIn} />
-      <GoogleTranslateToggle />
+      <LanguageToggle />
 
       <main>
         <HeroSection settings={settings} onOpenMenu={scrollToMenu} onOpenLocation={scrollToLocation} />

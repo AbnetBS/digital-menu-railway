@@ -10,7 +10,7 @@ import { MenuItem, Category, CafeTable, SiteSettings, Announcement, GalleryItem,
 import { DEFAULT_SETTINGS, DEFAULT_CATEGORIES, DEFAULT_MENU_ITEMS } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
 import { fixBrandText } from "@/lib/brand";
-import { useT } from "@/lib/i18n";
+import { useMenuText, useT } from "@/lib/i18n";
 import LanguageToggle from "@/components/LanguageToggle";
 
 interface CartEntry {
@@ -26,6 +26,7 @@ export default function CustomerMenuApp() {
   const searchParams = useSearchParams();
   const tableId = Number(searchParams.get("table") || 0);
   const t = useT();
+  const menuText = useMenuText();
 
   // Start with EMPTY states — NEVER flash the default demo items for those first seconds.
   // Customers now see a branded loading skeleton until real menu data arrives from the database.
@@ -197,9 +198,11 @@ export default function CustomerMenuApp() {
       menuItems.filter(
         (m) =>
           (category === "all" || m.category === category) &&
-          m.name.toLowerCase().includes(search.toLowerCase())
+          (m.name.toLowerCase().includes(search.toLowerCase()) ||
+            menuText(m.name).toLowerCase().includes(search.toLowerCase()) ||
+            menuText(m.description).toLowerCase().includes(search.toLowerCase()))
       ),
-    [menuItems, category, search]
+    [menuItems, category, search, menuText]
   );
 
   // Unified quantity control: qty 0 = remove from cart (fixes "accidental Add" confusion)
@@ -348,7 +351,7 @@ export default function CustomerMenuApp() {
           {cart.map((c) => (
             <div key={c.menuItemId} className="bg-white rounded-2xl border border-[#C9A227]/30 p-4 space-y-2 shadow-sm">
               <div className="flex items-center justify-between">
-                <p className="font-bold text-[#2C1B17] text-sm">{c.name}</p>
+                <p className="font-bold text-[#2C1B17] text-sm">{menuText(c.name)}</p>
                 <p className="font-extrabold text-[#4E342E]">{c.price * c.quantity} ETB</p>
               </div>
               <div className="flex items-center gap-2">
@@ -522,7 +525,7 @@ export default function CustomerMenuApp() {
                 category === c.slug ? "bg-[#4E342E] text-amber-200 border-[#C9A227]" : "bg-white text-stone-600 border-stone-200"
               }`}
             >
-              {c.name}
+              {menuText(c.name)}
             </button>
           ))}
         </div>
@@ -570,7 +573,7 @@ export default function CustomerMenuApp() {
                 className="relative w-full text-left cursor-pointer"
                 title="Tap for full details"
               >
-                <img src={m.imageUrl} alt={m.name} loading="lazy" decoding="async" className="w-full h-28 object-cover" />
+                <img src={m.imageUrl} alt={menuText(m.name)} loading="lazy" decoding="async" className="w-full h-28 object-cover" />
                 <span className="absolute bottom-1.5 right-1.5 bg-black/60 text-white text-[9px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
                   🔍 {t("details")}
                 </span>
@@ -582,9 +585,9 @@ export default function CustomerMenuApp() {
               </button>
               <div className="p-3 space-y-1.5">
                 <button onClick={() => setDetailItem(m)} className="text-left w-full">
-                  <p className="text-xs font-bold text-[#2C1B17] leading-tight line-clamp-2 min-h-[2rem] hover:text-[#C9A227] transition-colors">{m.name}</p>
+                  <p className="text-xs font-bold text-[#2C1B17] leading-tight line-clamp-2 min-h-[2rem] hover:text-[#C9A227] transition-colors">{menuText(m.name)}</p>
                 </button>
-                <p className="text-[10px] text-stone-500 line-clamp-2">{m.description}</p>
+                <p className="text-[10px] text-stone-500 line-clamp-2">{menuText(m.description)}</p>
                 <div className="flex items-center justify-between pt-1 gap-1">
                   {(() => {
                     const ep = effectivePrice(m);
@@ -647,7 +650,7 @@ export default function CustomerMenuApp() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="relative">
-              <img src={detailItem.imageUrl} alt={detailItem.name} className="w-full h-56 sm:h-64 object-cover" />
+              <img src={detailItem.imageUrl} alt={menuText(detailItem.name)} className="w-full h-56 sm:h-64 object-cover" />
               <button
                 onClick={() => setDetailItem(null)}
                 className="absolute top-3 right-3 w-9 h-9 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black"
@@ -664,7 +667,7 @@ export default function CustomerMenuApp() {
 
             <div className="p-5 space-y-4">
               <div className="flex items-start justify-between gap-3">
-                <h2 className="font-serif font-bold text-xl text-[#2C1B17] flex-1">{detailItem.name}</h2>
+                <h2 className="font-serif font-bold text-xl text-[#2C1B17] flex-1">{menuText(detailItem.name)}</h2>
                 {(() => {
                   const ep = effectivePrice(detailItem);
                   return ep.onSale ? (
@@ -684,7 +687,7 @@ export default function CustomerMenuApp() {
               {/* FULL description — nothing hidden */}
               <div>
                 <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-1">{t("description")}</p>
-                <p className="text-sm text-stone-700 leading-relaxed">{detailItem.description}</p>
+                <p className="text-sm text-stone-700 leading-relaxed">{menuText(detailItem.description)}</p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 text-[11px]">

@@ -5,7 +5,7 @@ import type { NextConfig } from "next";
  *
  * Kept intentionally conservative so no existing functionality breaks:
  *   - NO Content-Security-Policy: the app relies on Next.js inline scripts for
- *     hydration, Google Translate (external script), Google Maps embeds
+ *     hydration, Google Maps embeds
  *     (maps.google.com), QR code images (api.qrserver.com) and menu/gallery
  *     images (images.pexels.com). A strict CSP without careful nonce/hash and
  *     domain allow-listing would break these.

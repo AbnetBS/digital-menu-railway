@@ -44,7 +44,6 @@ After Group 1: the seed pipeline runs **once per server process** (then 0 extra 
 
 ### Medium
 
-- **[M1] Google Translate third-party script loads eagerly** on the homepage and customer menu (heavy `translate.google.com` script + DOM mutations + full `location.reload()` on toggle). Should lazy-load on first toggle. *(Group 2.)*
 - **[M2] No `next/font`, no `preconnect`/`dns-prefetch`** for image origins. *(Group 2.)*
 - **[M3] No DB indexes on hot query columns** — `ticket_items(ticket_id)`, `tickets(status)`, `tickets(table_id)`, `ticket_items(station_name)`, etc. Fine at small scale; matters as ticket volume grows. *(Group 3.)*
 - **[M4] Photos stored as base64 in Postgres and decoded per request.** Mitigations already exist (client-side compression, on-demand receipts, immutable `Cache-Control` on `/api/images/[id]`), so this is acceptable short-term. *(Group 3: move to object storage / server-side resize.)*
@@ -65,7 +64,7 @@ After Group 1: the seed pipeline runs **once per server process** (then 0 extra 
 | Group | Theme | Items |
 |---|---|---|
 | **Group 1 (this pass)** | Request-path efficiency | C1, C2, C3-fetch-pattern (parallelize), H1, H2, H3 |
-| **Group 2 (next)** | Rendering & payload | C3 (SSR/SSG homepage, server components), H4 (`next/image`), M1 (lazy Google Translate), M2 (fonts/preconnect), metadata/OG |
+| **Group 2 (next)** | Rendering & payload | C3 (SSR/SSG homepage, server components), H4 (`next/image`), M2 (fonts/preconnect), metadata/OG |
 | **Group 3 (later)** | Scale & ops | M3 (DB indexes), M4 (image pipeline), SSE/WebSocket for RMS instead of polling, route-level data cache with revalidation tags, connection pooling tuning for serverless |
 
 ---

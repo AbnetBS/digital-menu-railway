@@ -1,52 +1,21 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 
-/**
- * Native English ⇄ አማርኛ language layer.
- *
- * Why native (and not the Google Translate widget):
- *  • Google deprecated the free website-translator element — it became
- *    unreliable and its DOM rewriting fights React (re-renders throw
- *    `removeChild` errors, which was breaking cart/order interactions).
- *  • Native translation is deterministic: the choice is stored in
- *    localStorage, applies instantly (no reload), works in every tab,
- *    and never depends on a third-party script being reachable.
- */
+/** Native English ⇄ አማርኛ language layer.  It is deliberately local-only:
+ * no third-party script changes React-owned nodes, form values, or order data. */
 
 export type Lang = "en" | "am";
 
 const STORAGE_KEY = "fana_lang";
-const LEGACY_COOKIE = "googtrans"; // left over from the old Google Translate toggle
 
 /* ───────────────────────── persistence ───────────────────────── */
-
-function clearLegacyGoogleCookie() {
-  // The old toggle drove Google Translate via this cookie. Delete every
-  // variant (host + parent domain) so no stale "always Amharic" state
-  // survives the switch to the native system.
-  try {
-    const hosts = [location.hostname, `.${location.hostname}`];
-    for (const h of hosts) {
-      document.cookie = `${LEGACY_COOKIE}=; path=/; domain=${h}; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
-    }
-  } catch {}
-}
 
 export function getLang(): Lang {
   if (typeof window === "undefined") return "en";
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     if (saved === "am" || saved === "en") return saved;
-  } catch {}
-  // One-time migration: visitors who previously chose Amharic via the old
-  // Google toggle keep Amharic seamlessly.
-  try {
-    if (document.cookie.includes(`${LEGACY_COOKIE}=/en/am`)) {
-      window.localStorage.setItem(STORAGE_KEY, "am");
-      clearLegacyGoogleCookie();
-      return "am";
-    }
   } catch {}
   return "en";
 }
@@ -57,7 +26,6 @@ export function setLang(lang: Lang) {
   try {
     window.localStorage.setItem(STORAGE_KEY, lang);
   } catch {}
-  clearLegacyGoogleCookie();
   if (typeof document !== "undefined") {
     document.documentElement.lang = lang;
   }
@@ -79,6 +47,10 @@ const serverSnapshot: Lang = "en";
 /** Reactive hook: [lang, changeLang]. Syncs across every open tab. */
 export function useLang(): [Lang, (l: Lang) => void] {
   const lang = useSyncExternalStore(subscribeLang, getLang, () => serverSnapshot);
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
 
   const change = useCallback((l: Lang) => {
     setLang(l);
@@ -337,4 +309,40 @@ export function useT(): (key: StringKey, vars?: Record<string, string>) => strin
     },
     [lang]
   );
+}
+
+/** Native display translations for seeded menu data. The database's English values
+ * remain canonical identifiers, so changing language never changes an order payload. */
+const MENU_AM: Record<string, string> = {
+  "The Famous Fana Macchiato": "ታዋቂው የፋና ማኪያቶ",
+  "Mixed Fruit Juice (Spris)": "የተቀላቀለ የፍራፍሬ ጭማቂ (ስፕሪስ)",
+  "Chicken Club Sandwich": "የዶሮ ክለብ ሳንድዊች",
+  "Traditional Ethiopian Beyaynet Platter": "ባህላዊ የኢትዮጵያ በያይነት",
+  "Golden French Fries": "ወርቃማ ጥብስ ድንች",
+  "Traditional Ethiopian Coffee (Jebena)": "ባህላዊ የኢትዮጵያ ቡና (ጀበና)",
+  "Special Fruit Punches": "ልዩ የፍራፍሬ ጭማቂዎች",
+  "Ethiopian Spiced Chechebsa": "የኢትዮጵያ ቅመም ያለው ጨጨብሳ",
+  "Delicious Fresh Cake & Pastries": "ጣፋጭ ትኩስ ኬክ እና ፓስትሪዎች",
+  "Our world-class signature layered Ethiopian macchiato brewed with rich Arabica espresso and steamed microfoam milk.": "በምርጥ የአረቢካ ኤስፕሬሶ እና ለስላሳ የወተት አረፋ የተዘጋጀ ልዩ የኢትዮጵያ ማኪያቶ።",
+  "Freshly blended multi-layered puree of ripe local avocado, mango, and papaya with optional lemon squeeze.": "ከደረሱ አቮካዶ፣ ማንጎ እና ፓፓያ በትኩስ የተቀላቀለ ጭማቂ፣ እንደ ፍላጎትዎ ከሎሚ ጋር።",
+  "Triple-decker layered roasted chicken breast, crispy beef bacon, melted cheddar, egg, lettuce, tomato, served with French fries.": "በሶስት ደረጃ የተደረደረ የተጠበሰ ዶሮ፣ ባኮን፣ ቼዳር አይብ፣ እንቁላል፣ ሰላጣ እና ቲማቲም፣ ከጥብስ ድንች ጋር።",
+  "Generous traditional fasting platter featuring Shiro, Kik Alicha, Misir Wot, Gomen, Atakilt Wot, and fresh Injera.": "ሽሮ፣ ክክ አልጫ፣ ምስር ወጥ፣ ጎመን፣ አትክልት ወጥ እና ትኩስ እንጀራ የያዘ ባህላዊ የጾም በያይነት።",
+  "Crispy skin-on golden potatoes lightly salted and served hot with tomato ketchup and house chili mayo dip.": "ቀለል ባለ ጨው የተቀመመ ትኩስ ጥብስ ድንች ከቲማቲም ኬቸፕ እና ቺሊ ማዮ ጋር።",
+  "Authentic slow-brewed single-origin Arabica coffee served fresh from a traditional clay Jebena pot.": "በባህላዊ የሸክላ ጀበና ቀስ ብሎ የተፈላ ንጹህ የአረቢካ ቡና።",
+  "Ice-chilled naturally refreshing punch made with seasonal Ethiopian fruits including watermelon, passion fruit, and orange.": "ከወቅታዊ የኢትዮጵያ ፍራፍሬዎች የተዘጋጀ ቀዝቃዛ እና አዲስ የፍራፍሬ ጭማቂ።",
+  "Pan-fried flatbread shredded and coat in herbal spiced butter (Niter Kibbeh) and berbere, served warm with plain yogurt.": "በቅመም ቅቤ እና በርበሬ የተዘጋጀ ጨጨብሳ፣ በትኩስ ከእርጎ ጋር።",
+  "Moist fresh sponge cake with chocolate or vanilla cream frosting, baked fresh daily.": "በየቀኑ ትኩስ የሚጋገር ለስላሳ ስፖንጅ ኬክ ከቸኮሌት ወይም ቫኒላ ክሬም ጋር።",
+};
+
+const CATEGORY_AM: Record<string, string> = {
+  all: "ሁሉም", soup: "ሾርባ", burger: "በርገር", pasta: "ፓስታ", salad: "ሰላጣ", pizza: "ፒዛ", rice: "ሩዝ",
+  "hot-drinks": "ትኩስ መጠጦች", "soft-drinks": "ለስላሳ መጠጦች", juices: "ጭማቂዎች", sandwich: "ሳንድዊች", "snack-and-wrap": "ቀላል ምግቦች", "ethiopian-traditional-meals": "የኢትዮጵያ ምግቦች", "pastry-and-cakes": "ፓስትሪ እና ኬክ",
+};
+
+export function useMenuText() {
+  const [lang] = useLang();
+  return useCallback((text: string, category = false) => {
+    if (lang !== "am") return text;
+    return (category ? CATEGORY_AM[text.toLowerCase()] : MENU_AM[text]) || text;
+  }, [lang]);
 }

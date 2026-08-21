@@ -91,21 +91,10 @@ export default function PrivacyPage() {
         </Section>
 
         <Section title="6. Third-party services actually used">
-          To provide extra features, this website loads two Google services:
-          <ul className="list-disc pl-5 space-y-2 mt-2">
-            <li>
-              <strong className="text-[#4E342E]">Google Translate</strong> — lets you read the
-              site in another language.
-            </li>
-            <li>
-              <strong className="text-[#4E342E]">Google Maps</strong> — shows an embedded map of
-              our location.
-            </li>
-          </ul>
-          <span className="block mt-2">
-            When these features load, Google may apply its own privacy practices and may set its
-            own cookies. We do not share your order or review information with Google.
-          </span>
+          This website uses an embedded Google Maps view to show our location. The English and
+          Amharic language setting is provided directly by this website and is saved only in your
+          browser. When the map loads, Google may apply its own privacy practices. We do not share
+          your order or review information with Google.
         </Section>
 
         <Section title="7. How long we keep information">

@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { MenuItem, Category } from "@/types";
 import { useT } from "@/lib/i18n";
+import { optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 
 interface MenuSectionProps {
   items: MenuItem[];
@@ -186,11 +187,12 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                   {/* Image Header with Badge */}
                   <div className="relative h-52 overflow-hidden bg-stone-100 cursor-pointer" onClick={() => setActiveItemModal(item)}>
                     <img
-                      src={item.imageUrl}
+                      src={optimizeImageUrl(item.imageUrl, 600, 400)}
                       alt={item.name}
                       loading="lazy"
                       decoding="async"
-                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 bg-stone-100"
+                      onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }}
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-60" />
 
@@ -329,11 +331,12 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
 
             <div className="relative h-64">
               <img
-                src={activeItemModal.imageUrl}
+                src={optimizeImageUrl(activeItemModal.imageUrl, 800, 500)}
                 alt={activeItemModal.name}
                 loading="lazy"
                 decoding="async"
-                className="w-full h-full object-cover"
+                className="w-full h-full object-cover bg-stone-100"
+                onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }}
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
               <div className="absolute bottom-4 left-6 right-6 text-white">

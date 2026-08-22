@@ -93,7 +93,7 @@ export default function AboutSection({ settings }: AboutProps) {
             <div className="space-y-4">
               <div className="rounded-3xl overflow-hidden shadow-2xl border-2 border-[#C9A227]/20 group">
                 <img
-                  src="https://images.pexels.com/photos/36794595/pexels-photo-36794595.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=800&w=600"
+                  src="https://images.pexels.com/photos/36794595/pexels-photo-36794595.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=500&w=400"
                   alt="Traditional Ethiopian Coffee Jebena"
                   className="w-full h-64 object-cover group-hover:scale-105 transition-transform duration-500"
                 />
@@ -115,7 +115,7 @@ export default function AboutSection({ settings }: AboutProps) {
               </div>
               <div className="rounded-3xl overflow-hidden shadow-2xl border-2 border-[#C9A227]/20 group">
                 <img
-                  src="https://images.pexels.com/photos/6763235/pexels-photo-6763235.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=800&w=600"
+                  src="https://images.pexels.com/photos/6763235/pexels-photo-6763235.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=500&w=400"
                   alt="Fana Macchiato"
                   className="w-full h-64 object-cover group-hover:scale-105 transition-transform duration-500"
                 />

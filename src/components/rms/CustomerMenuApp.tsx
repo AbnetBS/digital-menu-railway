@@ -12,6 +12,7 @@ import { effectivePrice } from "@/lib/price";
 import { fixBrandText } from "@/lib/brand";
 import { useMenuText, useT } from "@/lib/i18n";
 import LanguageToggle from "@/components/LanguageToggle";
+import { optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 
 interface CartEntry {
   menuItemId: number;
@@ -101,49 +102,55 @@ export default function CustomerMenuApp() {
   // Returns the fresh menu items (used to prune a stale cart) or null on failure.
   const loadAllData = useCallback(async (): Promise<MenuItem[] | null> => {
     try {
-      // PERFORMANCE: no /api/seed call — routes initialize themselves on first read
-      const [s, c, m, tbl, anns, gal, revs] = await Promise.all([
-        fetch("/api/settings"),
-        fetch("/api/categories"),
-        fetch("/api/menu"),
-        fetch("/api/tables"),
-        fetch("/api/announcements?active=1"),
-        fetch("/api/gallery"),
-        fetch("/api/reviews"),
+      // 1. Critical path for instant ordering: menu items, categories, settings, and tables
+      const corePromise = Promise.all([
+        fetch("/api/settings").then((r) => (r.ok ? r.json() : null)),
+        fetch("/api/categories").then((r) => (r.ok ? r.json() : null)),
+        fetch("/api/menu").then((r) => (r.ok ? r.json() : null)),
+        fetch("/api/tables").then((r) => (r.ok ? r.json() : null)),
       ]);
+
+      // 2. Secondary path: below-the-fold announcements, gallery, reviews
+      const secondaryPromise = Promise.all([
+        fetch("/api/announcements?active=1").then((r) => (r.ok ? r.json() : [])),
+        fetch("/api/gallery").then((r) => (r.ok ? r.json() : [])),
+        fetch("/api/reviews").then((r) => (r.ok ? r.json() : [])),
+      ]);
+
+      const [s, c, m, tbl] = await corePromise;
       const fresh: Record<string, unknown> = {};
       let freshMenu: MenuItem[] | null = null;
-      if (s.ok) setSettings(await s.json());
-      if (c.ok) {
-        const allCats = await c.json();
-        setCategories(allCats);
-        fresh.categories = allCats;
+
+      if (s) setSettings(s);
+      if (c) {
+        setCategories(c);
+        fresh.categories = c;
       }
-      if (m.ok) {
-        const allMenu = await m.json();
-        setMenuItems(allMenu);
-        fresh.menuItems = allMenu;
-        freshMenu = allMenu;
+      if (m) {
+        setMenuItems(m);
+        fresh.menuItems = m;
+        freshMenu = m;
       }
-      setMenuLoading(false); // skeleton disappears ONLY after real menu lands — no demo flash, no demo data
-      if (tbl.ok) {
-        const tables: CafeTable[] = await tbl.json();
-        const found = tables.find((x) => x.id === tableId);
+      if (tbl) {
+        const found = tbl.find((x: CafeTable) => x.id === tableId);
         if (found) setTableName(found.name);
       }
-      if (anns.ok) {
-        const a = await anns.json();
-        setAnnouncements(a);
-        fresh.announcements = a;
+      // Critical menu rendering unlocks immediately!
+      setMenuLoading(false);
+
+      // Await secondary below-the-fold content without delaying menu interaction
+      const [anns, gal, revs] = await secondaryPromise;
+      if (anns) {
+        setAnnouncements(anns);
+        fresh.announcements = anns;
       }
-      if (gal.ok) {
-        const p = (await gal.json()).slice(0, 8);
+      if (gal) {
+        const p = gal.slice(0, 8);
         setGalleryPhotos(p);
         fresh.galleryPhotos = p;
       }
-      if (revs.ok) {
-        const all: Review[] = await revs.json();
-        const ap = all.filter((r) => r.isApproved).slice(0, 5);
+      if (revs) {
+        const ap = revs.filter((r: Review) => r.isApproved).slice(0, 5);
         setApprovedReviews(ap);
         fresh.approvedReviews = ap;
       }
@@ -439,7 +446,7 @@ export default function CustomerMenuApp() {
                 {/* full-bleed photo background (no frame) */}
                 {hasPhoto && (
                   <>
-                    <img src={a!.imageUrl!} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                    <img src={optimizeImageUrl(a!.imageUrl!, 800, 500)} alt="" className="absolute inset-0 w-full h-full object-cover" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
                     {/* dark scrim so white text always pops, on any photo */}
                     <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/45 to-black/15" />
                   </>
@@ -573,7 +580,7 @@ export default function CustomerMenuApp() {
                 className="relative w-full text-left cursor-pointer"
                 title="Tap for full details"
               >
-                <img src={m.imageUrl} alt={menuText(m.name)} loading="lazy" decoding="async" className="w-full h-28 object-cover" />
+                <img src={optimizeImageUrl(m.imageUrl, 400, 250)} alt={menuText(m.name)} loading="lazy" decoding="async" className="w-full h-28 object-cover bg-stone-100" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
                 <span className="absolute bottom-1.5 right-1.5 bg-black/60 text-white text-[9px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
                   🔍 {t("details")}
                 </span>
@@ -650,7 +657,7 @@ export default function CustomerMenuApp() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="relative">
-              <img src={detailItem.imageUrl} alt={menuText(detailItem.name)} className="w-full h-56 sm:h-64 object-cover" />
+              <img src={optimizeImageUrl(detailItem.imageUrl, 600, 400)} alt={menuText(detailItem.name)} className="w-full h-56 sm:h-64 object-cover bg-stone-100" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
               <button
                 onClick={() => setDetailItem(null)}
                 className="absolute top-3 right-3 w-9 h-9 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black"
@@ -755,7 +762,7 @@ export default function CustomerMenuApp() {
             </h3>
             <div className="grid grid-cols-3 gap-2">
               {galleryPhotos.slice(0, 6).map((g) => (
-                <img key={g.id} src={g.imageUrl} alt={g.title} className="w-full h-24 object-cover rounded-xl shadow-sm" loading="lazy" />
+                <img key={g.id} src={optimizeImageUrl(g.imageUrl, 300, 200)} alt={g.title} className="w-full h-24 object-cover rounded-xl shadow-sm bg-stone-100" loading="lazy" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
               ))}
             </div>
           </section>

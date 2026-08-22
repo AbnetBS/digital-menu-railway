@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 250" width="400" height="250">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3D2314" />
+      <stop offset="100%" stop-color="#22120C" />
+    </linearGradient>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F3C64D" />
+      <stop offset="100%" stop-color="#C9A227" />
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#bg)" />
+  <circle cx="200" cy="110" r="55" fill="#2C1B17" stroke="#C9A227" stroke-width="2" stroke-opacity="0.4" />
+  <!-- Food / Plate & Utensils Icon -->
+  <g transform="translate(170, 80) scale(1.6)" stroke="url(#gold)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Plate -->
+    <ellipse cx="18" cy="18" rx="14" ry="9" />
+    <!-- Cloche cover / food aroma -->
+    <path d="M9 17 C9 11 27 11 27 17" stroke-width="1.8" />
+    <path d="M18 10 V8" stroke-width="1.8" />
+  </g>
+  <text x="200" y="190" text-anchor="middle" fill="#E6D5B8" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" letter-spacing="1">FANA CAFE &amp; RESTAURANT</text>
+</svg>

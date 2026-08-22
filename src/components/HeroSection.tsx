@@ -18,7 +18,7 @@ export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: He
     "A cozy café and restaurant located at Golagul Building, 22 Square (Djibouti Street, Bole, Addis Ababa). Designed for coffee lovers, food enthusiasts, families, and friends.";
   const heroBgImage =
     settings.hero_bg_image ||
-    "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=1080&w=1920";
+    "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=800&w=1200";
   const openingHours = settings.opening_hours || "Open Daily Until 8:30 PM";
 
   return (

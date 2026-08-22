@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 250" width="400" height="250">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3D2314" />
+      <stop offset="100%" stop-color="#22120C" />
+    </linearGradient>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F3C64D" />
+      <stop offset="100%" stop-color="#C9A227" />
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#bg)" />
+  <circle cx="200" cy="110" r="55" fill="#2C1B17" stroke="#C9A227" stroke-width="2" stroke-opacity="0.4" />
+  <!-- Coffee Cup Icon -->
+  <g transform="translate(173, 83) scale(1.5)" stroke="url(#gold)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 8h1a4 4 0 0 1 0 8h-1" />
+    <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" />
+    <line x1="6" y1="1" x2="6" y2="4" />
+    <line x1="10" y1="1" x2="10" y2="4" />
+    <line x1="14" y1="1" x2="14" y2="4" />
+  </g>
+  <text x="200" y="190" text-anchor="middle" fill="#E6D5B8" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" letter-spacing="1">FANA CAFE &amp; RESTAURANT</text>
+</svg>

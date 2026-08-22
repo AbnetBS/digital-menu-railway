@@ -45,7 +45,7 @@ export default function AdminPanel({
       settings.hero_subtitle || "A cozy café and restaurant located at Golagul Building, 22 Square (Djibouti Street, Bole, Addis Ababa)...",
     hero_bg_image:
       settings.hero_bg_image ||
-      "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=1080&w=1920",
+      "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=800&w=1200",
     logo_url: String(settings.logo_url || ""),
     receipt_enabled: String(settings.receipt_enabled ?? "true"),
     phone: settings.phone || "0911 065 022",
@@ -613,7 +613,7 @@ export default function AdminPanel({
                     category: "signature-coffee",
                     price: 120,
                     description: "",
-                    imageUrl: "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200",
+                    imageUrl: "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=300&w=480",
                     isPopular: false,
                     isAvailable: true,
                     dietaryTags: "",

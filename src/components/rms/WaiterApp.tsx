@@ -6,7 +6,7 @@ import {
   Smartphone, Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing,
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
-import { compressImage } from "@/lib/image-utils";
+import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
 import { unlockAudio, playDing } from "@/lib/sound";
 import { triggerDesktopNotification } from "@/lib/notifications";
@@ -568,7 +568,7 @@ export default function WaiterApp() {
               const out = !m.isAvailable;
               return (
                 <div key={m.id} className={`bg-[#2C1B17] rounded-2xl overflow-hidden border ${out ? "border-stone-800 opacity-50" : "border-stone-700"}`}>
-                  <img src={m.imageUrl} alt={m.name} className="w-full h-24 object-cover" />
+                  <img src={optimizeImageUrl(m.imageUrl, 300, 200)} alt={m.name} className="w-full h-24 object-cover bg-stone-900" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
                   <div className="p-2.5 space-y-1">
                     <p className="text-xs font-bold text-amber-100 leading-tight line-clamp-2">{m.name}</p>
                     <p className="text-[11px] text-[#C9A227] font-extrabold">{effectivePrice(m).onSale ? <span><span className="line-through text-stone-500 text-[10px]">{m.price} </span>{effectivePrice(m).price}</span> : m.price} ETB</p>

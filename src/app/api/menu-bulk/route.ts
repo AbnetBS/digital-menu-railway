@@ -4,7 +4,7 @@ import { menuItems } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 
-const STOCK_IMG = "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200";
+const STOCK_IMG = "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=300&w=480";
 
 /**
  * POST /api/menu-bulk

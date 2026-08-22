@@ -32,7 +32,7 @@ export async function POST(request: Request) {
         description: body.description || "",
         imageUrl: body.imageUrl
           ? await persistImageRef(String(body.imageUrl))
-          : "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200",
+          : "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=300&w=480",
         isPopular: Boolean(body.isPopular),
         isAvailable: body.isAvailable !== undefined ? Boolean(body.isAvailable) : true,
         dietaryTags: body.dietaryTags || "",

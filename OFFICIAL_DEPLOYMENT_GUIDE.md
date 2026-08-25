@@ -97,9 +97,26 @@ HOW THE CAFE RUNS IT DAILY (owner manual)
 • Edit hero background → Website Copy & Hero Photo tab.
 • Edit gallery photos → Gallery Manager tab.
 • New orders & table reservations ring a DESKTOP POPUP alert in the admin tab.
-• Google Maps info already filled: 2Q7Q+W2, 0911 065 022, 22 Square Golagul Bldg.
+• Google Maps info already filled: 2Q7Q+W2, 0911 065 022, 22 Square Town Square Bldg.
 • Old receipt photos are cleared automatically every 24h (30+ days old) to save
   database space — no action needed.
+
+════════════════════════════════════════
+ENGLISH ⇄ አማርኛ LANGUAGE SYSTEM (how it works now)
+════════════════════════════════════════
+The 🌐 floating button switches the ENTIRE site instantly:
+• All buttons, labels and messages → built-in dictionaries (instant, offline).
+• Menu items, categories, announcements and texts YOU add later → translated
+  automatically by Google Translate, but safely:
+   - Google's engine runs on YOUR SERVER (/api/translate), never in the guest's
+     browser. That means: NO Google banner popping over the menu, and the
+     ordering system can never crash because of translation.
+   - Every translated string is cached in the database (table "translations"),
+     so each item is translated once — repeat loads are instant.
+   - Orders, receipts and kitchen tickets always keep the original English
+     item names, so staff never see mixed/broken text.
+• Optional env var (only if your server blocks Google): TRANSLATE_API_BASE
+  (default https://translate.googleapis.com) — point it at a proxy if needed.
 
 ════════════════════════════════════════
 WHY IT BROKE ON YOUR LAPTOP (and never will again)

@@ -315,7 +315,7 @@ export default function CustomerMenuApp() {
               <Clock className="w-4 h-4 text-[#C9A227]" /> {t("waiting_confirmation")}
             </p>
             <p className="text-xs text-stone-600">
-              {t("waiter_walking", { table: tableName })}
+              {t("waiter_walking", { table: menuText(tableName) })}
             </p>
           </div>
           <p className="text-xs text-stone-500">{t("add_more_note")}</p>
@@ -349,7 +349,7 @@ export default function CustomerMenuApp() {
       <div className="min-h-screen bg-[#FAF6F0] pb-32">
         <header className="bg-[#2C1B17] text-white sticky top-0 z-40 px-4 py-3 flex items-center gap-3 shadow-xl">
           <button onClick={() => setReviewMode(false)} className="text-amber-200"><X className="w-5 h-5" /></button>
-          <h1 className="font-serif font-bold">{t("review_your_order")} — {tableName}</h1>
+          <h1 className="font-serif font-bold">{t("review_your_order")} — {menuText(tableName)}</h1>
         </header>
 
         <div className="max-w-lg mx-auto p-4 space-y-3">
@@ -420,8 +420,8 @@ export default function CustomerMenuApp() {
           <div className="flex items-center gap-2.5">
             <img src={logoUrl} alt="Fana" className="w-10 h-10 rounded-full object-contain bg-white p-0.5" />
             <div>
-              <p className="font-serif font-bold text-sm text-amber-100 leading-none">{brandName}</p>
-              <p className="text-[10px] text-[#C9A227] font-bold uppercase tracking-wider">{t("menu_label")} • {tableName}</p>
+              <p className="font-serif font-bold text-sm text-amber-100 leading-none">{menuText(brandName)}</p>
+              <p className="text-[10px] text-[#C9A227] font-bold uppercase tracking-wider">{t("menu_label")} • {menuText(tableName)}</p>
             </div>
           </div>
           <a href={`tel:${phone.replace(/\s+/g, "")}`} className="flex items-center gap-1 bg-[#C9A227] text-[#2C1B17] text-[11px] font-extrabold px-3 py-1.5 rounded-full">
@@ -462,7 +462,7 @@ export default function CustomerMenuApp() {
                       hasPhoto ? "text-white drop-shadow-[0_2px_5px_rgba(0,0,0,0.9)]" : "text-[#2C1B17]"
                     }`}
                   >
-                    {a?.title}
+                    {menuText(a?.title || "")}
                   </p>
                   {a?.description && (
                     <p
@@ -470,7 +470,7 @@ export default function CustomerMenuApp() {
                         hasPhoto ? "text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]" : "text-[#3D2314]"
                       }`}
                     >
-                      {a.description}
+                      {menuText(a.description)}
                     </p>
                   )}
                 </div>
@@ -667,7 +667,7 @@ export default function CustomerMenuApp() {
               </button>
               {detailItem.badge && (
                 <span className="absolute top-3 left-3 bg-[#C9A227] text-[#2C1B17] text-[10px] font-extrabold uppercase px-3 py-1 rounded-full">
-                  {detailItem.badge}
+                  {menuText(detailItem.badge)}
                 </span>
               )}
             </div>
@@ -706,7 +706,7 @@ export default function CustomerMenuApp() {
                 {detailItem.dietaryTags &&
                   detailItem.dietaryTags.split(",").map((t, i) => (
                     <span key={i} className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-full font-bold">
-                      ✓ {t.trim()}
+                      ✓ {menuText(t.trim())}
                     </span>
                   ))}
               </div>
@@ -749,8 +749,10 @@ export default function CustomerMenuApp() {
         <section className="bg-white rounded-2xl p-5 border border-[#C9A227]/25 shadow-sm">
           <h3 className="font-serif font-bold text-lg text-[#2C1B17] flex items-center gap-2">{t("about_us")}</h3>
           <p className="text-sm text-stone-600 leading-relaxed mt-2">
-            {settings.about_description?.split(".").slice(0, 2).join(".") ||
-              "Since 2018, Fana Cafe has served premium Ethiopian coffee, fresh pastries, and traditional meals in a comfortable atmosphere. Made with love in Addis Ababa."}
+            {menuText(
+              settings.about_description?.split(".").slice(0, 2).join(".") ||
+                "Since 2018, Fana Cafe has served premium Ethiopian coffee, fresh pastries, and traditional meals in a comfortable atmosphere. Made with love in Addis Ababa."
+            )}
           </p>
         </section>
 
@@ -762,7 +764,7 @@ export default function CustomerMenuApp() {
             </h3>
             <div className="grid grid-cols-3 gap-2">
               {galleryPhotos.slice(0, 6).map((g) => (
-                <img key={g.id} src={optimizeImageUrl(g.imageUrl, 300, 200)} alt={g.title} className="w-full h-24 object-cover rounded-xl shadow-sm bg-stone-100" loading="lazy" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
+                <img key={g.id} src={optimizeImageUrl(g.imageUrl, 300, 200)} alt={menuText(g.title)} className="w-full h-24 object-cover rounded-xl shadow-sm bg-stone-100" loading="lazy" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
               ))}
             </div>
           </section>
@@ -792,9 +794,9 @@ export default function CustomerMenuApp() {
             loading="lazy"
           />
           <div className="text-xs text-stone-600 space-y-1.5">
-            <p>📍 {settings.address || "Golagul Building, 22 Square, Djibouti Street, Addis Ababa"}</p>
+            <p>📍 {menuText(settings.address || "Town Square Building, 22 Square, Djibouti Street, Addis Ababa")}</p>
             <p>📞 <a href={`tel:${String(settings.phone || "0911065022").replace(/\s+/g, "")}`} className="font-extrabold text-[#4E342E]">{settings.phone || "0911 065 022"}</a></p>
-            <p>🕒 {settings.opening_hours || "Open Daily Until 8:30 PM"}</p>
+            <p>🕒 {menuText(settings.opening_hours || "Open Daily Until 8:30 PM")}</p>
             <p className="text-stone-400">Plus Code: {settings.plus_code || "2Q7Q+W2 Addis Ababa"}</p>
           </div>
           <a
@@ -818,7 +820,7 @@ export default function CustomerMenuApp() {
                 <p className="text-xs font-bold text-[#2C1B17]">{r.customerName}</p>
                 <span className="text-[#C9A227] text-xs font-bold">{"★".repeat(r.rating)}{"☆".repeat(5 - r.rating)}</span>
               </div>
-              <p className="text-xs text-stone-600 mt-1.5 leading-relaxed italic">"{r.reviewText}"</p>
+              <p className="text-xs text-stone-600 mt-1.5 leading-relaxed italic">"{menuText(r.reviewText)}"</p>
             </div>
           ))}
 
@@ -869,7 +871,7 @@ export default function CustomerMenuApp() {
       <footer className="bg-[#1C120F] text-stone-400 mt-10 pb-24 pt-8">
         <div className="max-w-lg mx-auto px-4 text-center space-y-4">
           <img src={logoUrl} alt="Fana Cafe" className="w-12 h-12 rounded-full object-contain bg-white mx-auto border-2 border-[#C9A227] p-0.5" />
-          <p className="font-serif font-bold text-amber-100 text-sm">{brandName}</p>
+          <p className="font-serif font-bold text-amber-100 text-sm">{menuText(brandName)}</p>
           <a href={`tel:${String(settings.phone || "0911065022").replace(/\s+/g, "")}`} className="inline-flex items-center gap-2 text-[#C9A227] font-bold text-sm">
             <Phone className="w-4 h-4" /> {settings.phone || "0911 065 022"}
           </a>
@@ -888,9 +890,9 @@ export default function CustomerMenuApp() {
             © {new Date().getFullYear()} {brandName} • {settings.plus_code || "2Q7Q+W2 Addis Ababa"}
           </p>
           <div className="bg-[#C9A227]/10 border border-[#C9A227]/30 rounded-xl py-2.5 px-3">
-            <p className="text-[11px] font-black text-[#C9A227] tracking-wider uppercase">Powered by Abnet Gobezay</p>
+            <p className="text-[11px] font-black text-[#C9A227] tracking-wider uppercase">Powered by AB Web</p>
             <a href="tel:+251919081802" className="text-[11px] font-bold text-stone-300 hover:text-amber-300">
-              📞 +251 91 908 1802 — digital menus for restaurants
+              📞 +251 91 908 1802 — AB Web · Digital Menus & Websites
             </a>
           </div>
         </div>

@@ -42,17 +42,17 @@ export default function AdminPanel({
     tagline: settings.tagline || "Where Great Coffee Meets Beautiful Moments in Addis Ababa",
     hero_title: settings.hero_title || "Where Great Coffee Meets Beautiful Moments",
     hero_subtitle:
-      settings.hero_subtitle || "A cozy café and restaurant located at Golagul Building, 22 Square (Djibouti Street, Bole, Addis Ababa)...",
+      settings.hero_subtitle || "A cozy café and restaurant located at Town Square Building, 22 Square (Djibouti Street, Bole, Addis Ababa)...",
     hero_bg_image:
       settings.hero_bg_image ||
       "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=800&w=1200",
     logo_url: String(settings.logo_url || ""),
     receipt_enabled: String(settings.receipt_enabled ?? "true"),
     phone: settings.phone || "0911 065 022",
-    address: settings.address || "Golagul Building, 22 Square, Djibouti Street, Bole, Addis Ababa, Ethiopia",
+    address: settings.address || "Town Square Building, 22 Square, Djibouti Street, Bole, Addis Ababa, Ethiopia",
     plus_code: settings.plus_code || "2Q7Q+W2 Addis Ababa",
     opening_hours: settings.opening_hours || "Open Daily Until 8:30 PM (Hours may vary during holidays)",
-    announcement: settings.announcement || "☕ Welcome to Fana Cafe (22 Square, Golagul Building)!",
+    announcement: settings.announcement || "☕ Welcome to Fana Cafe & Restaurant (22 Square, Town Square Building)!",
   });
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState("");

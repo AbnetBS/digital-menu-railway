@@ -2,8 +2,16 @@
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
-/** Native English ⇄ አማርኛ language layer.  It is deliberately local-only:
- * no third-party script changes React-owned nodes, form values, or order data. */
+/** Native English ⇄ አማርኛ language layer.  It is deliberately local-first:
+ * no third-party script ever rewrites React-owned nodes, form values, or order
+ * data — Google's engine runs SERVER-side (/api/translate) and only sends back
+ * plain strings, so the menu UI can never be damaged by translation.
+ *
+ * Translation tiers (first match wins):
+ *   1. STRINGS / MENU_AM / CATEGORY_AM — hand-tuned dictionaries, instant & offline
+ *   2. Google auto-translation of ANY other text (owner-added menu items,
+ *      categories, announcements, settings texts) — cached in localStorage +
+ *      the `translations` DB table, so it is instant after the first time. */
 
 export type Lang = "en" | "am";
 
@@ -176,6 +184,27 @@ const STRINGS = {
     footer_privacy: "Privacy Policy",
     footer_terms: "Terms of Service",
     footer_rights: "All Rights Reserved.",
+
+    /* homepage — full menu section */
+    menu_badge_full: "Our Full Menu",
+    menu_browse_sub:
+      "Browse our complete selection of coffee, fresh fruit juices, Ethiopian favorites, club sandwiches, pastries, and snacks. All prices listed in Ethiopian Birr (ETB).",
+    search_menu_ph: "Search coffee, Spris juice, club sandwich, or desserts...",
+    clear_search: "Clear",
+    showing_items: "Showing {n} items",
+    reset_filter: "Reset Category Filter",
+    no_match_title: "No menu items match your search",
+    no_match_sub: "Try clearing your search term or selecting another category.",
+    show_all: "Show All Menu Items",
+    sold_out: "Sold Out",
+    unavailable: "Unavailable",
+    prep_time_label: "Prep Time:",
+    dietary_features: "Dietary & Features",
+    call_waiter_order: "Call your waiter to order this item",
+    includes_warmth: "Includes warm Ethiopian hospitality",
+
+    /* homepage — reviews section */
+    write_review: "Write a Review",
   },
 
   am: {
@@ -291,6 +320,27 @@ const STRINGS = {
     footer_privacy: "የግላዊነት ፖሊሲ",
     footer_terms: "የአገልግሎት ውሎች",
     footer_rights: "መብቱ በህግ የተጠበቀ ነው።",
+
+    /* homepage — full menu section */
+    menu_badge_full: "ሙሉ ምናሌያችን",
+    menu_browse_sub:
+      "የቡናዎች፣ ትኩስ የፍራፍሬ ጭማቂዎች፣ ተወዳጅ የኢትዮጵያ ምግቦች፣ ክለብ ሳንድዊቾች፣ ፓስትሪዎች እና ቀላል ምግቦች ሙሉ ምርጫ። ሁሉም ዋጋዎች በኢትዮጵያ ብር (ETB) ተዘርዘርዋል።",
+    search_menu_ph: "ቡና፣ ስፕሪስ ጭማቂ፣ ክለብ ሳንድዊች ወይም ጣፋጮችን ይፈልጉ...",
+    clear_search: "አጽዳ",
+    showing_items: "{n} እቃዎች ተገኝተዋል",
+    reset_filter: "የምድብ ማጣሪያ ዳግም አስጀምር",
+    no_match_title: "ከፍለጋዎ ጋር የሚጣጣም እቃ አልተገኘም",
+    no_match_sub: "ፍለጋዎን አጽደው ወይም ሌላ ምድብ ይምረጡ።",
+    show_all: "ሁሉንም እቃዎች አሳይ",
+    sold_out: "አልቋል",
+    unavailable: "አይገኝም",
+    prep_time_label: "የማብሰያ ጊዜ፡",
+    dietary_features: "የአመጋገብ ልዩ ምልክቶች",
+    call_waiter_order: "ይህን እቃ ለማዘዝ ሰራተኛዎን ይጥሩ",
+    includes_warmth: "በሞቅ ያለ የኢትዮጵያ እንግዳ ተቀባይነትን ያካትታል",
+
+    /* homepage — reviews section */
+    write_review: "ግምገማ ጻፍ",
   },
 } as const;
 
@@ -314,6 +364,8 @@ export function useT(): (key: StringKey, vars?: Record<string, string>) => strin
 /** Native display translations for seeded menu data. The database's English values
  * remain canonical identifiers, so changing language never changes an order payload. */
 const MENU_AM: Record<string, string> = {
+  "Fana Cafe & Restaurant": "ፋና ካፌ እና ሬስቶራንት",
+  "Fana Cafe": "ፋና ካፌ",
   "The Famous Fana Macchiato": "ታዋቂው የፋና ማኪያቶ",
   "Mixed Fruit Juice (Spris)": "የተቀላቀለ የፍራፍሬ ጭማቂ (ስፕሪስ)",
   "Chicken Club Sandwich": "የዶሮ ክለብ ሳንድዊች",
@@ -339,10 +391,173 @@ const CATEGORY_AM: Record<string, string> = {
   "hot-drinks": "ትኩስ መጠጦች", "soft-drinks": "ለስላሳ መጠጦች", juices: "ጭማቂዎች", sandwich: "ሳንድዊች", "snack-and-wrap": "ቀላል ምግቦች", "ethiopian-traditional-meals": "የኢትዮጵያ ምግቦች", "pastry-and-cakes": "ፓስትሪ እና ኬክ",
 };
 
+/* ───────────── Google-powered auto-translation for dynamic text ─────────────
+ * Anything not covered by the dictionaries above (menu items the owner adds
+ * later, new categories, announcements, settings texts…) is translated by the
+ * SAME Google engine as the Google Translate widget — but through OUR server
+ * (/api/translate). Google never touches the page DOM, so:
+ *   • no banner/toolbar ever pops up over the menu
+ *   • React never crashes ("removeChild" errors are impossible)
+ *   • form values, cart data and order payloads stay canonical English
+ *
+ * Flow: components call tx(text) → cache hit? show it : show English and
+ * register the string → one debounced batched request per view → results are
+ * merged (state bump) and every component re-renders with Amharic. Results
+ * are persisted in localStorage for instant repeat loads.
+ */
+
+const TX_STORAGE_KEY = "fana_tx_am";
+const TX_FLUSH_DELAY_MS = 600;
+const TX_BATCH_MAX = 120;
+const TX_STORAGE_MAX_ENTRIES = 1500;
+
+const GE_EZ_RE = /[\u1200-\u137F]/; // Amharic script already
+
+function txTranslatable(text: string): boolean {
+  if (!text || text.length > 1500) return false;
+  if (GE_EZ_RE.test(text)) return false;
+  return /[a-z]/i.test(text); // needs at least one Latin letter
+}
+
+let txCache: Record<string, string> | null = null; // lazy from localStorage
+const txRequested = new Set<string>(); // this tab already asked / received
+const txQueue = new Set<string>();
+const txListeners = new Set<() => void>();
+let txVersion = 0;
+let txTimer: ReturnType<typeof setTimeout> | null = null;
+let txInFlight = false;
+
+function txLoad(): Record<string, string> {
+  if (txCache) return txCache;
+  txCache = {};
+  try {
+    const raw = window.localStorage.getItem(TX_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") txCache = parsed as Record<string, string>;
+    }
+  } catch {}
+  return txCache;
+}
+
+function txPersist(): void {
+  try {
+    const entries = Object.entries(txCache ?? {});
+    const trimmed = entries.slice(-TX_STORAGE_MAX_ENTRIES); // keep the newest
+    window.localStorage.setItem(TX_STORAGE_KEY, JSON.stringify(Object.fromEntries(trimmed)));
+  } catch {} // quota/private mode — cache just stays in memory
+}
+
+function txEmit(): void {
+  txVersion += 1;
+  for (const cb of txListeners) cb();
+}
+
+function txSubscribe(cb: () => void): () => void {
+  txListeners.add(cb);
+  return () => txListeners.delete(cb);
+}
+
+const txServerSnapshot = 0;
+function txGetVersion(): number {
+  return txVersion;
+}
+
+async function txFlush(): Promise<void> {
+  if (txInFlight || txQueue.size === 0) return;
+  txInFlight = true;
+  const batch = [...txQueue].slice(0, TX_BATCH_MAX);
+  for (const s of batch) txQueue.delete(s);
+  try {
+    const r = await fetch("/api/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lang: "am", texts: batch }),
+    });
+    if (r.ok) {
+      const data = await r.json();
+      const map = data?.translations;
+      let changed = false;
+      if (map && typeof map === "object") {
+        const cache = txLoad();
+        for (const [k, v] of Object.entries(map as Record<string, string>)) {
+          if (typeof v === "string" && v) {
+            if (cache[k] !== v) changed = true;
+            cache[k] = v;
+          }
+        }
+        // every requested string is marked done — even ones Google couldn't
+        // translate — so we never re-ask for the same text in this tab.
+        for (const s of batch) txRequested.add(s);
+        if (changed) {
+          txPersist();
+          txEmit();
+        }
+      }
+    }
+  } catch {
+    // offline / server down → keep showing English; retry next registration
+  } finally {
+    txInFlight = false;
+    if (txQueue.size > 0) txSchedule(); // leftovers (batch > TX_BATCH_MAX)
+  }
+}
+
+function txSchedule(): void {
+  if (txTimer) return;
+  txTimer = setTimeout(() => {
+    txTimer = null;
+    void txFlush();
+  }, TX_FLUSH_DELAY_MS);
+}
+
+function txLookup(text: string): string | undefined {
+  if (txCache) return txCache[text];
+  return undefined;
+}
+
+/** Register a string for auto-translation (only acts when lang = am). */
+function txRegister(text: string): void {
+  if (!txTranslatable(text)) return;
+  txLoad();
+  if (txCache?.[text] || txRequested.has(text)) return;
+  txRequested.add(text);
+  txQueue.add(text);
+  txSchedule();
+}
+
+/** Best current Amharic for `text` (dictionaries first, then auto-cache). */
+function txBest(text: string): string {
+  if (!text) return text;
+  const lower = text.toLowerCase();
+  const manual =
+    MENU_AM[text] ?? CATEGORY_AM[lower] ?? CATEGORY_AM[lower.replace(/\s+/g, "-")];
+  if (manual) return manual;
+  const hit = txLookup(text);
+  if (hit) return hit;
+  txRegister(text);
+  return text;
+}
+
+/**
+ * Hook: reactive translator for DYNAMIC content (menu items, categories,
+ * announcements, settings strings). Returns text unchanged in English mode.
+ */
+export function useAutoT(): (text: string) => string {
+  const [lang] = useLang();
+  useSyncExternalStore(txSubscribe, txGetVersion, () => txServerSnapshot);
+  return useCallback(
+    (text: string) => (lang === "am" ? txBest(text) : text),
+    [lang]
+  );
+}
+
 export function useMenuText() {
   const [lang] = useLang();
+  useSyncExternalStore(txSubscribe, txGetVersion, () => txServerSnapshot);
   return useCallback((text: string, category = false) => {
-    if (lang !== "am") return text;
-    return (category ? CATEGORY_AM[text.toLowerCase()] : MENU_AM[text]) || text;
+    if (lang !== "am" || !text) return text;
+    if (category && CATEGORY_AM[text.toLowerCase()]) return CATEGORY_AM[text.toLowerCase()];
+    return txBest(text);
   }, [lang]);
 }

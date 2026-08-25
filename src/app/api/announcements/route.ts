@@ -4,6 +4,7 @@ import { announcements } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc } from "drizzle-orm";
 import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
+import { fixSiteText } from "@/lib/brand";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireAdmin } from "@/lib/session";
 
@@ -23,6 +24,13 @@ export async function GET(request: Request) {
     // beyond realistic usage; a real board is a handful of active items).
     let list = await db.select().from(announcements).orderBy(asc(announcements.priority), asc(announcements.id)).limit(200);
     if (onlyActive) list = list.filter(isActiveToday);
+    // Brand/address guard — old rows may still say "Golagul Building"; always
+    // serve the correct "Town Square Building" / brand text.
+    list = list.map((a) => ({
+      ...a,
+      title: fixSiteText(a.title),
+      description: fixSiteText(a.description),
+    }));
     return NextResponse.json(list, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import { ChevronDown, HelpCircle } from "lucide-react";
-import { useT } from "@/lib/i18n";
+import { useT, useAutoT } from "@/lib/i18n";
 
 export default function FaqSection() {
   const t = useT();
+  const tx = useAutoT();
   const [openIdx, setOpenIdx] = useState<number | null>(0);
 
   const faqs = [
@@ -43,7 +44,7 @@ export default function FaqSection() {
         <div className="text-center mb-12">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#C9A227]/20 border border-[#C9A227]/40 text-[#C9A227] text-xs font-bold uppercase tracking-widest mb-3">
             <HelpCircle className="w-3.5 h-3.5" />
-            <span>Got Questions?</span>
+            <span>{tx("Got Questions?")}</span>
           </div>
 
           <h2 className="text-3xl sm:text-4xl font-serif font-bold text-amber-100">
@@ -65,7 +66,7 @@ export default function FaqSection() {
                   className="w-full p-5 text-left flex items-center justify-between gap-4 focus:outline-none"
                 >
                   <span className="font-serif font-bold text-sm sm:text-base text-amber-100">
-                    {faq.q}
+                    {tx(faq.q)}
                   </span>
                   <ChevronDown
                     className={`w-5 h-5 text-[#C9A227] transition-transform duration-300 shrink-0 ${
@@ -76,7 +77,7 @@ export default function FaqSection() {
 
                 {isOpen && (
                   <div className="px-5 pb-5 text-xs sm:text-sm text-stone-300 leading-relaxed font-light border-t border-stone-800 pt-3">
-                    {faq.a}
+                    {tx(faq.a)}
                   </div>
                 )}
               </div>

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { MapPin, Phone, Clock, Navigation, Copy, Check, ExternalLink, Calendar } from "lucide-react";
 import { SiteSettings } from "@/types";
-import { useT } from "@/lib/i18n";
+import { useT, useAutoT } from "@/lib/i18n";
 
 interface LocationProps {
   settings: SiteSettings;
@@ -11,10 +11,11 @@ interface LocationProps {
 
 export default function LocationSection({ settings }: LocationProps) {
   const t = useT();
+  const tx = useAutoT();
   const [copiedCode, setCopiedCode] = useState(false);
 
   const phone = settings.phone || "0911 065 022";
-  const address = settings.address || "Golagul Building, 22 Square, Djibouti Street, Bole, Addis Ababa, Ethiopia";
+  const address = settings.address || "Town Square Building, 22 Square, Djibouti Street, Bole, Addis Ababa, Ethiopia";
   const plusCode = settings.plus_code || "2Q7Q+W2 Addis Ababa";
   const openingHours = settings.opening_hours || "Open Daily Until 8:30 PM (Hours may vary during holidays)";
 
@@ -34,7 +35,7 @@ export default function LocationSection({ settings }: LocationProps) {
         <div className="text-center max-w-3xl mx-auto mb-12">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#4E342E]/10 border border-[#4E342E]/20 text-[#4E342E] text-xs font-bold uppercase tracking-widest mb-3">
             <MapPin className="w-3.5 h-3.5 text-[#C9A227]" />
-            <span>Exact Google Maps Location</span>
+            <span>{tx("Exact Google Maps Location")}</span>
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-serif font-bold text-[#2C1B17]">
@@ -42,7 +43,7 @@ export default function LocationSection({ settings }: LocationProps) {
           </h2>
 
           <p className="text-stone-600 text-sm sm:text-base mt-3">
-            Located at Golagul Building, 22 Square on Djibouti Street in Bole, Addis Ababa. Drop in for coffee or reserve a table.
+            {tx("Located at Town Square Building, 22 Square on Djibouti Street in Bole, Addis Ababa. Drop in for coffee or reserve a table.")}
           </p>
         </div>
 
@@ -57,13 +58,13 @@ export default function LocationSection({ settings }: LocationProps) {
               </div>
 
               <div>
-                <h3 className="text-xl font-serif font-bold text-[#2C1B17]">Golagul Building Location</h3>
-                <p className="text-stone-600 text-sm mt-1 leading-relaxed">{address}</p>
+                <h3 className="text-xl font-serif font-bold text-[#2C1B17]">{tx("Town Square Building Location")}</h3>
+                <p className="text-stone-600 text-sm mt-1 leading-relaxed">{tx(address)}</p>
               </div>
 
               <div className="bg-[#FAF6F0] p-4 rounded-2xl border border-[#C9A227]/20 space-y-2">
                 <span className="text-[10px] uppercase font-extrabold text-[#4E342E] tracking-widest block">
-                  Google Maps Plus Code
+                  {tx("Google Maps Plus Code")}
                 </span>
                 <div className="flex items-center justify-between">
                   <span className="font-mono font-bold text-[#2C1B17] text-sm sm:text-base">{plusCode}</span>
@@ -72,7 +73,7 @@ export default function LocationSection({ settings }: LocationProps) {
                     className="inline-flex items-center gap-1 text-xs font-bold text-[#C9A227] bg-white border border-[#C9A227]/40 px-2.5 py-1 rounded-lg hover:bg-amber-50"
                   >
                     {copiedCode ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedCode ? "Copied" : "Copy"}</span>
+                    <span>{copiedCode ? tx("Copied") : tx("Copy")}</span>
                   </button>
                 </div>
               </div>
@@ -85,7 +86,7 @@ export default function LocationSection({ settings }: LocationProps) {
               className="w-full inline-flex items-center justify-center gap-2 bg-[#4E342E] hover:bg-[#3D2314] text-amber-200 font-bold text-xs uppercase py-3.5 rounded-2xl shadow transition"
             >
               <Navigation className="w-4 h-4 text-[#C9A227]" />
-              <span>Open in Google Maps App</span>
+              <span>{tx("Open in Google Maps App")}</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
           </div>
@@ -98,23 +99,23 @@ export default function LocationSection({ settings }: LocationProps) {
               </div>
 
               <div>
-                <h3 className="text-xl font-serif font-bold text-[#2C1B17]">Opening Hours & Phone</h3>
-                <p className="text-stone-600 text-xs mt-1">Open daily for breakfast, lunch, juices, and dinner.</p>
+                <h3 className="text-xl font-serif font-bold text-[#2C1B17]">{tx("Opening Hours & Phone")}</h3>
+                <p className="text-stone-600 text-xs mt-1">{tx("Open daily for breakfast, lunch, juices, and dinner.")}</p>
               </div>
 
               <div className="space-y-3 pt-2">
                 <div className="flex items-start gap-3 p-3 bg-amber-50/50 rounded-xl border border-amber-200/60">
                   <Clock className="w-4 h-4 text-[#C9A227] shrink-0 mt-0.5" />
                   <div>
-                    <span className="text-xs font-bold text-[#2C1B17] block">Daily Schedule</span>
-                    <span className="text-xs text-stone-600">{openingHours}</span>
+                    <span className="text-xs font-bold text-[#2C1B17] block">{tx("Daily Schedule")}</span>
+                    <span className="text-xs text-stone-600">{tx(openingHours)}</span>
                   </div>
                 </div>
 
                 <div className="flex items-start gap-3 p-3 bg-amber-50/50 rounded-xl border border-amber-200/60">
                   <Phone className="w-4 h-4 text-[#C9A227] shrink-0 mt-0.5" />
                   <div>
-                    <span className="text-xs font-bold text-[#2C1B17] block">Direct Phone</span>
+                    <span className="text-xs font-bold text-[#2C1B17] block">{tx("Direct Phone")}</span>
                     <a href={`tel:${phone.replace(/\s+/g, "")}`} className="text-xs font-bold text-[#4E342E] hover:underline">
                       {phone}
                     </a>
@@ -128,7 +129,7 @@ export default function LocationSection({ settings }: LocationProps) {
               className="w-full inline-flex items-center justify-center gap-2 bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-extrabold text-xs uppercase py-3.5 rounded-2xl shadow transition"
             >
               <Calendar className="w-4 h-4" />
-              <span>Browse Our Menu</span>
+              <span>{tx("Browse Our Menu")}</span>
             </a>
           </div>
 

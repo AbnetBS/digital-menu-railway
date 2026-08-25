@@ -1,10 +1,11 @@
 "use client";
 
 import { Coffee, Utensils, GlassWater, Sparkles, HeartHandshake, Briefcase, Heart, BookOpen, Users, Sun } from "lucide-react";
-import { useT } from "@/lib/i18n";
+import { useT, useAutoT } from "@/lib/i18n";
 
 export default function WhyChooseSection() {
   const t = useT();
+  const tx = useAutoT();
   const features = [
     {
       icon: Coffee,
@@ -58,7 +59,7 @@ export default function WhyChooseSection() {
         <div className="text-center max-w-3xl mx-auto mb-16">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#C9A227]/20 border border-[#C9A227]/40 text-[#C9A227] text-xs font-bold uppercase tracking-widest mb-3">
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Why Choose Fana Cafe</span>
+            <span>{tx("Why Choose Fana Cafe")}</span>
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-serif font-bold text-amber-100">
@@ -66,7 +67,7 @@ export default function WhyChooseSection() {
           </h2>
 
           <p className="text-stone-300 text-base sm:text-lg mt-4 font-light">
-            Whether you are stopping by for your morning macchiato or unwinding with fresh juice and desserts, Fana Cafe offers a welcoming setting for every guest.
+            {tx("Whether you are stopping by for your morning macchiato or unwinding with fresh juice and desserts, Fana Cafe offers a welcoming setting for every guest.")}
           </p>
         </div>
 
@@ -84,16 +85,16 @@ export default function WhyChooseSection() {
                     <IconComponent className="w-6 h-6" />
                   </div>
                   <span className="text-[10px] uppercase font-extrabold tracking-widest text-[#C9A227] bg-[#C9A227]/10 px-2.5 py-1 rounded-full border border-[#C9A227]/20">
-                    {feat.badge}
+                    {tx(feat.badge)}
                   </span>
                 </div>
 
                 <h3 className="text-xl font-serif font-bold text-stone-100 group-hover:text-[#C9A227] transition-colors">
-                  {feat.title}
+                  {tx(feat.title)}
                 </h3>
 
                 <p className="text-stone-300 text-sm mt-2 leading-relaxed font-light">
-                  {feat.desc}
+                  {tx(feat.desc)}
                 </p>
               </div>
             );
@@ -103,13 +104,13 @@ export default function WhyChooseSection() {
           <div className="bg-gradient-to-br from-[#4E342E] to-[#2C1B17] p-6 rounded-3xl border-2 border-[#C9A227]/40 shadow-xl flex flex-col justify-between">
             <div>
               <div className="inline-block bg-[#C9A227] text-[#2C1B17] font-extrabold text-[10px] uppercase tracking-wider px-3 py-1 rounded-full mb-3">
-                Versatile Environment
+                {tx("Versatile Environment")}
               </div>
               <h3 className="text-2xl font-serif font-bold text-amber-100 mb-2">
-                Designed For Every Occasion
+                {tx("Designed For Every Occasion")}
               </h3>
               <p className="text-stone-300 text-xs leading-relaxed mb-4">
-                A place where productivity and relaxation flow naturally together.
+                {tx("A place where productivity and relaxation flow naturally together.")}
               </p>
             </div>
 

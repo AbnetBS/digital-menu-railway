@@ -2,12 +2,14 @@
 
 import { Coffee, Heart, Sparkles, CheckCircle2, ShieldCheck } from "lucide-react";
 import { SiteSettings } from "@/types";
+import { useAutoT } from "@/lib/i18n";
 
 interface AboutProps {
   settings: SiteSettings;
 }
 
 export default function AboutSection({ settings }: AboutProps) {
+  const tx = useAutoT();
   const aboutTitle = settings.about_title || "Experience Modern Ethiopian Hospitality";
   const aboutDesc =
     settings.about_description ||
@@ -23,15 +25,15 @@ export default function AboutSection({ settings }: AboutProps) {
           <div className="space-y-6">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#4E342E]/10 border border-[#4E342E]/20 text-[#4E342E] text-xs font-bold uppercase tracking-widest">
               <Coffee className="w-3.5 h-3.5 text-[#C9A227]" />
-              <span>Discover Our Story</span>
+              <span>{tx("Discover Our Story")}</span>
             </div>
 
             <h2 className="text-3xl sm:text-4xl font-serif font-bold text-[#2C1B17] leading-tight">
-              {aboutTitle}
+              {tx(aboutTitle)}
             </h2>
 
             <p className="text-stone-700 text-base sm:text-lg leading-relaxed font-normal">
-              {aboutDesc}
+              {tx(aboutDesc)}
             </p>
 
             {/* Highlights List */}
@@ -40,32 +42,32 @@ export default function AboutSection({ settings }: AboutProps) {
               <div className="flex items-start gap-3 p-3.5 rounded-xl bg-white border border-[#C9A227]/20 shadow-sm">
                 <CheckCircle2 className="w-5 h-5 text-[#C9A227] shrink-0 mt-0.5" />
                 <div>
-                  <h4 className="font-bold text-[#2C1B17] text-sm">Authentic Coffee Culture</h4>
-                  <p className="text-xs text-stone-600 mt-0.5">Brewed from fresh, high-altitude Ethiopian beans.</p>
+                  <h4 className="font-bold text-[#2C1B17] text-sm">{tx("Authentic Coffee Culture")}</h4>
+                  <p className="text-xs text-stone-600 mt-0.5">{tx("Brewed from fresh, high-altitude Ethiopian beans.")}</p>
                 </div>
               </div>
 
               <div className="flex items-start gap-3 p-3.5 rounded-xl bg-white border border-[#C9A227]/20 shadow-sm">
                 <CheckCircle2 className="w-5 h-5 text-[#C9A227] shrink-0 mt-0.5" />
                 <div>
-                  <h4 className="font-bold text-[#2C1B17] text-sm">Fresh Made Daily</h4>
-                  <p className="text-xs text-stone-600 mt-0.5">Sandwiches, local dishes, and 100% natural juices.</p>
+                  <h4 className="font-bold text-[#2C1B17] text-sm">{tx("Fresh Made Daily")}</h4>
+                  <p className="text-xs text-stone-600 mt-0.5">{tx("Sandwiches, local dishes, and 100% natural juices.")}</p>
                 </div>
               </div>
 
               <div className="flex items-start gap-3 p-3.5 rounded-xl bg-white border border-[#C9A227]/20 shadow-sm">
                 <CheckCircle2 className="w-5 h-5 text-[#C9A227] shrink-0 mt-0.5" />
                 <div>
-                  <h4 className="font-bold text-[#2C1B17] text-sm">Calm & Welcoming Ambience</h4>
-                  <p className="text-xs text-stone-600 mt-0.5">Designed for remote work, meetings, or relaxing.</p>
+                  <h4 className="font-bold text-[#2C1B17] text-sm">{tx("Calm & Welcoming Ambience")}</h4>
+                  <p className="text-xs text-stone-600 mt-0.5">{tx("Designed for remote work, meetings, or relaxing.")}</p>
                 </div>
               </div>
 
               <div className="flex items-start gap-3 p-3.5 rounded-xl bg-white border border-[#C9A227]/20 shadow-sm">
                 <CheckCircle2 className="w-5 h-5 text-[#C9A227] shrink-0 mt-0.5" />
                 <div>
-                  <h4 className="font-bold text-[#2C1B17] text-sm">Dine-In, Takeaway & Delivery</h4>
-                  <p className="text-xs text-stone-600 mt-0.5">Enjoy your favorites in-house or brought to your door.</p>
+                  <h4 className="font-bold text-[#2C1B17] text-sm">{tx("Dine-In, Takeaway & Delivery")}</h4>
+                  <p className="text-xs text-stone-600 mt-0.5">{tx("Enjoy your favorites in-house or brought to your door.")}</p>
                 </div>
               </div>
 
@@ -78,10 +80,10 @@ export default function AboutSection({ settings }: AboutProps) {
               </div>
               <div>
                 <p className="text-sm italic font-light text-amber-100">
-                  "At Fana Cafe, every cup is poured with warmth, and every guest is treated like long-time family."
+                  {tx("“At Fana Cafe, every cup is poured with warmth, and every guest is treated like long-time family.”")}
                 </p>
                 <p className="text-xs text-[#C9A227] font-bold mt-1 uppercase tracking-wider">
-                  — The Fana Hospitality Team
+                  {tx("— The Fana Hospitality Team")}
                 </p>
               </div>
             </div>
@@ -101,7 +103,7 @@ export default function AboutSection({ settings }: AboutProps) {
               <div className="bg-[#4E342E] text-amber-100 p-5 rounded-3xl shadow-xl border border-[#C9A227]/30 text-center">
                 <span className="text-3xl font-serif font-extrabold text-[#C9A227] block">100%</span>
                 <span className="text-xs uppercase font-bold tracking-wider block mt-1 text-amber-200">
-                  Single-Origin Ethiopian Beans
+                  {tx("Single-Origin Ethiopian Beans")}
                 </span>
               </div>
             </div>
@@ -110,7 +112,7 @@ export default function AboutSection({ settings }: AboutProps) {
               <div className="bg-[#C9A227] text-[#2C1B17] p-5 rounded-3xl shadow-xl text-center">
                 <span className="text-3xl font-serif font-black block">Addis</span>
                 <span className="text-xs uppercase font-extrabold tracking-wider block mt-1">
-                  Heart of the City
+                  {tx("Heart of the City")}
                 </span>
               </div>
               <div className="rounded-3xl overflow-hidden shadow-2xl border-2 border-[#C9A227]/20 group">

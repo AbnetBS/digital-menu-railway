@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     template: "%s — Fana Cafe & Restaurant",
   },
   description:
-    "Fana Cafe & Restaurant in Addis Ababa — specialty coffee, authentic Ethiopian meals, and fresh juices at Golagul Building, 22 Square. Scan your table QR to order, or browse the menu, gallery, and reviews online.",
+    "Fana Cafe & Restaurant in Addis Ababa — specialty coffee, authentic Ethiopian meals, and fresh juices at Town Square Building, 22 Square. Scan your table QR to order, or browse the menu, gallery, and reviews online.",
   icons: {
     icon: "/logo.png",
     apple: "/logo.png",

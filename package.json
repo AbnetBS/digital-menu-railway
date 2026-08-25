@@ -6,7 +6,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node scripts/verify-no-runtime-seeding.mjs && node scripts/verify-image-cleanup.mjs && node scripts/verify-auth-guards.mjs && node scripts/verify-order-integrity.mjs && node scripts/verify-review-exposure.mjs && node scripts/verify-realtime.mjs && node scripts/verify-native-language-order-flow.mjs",
+    "test": "node scripts/verify-no-runtime-seeding.mjs && node scripts/verify-image-cleanup.mjs && node scripts/verify-auth-guards.mjs && node scripts/verify-order-integrity.mjs && node scripts/verify-review-exposure.mjs && node scripts/verify-realtime.mjs && node scripts/verify-native-language-order-flow.mjs && node scripts/verify-translation-safety.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

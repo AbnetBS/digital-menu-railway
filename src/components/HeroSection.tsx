@@ -2,7 +2,7 @@
 
 import { Coffee, Calendar, Utensils, Star, MapPin, Clock, ArrowRight, Sparkles } from "lucide-react";
 import { SiteSettings } from "@/types";
-import { useT } from "@/lib/i18n";
+import { useT, useAutoT } from "@/lib/i18n";
 
 interface HeroProps {
   settings: SiteSettings;
@@ -12,10 +12,11 @@ interface HeroProps {
 
 export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: HeroProps) {
   const t = useT();
+  const tx = useAutoT();
   const title = settings.hero_title || "Where Great Coffee Meets Beautiful Moments";
   const subtitle =
     settings.hero_subtitle ||
-    "A cozy café and restaurant located at Golagul Building, 22 Square (Djibouti Street, Bole, Addis Ababa). Designed for coffee lovers, food enthusiasts, families, and friends.";
+    "A cozy café and restaurant located at Town Square Building, 22 Square (Djibouti Street, Bole, Addis Ababa). Designed for coffee lovers, food enthusiasts, families, and friends.";
   const heroBgImage =
     settings.hero_bg_image ||
     "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=800&w=1200";
@@ -52,23 +53,23 @@ export default function HeroSection({ settings, onOpenMenu, onOpenLocation }: He
           <span className="text-amber-200/50">•</span>
           <span className="flex items-center gap-1 text-stone-200">
             <Clock className="w-3.5 h-3.5 text-[#C9A227]" />
-            {openingHours}
+            {tx(openingHours)}
           </span>
           <span className="hidden sm:inline text-amber-200/50">•</span>
           <span className="hidden sm:flex items-center gap-1 text-stone-200">
             <MapPin className="w-3.5 h-3.5 text-[#C9A227]" />
-            22 Square, Golagul Bldg
+            22 Square, Town Square Bldg
           </span>
         </div>
 
         {/* Main Title */}
         <h1 className="text-4xl sm:text-6xl lg:text-7xl font-serif font-black tracking-tight leading-tight text-transparent bg-clip-text bg-gradient-to-r from-amber-100 via-[#F4E8C1] to-amber-200 max-w-4xl mx-auto drop-shadow-md">
-          {title}
+          {tx(title)}
         </h1>
 
         {/* Subtitle */}
         <p className="mt-6 text-base sm:text-xl text-stone-200 max-w-2xl mx-auto leading-relaxed font-light drop-shadow">
-          {subtitle}
+          {tx(subtitle)}
         </p>
 
         {/* Action Call to Action Buttons */}

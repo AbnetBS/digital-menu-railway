@@ -6,7 +6,7 @@ import {
   Soup, Beef, Pizza, Salad, ChefHat, Package, CupSoda, Clock, Info,
 } from "lucide-react";
 import { MenuItem, Category } from "@/types";
-import { useT } from "@/lib/i18n";
+import { useT, useMenuText } from "@/lib/i18n";
 import { optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 
 interface MenuSectionProps {
@@ -20,6 +20,7 @@ interface MenuSectionProps {
 
 export default function MenuSection({ items, categories, onAddToCart, cartMap = {}, browseOnly = false }: MenuSectionProps) {
   const t = useT();
+  const menuText = useMenuText();
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [activeItemModal, setActiveItemModal] = useState<MenuItem | null>(null);
@@ -73,7 +74,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
 
       return matchesCategory && matchesSearch;
     });
-  }, [items, selectedCategory, searchQuery]);
+  }, [items, selectedCategory, searchQuery, menuText]);
 
   return (
     <section id="menu" className="py-20 bg-[#FAF6F0] relative min-h-screen">
@@ -83,7 +84,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
         <div className="text-center max-w-3xl mx-auto mb-10">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#4E342E]/10 border border-[#4E342E]/20 text-[#4E342E] text-xs font-bold uppercase tracking-widest mb-3">
             <Utensils className="w-3.5 h-3.5 text-[#C9A227]" />
-            <span>Our Full Menu</span>
+            <span>{t("menu_badge_full")}</span>
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-serif font-bold text-[#2C1B17]">
@@ -91,7 +92,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
           </h2>
 
           <p className="text-stone-600 text-sm sm:text-base mt-3">
-            Browse our complete selection of coffee, fresh fruit juices, Ethiopian favorites, club sandwiches, pastries, and snacks. All prices listed in Ethiopian Birr (ETB).
+            {t("menu_browse_sub")}
           </p>
         </div>
 
@@ -105,7 +106,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search coffee, Spris juice, club sandwich, or desserts..."
+              placeholder={t("search_menu_ph")}
               className="w-full pl-12 pr-4 py-3.5 rounded-2xl bg-white border border-[#C9A227]/30 shadow-md focus:outline-none focus:ring-2 focus:ring-[#C9A227] text-sm text-[#2C1B17] placeholder-stone-400"
             />
             {searchQuery && (
@@ -113,7 +114,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                 onClick={() => setSearchQuery("")}
                 className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-stone-400 hover:text-stone-700 bg-stone-100 px-2 py-1 rounded-full"
               >
-                Clear
+                {t("clear_search")}
               </button>
             )}
           </div>
@@ -135,7 +136,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                   <span className={isActive ? "text-[#C9A227]" : "text-stone-500"}>
                     {renderCategoryIcon(cat.icon)}
                   </span>
-                  <span>{cat.name}</span>
+                  <span>{menuText(cat.name)}</span>
                 </button>
               );
             })}
@@ -146,14 +147,14 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
         {/* Results Counter */}
         <div className="flex items-center justify-between mb-6 text-xs text-stone-500 border-b border-stone-200 pb-3">
           <span>
-            Showing <strong className="text-[#2C1B17]">{filteredItems.length}</strong> items
+            {t("showing_items", { n: String(filteredItems.length) })}
           </span>
           {selectedCategory !== "all" && (
             <button
               onClick={() => setSelectedCategory("all")}
               className="text-[#C9A227] hover:underline font-semibold"
             >
-              Reset Category Filter
+              {t("reset_filter")}
             </button>
           )}
         </div>
@@ -162,8 +163,8 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
         {filteredItems.length === 0 ? (
           <div className="text-center py-16 bg-white rounded-3xl border border-dashed border-stone-300">
             <Utensils className="w-12 h-12 text-stone-300 mx-auto mb-3" />
-            <h3 className="text-lg font-bold text-[#2C1B17]">No menu items match your search</h3>
-            <p className="text-xs text-stone-500 mt-1">Try clearing your search term or selecting another category.</p>
+            <h3 className="text-lg font-bold text-[#2C1B17]">{t("no_match_title")}</h3>
+            <p className="text-xs text-stone-500 mt-1">{t("no_match_sub")}</p>
             <button
               onClick={() => {
                 setSearchQuery("");
@@ -171,7 +172,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
               }}
               className="mt-4 px-4 py-2 bg-[#4E342E] text-amber-200 text-xs font-bold rounded-full hover:bg-[#3D2314]"
             >
-              Show All Menu Items
+              {t("show_all")}
             </button>
           </div>
         ) : (
@@ -188,7 +189,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                   <div className="relative h-52 overflow-hidden bg-stone-100 cursor-pointer" onClick={() => setActiveItemModal(item)}>
                     <img
                       src={optimizeImageUrl(item.imageUrl, 600, 400)}
-                      alt={item.name}
+                      alt={menuText(item.name)}
                       loading="lazy"
                       decoding="async"
                       className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 bg-stone-100"
@@ -198,7 +199,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
 
                     {item.badge && (
                       <span className="absolute top-3 left-3 bg-[#C9A227] text-[#2C1B17] text-[10px] font-extrabold uppercase tracking-widest px-3 py-1 rounded-full shadow-md">
-                        {item.badge}
+                        {menuText(item.badge)}
                       </span>
                     )}
 
@@ -211,11 +212,11 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
 
                     <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between text-white">
                       <span className="text-xs font-semibold bg-black/40 px-2.5 py-0.5 rounded-md backdrop-blur-sm">
-                        {item.category.replace("-", " ").toUpperCase()}
+                        {menuText(item.category.replace(/-/g, " ")).toUpperCase()}
                       </span>
                       {!item.isAvailable && (
                         <span className="text-xs bg-rose-600 text-white font-bold px-2 py-0.5 rounded">
-                          Sold Out
+                          {t("sold_out")}
                         </span>
                       )}
                     </div>
@@ -229,7 +230,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                           onClick={() => setActiveItemModal(item)}
                           className="text-lg font-serif font-bold text-[#2C1B17] hover:text-[#C9A227] cursor-pointer transition-colors"
                         >
-                          {item.name}
+                          {menuText(item.name)}
                         </h3>
                         <span className="text-lg font-serif font-black text-[#4E342E] whitespace-nowrap bg-amber-100/60 px-2.5 py-0.5 rounded-lg border border-amber-300/40">
                           {item.price} ETB
@@ -237,7 +238,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                       </div>
 
                       <p className="text-stone-600 text-xs mt-2 line-clamp-2 leading-relaxed font-light">
-                        {item.description}
+                        {menuText(item.description)}
                       </p>
 
                       {/* Dietary tags */}
@@ -248,7 +249,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                               key={tIdx}
                               className="text-[10px] font-medium text-stone-600 bg-stone-100 px-2 py-0.5 rounded-md border border-stone-200"
                             >
-                              {tag.trim()}
+                              {menuText(tag.trim())}
                             </span>
                           ))}
                         </div>
@@ -262,13 +263,13 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                         className="text-xs text-stone-500 hover:text-[#4E342E] flex items-center gap-1 font-semibold"
                       >
                         <Info className="w-3.5 h-3.5" />
-                        <span>Details</span>
+                        <span>{t("details")}</span>
                       </button>
 
                       {browseOnly ? (
                         !item.isAvailable && (
                           <span className="bg-stone-200 text-stone-500 font-bold text-xs px-3 py-1.5 rounded-full">
-                            Unavailable
+                            {t("unavailable")}
                           </span>
                         )
                       ) : item.isAvailable ? (
@@ -296,7 +297,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                             className="inline-flex items-center gap-1.5 bg-[#4E342E] hover:bg-[#3D2314] text-amber-200 font-bold text-xs px-4 py-2 rounded-full shadow transition hover:scale-105"
                           >
                             <Plus className="w-3.5 h-3.5 text-[#C9A227]" />
-                            <span>Add to Order</span>
+                            <span>{t("add_to_order")}</span>
                           </button>
                         )
                       ) : (
@@ -304,7 +305,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                           disabled
                           className="bg-stone-200 text-stone-400 font-bold text-xs px-3 py-1.5 rounded-full cursor-not-allowed"
                         >
-                          Unavailable
+                          {t("unavailable")}
                         </button>
                       )}
                     </div>
@@ -332,7 +333,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
             <div className="relative h-64">
               <img
                 src={optimizeImageUrl(activeItemModal.imageUrl, 800, 500)}
-                alt={activeItemModal.name}
+                alt={menuText(activeItemModal.name)}
                 loading="lazy"
                 decoding="async"
                 className="w-full h-full object-cover bg-stone-100"
@@ -341,9 +342,9 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
               <div className="absolute bottom-4 left-6 right-6 text-white">
                 <span className="text-xs font-bold uppercase tracking-widest text-[#C9A227] bg-black/50 px-2.5 py-1 rounded">
-                  {activeItemModal.category}
+                  {menuText(activeItemModal.category.replace(/-/g, " "))}
                 </span>
-                <h3 className="text-2xl font-serif font-bold mt-1 text-white">{activeItemModal.name}</h3>
+                <h3 className="text-2xl font-serif font-bold mt-1 text-white">{menuText(activeItemModal.name)}</h3>
               </div>
             </div>
 
@@ -353,16 +354,16 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                   {activeItemModal.price} ETB
                 </span>
                 <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-                  Prep Time: {activeItemModal.prepTime || "10 min"}
+                  {t("prep_time_label")} {activeItemModal.prepTime || "10 min"}
                 </span>
               </div>
 
-              <p className="text-stone-700 text-sm leading-relaxed">{activeItemModal.description}</p>
+              <p className="text-stone-700 text-sm leading-relaxed">{menuText(activeItemModal.description)}</p>
 
               {activeItemModal.dietaryTags && (
                 <div>
                   <h4 className="text-xs font-bold uppercase text-stone-400 tracking-wider mb-2">
-                    Dietary & Features
+                    {t("dietary_features")}
                   </h4>
                   <div className="flex flex-wrap gap-2">
                     {activeItemModal.dietaryTags.split(",").map((tag, i) => (
@@ -370,7 +371,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                         key={i}
                         className="text-xs font-semibold text-[#2C1B17] bg-amber-100 px-3 py-1 rounded-full border border-amber-300/50"
                       >
-                        ✓ {tag.trim()}
+                        ✓ {menuText(tag.trim())}
                       </span>
                     ))}
                   </div>
@@ -378,7 +379,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
               )}
 
               <div className="pt-4 border-t border-stone-200 flex items-center justify-between">
-                <span className="text-xs text-stone-500">{browseOnly ? "Call your waiter to order this item" : "Includes warm Ethiopian hospitality"}</span>
+                <span className="text-xs text-stone-500">{browseOnly ? t("call_waiter_order") : t("includes_warmth")}</span>
                 {!browseOnly && (
                   <button
                     onClick={() => {
@@ -388,7 +389,7 @@ export default function MenuSection({ items, categories, onAddToCart, cartMap = 
                     }}
                     className="bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-bold text-sm px-6 py-2.5 rounded-full shadow-lg hover:scale-105 transition"
                   >
-                    Add To Order ({activeItemModal.price} ETB)
+                    {t("add_to_order")} ({activeItemModal.price} ETB)
                   </button>
                 )}
               </div>

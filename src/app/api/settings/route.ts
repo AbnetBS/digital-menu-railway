@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { siteSettings } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq } from "drizzle-orm";
-import { fixBrandText } from "@/lib/brand";
+import { fixSiteText } from "@/lib/brand";
 import { hashSecret } from "@/lib/auth";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireAdmin } from "@/lib/session";
@@ -22,9 +22,10 @@ export async function GET() {
     allSettings.forEach((s) => {
       // Never leak credentials (or their hashes) to any client.
       if (SECRET_KEYS.has(s.key)) return;
-      // Brand guard: business is Fana Cafe & Restaurant — never serve the
-      // historical "FanaQueen"/double-Cafe text to any client, even if the DB holds it.
-      settingsMap[s.key] = fixBrandText(s.value);
+      // Brand + address guard: business is "Fana Cafe & Restaurant" located in
+      // Town Square Building — never serve historical "FanaQueen" or
+      // "Golagul Building" text to any client, even if the DB still holds it.
+      settingsMap[s.key] = fixSiteText(s.value);
     });
     return NextResponse.json(settingsMap, { status: 200, headers: { "Cache-Control": "public, max-age=60, stale-while-revalidate=300" } });
   } catch (error) {

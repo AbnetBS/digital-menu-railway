@@ -29,11 +29,15 @@ function pass(name, cond) {
   if (!cond) failures.push(name);
 }
 
-// Routes whose mutations are legitimately public (login/logout only).
+// Routes whose mutations are legitimately public:
+//  • login/logout endpoints
+//  • /api/translate — public, rate-limited, read-only translation cache for
+//    customer-facing menu text (no business data is created or changed).
 const PUBLIC_MUTATION_ROUTES = new Set([
   join(API, "admin", "login", "route.ts"),
   join(API, "admin", "verify", "route.ts"),
   join(API, "staff", "login", "route.ts"),
+  join(API, "translate", "route.ts"),
 ]);
 
 function walk(dir) {

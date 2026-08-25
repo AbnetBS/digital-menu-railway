@@ -82,7 +82,7 @@ export default function TermsPage() {
           If you have questions about these terms, you can reach us at:
           <ul className="list-none space-y-1 mt-2 text-[#4E342E]">
             <li>📞 0911 065 022</li>
-            <li>📍 Golagul Building, 22 Square, Djibouti Street, Bole, Addis Ababa, Ethiopia</li>
+            <li>📍 Town Square Building, 22 Square, Djibouti Street, Bole, Addis Ababa, Ethiopia</li>
           </ul>
         </Section>
 

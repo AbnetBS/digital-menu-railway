@@ -1,10 +1,11 @@
 "use client";
 
 import { UtensilsCrossed, QrCode, Users, Briefcase, ArrowUpRight, ShieldCheck } from "lucide-react";
-import { useT } from "@/lib/i18n";
+import { useT, useAutoT } from "@/lib/i18n";
 
 export default function ServicesSection() {
   const t = useT();
+  const tx = useAutoT();
   const services = [
     {
       icon: UtensilsCrossed,
@@ -38,11 +39,11 @@ export default function ServicesSection() {
         <div className="text-center max-w-3xl mx-auto mb-16">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#C9A227]/20 border border-[#C9A227]/40 text-[#C9A227] text-xs font-bold uppercase tracking-widest mb-3">
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Tailored Hospitality</span>
+            <span>{tx("Tailored Hospitality")}</span>
           </div>
           <h2 className="text-3xl sm:text-5xl font-serif font-bold text-amber-100">{t("sec_how")}</h2>
           <p className="text-stone-300 text-sm sm:text-base mt-3 font-light">
-            A modern table-service experience: scan, browse, order through your waiter, pay when you're done.
+            {tx("A modern table-service experience: scan, browse, order through your waiter, pay when you're done.")}
           </p>
         </div>
 
@@ -60,16 +61,16 @@ export default function ServicesSection() {
                       <Icon className="w-6 h-6" />
                     </div>
                     <span className="text-[10px] uppercase font-bold text-[#C9A227] bg-[#C9A227]/10 px-2 py-0.5 rounded border border-[#C9A227]/20">
-                      {srv.badge}
+                      {tx(srv.badge)}
                     </span>
                   </div>
                   <h3 className="text-xl font-serif font-bold text-stone-100 group-hover:text-[#C9A227] transition-colors">
-                    {srv.title}
+                    {tx(srv.title)}
                   </h3>
-                  <p className="text-stone-300 text-xs mt-2 leading-relaxed font-light">{srv.desc}</p>
+                  <p className="text-stone-300 text-xs mt-2 leading-relaxed font-light">{tx(srv.desc)}</p>
                 </div>
                 <div className="mt-6 pt-3 border-t border-stone-800 text-xs font-extrabold text-[#C9A227] flex items-center justify-between">
-                  <span>Always available</span>
+                  <span>{tx("Always available")}</span>
                   <ArrowUpRight className="w-4 h-4 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
                 </div>
               </div>

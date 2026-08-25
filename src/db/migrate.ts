@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-08-20-1";
+const SCHEMA_VERSION = "2026-08-25-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -132,6 +132,17 @@ const CREATES: Array<[string, string]> = [
       image_url text,
       caption text,
       sort_order integer DEFAULT 0
+    )`,
+  ],
+  [
+    "translations",
+    `CREATE TABLE IF NOT EXISTS translations (
+      id serial PRIMARY KEY,
+      lang varchar(10) NOT NULL,
+      source_hash varchar(64) NOT NULL,
+      source_text text NOT NULL,
+      translated_text text NOT NULL,
+      created_at timestamp DEFAULT now()
     )`,
   ],
 ];
@@ -390,6 +401,12 @@ async function runFullMigrate(force: boolean) {
     if (err) errors.push(`create ${name}: ${err}`);
   }
 
+  // Step 1b — translation cache: one row per (lang, source string) so repeat
+  // translations are served from the DB and never hit Google again.
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS translations_lang_hash_key ON translations (lang, source_hash)`
+  );
+
   // Step 2 — add missing columns + normalize types/defaults/constraints
   for (const [table, cols] of Object.entries({ ...TABLE_COLUMNS, ...RMS_COLUMNS })) {
     for (const [col, spec] of Object.entries(cols)) {
@@ -544,6 +561,35 @@ async function runFullMigrate(force: boolean) {
       `INSERT INTO site_settings (key, value, updated_at) VALUES ('default_cats_pruned', 'on', now()) ON CONFLICT (key) DO NOTHING`
     );
   }
+
+  //  • OWNER REQUEST (2026-08-25) — the cafe is in TOWN SQUARE BUILDING, not
+  //    "Golagul Building", and the business name is the full "Fana Cafe &
+  //    Restaurant". One-time idempotent heal of every historical row that still
+  //    carries the wrong building/name (re-running changes nothing afterwards).
+  await run(`
+    UPDATE site_settings SET value = regexp_replace(
+      regexp_replace(
+        regexp_replace(value, 'Golagul\\s+Bldg\\.?', 'Town Square Bldg', 'gi'),
+        'Golagul\\s+Building', 'Town Square Building', 'gi'),
+      'Golagul', 'Town Square', 'gi')
+    WHERE value ~* 'golagul'
+  `);
+  await run(`
+    UPDATE gallery_items SET title = regexp_replace(title, 'Golagul\\s+Building', 'Town Square Building', 'gi')
+    WHERE title ~* 'golagul'
+  `);
+  await run(`
+    UPDATE announcements SET
+      title = regexp_replace(title, 'Golagul\\s+Building', 'Town Square Building', 'gi'),
+      description = regexp_replace(description, 'Golagul\\s+Building', 'Town Square Building', 'gi')
+    WHERE title ~* 'golagul' OR description ~* 'golagul'
+  `);
+  await run(`
+    UPDATE site_settings SET value = 'Fana Cafe & Restaurant', updated_at = now()
+    WHERE key = 'cafe_name'
+      AND value ~* '^\\s*fana(queen)?\\s*cafe(\\s*&\\s*restaurant)?\\s*$'
+      AND value <> 'Fana Cafe & Restaurant'
+  `);
 
   if (errors.length > 0) {
     console.error("ensureTablesExist errors:", errors);

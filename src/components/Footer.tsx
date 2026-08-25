@@ -4,7 +4,7 @@ import { Coffee, MapPin, Phone, Clock, Lock, Heart, ShieldCheck } from "lucide-r
 import Link from "next/link";
 import { SiteSettings } from "@/types";
 import { fixBrandText } from "@/lib/brand";
-import { useT } from "@/lib/i18n";
+import { useT, useAutoT } from "@/lib/i18n";
 
 interface FooterProps {
   settings: SiteSettings;
@@ -14,7 +14,8 @@ interface FooterProps {
 
 export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: FooterProps) {
   const t = useT();
-  const cafeName = fixBrandText(settings.cafe_name || "FANA CAFE");
+  const tx = useAutoT();
+  const cafeName = fixBrandText(settings.cafe_name || "Fana Cafe & Restaurant");
   const tagline = settings.tagline || "Where Great Coffee Meets Beautiful Moments";
   const phone = settings.phone || "0911 065 022";
   const address = settings.address || "Addis Ababa, Ethiopia";
@@ -34,12 +35,12 @@ export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: Foote
                 <Coffee className="w-5 h-5 text-[#2C1B17]" />
               </div>
               <span className="text-2xl font-serif font-black text-amber-100 tracking-wider">
-                {cafeName}
+                {tx(cafeName)}
               </span>
             </div>
 
             <p className="text-stone-400 leading-relaxed font-light text-xs">
-              {tagline}
+              {tx(tagline)}
             </p>
 
             <div className="flex items-center gap-2 pt-1 text-xs text-[#C9A227] font-semibold">
@@ -71,7 +72,7 @@ export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: Foote
             <div className="space-y-2 text-stone-400 text-xs">
               <p className="flex items-center gap-2">
                 <Clock className="w-4 h-4 text-[#C9A227] shrink-0" />
-                <span>{openingHours}</span>
+                <span>{tx(openingHours)}</span>
               </p>
               <p className="flex items-center gap-2">
                 <Phone className="w-4 h-4 text-[#C9A227] shrink-0" />
@@ -81,7 +82,7 @@ export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: Foote
               </p>
               <p className="flex items-center gap-2">
                 <MapPin className="w-4 h-4 text-[#C9A227] shrink-0" />
-                <span>{address}</span>
+                <span>{tx(address)}</span>
               </p>
             </div>
           </div>
@@ -138,7 +139,7 @@ export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: Foote
             className="flex items-center gap-2 bg-[#C9A227]/10 hover:bg-[#C9A227]/20 border border-[#C9A227]/30 px-3.5 py-2 rounded-xl transition"
           >
             <Heart className="w-4 h-4 text-[#C9A227] fill-[#C9A227]" />
-            <span className="font-extrabold text-[#C9A227] tracking-wide">Powered by Abnet Gobezay</span>
+            <span className="font-extrabold text-[#C9A227] tracking-wide">AB Web</span>
             <span className="text-stone-400">📞 +251 91 908 1802</span>
           </a>
         </div>

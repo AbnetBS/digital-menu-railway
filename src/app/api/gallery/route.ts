@@ -4,6 +4,7 @@ import { galleryItems } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc } from "drizzle-orm";
 import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
+import { fixSiteText } from "@/lib/brand";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireAdmin } from "@/lib/session";
 
@@ -13,7 +14,14 @@ export async function GET() {
     // GROUP 4 / ITEM 6 — safety cap: gallery is owner-managed, but never allow
     // an unbounded response (500 is far beyond realistic cafe usage).
     const list = await db.select().from(galleryItems).orderBy(asc(galleryItems.sortOrder), asc(galleryItems.id)).limit(500);
-    return NextResponse.json(list, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
+    // Brand/address guard — old gallery titles/captions may still reference
+    // "Golagul Building"; always serve the correct "Town Square Building" text.
+    const guarded = list.map((g) => ({
+      ...g,
+      title: fixSiteText(g.title),
+      caption: g.caption ? fixSiteText(g.caption) : g.caption,
+    }));
+    return NextResponse.json(guarded, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

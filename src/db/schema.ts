@@ -129,3 +129,16 @@ export const ticketItems = pgTable("ticket_items", {
   // Shared by all rows of one order submission (see tickets.idempotencyKey).
   idempotencyKey: varchar("idempotency_key", { length: 64 }),
 });
+
+// ─── AMHARIC AUTO-TRANSLATION CACHE ─────────────────────────────────────────
+// Google Translate results for owner-managed content (menu items the owner
+// adds, categories, announcements, settings texts) are cached here so each
+// unique string is translated ONCE — repeat visits are instant and free.
+export const translations = pgTable("translations", {
+  id: serial("id").primaryKey(),
+  lang: varchar("lang", { length: 10 }).notNull(), // "am"
+  sourceHash: varchar("source_hash", { length: 64 }).notNull(), // sha256(sourceText)
+  sourceText: text("source_text").notNull(),
+  translatedText: text("translated_text").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Lock, Menu, X, Phone, ShieldCheck } from "lucide-react";
 import { SiteSettings } from "@/types";
 import { fixBrandText } from "@/lib/brand";
-import { useT } from "@/lib/i18n";
+import { useT, useAutoT } from "@/lib/i18n";
 
 interface NavbarProps {
   settings: SiteSettings;
@@ -16,10 +16,11 @@ export default function Navbar({ settings, onOpenAdmin, isAdminLoggedIn }: Navba
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showAnnouncement, setShowAnnouncement] = useState(true);
   const t = useT();
+  const tx = useAutoT();
 
   const phone = settings.phone || "0911 065 022";
-  const cafeName = fixBrandText(settings.cafe_name || "FANA CAFE");
-  const announcement = settings.announcement || "☕ Welcome to Fana Cafe!";
+  const cafeName = fixBrandText(settings.cafe_name || "Fana Cafe & Restaurant");
+  const announcement = settings.announcement || "☕ Welcome to Fana Cafe & Restaurant!";
 
   const navLinks = [
     { label: t("nav_home"), href: "#hero" },
@@ -50,7 +51,7 @@ export default function Navbar({ settings, onOpenAdmin, isAdminLoggedIn }: Navba
             <span className="inline-block bg-[#C9A227] text-[#2C1B17] px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider shrink-0">
               22 Square Bole
             </span>
-            <span className="truncate">{announcement}</span>
+            <span className="truncate">{tx(announcement)}</span>
           </div>
           <button onClick={() => setShowAnnouncement(false)} className="text-amber-200/70 hover:text-white ml-2 shrink-0" aria-label="Close">
             <X className="w-4 h-4" />
@@ -69,10 +70,10 @@ export default function Navbar({ settings, onOpenAdmin, isAdminLoggedIn }: Navba
             />
             <div className="flex flex-col">
               <span className="text-xl font-black tracking-wider text-white font-serif group-hover:text-[#C9A227] transition-colors">
-                {cafeName}
+                {tx(cafeName)}
               </span>
               <span className="text-[10px] text-[#C9A227] tracking-widest uppercase font-semibold">
-                Golagul Bldg, Addis Ababa
+                Town Square Bldg, Addis Ababa
               </span>
             </div>
           </a>

@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Coffee, Plus, Minus, Search, Send, CheckCircle2, Clock, X, Phone, Utensils, Loader2, QrCode,
-  ChevronLeft, ChevronRight, MapPin, Star, MessageSquare, Globe, Camera,
+  ChevronLeft, ChevronRight, MapPin, Star, MessageSquare, Camera, Music2,
 } from "lucide-react";
 import { MenuItem, Category, CafeTable, SiteSettings, Announcement, GalleryItem, Review } from "@/types";
 import { DEFAULT_SETTINGS, DEFAULT_CATEGORIES, DEFAULT_MENU_ITEMS } from "@/lib/initial-data";
@@ -14,6 +14,7 @@ import { fixBrandText } from "@/lib/brand";
 import { useMenuText, useT } from "@/lib/i18n";
 import LanguageToggle from "@/components/LanguageToggle";
 import { optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
+import { FACEBOOK_URL, GOOGLE_MAPS_DIRECTIONS_URL, INSTAGRAM_URL, TIKTOK_URL } from "@/lib/business-links";
 
 interface CartEntry {
   /** Stable per-cart-line key: promotions can contain the same menu item twice. */
@@ -1031,7 +1032,7 @@ export default function CustomerMenuApp() {
             <p className="text-stone-400">Plus Code: {settings.plus_code || "2Q7Q+W2 Addis Ababa"}</p>
           </div>
           <a
-            href="https://www.google.com/maps/place/Fana+cafe/@9.0148457,38.7875868,17z"
+            href={GOOGLE_MAPS_DIRECTIONS_URL}
             target="_blank"
             rel="noreferrer"
             className="block text-center bg-[#4E342E] text-amber-200 font-bold text-xs py-2.5 rounded-xl"
@@ -1106,15 +1107,18 @@ export default function CustomerMenuApp() {
           <a href={`tel:${String(settings.phone || "0911065022").replace(/\s+/g, "")}`} className="inline-flex items-center gap-2 text-[#C9A227] font-bold text-sm">
             <Phone className="w-4 h-4" /> {settings.phone || "0911 065 022"}
           </a>
-          <div className="flex items-center justify-center gap-4 pt-1">
-            <a href="https://facebook.com" target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-xs font-bold bg-white/10 px-3.5 py-2 rounded-full hover:bg-white/20">
-              <Globe className="w-3.5 h-3.5 text-[#C9A227]" /> Facebook
+          <div className="flex flex-wrap items-center justify-center gap-2 pt-1" aria-label="Fana Cafe official links">
+            <a href={FACEBOOK_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs font-bold bg-white/10 px-3.5 py-2 rounded-full hover:bg-[#1877F2] transition" aria-label="Fana Cafe on Facebook">
+              <span aria-hidden="true" className="font-sans font-black text-sm leading-none">f</span> Facebook
             </a>
-            <a href="https://instagram.com" target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-xs font-bold bg-white/10 px-3.5 py-2 rounded-full hover:bg-white/20">
-              <Camera className="w-3.5 h-3.5 text-[#C9A227]" /> Instagram
+            <a href={INSTAGRAM_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs font-bold bg-white/10 px-3.5 py-2 rounded-full hover:bg-[#C13584] transition" aria-label="Fana Cafe on Instagram">
+              <Camera className="w-3.5 h-3.5 text-[#C9A227]" aria-hidden="true" /> Instagram
             </a>
-            <a href="https://t.me" target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-xs font-bold bg-white/10 px-3.5 py-2 rounded-full hover:bg-white/20">
-              <Send className="w-3.5 h-3.5 text-[#C9A227]" /> Telegram
+            <a href={TIKTOK_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs font-bold bg-white/10 px-3.5 py-2 rounded-full hover:bg-white hover:text-black transition" aria-label="Fana Cafe on TikTok">
+              <Music2 className="w-3.5 h-3.5 text-[#C9A227]" aria-hidden="true" /> TikTok
+            </a>
+            <a href={GOOGLE_MAPS_DIRECTIONS_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-xs font-bold bg-white/10 px-3.5 py-2 rounded-full hover:bg-emerald-600 transition" aria-label="Get directions to Fana Cafe on Google Maps">
+              <MapPin className="w-3.5 h-3.5 text-[#C9A227]" aria-hidden="true" /> Maps
             </a>
           </div>
           <p className="text-[10px] text-stone-600 pt-2">

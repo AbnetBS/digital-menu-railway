@@ -4,6 +4,7 @@ import { useState } from "react";
 import { MapPin, Phone, Clock, Navigation, Copy, Check, ExternalLink, Calendar } from "lucide-react";
 import { SiteSettings } from "@/types";
 import { useT, useAutoT } from "@/lib/i18n";
+import { GOOGLE_MAPS_DIRECTIONS_URL } from "@/lib/business-links";
 
 interface LocationProps {
   settings: SiteSettings;
@@ -24,8 +25,6 @@ export default function LocationSection({ settings }: LocationProps) {
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
   };
-
-  const mapDirectionsUrl = "https://www.google.com/maps/place/Fana+cafe/@9.0148457,38.7875868,17z";
 
   return (
     <section id="contact" className="py-20 bg-[#FAF6F0] relative">
@@ -80,7 +79,7 @@ export default function LocationSection({ settings }: LocationProps) {
             </div>
 
             <a
-              href={mapDirectionsUrl}
+              href={GOOGLE_MAPS_DIRECTIONS_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="w-full inline-flex items-center justify-center gap-2 bg-[#4E342E] hover:bg-[#3D2314] text-amber-200 font-bold text-xs uppercase py-3.5 rounded-2xl shadow transition"

@@ -15,10 +15,6 @@ export default function FaqSection() {
       a: "Fana Cafe is open daily until 8:30 PM in Addis Ababa. Operating hours may vary slightly during Ethiopian public holidays. Call 0911 065 022 for holiday hours.",
     },
     {
-      q: "Can I order foods and drinks for delivery or takeaway?",
-      a: "Yes! You can order online directly through this website or by phone. We offer takeaway pick-up as well as direct delivery to your home or office across Addis Ababa.",
-    },
-    {
       q: "How do I reserve a table in advance?",
       a: "You can reserve a table by clicking the 'Reserve Table' button on this page. Choose your preferred date, time, party size, and table setting (Indoor, Garden, Quiet Corner, or Window View). Your table will be held for you.",
     },

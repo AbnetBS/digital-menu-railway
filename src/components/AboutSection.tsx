@@ -66,8 +66,8 @@ export default function AboutSection({ settings }: AboutProps) {
               <div className="flex items-start gap-3 p-3.5 rounded-xl bg-white border border-[#C9A227]/20 shadow-sm">
                 <CheckCircle2 className="w-5 h-5 text-[#C9A227] shrink-0 mt-0.5" />
                 <div>
-                  <h4 className="font-bold text-[#2C1B17] text-sm">{tx("Dine-In, Takeaway & Delivery")}</h4>
-                  <p className="text-xs text-stone-600 mt-0.5">{tx("Enjoy your favorites in-house or brought to your door.")}</p>
+                  <h4 className="font-bold text-[#2C1B17] text-sm">{tx("Comfortable Dine-In")}</h4>
+                  <p className="text-xs text-stone-600 mt-0.5">{tx("Enjoy your favorites in our warm, welcoming space.")}</p>
                 </div>
               </div>
 

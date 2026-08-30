@@ -101,7 +101,7 @@ const CREATES: Array<[string, string]> = [
       order_number text,
       customer_name text,
       phone text,
-      order_type text DEFAULT 'delivery',
+      order_type text DEFAULT 'dine_in',
       address text,
       items text,
       total_amount integer DEFAULT 0,
@@ -285,7 +285,7 @@ const TABLE_COLUMNS: Record<string, Record<string, ColSpec>> = {
     order_number: { type: "text", def: "'FANA-ORD-000000'" },
     customer_name: { type: "text", def: "'Guest'" },
     phone: { type: "text", def: "''" },
-    order_type: { type: "text", def: "'delivery'" },
+    order_type: { type: "text", def: "'dine_in'" },
     address: { type: "text" },
     items: { type: "text", def: "'[]'" },
     total_amount: { type: "integer", def: "0", castText: true },
@@ -656,7 +656,7 @@ export async function insertSmokeTest() {
 
   let err = await run(
     `INSERT INTO orders (order_number, customer_name, phone, order_type, address, items, total_amount, status, notes)
-     VALUES ('FANA-TEST-000001','Setup Test','0911065022','delivery','Test Address','[]',1,'pending','smoke test')`
+     VALUES ('FANA-TEST-000001','Setup Test','0911065022','dine_in','Test Address','[]',1,'pending','smoke test')`
   );
   if (!err) {
     await run(`DELETE FROM orders WHERE order_number = 'FANA-TEST-000001'`);

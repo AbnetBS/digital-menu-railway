@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Camera, Eye, X, Image as ImageIcon } from "lucide-react";
+import { Camera, Eye, X, Image as ImageIcon, ChevronLeft, ChevronRight } from "lucide-react";
 import { GalleryItem } from "@/types";
 import { useT, useAutoT } from "@/lib/i18n";
 
@@ -20,6 +20,15 @@ export default function GallerySection({ items }: GalleryProps) {
   const filteredItems = items.filter(
     (item) => selectedCategory === "All" || item.category.toLowerCase() === selectedCategory.toLowerCase()
   );
+  const lightboxIndex = lightboxItem ? filteredItems.findIndex((item) => item.id === lightboxItem.id) : -1;
+  const showPreviousPhoto = () => {
+    if (lightboxIndex < 0 || filteredItems.length < 2) return;
+    setLightboxItem(filteredItems[(lightboxIndex - 1 + filteredItems.length) % filteredItems.length]);
+  };
+  const showNextPhoto = () => {
+    if (lightboxIndex < 0 || filteredItems.length < 2) return;
+    setLightboxItem(filteredItems[(lightboxIndex + 1) % filteredItems.length]);
+  };
 
   return (
     <section id="gallery" className="py-20 bg-[#2C1B17] text-white relative">
@@ -117,6 +126,27 @@ export default function GallerySection({ items }: GalleryProps) {
                 className="w-full h-full object-contain"
               />
             </div>
+
+            {filteredItems.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  onClick={showPreviousPhoto}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black"
+                  aria-label={tx("Previous photo")}
+                >
+                  <ChevronLeft className="w-6 h-6" />
+                </button>
+                <button
+                  type="button"
+                  onClick={showNextPhoto}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black"
+                  aria-label={tx("Next photo")}
+                >
+                  <ChevronRight className="w-6 h-6" />
+                </button>
+              </>
+            )}
 
             <div className="p-6 bg-[#3D2314] text-white">
               <span className="text-xs font-bold text-[#C9A227] uppercase tracking-wider">

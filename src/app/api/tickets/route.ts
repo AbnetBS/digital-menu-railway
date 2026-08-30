@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { tickets, ticketItems, cafeTables, menuItems } from "@/db/schema";
+import { tickets, ticketItems, cafeTables, menuItems, announcements } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
@@ -9,9 +9,15 @@ import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireStaffOrAdmin, requireAdmin } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { parseDailyPromotionItems } from "@/lib/daily-promotion";
 
 const CUSTOMER_ORDER_LIMIT = 30;
 const CUSTOMER_ORDER_WINDOW_MS = 10 * 60 * 1000;
+
+function isActiveToday(a: { startDate?: string | null; endDate?: string | null }): boolean {
+  const today = new Date().toISOString().slice(0, 10);
+  return (!a.startDate || today >= String(a.startDate)) && (!a.endDate || today <= String(a.endDate));
+}
 
 // The transaction client and the root Drizzle client share the query methods used here.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -270,7 +276,72 @@ export async function POST(request: Request) {
         : [];
     const priceById = new Map(menuRows.map((m) => [m.id, effectivePrice(m).price]));
 
-    for (const it of items) {
+    // ── DAILY SPECIAL INTEGRITY ──
+    // The browser may say which Daily Board card it selected, but it never gets
+    // to decide what the offer contains or which item is free. Every referenced
+    // card is re-read here, must still be active, and its submitted rows must
+    // exactly match its owner-configured menu-item/quantity configuration.
+    const promotionPayloadIndexes = new Map<number, number[]>();
+    for (let payloadIndex = 0; payloadIndex < items.length; payloadIndex++) {
+      const it = items[payloadIndex];
+      const hasPromotionId = it.promotionId !== undefined && it.promotionId !== null && it.promotionId !== "";
+      const hasPromotionItemIndex = it.promotionItemIndex !== undefined && it.promotionItemIndex !== null && it.promotionItemIndex !== "";
+      if (!hasPromotionId) {
+        if (hasPromotionItemIndex) {
+          return NextResponse.json({ error: "Invalid daily special item" }, { status: 400 });
+        }
+        continue;
+      }
+      const promotionId = Number(it.promotionId);
+      if (!Number.isInteger(promotionId) || promotionId < 1) {
+        return NextResponse.json({ error: "Invalid daily special" }, { status: 400 });
+      }
+      const indexes = promotionPayloadIndexes.get(promotionId) || [];
+      indexes.push(payloadIndex);
+      promotionPayloadIndexes.set(promotionId, indexes);
+    }
+
+    const promotionPartByPayloadIndex = new Map<number, { isFree: boolean; title: string }>();
+    const promotionIds = [...promotionPayloadIndexes.keys()];
+    if (promotionIds.length > 0) {
+      const promotionRows = await tx.select().from(announcements).where(inArray(announcements.id, promotionIds));
+      const promotionById = new Map(promotionRows.map((promotion) => [promotion.id, promotion]));
+
+      for (const [promotionId, payloadIndexes] of promotionPayloadIndexes) {
+        const promotion = promotionById.get(promotionId);
+        if (!promotion || !isActiveToday(promotion)) {
+          return NextResponse.json({ error: "This daily special is no longer available" }, { status: 409 });
+        }
+        const configuredItems = parseDailyPromotionItems(promotion.promotionItems);
+        if (configuredItems.length === 0 || payloadIndexes.length !== configuredItems.length) {
+          return NextResponse.json({ error: "Daily special items no longer match this offer" }, { status: 409 });
+        }
+
+        const usedPromotionItemIndexes = new Set<number>();
+        for (const payloadIndex of payloadIndexes) {
+          const it = items[payloadIndex];
+          const promotionItemIndex = Number(it.promotionItemIndex);
+          if (
+            !Number.isInteger(promotionItemIndex) ||
+            promotionItemIndex < 0 ||
+            promotionItemIndex >= configuredItems.length ||
+            usedPromotionItemIndexes.has(promotionItemIndex)
+          ) {
+            return NextResponse.json({ error: "Daily special items no longer match this offer" }, { status: 409 });
+          }
+          usedPromotionItemIndexes.add(promotionItemIndex);
+
+          const configuredItem = configuredItems[promotionItemIndex];
+          if (Number(it.menuItemId) !== configuredItem.menuItemId || Number(it.quantity) !== configuredItem.quantity) {
+            return NextResponse.json({ error: "Daily special items no longer match this offer" }, { status: 409 });
+          }
+          promotionPartByPayloadIndex.set(payloadIndex, { isFree: configuredItem.isFree, title: promotion.title });
+        }
+      }
+    }
+
+    for (let payloadIndex = 0; payloadIndex < items.length; payloadIndex++) {
+      const it = items[payloadIndex];
       const qty = Number(it.quantity);
       if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty < 1 || qty > 100) {
         return NextResponse.json({ error: `Invalid quantity for "${it.name}"` }, { status: 400 });
@@ -283,8 +354,21 @@ export async function POST(request: Request) {
       if (!menuRow.isAvailable) {
         return NextResponse.json({ error: `Menu item "${it.name}" is currently out of stock` }, { status: 409 });
       }
+
+      const promotionPart = promotionPartByPayloadIndex.get(payloadIndex);
+      // `isFree` is read from the server-side Daily Board configuration — a
+      // customer-supplied `price: 0` alone is ignored and charged normally.
       it.price = priceById.get(menuId);
+      if (promotionPart?.isFree) it.price = 0;
       it.quantity = qty;
+      if (promotionPart) {
+        // Store canonical names/categories plus a staff-visible special label;
+        // this makes the final kitchen/restaurant order self-explanatory.
+        it.name = menuRow.name;
+        it.category = menuRow.category;
+        const customerNotes = String(it.notes || "").trim().slice(0, 500);
+        it.notes = [`Daily special: ${promotionPart.title}`, customerNotes].filter(Boolean).join(" — ");
+      }
     }
 
     // Insert the submission's items. If a CONCURRENT duplicate of this exact

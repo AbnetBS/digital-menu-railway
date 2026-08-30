@@ -1,18 +1,23 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Megaphone, Plus, Trash2, Edit3, RefreshCw, Upload, Calendar } from "lucide-react";
-import { Announcement } from "@/types";
+import { Megaphone, Plus, Trash2, Edit3, RefreshCw, Upload, Calendar, Gift } from "lucide-react";
+import { Announcement, DailyPromotionItem, MenuItem } from "@/types";
 import { compressImage } from "@/lib/image-utils";
 
 export default function DailyBoardTab() {
   const [items, setItems] = useState<Announcement[]>([]);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [editing, setEditing] = useState<Partial<Announcement> | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = async () => {
-    const r = await fetch("/api/announcements");
-    if (r.ok) setItems(await r.json());
+    const [announcementsResponse, menuResponse] = await Promise.all([
+      fetch("/api/announcements"),
+      fetch("/api/menu"),
+    ]);
+    if (announcementsResponse.ok) setItems(await announcementsResponse.json());
+    if (menuResponse.ok) setMenuItems(await menuResponse.json());
   };
 
   useEffect(() => {
@@ -53,6 +58,13 @@ export default function DailyBoardTab() {
     if (a.startDate && today < a.startDate) return false;
     if (a.endDate && today > a.endDate) return false;
     return true;
+  };
+
+  const updatePromotionItem = (index: number, patch: Partial<DailyPromotionItem>) => {
+    if (!editing) return;
+    const promotionItems = [...(editing.promotionItems || [])];
+    promotionItems[index] = { ...promotionItems[index], ...patch };
+    setEditing({ ...editing, promotionItems });
   };
 
   return (
@@ -107,6 +119,7 @@ export default function DailyBoardTab() {
               <span>
                 {a.startDate || "Any"} → {a.endDate || "Any"}
                 {a.imageUrl ? " • 📸 image" : ""}
+                {a.promotionItems?.length ? " • 🎁 orderable offer" : " • display only"}
               </span>
             </div>
             <div className="flex justify-end gap-2">
@@ -167,6 +180,90 @@ export default function DailyBoardTab() {
                 <label className="block text-xs font-bold text-amber-200 mb-1">End Date (auto-hides)</label>
                 <input type="date" value={editing.endDate || ""} onChange={(e) => setEditing({ ...editing, endDate: e.target.value })} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white" />
               </div>
+            </div>
+
+            {/* An announcement stays display-only until the owner explicitly maps it to menu items. */}
+            <div className="bg-[#3D2314] rounded-2xl p-4 border border-stone-700 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold text-amber-200 flex items-center gap-1.5"><Gift className="w-3.5 h-3.5" /> Orderable special</p>
+                  <p className="text-[11px] text-stone-400 mt-1">Choose the exact menu items in this offer. Mark complimentary items FREE; their price is enforced as 0 at checkout.</p>
+                </div>
+                {editing.promotionItems?.length ? (
+                  <button
+                    type="button"
+                    onClick={() => setEditing({ ...editing, promotionItems: [] })}
+                    className="shrink-0 text-[10px] font-bold text-rose-300 hover:text-rose-200"
+                  >
+                    Make display-only
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={menuItems.length === 0}
+                    onClick={() => setEditing({ ...editing, promotionItems: [{ menuItemId: menuItems[0].id, quantity: 1, isFree: false }] })}
+                    className="shrink-0 text-[10px] font-bold bg-[#C9A227] text-[#2C1B17] px-2.5 py-1.5 rounded-lg disabled:opacity-40"
+                  >
+                    Add offer items
+                  </button>
+                )}
+              </div>
+
+              {(editing.promotionItems || []).map((promotionItem, index) => (
+                <div key={index} className="rounded-xl border border-stone-700 bg-[#2C1B17] p-3 space-y-2">
+                  <div className="flex gap-2">
+                    <select
+                      value={promotionItem.menuItemId || ""}
+                      onChange={(e) => updatePromotionItem(index, { menuItemId: Number(e.target.value) })}
+                      className="min-w-0 flex-1 bg-[#3D2314] border border-stone-700 rounded-lg px-2 py-2 text-xs text-white"
+                    >
+                      <option value="" disabled>Select menu item</option>
+                      {menuItems.map((m) => <option key={m.id} value={m.id}>{m.name} — {m.price} ETB</option>)}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setEditing({ ...editing, promotionItems: (editing.promotionItems || []).filter((_, itemIndex) => itemIndex !== index) })}
+                      className="w-8 h-8 shrink-0 rounded-lg bg-rose-500/15 text-rose-300 hover:bg-rose-500 hover:text-white flex items-center justify-center"
+                      aria-label="Remove offer item"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="flex items-center gap-2 text-[11px] font-bold text-stone-300">
+                      Qty
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={promotionItem.quantity}
+                        onChange={(e) => updatePromotionItem(index, { quantity: Number(e.target.value) })}
+                        className="w-16 bg-[#3D2314] border border-stone-700 rounded-lg px-2 py-1.5 text-xs text-white"
+                      />
+                    </label>
+                    <label className="flex items-center gap-2 text-[11px] font-bold text-emerald-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={promotionItem.isFree}
+                        onChange={(e) => updatePromotionItem(index, { isFree: e.target.checked })}
+                        className="accent-emerald-500"
+                      />
+                      FREE item (0 ETB)
+                    </label>
+                  </div>
+                </div>
+              ))}
+
+              {(editing.promotionItems || []).length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setEditing({ ...editing, promotionItems: [...(editing.promotionItems || []), { menuItemId: menuItems[0]?.id || 0, quantity: 1, isFree: false }] })}
+                  disabled={menuItems.length === 0}
+                  className="w-full border border-dashed border-[#C9A227]/60 text-amber-200 hover:bg-[#C9A227]/10 text-xs font-bold py-2 rounded-xl disabled:opacity-40"
+                >
+                  + Add another menu item
+                </button>
+              )}
             </div>
 
             <div className="bg-[#3D2314] rounded-2xl p-4 border border-stone-700 space-y-2">

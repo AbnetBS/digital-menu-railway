@@ -17,6 +17,13 @@ export interface MenuItem {
   sortOrder?: number;
 }
 
+export interface DailyPromotionItem {
+  menuItemId: number;
+  quantity: number;
+  /** Free item price is resolved as 0 by the server, never supplied by the client. */
+  isFree: boolean;
+}
+
 export interface Announcement {
   id: number;
   title: string;
@@ -24,6 +31,8 @@ export interface Announcement {
   imageUrl?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+  /** Existing menu items and quantities included when this Daily Board card is ordered. */
+  promotionItems?: DailyPromotionItem[];
   priority?: number;
   createdAt?: string;
 }

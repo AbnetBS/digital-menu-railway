@@ -41,6 +41,9 @@ export const announcements = pgTable("announcements", {
   imageUrl: text("image_url"), // optional
   startDate: varchar("start_date", { length: 20 }), // YYYY-MM-DD
   endDate: varchar("end_date", { length: 20 }),
+  // Optional JSON array of menu-item references that makes this board card orderable.
+  // Prices and free-item status are always revalidated on the server at order time.
+  promotionItems: text("promotion_items"),
   priority: integer("priority").default(0),
   createdAt: timestamp("created_at").defaultNow(),
 });

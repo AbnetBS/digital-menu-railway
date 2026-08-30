@@ -33,6 +33,10 @@ pass("order route caps quantity (<= 100)", /qty\s*>\s*100/.test(src));
 pass("order route rejects non-integer quantity", /Number\.isInteger\(qty\)/.test(src));
 pass("order route rejects unknown menu item", /Unknown menu item/.test(src));
 pass("order route overwrites client price with resolved price", /it\.price\s*=\s*priceById\.get/.test(src));
+pass("daily special is re-read from announcements server-side", /import\s*\{[^}]*announcements[^}]*\}\s*from\s*"@\/db\/schema"/.test(src) && src.includes("parseDailyPromotionItems"));
+pass("daily special must still be active and exactly match configured items", src.includes("isActiveToday(promotion)") && src.includes("configuredItem.menuItemId") && src.includes("configuredItem.quantity"));
+pass("free special items are priced at zero only from the server configuration", src.includes("promotionPart?.isFree") && /if\s*\(promotionPart\?\.isFree\)\s*it\.price\s*=\s*0/.test(src));
+pass("daily special items retain normal out-of-stock protection", src.includes("if (!menuRow.isAvailable)"));
 
 // Item-edit route (staff adjusting quantity after order) must validate too.
 pass("item-edit route validates quantity is integer 1-100", /Number\.isInteger\(qty\)/.test(itemsSrc) && /qty\s*<\s*1/.test(itemsSrc) && /qty\s*>\s*100/.test(itemsSrc));
@@ -47,3 +51,4 @@ console.log("\n✅ Order integrity regression test PASSED");
 console.log("   • prices resolved server-side from the menu");
 console.log("   • quantities validated and bounded");
 console.log("   • unknown menu items rejected");
+console.log("   • daily-special items and free pricing are resolved server-side");

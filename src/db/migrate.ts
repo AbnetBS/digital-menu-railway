@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-08-25-1";
+const SCHEMA_VERSION = "2026-08-30-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -215,6 +215,7 @@ const RMS_CREATES: Array<[string, string]> = [
       image_url text,
       start_date text,
       end_date text,
+      promotion_items text,
       priority integer DEFAULT 0,
       created_at timestamp DEFAULT now()
     )`,
@@ -314,6 +315,7 @@ const TABLE_COLUMNS: Record<string, Record<string, ColSpec>> = {
     image_url: { type: "text" },
     start_date: { type: "text" },
     end_date: { type: "text" },
+    promotion_items: { type: "text" },
     priority: { type: "integer", def: "0", castText: true },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
   },

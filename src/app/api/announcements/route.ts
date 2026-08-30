@@ -7,6 +7,7 @@ import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
 import { fixSiteText } from "@/lib/brand";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireAdmin } from "@/lib/session";
+import { parseDailyPromotionItems, serializeDailyPromotionItems } from "@/lib/daily-promotion";
 
 function isActiveToday(a: { startDate?: string | null; endDate?: string | null }): boolean {
   const today = new Date().toISOString().slice(0, 10);
@@ -26,12 +27,15 @@ export async function GET(request: Request) {
     if (onlyActive) list = list.filter(isActiveToday);
     // Brand/address guard — old rows may still say "Golagul Building"; always
     // serve the correct "Town Square Building" / brand text.
-    list = list.map((a) => ({
+    const response = list.map((a) => ({
       ...a,
       title: fixSiteText(a.title),
       description: fixSiteText(a.description),
+      // Invalid legacy data is deliberately returned as an empty configuration,
+      // so only a validated, owner-configured announcement can be ordered.
+      promotionItems: parseDailyPromotionItems(a.promotionItems),
     }));
-    return NextResponse.json(list, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
+    return NextResponse.json(response, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
@@ -44,6 +48,12 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     if (!body.title) return NextResponse.json({ error: "Title required" }, { status: 400 });
+    let promotionItems: string | null;
+    try {
+      promotionItems = serializeDailyPromotionItems(body.promotionItems);
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid promotion items" }, { status: 400 });
+    }
     const created = await db
       .insert(announcements)
       .values({
@@ -52,6 +62,7 @@ export async function POST(request: Request) {
         imageUrl: await persistImageRef(body.imageUrl || ""),
         startDate: body.startDate || "",
         endDate: body.endDate || "",
+        promotionItems,
         priority: Number(body.priority || 0),
       })
       .returning();
@@ -70,6 +81,14 @@ export async function PUT(request: Request) {
     if (!body.id) return NextResponse.json({ error: "ID required" }, { status: 400 });
     const existing = await db.select().from(announcements).where(eq(announcements.id, body.id));
     if (existing.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    let promotionItems: string | null;
+    try {
+      promotionItems = body.promotionItems === undefined
+        ? existing[0].promotionItems
+        : serializeDailyPromotionItems(body.promotionItems);
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid promotion items" }, { status: 400 });
+    }
     const updated = await db
       .update(announcements)
       .set({
@@ -78,6 +97,7 @@ export async function PUT(request: Request) {
         imageUrl: await persistImageRef(body.imageUrl ?? ""),
         startDate: body.startDate,
         endDate: body.endDate,
+        promotionItems,
         priority: Number(body.priority || 0),
       })
       .where(eq(announcements.id, body.id))

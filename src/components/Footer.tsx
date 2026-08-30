@@ -1,10 +1,11 @@
 "use client";
 
-import { Coffee, MapPin, Phone, Clock, Lock, Heart, ShieldCheck } from "lucide-react";
+import { Coffee, MapPin, Phone, Clock, Lock, Heart, ShieldCheck, Camera, Music2 } from "lucide-react";
 import Link from "next/link";
 import { SiteSettings } from "@/types";
 import { fixBrandText } from "@/lib/brand";
 import { useT, useAutoT } from "@/lib/i18n";
+import { FACEBOOK_URL, GOOGLE_MAPS_DIRECTIONS_URL, INSTAGRAM_URL, TIKTOK_URL } from "@/lib/business-links";
 
 interface FooterProps {
   settings: SiteSettings;
@@ -46,6 +47,20 @@ export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: Foote
             <div className="flex items-center gap-2 pt-1 text-xs text-[#C9A227] font-semibold">
               <MapPin className="w-4 h-4" />
               <span>Addis Ababa • Plus Code: {plusCode}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 pt-1" aria-label="Fana Cafe official links">
+              <a href={FACEBOOK_URL} target="_blank" rel="noopener noreferrer" aria-label="Fana Cafe on Facebook" title="Facebook" className="w-8 h-8 rounded-full bg-white/10 hover:bg-[#1877F2] text-amber-100 flex items-center justify-center transition">
+                <span aria-hidden="true" className="font-sans font-black text-base leading-none">f</span>
+              </a>
+              <a href={INSTAGRAM_URL} target="_blank" rel="noopener noreferrer" aria-label="Fana Cafe on Instagram" title="Instagram" className="w-8 h-8 rounded-full bg-white/10 hover:bg-[#C13584] text-amber-100 flex items-center justify-center transition">
+                <Camera className="w-4 h-4" aria-hidden="true" />
+              </a>
+              <a href={TIKTOK_URL} target="_blank" rel="noopener noreferrer" aria-label="Fana Cafe on TikTok" title="TikTok" className="w-8 h-8 rounded-full bg-white/10 hover:bg-white hover:text-black text-amber-100 flex items-center justify-center transition">
+                <Music2 className="w-4 h-4" aria-hidden="true" />
+              </a>
+              <a href={GOOGLE_MAPS_DIRECTIONS_URL} target="_blank" rel="noopener noreferrer" aria-label="Get directions to Fana Cafe on Google Maps" title="Google Maps" className="w-8 h-8 rounded-full bg-white/10 hover:bg-emerald-600 text-amber-100 flex items-center justify-center transition">
+                <MapPin className="w-4 h-4" aria-hidden="true" />
+              </a>
             </div>
           </div>
 

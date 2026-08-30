@@ -3,7 +3,7 @@
  *
  * Resolution order:
  *   1. NEXT_PUBLIC_SITE_URL  — set this in Railway (or Vercel) to your real
- *      public domain, e.g. https://fanacafe.com (no trailing slash).
+ *      public domain, e.g. https://fanacafe.com.et (no trailing slash).
  *   2. RAILWAY_PUBLIC_DOMAIN — auto-provided by Railway when deployed there.
  *   3. VERCEL_URL            — auto-provided by Vercel when deployed there.
  *   4. http://localhost:3000 — local development fallback only.

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { tickets, ticketItems, cafeTables, menuItems } from "@/db/schema";
+import { tickets, ticketItems, cafeTables, menuItems, announcements } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
@@ -9,6 +9,7 @@ import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireStaffOrAdmin, requireAdmin } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 
 const CUSTOMER_ORDER_LIMIT = 30;
 const CUSTOMER_ORDER_WINDOW_MS = 10 * 60 * 1000;
@@ -270,7 +271,81 @@ export async function POST(request: Request) {
         : [];
     const priceById = new Map(menuRows.map((m) => [m.id, effectivePrice(m).price]));
 
-    for (const it of items) {
+    // ── DAILY PROMOTION INTEGRITY ──
+    // The browser may name a Daily Board promotion, but it can never choose its
+    // menu items, quantities, active period, or price. Those are re-read from
+    // the announcement here before a normal ticket is created.
+    const promotionPayloadIndexes = new Map<number, number[]>();
+    for (let payloadIndex = 0; payloadIndex < items.length; payloadIndex++) {
+      const it = items[payloadIndex];
+      const hasPromotionId = it.promotionId !== undefined && it.promotionId !== null && it.promotionId !== "";
+      const hasPromotionItemIndex = it.promotionItemIndex !== undefined && it.promotionItemIndex !== null && it.promotionItemIndex !== "";
+      if (!hasPromotionId) {
+        if (hasPromotionItemIndex) return NextResponse.json({ error: "Invalid daily promotion item" }, { status: 400 });
+        continue;
+      }
+      const promotionId = Number(it.promotionId);
+      if (!Number.isInteger(promotionId) || promotionId < 1) {
+        return NextResponse.json({ error: "Invalid daily promotion" }, { status: 400 });
+      }
+      const indexes = promotionPayloadIndexes.get(promotionId) || [];
+      indexes.push(payloadIndex);
+      promotionPayloadIndexes.set(promotionId, indexes);
+    }
+
+    const promotionLineByPayloadIndex = new Map<number, { title: string; unitPrices: number[] }>();
+    const promotionIds = [...promotionPayloadIndexes.keys()];
+    if (promotionIds.length > 0) {
+      const promotionRows = await tx.select().from(announcements).where(inArray(announcements.id, promotionIds));
+      const promotionById = new Map(promotionRows.map((promotion) => [promotion.id, promotion]));
+
+      for (const [promotionId, payloadIndexes] of promotionPayloadIndexes) {
+        const announcement = promotionById.get(promotionId);
+        const promotion = announcement ? parseDailyPromotion(announcement.promotionItems) : null;
+        if (!announcement || !promotion || !isDailyPromotionOrderable(promotion, announcement)) {
+          return NextResponse.json({ error: "This daily promotion is not currently available" }, { status: 409 });
+        }
+        if (payloadIndexes.length !== promotion.items.length) {
+          return NextResponse.json({ error: "Promotion items no longer match this offer" }, { status: 409 });
+        }
+
+        let linePrices;
+        try {
+          linePrices = calculateDailyPromotionLinePrices(promotion, (menuItemId) => priceById.get(menuItemId) ?? -1);
+        } catch {
+          return NextResponse.json({ error: "Promotion menu items are no longer available" }, { status: 409 });
+        }
+
+        const usedPromotionItemIndexes = new Set<number>();
+        for (const payloadIndex of payloadIndexes) {
+          const it = items[payloadIndex];
+          const promotionItemIndex = Number(it.promotionItemIndex);
+          if (
+            !Number.isInteger(promotionItemIndex) ||
+            promotionItemIndex < 0 ||
+            promotionItemIndex >= promotion.items.length ||
+            usedPromotionItemIndexes.has(promotionItemIndex)
+          ) {
+            return NextResponse.json({ error: "Promotion items no longer match this offer" }, { status: 409 });
+          }
+          usedPromotionItemIndexes.add(promotionItemIndex);
+
+          const configuredItem = promotion.items[promotionItemIndex];
+          if (Number(it.menuItemId) !== configuredItem.menuItemId || Number(it.quantity) !== configuredItem.quantity) {
+            return NextResponse.json({ error: "Promotion items no longer match this offer" }, { status: 409 });
+          }
+          promotionLineByPayloadIndex.set(payloadIndex, { title: announcement.title, unitPrices: linePrices[promotionItemIndex].unitPrices });
+        }
+      }
+    }
+
+    // Expand promotion lines into their authoritative unit-price entries. This
+    // preserves an exact integer combo total even where a configured item has a
+    // quantity greater than one, while the resulting ticket remains standard
+    // ticket_items for the existing kitchen/cashier/waiter workflow.
+    const ticketRows: Array<{ menuItemId: number; name: string; category: string; price: number; quantity: number; notes: string }> = [];
+    for (let payloadIndex = 0; payloadIndex < items.length; payloadIndex++) {
+      const it = items[payloadIndex];
       const qty = Number(it.quantity);
       if (!Number.isFinite(qty) || !Number.isInteger(qty) || qty < 1 || qty > 100) {
         return NextResponse.json({ error: `Invalid quantity for "${it.name}"` }, { status: 400 });
@@ -283,25 +358,39 @@ export async function POST(request: Request) {
       if (!menuRow.isAvailable) {
         return NextResponse.json({ error: `Menu item "${it.name}" is currently out of stock` }, { status: 409 });
       }
+
+      const promotionLine = promotionLineByPayloadIndex.get(payloadIndex);
+      // A client-supplied price (including 0) is always overwritten. Promotion
+      // prices are only the unit prices calculated from trusted DB data above.
       it.price = priceById.get(menuId);
       it.quantity = qty;
+      if (!promotionLine) {
+        ticketRows.push({ menuItemId: menuId, name: it.name, category: it.category || "", price: Number(it.price), quantity: qty, notes: it.notes || "" });
+        continue;
+      }
+
+      const customerNotes = String(it.notes || "").trim().slice(0, 500);
+      const notes = [`Daily special: ${promotionLine.title}`, customerNotes].filter(Boolean).join(" — ");
+      for (const unitPrice of promotionLine.unitPrices) {
+        ticketRows.push({ menuItemId: menuId, name: menuRow.name, category: menuRow.category, price: unitPrice, quantity: 1, notes });
+      }
     }
 
     // Insert the submission's items. If a CONCURRENT duplicate of this exact
     // submission already inserted rows, the UNIQUE index on (ticket_id, key)
     // rejects ours → we return the already-recorded bill instead.
     try {
-      for (let idx = 0; idx < items.length; idx++) {
-        const it = items[idx];
+      for (let idx = 0; idx < ticketRows.length; idx++) {
+        const it = ticketRows[idx];
         const catSlug = String(it.category || "").toLowerCase();
         const stationName = routing[catSlug] || "kitchen";
         await tx.insert(ticketItems).values({
           ticketId,
-          menuItemId: it.menuItemId ?? null,
+          menuItemId: it.menuItemId,
           name: it.name,
           category: it.category || "",
           price: Number(it.price),
-          quantity: Number(it.quantity || 1),
+          quantity: it.quantity,
           notes: it.notes || "",
           stationName,
           stationStatus: "pending",

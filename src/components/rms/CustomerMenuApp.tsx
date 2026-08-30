@@ -9,6 +9,7 @@ import {
 import { MenuItem, Category, CafeTable, SiteSettings, Announcement, GalleryItem, Review } from "@/types";
 import { DEFAULT_SETTINGS, DEFAULT_CATEGORIES, DEFAULT_MENU_ITEMS } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
+import { calculateDailyPromotionLinePrices, dailyPromotionLabel, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { fixBrandText } from "@/lib/brand";
 import { useMenuText, useT } from "@/lib/i18n";
 import LanguageToggle from "@/components/LanguageToggle";
@@ -27,6 +28,10 @@ interface CartEntry {
   promotionId?: number;
   promotionItemIndex?: number;
   promotionTitle?: string;
+  promotionLabel?: string;
+  regularTotal?: number;
+  /** Promotion totals can differ from quantity × one unit price for combos. */
+  promotionLineTotal?: number;
   isFree?: boolean;
 }
 
@@ -261,36 +266,48 @@ export default function CustomerMenuApp() {
   const isDailySpecialInCart = (announcementId: number) => cart.some((c) => c.promotionId === announcementId);
 
   const addDailySpecial = (announcement: Announcement) => {
-    const promotionItems = announcement.promotionItems || [];
-    const resolvedItems = promotionItems.map((promotionItem) => ({
-      promotionItem,
-      menuItem: menuItems.find((menuItem) => menuItem.id === promotionItem.menuItemId),
-    }));
+    const promotion = parseDailyPromotion(announcement.promotionItems);
+    if (!promotion || !isDailyPromotionOrderable(promotion, announcement) || isDailySpecialInCart(announcement.id)) return;
+
+    const resolvedItems = promotion.items.map((promotionItem) => menuItems.find((menuItem) => menuItem.id === promotionItem.menuItemId));
     // The UI mirrors availability for immediate feedback; the order endpoint
     // repeats this check against live database values before saving the ticket.
-    if (!promotionItems.length || resolvedItems.some(({ menuItem }) => !menuItem?.isAvailable) || isDailySpecialInCart(announcement.id)) return;
-    if (addingSpecialIdsRef.current.has(announcement.id)) return;
+    if (resolvedItems.some((menuItem) => !menuItem?.isAvailable) || addingSpecialIdsRef.current.has(announcement.id)) return;
+
+    let linePrices;
+    try {
+      linePrices = calculateDailyPromotionLinePrices(promotion, (menuItemId) => effectivePrice(menuItems.find((menuItem) => menuItem.id === menuItemId)!).price);
+    } catch {
+      return;
+    }
 
     addingSpecialIdsRef.current.add(announcement.id);
     setCart((prev) => {
       if (prev.some((entry) => entry.promotionId === announcement.id)) return prev;
       return [
         ...prev,
-        ...resolvedItems.map(({ promotionItem, menuItem }, promotionItemIndex) => ({
-          lineId: `special-${announcement.id}-${promotionItemIndex}`,
-          menuItemId: menuItem!.id,
-          name: menuItem!.name,
-          category: menuItem!.category,
-          // This gives immediate cart feedback only. The API derives the real
-          // zero/free price again from the Daily Board configuration.
-          price: promotionItem.isFree ? 0 : effectivePrice(menuItem!).price,
-          quantity: promotionItem.quantity,
-          notes: "",
-          promotionId: announcement.id,
-          promotionItemIndex,
-          promotionTitle: announcement.title,
-          isFree: promotionItem.isFree,
-        })),
+        ...promotion.items.map((promotionItem, promotionItemIndex) => {
+          const menuItem = resolvedItems[promotionItemIndex]!;
+          const linePrice = linePrices[promotionItemIndex];
+          return {
+            lineId: `special-${announcement.id}-${promotionItemIndex}`,
+            menuItemId: menuItem.id,
+            name: menuItem.name,
+            category: menuItem.category,
+            // Client prices are display-only. The ticket API calculates every
+            // promotion price again from its database configuration and menu.
+            price: linePrice.unitPrices[0] || 0,
+            quantity: promotionItem.quantity,
+            notes: "",
+            promotionId: announcement.id,
+            promotionItemIndex,
+            promotionTitle: announcement.title,
+            promotionLabel: dailyPromotionLabel(promotion),
+            regularTotal: linePrice.regularTotal,
+            promotionLineTotal: linePrice.total,
+            isFree: linePrice.isFree,
+          };
+        }),
       ];
     });
     window.setTimeout(() => addingSpecialIdsRef.current.delete(announcement.id), 400);
@@ -300,7 +317,7 @@ export default function CustomerMenuApp() {
     setCart((prev) => prev.filter((entry) => entry.promotionId !== announcementId));
   };
 
-  const cartTotal = cart.reduce((s, c) => s + c.price * c.quantity, 0);
+  const cartTotal = cart.reduce((s, c) => s + (c.promotionLineTotal ?? c.price * c.quantity), 0);
   const cartCount = cart.reduce((s, c) => s + c.quantity, 0);
 
   const submitOrder = async () => {
@@ -442,8 +459,14 @@ export default function CustomerMenuApp() {
                   <div>
                     <p className="font-bold text-[#2C1B17] text-sm">{menuText(c.name)}</p>
                     {c.promotionTitle && <p className="text-[10px] font-semibold text-stone-500 mt-0.5">{menuText(c.promotionTitle)}</p>}
+                    {c.promotionLabel && <p className="text-[10px] font-black text-amber-700 mt-0.5">{c.promotionLabel}</p>}
                   </div>
-                  <p className={`font-extrabold whitespace-nowrap ${c.isFree ? "text-emerald-700" : "text-[#4E342E]"}`}>{c.isFree ? `${t("free")} · 0 ETB` : `${c.price * c.quantity} ETB`}</p>
+                  <div className="text-right whitespace-nowrap">
+                    {c.regularTotal !== undefined && c.promotionLineTotal !== undefined && c.regularTotal !== c.promotionLineTotal && (
+                      <p className="text-[10px] text-stone-400 line-through">{c.regularTotal} ETB</p>
+                    )}
+                    <p className={`font-extrabold ${c.isFree ? "text-emerald-700" : "text-[#4E342E]"}`}>{c.isFree ? `${t("free")} · 0 ETB` : `${c.promotionLineTotal ?? c.price * c.quantity} ETB`}</p>
+                  </div>
                 </div>
                 {c.promotionId !== undefined ? (
                   <div className="flex items-center gap-2 min-h-7">
@@ -538,12 +561,27 @@ export default function CustomerMenuApp() {
           {(() => {
             const a = announcements[slideIdx];
             const hasPhoto = Boolean(a?.imageUrl);
-            const promotionItems = a?.promotionItems || [];
+            const promotion = parseDailyPromotion(a?.promotionItems);
             const specialIsInCart = a ? isDailySpecialInCart(a.id) : false;
-            const canOrderSpecial = promotionItems.length > 0 && promotionItems.every((promotionItem) => {
-              const menuItem = menuItems.find((item) => item.id === promotionItem.menuItemId);
-              return Boolean(menuItem?.isAvailable);
-            });
+            const promotionLines = (() => {
+              if (!promotion) return null;
+              try {
+                return calculateDailyPromotionLinePrices(promotion, (menuItemId) => {
+                  const menuItem = menuItems.find((item) => item.id === menuItemId);
+                  return menuItem ? effectivePrice(menuItem).price : -1;
+                });
+              } catch {
+                return null;
+              }
+            })();
+            const canOrderSpecial = Boolean(
+              promotion &&
+              promotionLines &&
+              isDailyPromotionOrderable(promotion, a) &&
+              promotion.items.every((promotionItem) => menuItems.find((item) => item.id === promotionItem.menuItemId)?.isAvailable)
+            );
+            const regularPromotionTotal = promotionLines?.reduce((sum, line) => sum + line.regularTotal, 0) ?? 0;
+            const promotionTotal = promotionLines?.reduce((sum, line) => sum + line.total, 0) ?? 0;
             const boardContent = (
               <>
                 {/* full-bleed photo background (no frame) */}
@@ -576,7 +614,15 @@ export default function CustomerMenuApp() {
                       {menuText(a.description)}
                     </p>
                   )}
-                  {promotionItems.length > 0 && (
+                  {promotion && promotionLines && (
+                    <div className={`mt-2 text-[11px] font-bold ${hasPhoto ? "text-amber-100 drop-shadow" : "text-[#3D2314]"}`}>
+                      <span>{dailyPromotionLabel(promotion)}</span>
+                      {regularPromotionTotal !== promotionTotal && (
+                        <span className="ml-2"><span className="line-through opacity-75">{regularPromotionTotal} ETB</span> → {promotionTotal} ETB</span>
+                      )}
+                    </div>
+                  )}
+                  {promotion && (
                     <span className={`mt-3 inline-flex self-start items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-black uppercase tracking-wide ${
                       hasPhoto ? "bg-white/90 text-[#2C1B17]" : "bg-[#2C1B17] text-amber-200"
                     }`}>

@@ -7,7 +7,7 @@ import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
 import { fixSiteText } from "@/lib/brand";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireAdmin } from "@/lib/session";
-import { parseDailyPromotionItems, serializeDailyPromotionItems } from "@/lib/daily-promotion";
+import { parseDailyPromotion, serializeDailyPromotion } from "@/lib/daily-promotion";
 
 function isActiveToday(a: { startDate?: string | null; endDate?: string | null }): boolean {
   const today = new Date().toISOString().slice(0, 10);
@@ -33,7 +33,7 @@ export async function GET(request: Request) {
       description: fixSiteText(a.description),
       // Invalid legacy data is deliberately returned as an empty configuration,
       // so only a validated, owner-configured announcement can be ordered.
-      promotionItems: parseDailyPromotionItems(a.promotionItems),
+      promotionItems: parseDailyPromotion(a.promotionItems),
     }));
     return NextResponse.json(response, { status: 200, headers: { "Cache-Control": PUBLIC_CACHE_CONTROL } });
   } catch (error) {
@@ -50,7 +50,7 @@ export async function POST(request: Request) {
     if (!body.title) return NextResponse.json({ error: "Title required" }, { status: 400 });
     let promotionItems: string | null;
     try {
-      promotionItems = serializeDailyPromotionItems(body.promotionItems);
+      promotionItems = serializeDailyPromotion(body.promotionItems);
     } catch (error) {
       return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid promotion items" }, { status: 400 });
     }
@@ -85,7 +85,7 @@ export async function PUT(request: Request) {
     try {
       promotionItems = body.promotionItems === undefined
         ? existing[0].promotionItems
-        : serializeDailyPromotionItems(body.promotionItems);
+        : serializeDailyPromotion(body.promotionItems);
     } catch (error) {
       return NextResponse.json({ error: error instanceof Error ? error.message : "Invalid promotion items" }, { status: 400 });
     }

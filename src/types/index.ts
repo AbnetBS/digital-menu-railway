@@ -17,11 +17,37 @@ export interface MenuItem {
   sortOrder?: number;
 }
 
+export type DailyPromotionType =
+  | "special_price"
+  | "percentage_discount"
+  | "fixed_amount_discount"
+  | "buy_x_get_y"
+  | "buy_x_get_y_discounted"
+  | "combo";
+
 export interface DailyPromotionItem {
   menuItemId: number;
   quantity: number;
-  /** Free item price is resolved as 0 by the server, never supplied by the client. */
-  isFree: boolean;
+  /** Only used by Buy X Get Y promotions. */
+  role?: "buy" | "get";
+}
+
+/**
+ * The orderable configuration stored in an announcement's existing
+ * `promotion_items` JSON column. It only references real menu items.
+ */
+export interface DailyPromotion {
+  type: DailyPromotionType;
+  items: DailyPromotionItem[];
+  isActive: boolean;
+  startTime?: string | null;
+  endTime?: string | null;
+  /** Unit price for Special Price; total bundle price for Combo. */
+  specialPrice?: number | null;
+  discountPercent?: number | null;
+  discountAmount?: number | null;
+  /** Discount applied to the Get item(s) in Buy X Get Y Discounted. */
+  getDiscountPercent?: number | null;
 }
 
 export interface Announcement {
@@ -31,8 +57,8 @@ export interface Announcement {
   imageUrl?: string | null;
   startDate?: string | null;
   endDate?: string | null;
-  /** Existing menu items and quantities included when this Daily Board card is ordered. */
-  promotionItems?: DailyPromotionItem[];
+  /** Parsed from the existing `promotion_items` column; null = display-only. */
+  promotionItems?: DailyPromotion | null;
   priority?: number;
   createdAt?: string;
 }

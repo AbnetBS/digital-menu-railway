@@ -1,7 +1,7 @@
 # 🚀 OFFICIAL DEPLOYMENT GUIDE — Make Fana Cafe a Real Live Website
 # (No more localhost problems — deploy once, works forever)
 
-This guide turns the code into an official website like **https://fanacafe.com**
+This guide turns the code into an official website like **https://fanacafe.com.et**
 with a real cloud database, admin dashboard, and 24/7 online orders.
 
 Recommended stack (current plan):
@@ -77,21 +77,21 @@ STEP 3 — DEPLOY TO RAILWAY (5 minutes)
 ✅ Customers never see raw errors — just a friendly "call us" message.
 
 ════════════════════════════════════════
-STEP 4 — CONNECT YOUR OWN DOMAIN (fanacafe.com) (optional, ~$10/year)
+STEP 4 — CONNECT YOUR OWN DOMAIN (fanacafe.com.et)
 ════════════════════════════════════════
-1. Buy "fanacafe.com" from Namecheap, GoDaddy, or any registrar.
-2. In Railway → your service → Settings → Networking → "Custom Domain" → add "fanacafe.com".
+1. Buy "fanacafe.com.et" from Namecheap, GoDaddy, or any registrar.
+2. In Railway → your service → Settings → Networking → "Custom Domain" → add "fanacafe.com.et".
 3. Railway shows the DNS records (CNAME + verification). Copy them into your
    registrar's DNS page.
-4. Wait 5–30 minutes → https://fanacafe.com is LIVE with free HTTPS.
+4. Wait 5–30 minutes → https://fanacafe.com.et is LIVE with free HTTPS.
 
-   Then also set  NEXT_PUBLIC_SITE_URL = https://fanacafe.com  so the sitemap
+   Then also set  NEXT_PUBLIC_SITE_URL = https://fanacafe.com.et  so the sitemap
    and robots.txt use your real domain.
 
 ════════════════════════════════════════
 HOW THE CAFE RUNS IT DAILY (owner manual)
 ════════════════════════════════════════
-• Site manager opens  https://fanacafe.com/admin  on any phone/computer.
+• Site manager opens  https://fanacafe.com.et/admin  on any phone/computer.
   Password = the ADMIN_PASSWORD from Railway env (changeable in Settings tab).
 • Edit menu / prices / photos (upload from phone!) → Menu & Food Photos tab.
 • Edit hero background → Website Copy & Hero Photo tab.

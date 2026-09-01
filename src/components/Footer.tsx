@@ -154,8 +154,7 @@ export default function Footer({ settings, onOpenAdmin, isAdminLoggedIn }: Foote
             className="flex items-center gap-2 bg-[#C9A227]/10 hover:bg-[#C9A227]/20 border border-[#C9A227]/30 px-3.5 py-2 rounded-xl transition"
           >
             <Heart className="w-4 h-4 text-[#C9A227] fill-[#C9A227]" />
-            <span className="font-extrabold text-[#C9A227] tracking-wide">AB Web</span>
-            <span className="text-stone-400">📞 +251 91 908 1802</span>
+            <span className="font-extrabold text-[#C9A227] tracking-wide">Powered by - +251919081802</span>
           </a>
         </div>
 

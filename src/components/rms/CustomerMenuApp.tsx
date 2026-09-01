@@ -68,6 +68,9 @@ export default function CustomerMenuApp() {
   // A special is added at most once until it is removed from this cart. The ref
   // closes the gap before React has rendered the first click's state update.
   const addingSpecialIdsRef = useRef(new Set<number>());
+  // Used to jump the item grid back to the TOP of a category when a chip is tapped.
+  const menuGridRef = useRef<HTMLDivElement | null>(null);
+  const stickyBarRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const sig = JSON.stringify(cart);
@@ -244,6 +247,23 @@ export default function CustomerMenuApp() {
       ),
     [menuItems, category, search, menuText]
   );
+
+  // When a category chip is tapped, jump the menu list back to the TOP of that
+  // category instead of leaving the user at the scrolled-down position of the
+  // previous list. The offset accounts for the sticky app header + sticky
+  // search/category bar so the first item is never hidden underneath them.
+  const selectCategory = (slug: string) => {
+    setCategory(slug);
+    requestAnimationFrame(() => {
+      const grid = menuGridRef.current;
+      if (!grid) return;
+      const bar = stickyBarRef.current;
+      const barH = bar ? bar.getBoundingClientRect().height : 0;
+      const HEADER_H = 61; // height of the sticky dark app header
+      const top = grid.getBoundingClientRect().top + window.scrollY - (HEADER_H + barH);
+      window.scrollTo({ top: Math.max(top, 0), behavior: "auto" });
+    });
+  };
 
   // Unified quantity control: qty 0 = remove from cart (fixes "accidental Add" confusion)
   // Applies the auto-scheduled SALE price when active for today.
@@ -690,7 +710,7 @@ export default function CustomerMenuApp() {
       )}
 
       {/* search + categories */}
-      <div className="sticky top-[61px] z-30 bg-[#FAF6F0] px-4 pt-3 pb-2 space-y-2 max-w-lg mx-auto">
+      <div ref={stickyBarRef} className="sticky top-[61px] z-30 bg-[#FAF6F0] px-4 pt-3 pb-2 space-y-2 max-w-lg mx-auto">
         <div className="relative">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
           <input
@@ -704,7 +724,7 @@ export default function CustomerMenuApp() {
           {categories.map((c) => (
             <button
               key={c.slug}
-              onClick={() => setCategory(c.slug)}
+              onClick={() => selectCategory(c.slug)}
               className={`px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap border transition ${
                 category === c.slug ? "bg-[#4E342E] text-amber-200 border-[#C9A227]" : "bg-white text-stone-600 border-stone-200"
               }`}
@@ -745,7 +765,7 @@ export default function CustomerMenuApp() {
       )}
 
       {/* menu grid */}
-      <div className="px-4 grid grid-cols-2 gap-3 max-w-lg mx-auto">
+      <div ref={menuGridRef} className="px-4 grid grid-cols-2 gap-3 max-w-lg mx-auto">
         {filteredMenu.map((m) => {
           const qty = cartQty(m.id);
           const out = !m.isAvailable;
@@ -1125,9 +1145,9 @@ export default function CustomerMenuApp() {
             © {new Date().getFullYear()} {brandName} • {settings.plus_code || "2Q7Q+W2 Addis Ababa"}
           </p>
           <div className="bg-[#C9A227]/10 border border-[#C9A227]/30 rounded-xl py-2.5 px-3">
-            <p className="text-[11px] font-black text-[#C9A227] tracking-wider uppercase">Powered by AB Web</p>
+            <p className="text-[11px] font-black text-[#C9A227] tracking-wider uppercase">Powered by - +251919081802</p>
             <a href="tel:+251919081802" className="text-[11px] font-bold text-stone-300 hover:text-amber-300">
-              📞 +251 91 908 1802 — AB Web · Digital Menus & Websites
+              📞 +251 91 908 1802
             </a>
           </div>
         </div>

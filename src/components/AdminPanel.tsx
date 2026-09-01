@@ -61,6 +61,7 @@ export default function AdminPanel({
   const [isMenuSubmitting, setIsMenuSubmitting] = useState(false);
   const [editingGallery, setEditingGallery] = useState<Partial<GalleryItem> | null>(null);
   const [isGallerySubmitting, setIsGallerySubmitting] = useState(false);
+  const [bulkPrepTime, setBulkPrepTime] = useState("");
 
   const [newPassword, setNewPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -559,7 +560,7 @@ export default function AdminPanel({
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-bold text-emerald-300">📋 Bulk Menu Import</h3>
-                  <p className="text-[11px] text-stone-400 mt-0.5">Paste your full dish list — one line per item in the format below. Duplicates by name are skipped automatically.</p>
+                  <p className="text-[11px] text-stone-400 mt-0.5">Paste your full dish list — one line per item in the format below. Items matching an existing name are updated in place (only the differences change, e.g. a new prep time).</p>
                 </div>
                 <button
                   id="bulk-import-btn"
@@ -572,7 +573,7 @@ export default function AdminPanel({
                       const r = await fetch("/api/menu-bulk", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ text: ta.value }),
+                        body: JSON.stringify({ text: ta.value, prepTime: bulkPrepTime }),
                       });
                       const d = await r.json();
                       alert(d.message || d.error || "Import done");
@@ -589,14 +590,28 @@ export default function AdminPanel({
                   <Upload className="w-4 h-4" /> Import Items
                 </button>
               </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-emerald-200 mb-1">⏱ Prep Time to apply (all items)</label>
+                  <input
+                    value={bulkPrepTime}
+                    onChange={(e) => setBulkPrepTime(e.target.value)}
+                    placeholder="e.g. 15-20 min — leave empty to keep existing times"
+                    className="w-full bg-black/30 border border-stone-700 rounded-xl p-2.5 text-xs text-stone-200"
+                  />
+                  <p className="text-[10px] text-stone-500 mt-1">Type a time here to set/update it on EVERY item in your paste (even existing ones). Leave empty to keep each item's current time. A per-line &quot;Name | Category | Price | PrepTime | Description&quot; value wins for that item.</p>
+                </div>
+              </div>
+
               <textarea
                 id="bulk-menu-text"
                 rows={5}
-                placeholder="Fresh Mango Juice | juices | 150 | Pure mango blended with honey & lime&#10;Chicken Shawarma | snack-and-wrap | 380 | Grilled chicken wrap with garlic sauce&#10;Classic Margherita | pizza | 420 | mozzarella, basil & tomato sauce&#10;...paste more lines..."
+                placeholder="Fresh Mango Juice | juices | 150 | 10 min | Pure mango blended with honey & lime&#10;Chicken Shawarma | snack-and-wrap | 380 | 15-20 min | Grilled chicken wrap with garlic sauce&#10;Classic Margherita | pizza | 420 | 20 min | mozzarella, basil & tomato sauce&#10;...paste more lines..."
                 className="w-full bg-black/30 border border-stone-700 rounded-xl p-3 text-xs text-stone-200 font-mono leading-relaxed"
               />
               <p className="text-[10px] text-stone-500">
-                Format per line: <code className="text-[#C9A227]">Name | Category-slug | Price | Description(optional)</code>. Categories: soup, burger, pasta, salad, pizza, rice, ethiopian-traditional-meals, sandwich, snack-and-wrap, juices, hot-drinks, soft-drinks, pastry-and-cakes. Description optional.
+                Format per line: <code className="text-[#C9A227]">Name | Category-slug | Price | PrepTime(optional) | Description(optional)</code>. Categories: soup, burger, pasta, salad, pizza, rice, ethiopian-traditional-meals, sandwich, snack-and-wrap, juices, hot-drinks, soft-drinks, pastry-and-cakes. Same name → updates the item (re-category, re-price, new prep time) instead of duplicating.
               </p>
             </div>
 

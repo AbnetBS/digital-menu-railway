@@ -1,45 +1,22 @@
 "use client";
 
-export const FALLBACK_FOOD_IMAGE = "/images/placeholder-food.svg";
-export const FALLBACK_DRINK_IMAGE = "/images/placeholder-drink.svg";
-
 /**
- * Optimizes remote image URLs (specifically Pexels hotlinks) by applying
- * strict crop, dimensions, and compression query parameters.
- * Application-controlled image references (/api/images/{id}, local /images/..., data:)
- * are returned as-is.
+ * Browser-side image helpers.
+ *
+ * The pure URL rules (`optimizeImageUrl`, the placeholder constants) moved to
+ * `src/lib/image-url.ts` so the SERVER can build the exact same first-screen
+ * photo URLs for its `<link rel="preload">` tags — a `"use client"` module
+ * cannot be called from a server component. They are re-exported here, so every
+ * existing `from "@/lib/image-utils"` import keeps working untouched.
  */
-export function optimizeImageUrl(
-  url: string | null | undefined,
-  maxWidth = 480,
-  maxHeight = 320
-): string {
-  if (!url || typeof url !== "string") return FALLBACK_FOOD_IMAGE;
-  const trimmed = url.trim();
-  if (!trimmed) return FALLBACK_FOOD_IMAGE;
-
-  // Local /api/images/{id} or local static files / data URLs stay untouched
-  if (trimmed.startsWith("/") || trimmed.startsWith("data:")) {
-    return trimmed;
-  }
-
-  // Dynamic Pexels CDN optimization
-  if (trimmed.includes("images.pexels.com")) {
-    try {
-      const parsed = new URL(trimmed);
-      parsed.searchParams.set("auto", "compress");
-      parsed.searchParams.set("cs", "tinysrgb");
-      parsed.searchParams.set("fit", "crop");
-      parsed.searchParams.set("w", String(maxWidth));
-      parsed.searchParams.set("h", String(maxHeight));
-      return parsed.toString();
-    } catch {
-      return trimmed;
-    }
-  }
-
-  return trimmed;
-}
+export {
+  FALLBACK_FOOD_IMAGE,
+  FALLBACK_DRINK_IMAGE,
+  MENU_CARD_IMG_W,
+  MENU_CARD_IMG_H,
+  FIRST_SCREEN_PHOTOS,
+  optimizeImageUrl,
+} from "@/lib/image-url";
 
 /**
  * Compresses a photo on the device before upload.

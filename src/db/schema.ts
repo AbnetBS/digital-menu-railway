@@ -113,6 +113,36 @@ export const tickets = pgTable("tickets", {
   // verification step for digital/card payments). Null for unpaid/cancelled.
   verifiedBy: varchar("verified_by", { length: 100 }),
   verifiedAt: timestamp("verified_at"),
+  // Guest "we are done — please bring the bill/receipt" request (Group 8).
+  // Stamped from the guest's own phone via the public table-status endpoint
+  // once the food is served; cleared by staff after the receipt is delivered.
+  // It never changes the order or payment status by itself.
+  receiptRequestedAt: timestamp("receipt_requested_at"),
+});
+
+/**
+ * One row per ACCEPTED order submission (Group 8).
+ *
+ * The bill of a table grows over time — the guest orders tea, then orders tea
+ * again ten minutes later — and identical pending lines are now folded into the
+ * existing row so no screen ever shows "1 Tea, 1 Sandwich, 1 Tea". Folding a
+ * line means NOT inserting a row for it, which would have lost the per-row
+ * idempotency key that protects against a retried/double-tapped submission.
+ * This table records the submission itself, so the duplicate guard keeps working
+ * no matter how many of its lines were merged away.
+ */
+export const orderSubmissions = pgTable("order_submissions", {
+  id: serial("id").primaryKey(),
+  ticketId: integer("ticket_id").notNull(),
+  /** Client-generated submission UUID (the same value as tickets.idempotencyKey). */
+  idempotencyKey: varchar("idempotency_key", { length: 64 }).notNull(),
+  /** "customer" (QR) or "staff" (waiter/cashier) — who sent this submission. */
+  source: varchar("source", { length: 20 }),
+  /** Waiter name for staff submissions, null for a guest's own phone. */
+  waiterName: varchar("waiter_name", { length: 100 }),
+  lines: integer("lines").default(0),
+  mergedLines: integer("merged_lines").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const ticketItems = pgTable("ticket_items", {

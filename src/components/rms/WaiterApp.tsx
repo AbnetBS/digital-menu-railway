@@ -6,6 +6,7 @@ import {
   Smartphone, Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing,
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
+import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
 import { unlockAudio, playDing } from "@/lib/sound";
@@ -506,6 +507,14 @@ export default function WaiterApp() {
                 {t.activeTicketBy ? (
                   <p className="text-[10px] text-[#C9A227] mt-1 font-semibold">👤 {t.activeTicketBy}</p>
                 ) : null}
+                {t.activeTicketAt ? (
+                  <p className="text-[10px] text-stone-500 mt-0.5 font-semibold">
+                    🕒 since {formatClock(t.activeTicketAt)} • {waitingLabel(t.activeTicketAt)}
+                  </p>
+                ) : null}
+                {t.activeTicketReceiptRequestedAt ? (
+                  <p className="text-[10px] text-emerald-400 mt-1 font-black">🧾 bill requested</p>
+                ) : null}
               </button>
             ))}
           </div>
@@ -633,6 +642,16 @@ export default function WaiterApp() {
             <div className="flex-1">
               <h2 className="font-serif font-bold text-amber-100 text-lg leading-none">{selectedTable.name} — Bill</h2>
               <p className="text-[11px] text-stone-400 capitalize">Status: {activeTicket.status.replace(/_/g, " ")}</p>
+              {/* Group 8: WHEN the order arrived and WHO sent it — the two things
+                  staff keep asking for — plus the guest's own bill request. */}
+              <p className="text-[11px] text-[#C9A227] font-bold mt-0.5">
+                🕒 {formatDateTime(activeTicket.createdAt)} • by {activeTicket.confirmedBy || activeTicket.createdBy || "—"}
+              </p>
+              {activeTicket.receiptRequestedAt && (
+                <p className="mt-1 inline-block text-[10px] font-black text-emerald-300 bg-emerald-950/60 border border-emerald-700 rounded-lg px-2 py-0.5">
+                  🧾 Guest asked for the bill at {formatClock(activeTicket.receiptRequestedAt)}
+                </p>
+              )}
             </div>
             {activeTicket.status !== "ready_for_payment" && (
               <button onClick={() => setView("order")} className="text-xs bg-[#C9A227] text-[#2C1B17] px-3 py-2 rounded-lg font-bold flex items-center gap-1">

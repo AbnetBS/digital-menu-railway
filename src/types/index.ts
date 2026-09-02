@@ -140,6 +140,10 @@ export interface CafeTable {
   activeTicketId?: number | null;
   activeTicketTotal?: number;
   activeTicketBy?: string | null; // who is handling the open bill (createdBy / confirmedBy)
+  /** When the open bill started (Group 8). */
+  activeTicketAt?: string | null;
+  /** Guest tapped "bring us the bill" from their phone (Group 8). */
+  activeTicketReceiptRequestedAt?: string | null;
 }
 
 export type PaymentMethod = "cash" | "card" | "online" | "telebirr" | "cbe";
@@ -160,6 +164,10 @@ export interface TicketItem {
   quantity: number;
   notes?: string | null;
   removed: boolean;
+  /** Which crew makes it: "kitchen" (food) or "barista" (drinks/cake). */
+  stationName?: string | null;
+  /** Crew progress: pending → accepted → done. */
+  stationStatus?: string | null;
   createdAt?: string;
   idempotencyKey?: string | null;
 }
@@ -181,6 +189,8 @@ export interface Ticket {
   confirmedBy?: string | null;
   verifiedBy?: string | null;
   verifiedAt?: string | null;
+  /** Guest asked for the bill/receipt (Group 8). Null until they tap it. */
+  receiptRequestedAt?: string | null;
   items?: TicketItem[];
 }
 

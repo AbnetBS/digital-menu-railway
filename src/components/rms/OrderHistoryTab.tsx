@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Search, RefreshCw, CreditCard, Banknote, Smartphone, ImageIcon, X, Trash2 } from "lucide-react";
 import { Ticket, TicketItem } from "@/types";
+import { formatDateTime, groupOrderLines, type OrderLine } from "@/lib/order-lines";
 
 export default function OrderHistoryTab() {
   const [orders, setOrders] = useState<Ticket[]>([]);
@@ -66,6 +67,13 @@ export default function OrderHistoryTab() {
     const d = t.closedAt || t.updatedAt;
     return d ? new Date(d).toLocaleString() : "—";
   };
+
+  /**
+   * One line per dish, however many times the table added it during the visit.
+   * New orders are already merged in the database; this collapses the duplicates
+   * left on bills created before that, so history reads "2 Tea" not "1 Tea, 1 Tea".
+   */
+  const displayItems = (t: Ticket) => groupOrderLines((t.items || []) as OrderLine[], { includeRemoved: true });
 
   return (
     <div className="space-y-5">
@@ -131,6 +139,10 @@ export default function OrderHistoryTab() {
                   <p className="text-[10px] text-stone-500">
                     {fmtTime(o)} • by {o.createdBy || "—"}
                   </p>
+                  {/* Group 8: when the order actually ARRIVED, not just when it closed. */}
+                  <p className="text-[10px] text-stone-500">
+                    🕒 arrived {formatDateTime(o.createdAt)}
+                  </p>
                 </div>
                 <div className="text-right flex flex-col items-end gap-1.5">
                   <div className="flex items-center gap-1.5">
@@ -174,15 +186,15 @@ export default function OrderHistoryTab() {
 
               {/* items */}
               <div className="bg-[#3D2314] rounded-xl p-3 space-y-1.5">
-                {(o.items || []).map((i: TicketItem) => (
-                  <div key={i.id} className={`text-xs flex justify-between gap-2 ${i.removed ? "opacity-40 line-through" : ""}`}>
+                {displayItems(o).map((i) => (
+                  <div key={i.ids.join("-")} className={`text-xs flex justify-between gap-2 ${i.removed ? "opacity-40 line-through" : ""}`}>
                     <div className="flex-1 min-w-0">
                       <span className="text-stone-200">
                         {i.name} <span className="text-stone-500">x{i.quantity}</span>
                       </span>
                       {i.notes && <p className="text-[10px] text-amber-300/80 italic">📝 {i.notes}</p>}
                     </div>
-                    <span className="font-bold text-amber-200 shrink-0">{i.price * i.quantity} ETB</span>
+                    <span className="font-bold text-amber-200 shrink-0">{Number(i.price ?? 0) * i.quantity} ETB</span>
                   </div>
                 ))}
               </div>

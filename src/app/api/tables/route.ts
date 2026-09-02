@@ -49,6 +49,12 @@ export async function GET() {
         activeTicketTotal: tk ? tk.totalAmount : 0,
         // Who is handling this table: the confirmer if set, else the order creator.
         activeTicketBy: tk ? tk.confirmedBy || tk.createdBy || null : null,
+        // Group 8: how long the table has been open, and whether the guest has
+        // already tapped "bring us the bill" from their own phone.
+        activeTicketAt: tk?.createdAt ? new Date(tk.createdAt).toISOString() : null,
+        activeTicketReceiptRequestedAt: tk?.receiptRequestedAt
+          ? new Date(tk.receiptRequestedAt).toISOString()
+          : null,
       };
     });
 

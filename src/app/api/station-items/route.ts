@@ -40,8 +40,13 @@ export async function GET(request: Request) {
         orderNumber: tickets.orderNumber,
         status: tickets.status,
         totalAmount: tickets.totalAmount,
+        receiptRequestedAt: tickets.receiptRequestedAt,
         createdBy: tickets.createdBy,
         confirmedBy: tickets.confirmedBy,
+        // Group 8: the crew needs to know WHEN the order arrived (and how long it
+        // has been waiting), not just that it exists.
+        createdAt: tickets.createdAt,
+        updatedAt: tickets.updatedAt,
       })
       .from(tickets)
       .where(notInArray(tickets.status, ["paid", "cancelled"]));
@@ -79,6 +84,10 @@ export async function GET(request: Request) {
         totalAmount: t.totalAmount,
         createdBy: t.createdBy,
         confirmedBy: t.confirmedBy,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+        // A guest asking for the bill is the crew's cue that the table is waiting.
+        receiptRequestedAt: t.receiptRequestedAt,
         items: map.get(t.id) || [],
       }));
 

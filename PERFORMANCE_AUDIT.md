@@ -580,6 +580,368 @@ new) · all pages 200 · harness run: **ALL CHECKS PASSED** (exit 0). Group 7 NO
 4. Try `PUT /api/tickets` with an illegal transition (e.g. `paid` → `preparing`) — it
    returns 400.
 
+## 5o. Group 7 — "food photos appear together" on a QR scan (2026-09-02)
+
+**Owner report:** scanning a table QR with a phone that has never visited before showed the
+dish photos downloading one after another — card 1 paints, then card 2, then card 3 — instead
+of the whole screen of food appearing at once.
+
+### Root cause (three separate problems, all on the customer path)
+
+**Inspection:** `/menu?table=N` renders the grid the instant the menu JSON arrives, and every
+card was a bare `<img loading="lazy">`. Three things then worked against us:
+
+1. **No coordination.** Each `<img>` fetched on its own, in DOM order, at default priority —
+   a sequential trickle rather than one parallel burst. Nothing started before React painted
+   the cards, so the download clock only began *after* four API round-trips.
+2. **Massively oversized bytes for uploaded photos.** `optimizeImageUrl()` only optimised
+   Pexels hotlinks; an application photo (`/api/images/{id}`) was served at its stored size —
+   a ~900px JPEG of 100-250KB — into a card that renders it at ~190 CSS px. Eight first-screen
+   dishes ≈ **1MB+** of pixels on a cold phone.
+3. **No placeholder discipline.** A half-painted JPEG is visible while it streams, so the
+   progressive download was *seen* rather than hidden.
+
+### Fix
+
+**1. One parallel, high-priority batch + synchronized reveal** (`src/components/ImageReveal.tsx`, new)
+
+- `<ImageBatchProvider urls={firstScreenPhotoUrls}>` fires the first screen of dish photos as
+  `<link rel="preload" as="image" fetchpriority="high">` the moment the URLs are known — before
+  the cards paint, all at once, instead of one request per card in DOM order.
+- `<RevealImage>` renders each photo over a shimmer placeholder (`globals.css` → `.img-shimmer`,
+  `prefers-reduced-motion` aware) and holds it at `opacity-0` until the batch is released, then
+  cross-fades **all of them in together** (500ms).
+- The gate is bounded: a 2.5s hard timeout plus per-photo `load`/`error` settlement means one
+  slow or dead photo can never hold the menu hostage. Names, prices and the ±buttons are on
+  screen and usable the whole time — **ordering was never blocked by an image**.
+- Below-the-fold cards stay `loading="lazy"` (no mobile data spent on dishes nobody scrolled
+  to) and fade in individually; first-screen cards switched to `loading="eager"` +
+  `fetchPriority="high"`.
+- While the customer is typing a search the batch is empty, so results never blink back to
+  placeholders on every keystroke.
+- Safety nets: a photo cached before hydration is reconciled through the ref callback, a broken
+  photo still swaps in `placeholder-food.svg` exactly as the old inline `onError` did, and a
+  15s timer guarantees a photo can never stay invisible.
+
+**2. Photos are now served at their rendered size** (`src/lib/image-size.ts`,
+`src/lib/image-variant.ts`, `src/app/api/images/[id]/route.ts`, `src/lib/image-utils.ts`)
+
+- `optimizeImageUrl()` now also rewrites `/api/images/{id}` → `/api/images/{id}?w=&h=`, and the
+  endpoint downscales/centre-crops to that box and returns WebP via `sharp`.
+- Requested sizes snap UP to a fixed allow-list (`160…1600`), which both maximises cache hits
+  (every card asks for the same `400x256` box) and bounds the CPU an outsider can request.
+- Derived variants are held in a small in-process LRU (150 entries), so a warm instance skips
+  both Postgres and the re-encode.
+
+**Measured** (`scripts/verify-image-display.ts`, synthetic 900x675 phone-upload JPEG):
+**128.7KB → 9.0KB per menu card (-93%)**; eight first-screen dishes ≈ **1.03MB → 72KB**.
+
+**Nothing else changed — explicit guarantees**
+
+- `/api/images/{id}` with **no parameters** returns the stored bytes and stored MIME type,
+  exactly as before: admin previews, receipt photos, waiter/kitchen screens and every
+  already-printed QR are untouched.
+- Derivation is best-effort only. No `sharp`, animated GIF, undecodable blob, empty blob, or a
+  result heavier than the original ⇒ the stored bytes are served. A variant can only ever help.
+- `cdn_images` ids are immutable (replacing a photo INSERTs a new row), so `Cache-Control:
+  public, max-age=31536000, immutable` remains correct for variants too.
+- Pexels hotlinks, `data:` URLs, `/logo.png` and the placeholder SVGs are byte-for-byte
+  unaffected by `optimizeImageUrl()`; the rewrite is idempotent.
+- No schema change, no new dependency (`sharp` is already an optional dependency of `next`),
+  no change to the upload flow, the order flow, the loading skeleton or the QR URLs.
+
+### Regression guards (both wired into `npm test`)
+
+- `scripts/verify-image-reveal.mjs` — the batch is fired as high-priority image preloads, has a
+  timeout + error settlement, cleans its links up, the customer grid is wrapped in it, only the
+  first screen is gated, search is exempt, cards no longer use a bare `<img>`, and the endpoint
+  still serves originals when asked.
+- `scripts/verify-image-display.ts` — real `sharp` assertions: variant is produced, is smaller,
+  matches the requested box, never upscales, and every failure path returns null; plus the
+  allow-list snapping and the LRU.
+
+### How to verify on a real phone after deploying
+
+1. Open the table QR in a **private/incognito** window (a cold cache is the whole point) with
+   DevTools → Network → "Disable cache" and throttling set to *Fast 4G*.
+2. The eight first-screen `/api/images/{id}?w=400&h=250` requests should start **together**
+   (same wall-clock start, high priority, ~9-30KB each), not one after another.
+3. Cards show a soft shimmer, then every photo fades in **at once**; scroll down and the rest
+   load lazily as they enter the viewport.
+4. Repeat the scan: photos come from disk cache and the grid is instant.
+5. `/api/images/{id}` **without** parameters still returns the original JPEG (right-click a
+   receipt photo in the cashier → open in a new tab).
+
+## 5p. Group 8 — six guest-facing order features (2026-09-02)
+
+Requested by the owner after the photo fix: live order status on the guest's own phone, arrival
+time + waiter name on the crew/staff screens, duplicate lines merged, a "bring us the bill"
+button, the review as the last step of the flow, and one more round on image loading.
+
+### 1 · Live order status on the guest's phone (`/api/table-status`, `src/components/rms/OrderStatus.tsx`)
+
+- **New public endpoint** `GET /api/table-status?table=N` → the table's open bill: order number,
+  phase, kitchen progress, barista progress, every line (name/qty/note/state), totals, arrival
+  time, bill-request time. `POST /api/table-status` → the guest's "bring us the bill/receipt" tap.
+- **Table-scoped on purpose**: a bill can be opened by the *waiter's* phone, and the guest who
+  then scans the same QR must see that same order. There is no per-device token to key on, and
+  the table id is already public (it is printed on the QR).
+- **What it never exposes**: no staff names, no PIN/session data, no receipt photos, no payment
+  verification audit, no other table's rows, no bill older than the 30-minute grace window (which
+  exists only so the thank-you/review step survives payment). Rate-limited per IP
+  (240 reads / 20 requests per 10 min) and `Cache-Control: no-store`.
+- **The only write it performs** is `receipt_requested_at` (+ `updated_at`) on that table's open
+  ticket, guarded by `WHERE receipt_requested_at IS NULL` so two guests tapping at once keep the
+  *first* request time. It can never touch a status, a price or a quantity.
+- **Phases** (`customerOrderPhase`, `src/lib/order-lines.ts`): `waiting` (sent, waiter has not
+  confirmed) → `confirmed` → `preparing` → `ready`, then `bill` / `paid`. A bill with **no kitchen
+  items** reports `drinks_only` and shows **no progress bar** — coffee, juice and cake are handed
+  over in seconds, so a "preparing…" bar for a macchiato would be noise. Drinks are still listed.
+- **UI**: a pill above the አማርኛ toggle (only once the table has an order), a slim status line
+  under the header, and a full panel with the kitchen progress bar, every dish, the bill button and
+  the review shortcut. Polls every 12 s **only while the tab is visible** — a phone left open on a
+  table must not hammer the server all evening — and refreshes immediately after a submit.
+- Staff see the request the instant it happens: the POST publishes on the realtime `orders`
+  channel that the waiter/cashier/kitchen screens already subscribe to. The cashier can clear it
+  ("bill already handed over") via `PUT /api/tickets {receiptRequested:false}` (staff-only route).
+
+### 2 · Arrival time, date and waiter name (`station-items`, `/api/tables`, crew + staff UIs)
+
+- `/api/station-items` now returns `createdAt`, `updatedAt`, `receiptRequestedAt` per ticket and
+  `createdAt` per item; `/api/tables` returns `activeTicketAt` + `activeTicketReceiptRequestedAt`.
+- **Kitchen/barista**: "Arrived 14:35 · waiting 12 min" on every ticket, red from 10 minutes,
+  the same clock on each individual item, and a 🧾 badge when the table asked for the bill. A 30 s
+  ticker keeps the waiting labels live without a reload.
+- **Waiter**: arrival date/time + who sent it on the bill header, "open since 14:35 · 12 min" and
+  a bill-requested flag on each table card.
+- **Cashier**: arrival + waiting on every active order, the guest's bill request with a Clear
+  button, and date/time/waiter on the Recently Paid cards.
+- **Order history**: "🕒 arrived …" next to the existing close time and waiter.
+
+### 3 · Duplicate lines merged — "2 Tea", never "1 Tea + 1 Tea"
+
+Ordering tea, then tea again ten minutes later, used to leave two `ticket_items` rows and every
+screen (including the receipt the cashier prints) read "1 Tea, 1 Sandwich, 1 Tea".
+
+- **In the database** (`POST /api/tickets`): a new line that is identical to an existing
+  **pending, not-removed** row of the same ticket (same dish, unit price, note and station —
+  `canMergeLines`) is folded in with `UPDATE quantity = quantity + n` instead of inserted, capped
+  at 999. Deliberately **not** merged: rows the crew already `accepted`/`done` (folding new work
+  into a cooked dish would hide it), cashier-removed rows, and Daily Board offer lines (they are
+  expanded per unit so a combo's exact integer total survives).
+- **Idempotency had to move up a level**: a submission whose lines *all* merge inserts no item
+  rows, so the old per-row `<key>#0` probe would not recognise a retry of it — and a replayed
+  request would then double the quantities. New table **`order_submissions`** (UNIQUE
+  `idempotency_key`) records every accepted submission, is probed first, and the legacy per-row
+  probe remains as the fallback for bills recorded before it existed. A unique-violation race
+  (`23505`) is caught and answered with the already-recorded bill.
+- **On screen** (`groupOrderLines`): bills created before this change are collapsed for read-only
+  views (guest panel, order history), including `removed` rows kept apart so a struck-through item
+  can never inflate a paid bill's quantity. **Editable staff lists still render raw rows** — their
+  ± buttons write to a single row id, so they rely on the database-level merge instead.
+
+### 4 · "Request the bill/receipt" — see item 1
+
+The button lives in the guest's status panel and is offered **only once the customer has been
+served**: every kitchen unit is `done` (or the bill never contained food — a drinks/cake-only table
+has nothing to wait for). While the food is still cooking the panel says so instead of showing a
+dead control. Drinks are deliberately NOT part of the gate: the crew does not tick them off one by
+one, and waiting on a barista "done" tap would leave a guest unable to pay. Once tapped, the button
+is replaced by the request time and a confirmation that a waiter is coming.
+
+### 5 · Review as the last step of the flow
+
+- The status panel offers **Rate your visit** once the bill has been requested or paid; it closes
+  the panel, scrolls to the review card (`#guest-review`) and pulses a gold ring around it.
+- After an order is sent, the review card gains a "Enjoyed your visit?" call-to-action, and a
+  successful submit replaces the form with a **thank-you card** (name/comment cleared, message
+  that it awaits admin approval). No change to `/api/reviews` or the approval flow.
+
+### 6 · Image loading, round 2 (`src/app/menu/page.tsx`, `src/lib/menu-preview.ts`)
+
+§5o made the first screen download in parallel *once the menu JSON arrived*. That still left the
+radio idle while the page's JS downloaded and booted — 1-2 s on a phone connection.
+
+- `/menu` is now a **server** component (`force-dynamic`) that asks Postgres for the first eight
+  photos — same order as `/api/menu` (`sortOrder`, `id`) and same `?w=&h=` box — and emits them as
+  `<link rel="preload" as="image" fetchpriority="high">`. The bytes are in flight during the JS
+  download, so the first screen is usually ready the moment the skeleton clears.
+  The URL rules moved to `src/lib/image-url.ts` (no `"use client"`) and are re-exported by
+  `image-utils.ts`, so **both sides build byte-identical URLs** — a one-parameter mismatch would
+  mean downloading every photo twice.
+- **Fails soft**: the lookup is capped at 1.2 s and any error (slow DB, no tables yet) yields `[]`,
+  in which case the page behaves exactly as it did before.
+- **Below the fold keeps streaming**: once the first batch has been released
+  (`ImageBatchProvider onReleased`), `useIdleImagePrefetch` warms **4** more photos at
+  `fetchpriority="low"` during browser idle time — skipped entirely on Data Saver or 2G, cancelled
+  and cleaned up if the list changes. Everything further down stays `loading="lazy"`.
+
+### Schema / deployment
+
+- New: `tickets.receipt_requested_at` (nullable timestamp), table `order_submissions`
+  (`id`, `ticket_id`, `idempotency_key` UNIQUE, `source`, `waiter_name`, `lines`, `merged_lines`,
+  `created_at`) + index on `ticket_id`.
+- Applied automatically by `ensureTablesExist()` on the first request after deploy
+  (`SCHEMA_VERSION = "2026-09-02-1"`); all statements are `IF NOT EXISTS` / additive, so an
+  already-migrated database is untouched and an old one keeps working (see `canRecordSubmissions`).
+- No data backfill, no destructive change and no new RUNTIME dependency (`jsdom` +
+  `@types/jsdom` were added as devDependencies for the UI test below and are never bundled).
+  `/menu` becomes server-rendered
+  (`ƒ Dynamic` in the build output) — that is required, a prerendered page would bake in whatever
+  the database held at build time.
+
+### Regression guards (wired into `npm test`)
+
+- `scripts/verify-order-lines.ts` — 71 unit assertions on the shared helpers: line identity,
+  the merge rule (pending only, never promotions/removed/other tickets), grouping (quantity sums,
+  preserved order, removed rows never inflating a live line), per-station progress in units,
+  every customer phase including `drinks_only`, and the arrival/waiting time helpers.
+- `scripts/verify-order-status.mjs` — the endpoint's scope, rate limits, `no-store`, its single
+  guarded write, the payload's privacy, the schema + migration, the database merge, every crew and
+  staff screen, the guest UI wiring, the review shortcut, and **English/Amharic key parity** (155
+  keys each, every `os_*` string the UI asks for exists in both, Amharic values really are Amharic).
+- `scripts/verify-order-status-ui.tsx` — actually MOUNTS the guest status UI in jsdom (no browser,
+  no database, no server) and clicks through it: 34 assertions — the pill and banner appear only
+  once the table has a real order, the kitchen bar reads 50% for "1 done + 1 of 2 cooking out of 3
+  units", the panel lists every dish with quantity/notes/state/total/waiting minutes, **the bill
+  button is absent while the food is cooking and appears the moment the kitchen finishes**, the
+  bill request POSTs exactly `{table:N}` and swaps to a confirmation with the request time, the
+  review shortcut fires the callback and closes the panel, a drinks-only bill shows the pill and
+  offers the bill but draws **no** progress bar, a QR with no table never polls, and a 500 from the
+  endpoint is swallowed and recovers on the next poll.
+- `scripts/verify-image-reveal.mjs` — extended with the round-2 guards (server preload, shared
+  constants, fail-soft budget, idle prefetch and its data-saver/low-priority rules).
+
+### How to verify after deploying
+
+1. Scan a table QR, order two teas **ten minutes apart** → kitchen, waiter, cashier, history and
+   the guest panel all read **"Tea ×2"** on one line; the total is unchanged.
+2. On the guest phone: the pill appears above አማርኛ, the panel shows "your food is being prepared"
+   with a progress bar; tap Accept/Done in the kitchen → the guest's phone updates within ~12 s.
+3. Order **only** a macchiato → the panel lists it but shows **no progress bar** and no banner.
+4. Kitchen marks everything done → **Request the bill/receipt** appears; tap it → the cashier and
+   waiter screens show 🧾 immediately (no refresh); the cashier's **Clear** removes it again.
+5. Kitchen/barista cards show "Arrived 14:35 · waiting N min", turning red at 10 minutes.
+6. After the bill is requested, **Rate your visit** jumps to the review card; submitting it shows
+   the thank-you card.
+7. Cold-cache phone on DevTools → Network: the eight `?w=400&h=250` requests now start with the
+   **document** (initiator `other`, from the server `<link>`), before `/api/menu` returns.
+
+### Known pre-existing issues (not touched by this change)
+
+- `npm test` ends on one failing assertion, **"developer credit is AB Web"**
+  (`scripts/verify-translation-safety.mjs`): it expects the string "AB Web" inside
+  `CustomerMenuApp.tsx`, which has not been there since the customer footer was changed to
+  "Powered by - +251 91 908 1802". Fails identically on the base commit — left alone on purpose.
+- `npm run lint` reports 34 errors / 33 warnings, **the exact same count as before this change**
+  (verified against a clean worktree of the previous commit): repo-wide `setState`-in-effect,
+  `<img>` and unescaped-entity patterns. New files add none.
+
+## 5q. Group 9 — "the café opens tomorrow, everyone scans at once" (2026-09-02)
+
+**Question:** can one Node instance serve a full room of guests who all arrive through the
+café's single public IP? **Answer after this change: yes for a 40-table venue with 3–6 phones
+per table (~240 simultaneous guests), with headroom.** Measured, not assumed — numbers below.
+
+### The four things that would have broken on day one
+
+1. **Rate limits were per-IP.** Every guest in the café shares one NAT IP, so the old
+   `checkRateLimit("table-status:" + ip)` counted the *whole venue* as one abusive client.
+   Replay of the same traffic under the old limits: **23,560 blocked requests, including 90
+   order submissions**, and the live status pill dies within minutes.
+   → `src/lib/rate-limit.ts` now exports `checkSharedIpRateLimit()` plus **`VENUE_POLICIES`**,
+   one object that is the single source of truth for both tiers (per table, then per venue):
+
+   | scope | per table / 10 min | per venue / 10 min | why |
+   |---|---|---|---|
+   | `customerOrder` | 30 | 600 | a table re-orders a few times; venue cap stops scripted floods |
+   | `statusRead` | 600 | 20,000 | 20k ≈ 33 reads/s ≈ 80 tables polling every 12 s with 4 phones each |
+   | `statusRequest` (bill) | 12 | 300 | one bill per table, retries allowed |
+   | `review` (per hour) | 5 | 200 | admin approval still required |
+
+   Consumed by `table-status/route.ts`, `tickets/route.ts`, `reviews/route.ts`. Blocked requests
+   get `Retry-After`, and a hammering phone is cut at **its own table's** limit without touching
+   neighbouring tables.
+2. **Image encode thundering herd.** N guests requesting the same photo at the same moment each
+   ran their own `sharp` decode+resize+encode. → `inFlightVariants` in
+   `src/app/api/images/[id]/route.ts` dedupes concurrent identical variants into one encode.
+3. **`/menu` queried the DB on every scan.** → `src/lib/menu-preview.ts` caches
+   `firstScreenPhotoUrls()` for **30 s positive / 5 s negative** and shares one in-flight query
+   between concurrent scans, so a burst of QR scans costs one DB round-trip.
+4. **pg pool was the driver default (10).** → `src/db/index.ts` reads `PG_POOL_MAX`
+   (default **20**, safely parsed) and sets `idleTimeoutMillis: 30_000` so idle connections are
+   released back to the server between rushes.
+
+### Evidence 1 — venue replay against the real policies (`scripts/verify-shared-ip-limits.ts`, in `npm test`)
+
+Clock-controlled, in-memory replay of the actual `VENUE_POLICIES` (no HTTP, no DB):
+
+| scenario | requests | blocked |
+|---|---|---|
+| seeded venue: 10 tables × 4 phones, 60 min, 12 s poll | — | **0** |
+| 40 tables × 3 phones, one shared IP, 60 min (~7 req/s) | 25,135 | **0** |
+| 80 tables × 4 phones (double the venue, ~19 req/s) | 66,900 | **0** |
+| same 40-table traffic under the OLD per-IP limits | 25,135 | **23,560** (incl. 90 orders) |
+| one phone hammering 5× the normal rate | cut at 600/table | neighbour table unaffected |
+| flood rotating fake table ids | stopped at the venue ceiling | 600 of 5,000 |
+
+### Evidence 2 — real HTTP load test (production build, `next start`)
+
+Harness: `next build && next start` on Node 22, **2 vCPU / 3.9 GB** sandbox, Postgres replaced by
+an in-memory stub (40 menu items, 10 tables, one open ticket with 4 lines, a real 141 KB JPEG
+that `sharp` genuinely re-encodes to ~41 KB WebP). The load generator ran **in the same sandbox**,
+so it stole CPU from the server — every latency below is pessimistic. The stub is *not* committed;
+`src/db/index.ts` was restored with `git checkout` afterwards.
+
+All requests carried one shared `x-forwarded-for` (41.200.1.1), i.e. the whole venue behind one IP.
+
+**A · Opening rush — 60 guests (10 tables × 6 phones) arriving over 20 s, then polling every 12 s**
+660 requests in 62 s, **0 errors, 0 rate-limit blocks**:
+
+| endpoint | n | p50 | p95 | max |
+|---|---|---|---|---|
+| `GET /menu` (SSR HTML, 31 KB) | 60 | 12 ms | 20 ms | 71 ms |
+| `GET /api/images/N?w=360` | 192 | 9 ms | 22 ms | 33 ms |
+| `GET /api/menu` | 60 | 3 ms | 8 ms | 11 ms |
+| `GET /api/table-status` (polls) | 168 | 3 ms | 4 ms | 7 ms |
+
+**D · Worst case — 240 guests (40 tables × 6 phones) all scanning within 5 s**
+1,760 requests, **0 errors, 0 blocks**: `/menu` p50 8 ms / p95 285 ms / max 311 ms;
+320 photo requests (13 MB) p50 20 ms / p95 478 ms / max 770 ms; `/api/menu` p50 2 ms / p95 29 ms;
+status polls p50 2 ms.
+
+**B · Steady state — 120 concurrent pollers, 12 s interval, 36 s:** 360 requests,
+p50 13 ms, p95 228 ms, max 248 ms, 0 blocks. (The p95 tail is the harness starting all 120
+pollers in the same tick — real guests are never synchronised like that.)
+
+**E · Peak throughput — 32 workers hammering `/api/table-status` for 10 s:**
+**9,798 requests = 977 req/s**, p50 28 ms, p95 58 ms, p99 84 ms, max 542 ms, 0 errors, 0 blocks.
+
+**C · Cold photo burst — 8 unique photos × 6 concurrent requests (cache empty):**
+all 48 served in **312 ms** wall (p95 271 ms) — the in-flight dedupe collapsed 48 requests into
+8 encodes. Same burst with the LRU warm: **156 ms** (p50 59 ms).
+
+**F · Order writes:** 40 tables POSTing `/api/tickets` at the same instant → **40/40 HTTP 200**,
+p50 140 ms, p95 192 ms, max 195 ms, 0 blocks. Double-tap retry (3 phones × 2 sends, identical
+idempotency keys) → 6/6 HTTP 200, p50 15 ms, **no duplicate tickets** (merge/replay path).
+
+### Honest caveats
+
+- **The DB was stubbed.** These numbers measure the app layer: routing, rate limiting, payload
+  building, SSR and real `sharp` work. A same-region Postgres adds roughly 1–5 ms per query
+  (`/api/table-status` = 2 indexed SELECTs; the order POST = ~6 statements in one transaction),
+  so real p95 for status reads lands in the tens of ms, not single digits. The venue ceiling
+  (33 status reads/s sustained) is ~66 queries/s — trivial for any managed Postgres.
+- **Single instance.** The rate-limit counters, the menu-preview TTL cache and the photo
+  LRU/dedupe are all in-process. Scaling to 2+ instances keeps correctness (limits become
+  per-instance, i.e. looser) but halves cache hit rates; move the counters to Redis/Upstash if
+  you ever run more than one.
+- **Photos are encoded on demand, then cached in memory.** The durable win is uploading
+  already-right-sized WebP originals so `sharp` never runs on the request path.
+- Watch after go-live: `429` count on `/api/table-status` (should be ~0), p95 of `/menu`,
+  Postgres connection count vs `PG_POOL_MAX`, and instance memory (the photo LRU is the main
+  consumer).
+
 ## 5. How to measure after deploying
 
 1. Open the deployed homepage in Chrome DevTools → Network: confirm `settings/categories/menu/reviews/gallery` load **in parallel** and return `Cache-Control: public, max-age=60, stale-while-revalidate=300` (no `no-store`).

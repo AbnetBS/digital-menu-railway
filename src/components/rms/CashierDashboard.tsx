@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { Ticket, TicketItem, CafeTable, StaffUser } from "@/types";
 import { triggerDesktopNotification } from "@/lib/notifications";
+import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { unlockAudio, playDing } from "@/lib/sound";
 
 interface StaffLite {
@@ -202,6 +203,20 @@ export default function CashierDashboard() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ itemId: item.id, quantity: qty }),
+    });
+    loadAll();
+  };
+
+  /**
+   * The guest tapped "bring us the bill" from their own phone (Group 8). Once the
+   * receipt has physically reached the table, clear the flag so the badge stops
+   * shouting. This touches ONLY receipt_requested_at — never a status or a price.
+   */
+  const clearReceiptRequest = async (t: Ticket) => {
+    await fetch("/api/tickets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: t.id, receiptRequested: false }),
     });
     loadAll();
   };
@@ -473,12 +488,34 @@ export default function CashierDashboard() {
                         <p className="text-[10px] text-stone-500 flex items-center gap-1">
                           <Clock className="w-3 h-3" /> {t.confirmedBy ? `by ${t.confirmedBy}` : `by ${t.createdBy || "waiter"}`}
                         </p>
+                        {/* When the order ARRIVED and how long the table has been
+                            waiting — the question staff keep asking. */}
+                        <p className="text-[10px] text-stone-500">
+                          🕒 arrived {formatClock(t.createdAt)} • waiting {waitingLabel(t.createdAt)}
+                        </p>
                       </div>
                       <div className="text-right">
                         <span className={`inline-block text-[10px] font-black px-2.5 py-1 rounded-full ${meta.cls}`}>{meta.label}</span>
                         <p className="font-serif font-black text-xl text-[#C9A227] mt-1">{t.totalAmount} ETB</p>
                       </div>
                     </div>
+
+                    {/* The guest tapped "bring us the bill" on their own phone.
+                        Arrives instantly over the realtime orders channel. */}
+                    {t.receiptRequestedAt && (
+                      <div className="flex items-center justify-between gap-2 bg-emerald-500/15 border border-emerald-500/50 rounded-xl px-3 py-2">
+                        <p className="text-[11px] font-black text-emerald-300">
+                          🧾 Guest asked for the bill at {formatClock(t.receiptRequestedAt)}
+                        </p>
+                        <button
+                          onClick={() => clearReceiptRequest(t)}
+                          className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg bg-black/30 text-emerald-200 hover:bg-black/50"
+                          title="Clear the request (bill already handed over)"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    )}
 
                     {/* items (editable: qty adjust + remove) */}
                     <div className="bg-[#3D2314] rounded-xl divide-y divide-stone-800">
@@ -603,9 +640,12 @@ export default function CashierDashboard() {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {history.map((t) => (
                 <div key={t.id} className="bg-[#241714] border border-stone-800 rounded-xl p-3 flex items-center justify-between">
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-xs font-bold text-stone-300">{t.tableName}</p>
                     <p className="text-[10px] text-stone-500 capitalize flex items-center gap-1">{methodIcon(t.paymentMethod)} {t.paymentMethod || "cash"}</p>
+                    {/* Group 8: table, date, time and waiter on every history card. */}
+                    <p className="text-[10px] text-stone-500 mt-0.5 truncate">🕒 {formatDateTime(t.closedAt || t.updatedAt || t.createdAt)}</p>
+                    <p className="text-[10px] text-[#C9A227]/80 truncate">👤 {t.confirmedBy || t.createdBy || "—"}</p>
                   </div>
                   <div className="text-right">
                     <p className="text-xs font-extrabold text-emerald-400">{t.totalAmount} ETB</p>

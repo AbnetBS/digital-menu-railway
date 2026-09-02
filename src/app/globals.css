@@ -93,3 +93,38 @@
 .animate-ambient-pulse {
   animation: ambientPulse 6s infinite ease-in-out;
 }
+
+/* Food-photo placeholder.
+   While a dish photo downloads, its card shows this soft shimmer instead of an
+   empty grey box or a half-drawn image. ImageBatchProvider releases the whole
+   first screen at once, so the shimmer is replaced by a single synchronized
+   fade-in — every photo appears together rather than one after another. */
+@keyframes imgShimmer {
+  0% {
+    background-position: 140% 0;
+  }
+  100% {
+    background-position: -40% 0;
+  }
+}
+
+.img-shimmer {
+  background-color: #EFEDE9;
+  background-image: linear-gradient(
+    100deg,
+    rgba(239, 237, 233, 0) 20%,
+    rgba(255, 255, 255, 0.85) 45%,
+    rgba(239, 237, 233, 0) 70%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: imgShimmer 1.4s ease-in-out infinite;
+  transition: opacity 0.35s ease-out;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .img-shimmer {
+    animation: none;
+  }
+}

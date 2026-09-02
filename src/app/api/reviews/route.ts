@@ -5,9 +5,16 @@ import { ensureTablesExist } from "@/db/migrate";
 import { eq, desc } from "drizzle-orm";
 import { PUBLIC_CACHE_CONTROL } from "@/lib/cache";
 import { requireAdmin, readAdminSession } from "@/lib/session";
-import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { checkRateLimit, getClientIp, VENUE_POLICIES } from "@/lib/rate-limit";
 
-const REVIEW_LIMIT = 5;
+/**
+ * Every guest in the room shares ONE public IP (café WiFi NAT / mobile CGNAT),
+ * so this cap covers the whole venue, not one person. 5/hour blocked real guests
+ * as soon as the menu started asking for a review after the bill; the venue-wide
+ * number in VENUE_POLICIES still stops a single-IP spam run, and every review
+ * needs admin approval before it is shown anyway.
+ */
+const REVIEW_LIMIT = VENUE_POLICIES.review.perIp;
 const REVIEW_WINDOW_MS = 60 * 60 * 1000;
 
 export async function GET(request: Request) {

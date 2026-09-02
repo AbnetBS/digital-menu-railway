@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Coffee, CookingPot, RefreshCw, LogOut, CheckCircle2, BellRing, Clock } from "lucide-react";
 import { unlockAudio, playDing } from "@/lib/sound";
+import { formatClock, formatDayMonthYear, minutesSince, waitingLabel } from "@/lib/order-lines";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import Link from "next/link";
 
@@ -22,6 +23,8 @@ interface StationItem {
   quantity: number;
   notes?: string | null;
   stationStatus: "pending" | "accepted" | "done";
+  /** When THIS line arrived — a later "2 Tea" is newer work than the first one. */
+  createdAt?: string | null;
 }
 
 interface StationTicket {
@@ -31,6 +34,10 @@ interface StationTicket {
   status: string;
   createdBy?: string | null;
   confirmedBy?: string | null;
+  /** Group 8: when the order arrived + the guest's "bring the bill" request. */
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  receiptRequestedAt?: string | null;
   items: StationItem[];
 }
 
@@ -50,8 +57,16 @@ export default function StationApp({ station }: { station: Station }) {
   const [loginError, setLoginError] = useState("");
   const [tickets, setTickets] = useState<StationTicket[]>([]);
   const [alertsOn, setAlertsOn] = useState(false);
+  // Ticks every 30s so the "waiting N min" badge on each ticket stays honest
+  // even when no new order arrives to trigger a refresh.
+  const [now, setNow] = useState(() => Date.now());
   const pendingSeenRef = useRef<Set<number>>(new Set());
   const initRef = useRef(false);
+
+  useEffect(() => {
+    const ticker = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(ticker);
+  }, []);
 
   useEffect(() => {
     setAlertsOn(localStorage.getItem(`fana_alerts_${station}`) === "1");
@@ -278,10 +293,31 @@ export default function StationApp({ station }: { station: Station }) {
                   <p className="text-[10px] text-stone-500 flex items-center gap-1.5 uppercase font-bold">
                     <Clock className="w-3 h-3 text-[#C9A227]" /> {t.status.replace(/_/g, " ")}
                   </p>
+                  {/* ARRIVAL TIME — the crew's first question: when did this land,
+                      and how long has the table been waiting? */}
+                  <p className="mt-1 flex items-center gap-1.5 flex-wrap text-[13px] font-black text-amber-200">
+                    <Clock className="w-3.5 h-3.5 text-[#C9A227]" />
+                    Arrived {formatClock(t.createdAt)}
+                    <span className="text-[10px] font-bold text-stone-400">{formatDayMonthYear(t.createdAt)}</span>
+                    <span
+                      className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                        minutesSince(t.createdAt, now) >= 10
+                          ? "bg-rose-600 text-white"
+                          : "bg-stone-800 text-stone-300"
+                      }`}
+                    >
+                      waiting {waitingLabel(t.createdAt, now)}
+                    </span>
+                  </p>
                   <p className="text-[11px] text-[#C9A227] mt-0.5 font-semibold">
                     👤 Ordered by {t.createdBy || "—"}
                     {t.confirmedBy ? ` • Confirmed by ${t.confirmedBy}` : ""}
                   </p>
+                  {t.receiptRequestedAt && (
+                    <p className="mt-1 inline-block text-[11px] font-black text-emerald-300 bg-emerald-950/60 border border-emerald-700 rounded-lg px-2 py-1">
+                      🧾 Table asked for the bill at {formatClock(t.receiptRequestedAt)}
+                    </p>
+                  )}
                 </div>
                 <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-[#C9A227]/20 text-[#C9A227]">
                   {t.items.length} item(s) for you
@@ -300,6 +336,11 @@ export default function StationApp({ station }: { station: Station }) {
                       <p className={`font-bold ${i.stationStatus === "done" ? "text-stone-500 line-through" : "text-amber-100"}`}>
                         {i.name} <span className="text-[#C9A227]">x{i.quantity}</span>
                       </p>
+                      {i.createdAt && (
+                        <p className="text-[10px] font-bold text-stone-500 mt-0.5">
+                          🕒 {formatClock(i.createdAt)} • waiting {waitingLabel(i.createdAt, now)}
+                        </p>
+                      )}
                       {i.notes && (
                         <p className={`text-sm font-semibold mt-1 px-2 py-1 rounded-lg bg-amber-950/50 border border-amber-700/40 ${i.stationStatus === "done" ? "text-stone-500 line-through" : "text-amber-200"}`}>
                           📝 {i.notes}

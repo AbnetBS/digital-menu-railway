@@ -4,10 +4,29 @@ export const FALLBACK_FOOD_IMAGE = "/images/placeholder-food.svg";
 export const FALLBACK_DRINK_IMAGE = "/images/placeholder-drink.svg";
 
 /**
- * Optimizes remote image URLs (specifically Pexels hotlinks) by applying
- * strict crop, dimensions, and compression query parameters.
- * Application-controlled image references (/api/images/{id}, local /images/..., data:)
- * are returned as-is.
+ * Adds `?w=&h=` to an application-served photo (`/api/images/{id}`) so the
+ * endpoint downscales it to the size actually being rendered instead of sending
+ * the stored ~900px original. A menu-card photo drops from ~150-250KB to
+ * ~15-30KB (WebP), which is what lets a whole screen of dishes arrive together
+ * on a phone that has never visited before.
+ *
+ * Only a bare `/api/images/{id}` ref is rewritten: anything that already carries
+ * a query string is returned untouched, so calling this twice is safe and no
+ * other local asset (`/logo.png`, `/images/placeholder-*.svg`) is affected.
+ */
+function withDisplaySize(ref: string, maxWidth: number, maxHeight: number): string {
+  if (!/^\/api\/images\/\d+\/?$/.test(ref)) return ref;
+  const width = Math.max(1, Math.round(maxWidth));
+  const height = Math.max(1, Math.round(maxHeight));
+  return `${ref.replace(/\/$/, "")}?w=${width}&h=${height}`;
+}
+
+/**
+ * Optimizes image URLs for the size they are rendered at:
+ *   - `/api/images/{id}` → same URL + `?w=&h=` (server-side downscale, see above)
+ *   - Pexels hotlinks    → strict crop, dimensions and compression parameters
+ *   - local static files (`/images/...`, `/logo.png`) and inline `data:` URLs
+ *     are returned as-is.
  */
 export function optimizeImageUrl(
   url: string | null | undefined,
@@ -18,8 +37,18 @@ export function optimizeImageUrl(
   const trimmed = url.trim();
   if (!trimmed) return FALLBACK_FOOD_IMAGE;
 
-  // Local /api/images/{id} or local static files / data URLs stay untouched
-  if (trimmed.startsWith("/") || trimmed.startsWith("data:")) {
+  // Inline data URLs are already the final bytes — never touch them.
+  if (trimmed.startsWith("data:")) {
+    return trimmed;
+  }
+
+  // Application photos: ask the endpoint for the rendered size.
+  if (trimmed.startsWith("/api/images/")) {
+    return withDisplaySize(trimmed, maxWidth, maxHeight);
+  }
+
+  // Any other local static file stays untouched.
+  if (trimmed.startsWith("/")) {
     return trimmed;
   }
 

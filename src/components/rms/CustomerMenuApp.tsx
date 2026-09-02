@@ -14,7 +14,21 @@ import { fixBrandText } from "@/lib/brand";
 import { useMenuText, useT } from "@/lib/i18n";
 import LanguageToggle from "@/components/LanguageToggle";
 import { optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
+import { ImageBatchProvider, RevealImage } from "@/components/ImageReveal";
 import { FACEBOOK_URL, GOOGLE_MAPS_DIRECTIONS_URL, INSTAGRAM_URL, TIKTOK_URL } from "@/lib/business-links";
+
+/**
+ * Menu-card photo size. Cards are ~190 CSS px wide, so 400x250 covers 2x-DPR
+ * phones without shipping the stored 900px original (~150-250KB → ~15-30KB).
+ */
+const MENU_CARD_IMG_W = 400;
+const MENU_CARD_IMG_H = 250;
+/**
+ * How many dish photos fit on the first screen (2 columns × ~3 rows + a little
+ * scroll buffer). These are preloaded in parallel and revealed together; the
+ * rest stay lazy so scrolling is what costs data, not opening the menu.
+ */
+const FIRST_SCREEN_PHOTOS = 8;
 
 interface CartEntry {
   /** Stable per-cart-line key: promotions can contain the same menu item twice. */
@@ -246,6 +260,24 @@ export default function CustomerMenuApp() {
             menuText(m.description).toLowerCase().includes(search.toLowerCase()))
       ),
     [menuItems, category, search, menuText]
+  );
+
+  /**
+   * Photos of the first screen, preloaded the instant the menu JSON arrives so
+   * they download IN PARALLEL at high priority and can be revealed together.
+   *
+   * Deliberately empty while the customer is typing a search: results change on
+   * every keystroke and must never blink back to placeholders — those photos
+   * simply fade in individually (they are few and usually already cached).
+   */
+  const firstScreenPhotoUrls = useMemo(
+    () =>
+      search.trim()
+        ? []
+        : filteredMenu
+            .slice(0, FIRST_SCREEN_PHOTOS)
+            .map((m) => optimizeImageUrl(m.imageUrl, MENU_CARD_IMG_W, MENU_CARD_IMG_H)),
+    [filteredMenu, search]
   );
 
   // When a category chip is tapped, jump the menu list back to the TOP of that
@@ -764,87 +796,96 @@ export default function CustomerMenuApp() {
         </div>
       )}
 
-      {/* menu grid */}
-      <div ref={menuGridRef} className="px-4 grid grid-cols-2 gap-3 max-w-lg mx-auto">
-        {filteredMenu.map((m) => {
-          const qty = cartQty(m.id);
-          const out = !m.isAvailable;
-          return (
-            <div key={m.id} className={`bg-white rounded-2xl overflow-hidden border shadow-sm ${out ? "opacity-60 border-stone-200" : "border-[#C9A227]/25"}`}>
-              {/* Tap photo or name → BIG detail view with full description */}
-              <button
-                onClick={() => setDetailItem(m)}
-                className="relative w-full text-left cursor-pointer"
-                title="Tap for full details"
-              >
-                <img src={optimizeImageUrl(m.imageUrl, 400, 250)} alt={menuText(m.name)} loading="lazy" decoding="async" className="w-full h-28 object-cover bg-stone-100" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
-                <span className="absolute bottom-1.5 right-1.5 bg-black/60 text-white text-[9px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
-                  🔍 {t("details")}
-                </span>
-                {out && (
-                  <span className="absolute top-2 left-2 bg-rose-600 text-white text-[9px] font-extrabold uppercase px-2 py-0.5 rounded-full">
-                    {t("out_of_stock")}
+      {/* menu grid — first-screen dish photos are preloaded in parallel and
+          revealed TOGETHER (see ImageBatchProvider) instead of trickling in one
+          card at a time on a phone that has never visited before. */}
+      <ImageBatchProvider urls={firstScreenPhotoUrls}>
+        <div ref={menuGridRef} className="px-4 grid grid-cols-2 gap-3 max-w-lg mx-auto">
+          {filteredMenu.map((m, index) => {
+            const qty = cartQty(m.id);
+            const out = !m.isAvailable;
+            return (
+              <div key={m.id} className={`bg-white rounded-2xl overflow-hidden border shadow-sm ${out ? "opacity-60 border-stone-200" : "border-[#C9A227]/25"}`}>
+                {/* Tap photo or name → BIG detail view with full description */}
+                <button
+                  onClick={() => setDetailItem(m)}
+                  className="relative w-full text-left cursor-pointer"
+                  title="Tap for full details"
+                >
+                  <RevealImage
+                    src={optimizeImageUrl(m.imageUrl, MENU_CARD_IMG_W, MENU_CARD_IMG_H)}
+                    alt={menuText(m.name)}
+                    eager={index < FIRST_SCREEN_PHOTOS}
+                    className="w-full h-28 object-cover bg-stone-100"
+                  />
+                  <span className="absolute bottom-1.5 right-1.5 bg-black/60 text-white text-[9px] font-bold px-2 py-0.5 rounded-full backdrop-blur-sm">
+                    🔍 {t("details")}
                   </span>
-                )}
-              </button>
-              <div className="p-3 space-y-1.5">
-                <button onClick={() => setDetailItem(m)} className="text-left w-full">
-                  <p className="text-xs font-bold text-[#2C1B17] leading-tight line-clamp-2 min-h-[2rem] hover:text-[#C9A227] transition-colors">{menuText(m.name)}</p>
-                </button>
-                <p className="text-[10px] text-stone-500 line-clamp-2">{menuText(m.description)}</p>
-                <div className="flex items-center justify-between pt-1 gap-1">
-                  {(() => {
-                    const ep = effectivePrice(m);
-                    return ep.onSale ? (
-                      <span className="flex flex-col leading-none">
-                        <span className="text-[10px] line-through text-stone-400 font-semibold">{m.price} ETB</span>
-                        <span className="font-extrabold text-emerald-700 text-sm">{ep.price} ETB <span className="text-[9px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-extrabold">{t("sale")}</span></span>
-                      </span>
-                    ) : (
-                      <span className="font-extrabold text-[#4E342E] text-sm">{m.price} ETB</span>
-                    );
-                  })()}
-                  {out ? (
-                    <span className="text-[10px] text-stone-400 font-bold">—</span>
-                  ) : qty > 0 ? (
-                  // Inline −/+ stepper — customer can decrease or remove
-                    <div className="flex items-center gap-1.5 bg-stone-100 rounded-lg p-1">
-                      <button
-                        onClick={() => setQty(m, qty - 1)}
-                        className="w-7 h-7 rounded-md bg-white shadow-sm flex items-center justify-center text-[#2C1B17] font-bold hover:bg-rose-50"
-                        aria-label="Decrease"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-                      <span className="font-extrabold w-5 text-center text-[#2C1B17] text-sm">{qty}</span>
-                      <button
-                        onClick={() => setQty(m, qty + 1)}
-                        className="w-7 h-7 rounded-md bg-emerald-600 shadow-sm flex items-center justify-center text-white font-bold"
-                        aria-label="Increase"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setQty(m, 1)}
-                      className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg flex items-center gap-1 transition bg-[#C9A227] text-[#2C1B17]"
-                    >
-                      <Plus className="w-3 h-3" /> {t("add")}
-                    </button>
+                  {out && (
+                    <span className="absolute top-2 left-2 bg-rose-600 text-white text-[9px] font-extrabold uppercase px-2 py-0.5 rounded-full">
+                      {t("out_of_stock")}
+                    </span>
                   )}
+                </button>
+                <div className="p-3 space-y-1.5">
+                  <button onClick={() => setDetailItem(m)} className="text-left w-full">
+                    <p className="text-xs font-bold text-[#2C1B17] leading-tight line-clamp-2 min-h-[2rem] hover:text-[#C9A227] transition-colors">{menuText(m.name)}</p>
+                  </button>
+                  <p className="text-[10px] text-stone-500 line-clamp-2">{menuText(m.description)}</p>
+                  <div className="flex items-center justify-between pt-1 gap-1">
+                    {(() => {
+                      const ep = effectivePrice(m);
+                      return ep.onSale ? (
+                        <span className="flex flex-col leading-none">
+                          <span className="text-[10px] line-through text-stone-400 font-semibold">{m.price} ETB</span>
+                          <span className="font-extrabold text-emerald-700 text-sm">{ep.price} ETB <span className="text-[9px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-extrabold">{t("sale")}</span></span>
+                        </span>
+                      ) : (
+                        <span className="font-extrabold text-[#4E342E] text-sm">{m.price} ETB</span>
+                      );
+                    })()}
+                    {out ? (
+                      <span className="text-[10px] text-stone-400 font-bold">—</span>
+                    ) : qty > 0 ? (
+                    // Inline −/+ stepper — customer can decrease or remove
+                      <div className="flex items-center gap-1.5 bg-stone-100 rounded-lg p-1">
+                        <button
+                          onClick={() => setQty(m, qty - 1)}
+                          className="w-7 h-7 rounded-md bg-white shadow-sm flex items-center justify-center text-[#2C1B17] font-bold hover:bg-rose-50"
+                          aria-label="Decrease"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="font-extrabold w-5 text-center text-[#2C1B17] text-sm">{qty}</span>
+                        <button
+                          onClick={() => setQty(m, qty + 1)}
+                          className="w-7 h-7 rounded-md bg-emerald-600 shadow-sm flex items-center justify-center text-white font-bold"
+                          aria-label="Increase"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setQty(m, 1)}
+                        className="text-[11px] font-extrabold px-3 py-1.5 rounded-lg flex items-center gap-1 transition bg-[#C9A227] text-[#2C1B17]"
+                      >
+                        <Plus className="w-3 h-3" /> {t("add")}
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
+            );
+          })}
+          {!menuLoading && filteredMenu.length === 0 && (
+            <div className="col-span-2 text-center py-12 text-stone-400 text-sm">
+              <Utensils className="w-8 h-8 mx-auto mb-2 text-stone-300" />
+              {t("nothing_found")}
             </div>
-          );
-        })}
-        {!menuLoading && filteredMenu.length === 0 && (
-          <div className="col-span-2 text-center py-12 text-stone-400 text-sm">
-            <Utensils className="w-8 h-8 mx-auto mb-2 text-stone-300" />
-            {t("nothing_found")}
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      </ImageBatchProvider>
 
       {/* ── ITEM DETAIL MODAL — big photo + FULL description ── */}
       {detailItem && (
@@ -854,7 +895,12 @@ export default function CustomerMenuApp() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="relative">
-              <img src={optimizeImageUrl(detailItem.imageUrl, 600, 400)} alt={menuText(detailItem.name)} className="w-full h-56 sm:h-64 object-cover bg-stone-100" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
+              <RevealImage
+                src={optimizeImageUrl(detailItem.imageUrl, 600, 400)}
+                alt={menuText(detailItem.name)}
+                eager
+                className="w-full h-56 sm:h-64 object-cover bg-stone-100"
+              />
               <button
                 onClick={() => setDetailItem(null)}
                 className="absolute top-3 right-3 w-9 h-9 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black"

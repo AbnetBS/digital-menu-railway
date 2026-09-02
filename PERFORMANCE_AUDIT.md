@@ -580,6 +580,98 @@ new) · all pages 200 · harness run: **ALL CHECKS PASSED** (exit 0). Group 7 NO
 4. Try `PUT /api/tickets` with an illegal transition (e.g. `paid` → `preparing`) — it
    returns 400.
 
+## 5o. Group 7 — "food photos appear together" on a QR scan (2026-09-02)
+
+**Owner report:** scanning a table QR with a phone that has never visited before showed the
+dish photos downloading one after another — card 1 paints, then card 2, then card 3 — instead
+of the whole screen of food appearing at once.
+
+### Root cause (three separate problems, all on the customer path)
+
+**Inspection:** `/menu?table=N` renders the grid the instant the menu JSON arrives, and every
+card was a bare `<img loading="lazy">`. Three things then worked against us:
+
+1. **No coordination.** Each `<img>` fetched on its own, in DOM order, at default priority —
+   a sequential trickle rather than one parallel burst. Nothing started before React painted
+   the cards, so the download clock only began *after* four API round-trips.
+2. **Massively oversized bytes for uploaded photos.** `optimizeImageUrl()` only optimised
+   Pexels hotlinks; an application photo (`/api/images/{id}`) was served at its stored size —
+   a ~900px JPEG of 100-250KB — into a card that renders it at ~190 CSS px. Eight first-screen
+   dishes ≈ **1MB+** of pixels on a cold phone.
+3. **No placeholder discipline.** A half-painted JPEG is visible while it streams, so the
+   progressive download was *seen* rather than hidden.
+
+### Fix
+
+**1. One parallel, high-priority batch + synchronized reveal** (`src/components/ImageReveal.tsx`, new)
+
+- `<ImageBatchProvider urls={firstScreenPhotoUrls}>` fires the first screen of dish photos as
+  `<link rel="preload" as="image" fetchpriority="high">` the moment the URLs are known — before
+  the cards paint, all at once, instead of one request per card in DOM order.
+- `<RevealImage>` renders each photo over a shimmer placeholder (`globals.css` → `.img-shimmer`,
+  `prefers-reduced-motion` aware) and holds it at `opacity-0` until the batch is released, then
+  cross-fades **all of them in together** (500ms).
+- The gate is bounded: a 2.5s hard timeout plus per-photo `load`/`error` settlement means one
+  slow or dead photo can never hold the menu hostage. Names, prices and the ±buttons are on
+  screen and usable the whole time — **ordering was never blocked by an image**.
+- Below-the-fold cards stay `loading="lazy"` (no mobile data spent on dishes nobody scrolled
+  to) and fade in individually; first-screen cards switched to `loading="eager"` +
+  `fetchPriority="high"`.
+- While the customer is typing a search the batch is empty, so results never blink back to
+  placeholders on every keystroke.
+- Safety nets: a photo cached before hydration is reconciled through the ref callback, a broken
+  photo still swaps in `placeholder-food.svg` exactly as the old inline `onError` did, and a
+  15s timer guarantees a photo can never stay invisible.
+
+**2. Photos are now served at their rendered size** (`src/lib/image-size.ts`,
+`src/lib/image-variant.ts`, `src/app/api/images/[id]/route.ts`, `src/lib/image-utils.ts`)
+
+- `optimizeImageUrl()` now also rewrites `/api/images/{id}` → `/api/images/{id}?w=&h=`, and the
+  endpoint downscales/centre-crops to that box and returns WebP via `sharp`.
+- Requested sizes snap UP to a fixed allow-list (`160…1600`), which both maximises cache hits
+  (every card asks for the same `400x256` box) and bounds the CPU an outsider can request.
+- Derived variants are held in a small in-process LRU (150 entries), so a warm instance skips
+  both Postgres and the re-encode.
+
+**Measured** (`scripts/verify-image-display.ts`, synthetic 900x675 phone-upload JPEG):
+**128.7KB → 9.0KB per menu card (-93%)**; eight first-screen dishes ≈ **1.03MB → 72KB**.
+
+**Nothing else changed — explicit guarantees**
+
+- `/api/images/{id}` with **no parameters** returns the stored bytes and stored MIME type,
+  exactly as before: admin previews, receipt photos, waiter/kitchen screens and every
+  already-printed QR are untouched.
+- Derivation is best-effort only. No `sharp`, animated GIF, undecodable blob, empty blob, or a
+  result heavier than the original ⇒ the stored bytes are served. A variant can only ever help.
+- `cdn_images` ids are immutable (replacing a photo INSERTs a new row), so `Cache-Control:
+  public, max-age=31536000, immutable` remains correct for variants too.
+- Pexels hotlinks, `data:` URLs, `/logo.png` and the placeholder SVGs are byte-for-byte
+  unaffected by `optimizeImageUrl()`; the rewrite is idempotent.
+- No schema change, no new dependency (`sharp` is already an optional dependency of `next`),
+  no change to the upload flow, the order flow, the loading skeleton or the QR URLs.
+
+### Regression guards (both wired into `npm test`)
+
+- `scripts/verify-image-reveal.mjs` — the batch is fired as high-priority image preloads, has a
+  timeout + error settlement, cleans its links up, the customer grid is wrapped in it, only the
+  first screen is gated, search is exempt, cards no longer use a bare `<img>`, and the endpoint
+  still serves originals when asked.
+- `scripts/verify-image-display.ts` — real `sharp` assertions: variant is produced, is smaller,
+  matches the requested box, never upscales, and every failure path returns null; plus the
+  allow-list snapping and the LRU.
+
+### How to verify on a real phone after deploying
+
+1. Open the table QR in a **private/incognito** window (a cold cache is the whole point) with
+   DevTools → Network → "Disable cache" and throttling set to *Fast 4G*.
+2. The eight first-screen `/api/images/{id}?w=400&h=250` requests should start **together**
+   (same wall-clock start, high priority, ~9-30KB each), not one after another.
+3. Cards show a soft shimmer, then every photo fades in **at once**; scroll down and the rest
+   load lazily as they enter the viewport.
+4. Repeat the scan: photos come from disk cache and the grid is instant.
+5. `/api/images/{id}` **without** parameters still returns the original JPEG (right-click a
+   receipt photo in the cashier → open in a new tab).
+
 ## 5. How to measure after deploying
 
 1. Open the deployed homepage in Chrome DevTools → Network: confirm `settings/categories/menu/reviews/gallery` load **in parallel** and return `Cache-Control: public, max-age=60, stale-while-revalidate=300` (no `no-store`).

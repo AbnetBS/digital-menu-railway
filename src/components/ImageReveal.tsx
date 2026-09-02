@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ImgHTMLAttributes,
   type ReactNode,
@@ -73,10 +74,16 @@ export interface ImageBatchProviderProps {
   urls: string[];
   /** Hard cap on how long photos may hold back the reveal, in ms. */
   timeoutMs?: number;
+  /**
+   * Fired when the first screen has been released (downloaded, or the timeout
+   * gave up on it). The menu uses this as the "now it is safe to spend bandwidth
+   * on the next screen" signal — see `useIdleImagePrefetch`.
+   */
+  onReleased?: () => void;
   children: ReactNode;
 }
 
-export function ImageBatchProvider({ urls, timeoutMs = 2500, children }: ImageBatchProviderProps) {
+export function ImageBatchProvider({ urls, timeoutMs = 2500, onReleased, children }: ImageBatchProviderProps) {
   // Derived by VALUE (not by array identity) so a caller that rebuilds the array
   // on every render cannot retrigger the effect — and so switching back to a
   // category whose photos are already cached never blinks.
@@ -137,8 +144,86 @@ export function ImageBatchProvider({ urls, timeoutMs = 2500, children }: ImageBa
     };
   }, [signature, timeoutMs]);
 
+  // Held in a ref so a caller may pass an inline arrow without retriggering the
+  // preload effect above (which would restart the whole batch).
+  const onReleasedRef = useRef(onReleased);
+  useEffect(() => {
+    onReleasedRef.current = onReleased;
+  }, [onReleased]);
+  useEffect(() => {
+    if (released) onReleasedRef.current?.();
+  }, [released]);
+
   const value = useMemo<ImageBatchValue>(() => ({ released, gated }), [released, gated]);
   return <ImageBatchContext.Provider value={value}>{children}</ImageBatchContext.Provider>;
+}
+
+/**
+ * Warms a handful of BELOW-THE-FOLD photos while the browser is idle, so the
+ * next screen keeps streaming in without ever competing with the first one.
+ *
+ * Guard rails, because this spends a guest's mobile data:
+ *  • only runs after the first screen has been released (the caller gates it);
+ *  • `fetchpriority="low"` — a visible photo always wins the bandwidth contest;
+ *  • skipped entirely when the device reports Data Saver or a 2G connection;
+ *  • cancelled (and its links removed) if the list changes or the page unmounts.
+ */
+export function useIdleImagePrefetch(urls: string[]): void {
+  const signature = uniqueUrls(urls).join(SEP);
+
+  useEffect(() => {
+    if (!signature || typeof document === "undefined") return;
+
+    const connection = (
+      navigator as Navigator & {
+        connection?: { saveData?: boolean; effectiveType?: string };
+      }
+    ).connection;
+    if (connection?.saveData || connection?.effectiveType === "2g" || connection?.effectiveType === "slow-2g") {
+      return;
+    }
+
+    const list = signature.split(SEP);
+    const links: HTMLLinkElement[] = [];
+    let cancelled = false;
+    let idleHandle: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const start = () => {
+      if (cancelled) return;
+      for (const href of list) {
+        const link = document.createElement("link");
+        link.rel = "preload";
+        link.as = "image";
+        link.href = href;
+        link.setAttribute("fetchpriority", "low");
+        // The link stays until this effect cleans up: removing it the instant the
+        // bytes land risks the memory-cache entry going before the lazy <img>
+        // asks for it.
+        document.head.appendChild(link);
+        links.push(link);
+      }
+    };
+
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof w.requestIdleCallback === "function") {
+      idleHandle = w.requestIdleCallback(start, { timeout: 4000 });
+    } else {
+      timer = setTimeout(start, 1500);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleHandle !== undefined && typeof w.cancelIdleCallback === "function") {
+        w.cancelIdleCallback(idleHandle);
+      }
+      if (timer) clearTimeout(timer);
+      for (const link of links) link.remove();
+    };
+  }, [signature]);
 }
 
 export interface RevealImageProps

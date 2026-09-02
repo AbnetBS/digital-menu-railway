@@ -63,14 +63,43 @@ const reveal = read("src/components/ImageReveal.tsx");
 // ── 3. Wired into the customer QR menu ──────────────────────────────────────
 const app = read("src/components/rms/CustomerMenuApp.tsx");
 {
-  pass("customer menu imports the batch provider", /import \{ ImageBatchProvider, RevealImage \} from "@\/components\/ImageReveal"/.test(app));
-  pass("the menu grid is wrapped in ImageBatchProvider", /<ImageBatchProvider urls=\{firstScreenPhotoUrls\}>/.test(app));
+  pass("customer menu imports the batch provider", /import \{[^}]*ImageBatchProvider[^}]*RevealImage[^}]*\} from "@\/components\/ImageReveal"/s.test(app));
+  pass("the menu grid is wrapped in ImageBatchProvider", /<ImageBatchProvider[\s\S]{0,140}urls=\{firstScreenPhotoUrls\}/.test(app));
   pass("only the FIRST SCREEN is gated", /slice\(0, FIRST_SCREEN_PHOTOS\)/.test(app));
   pass("cards render through RevealImage", /<RevealImage[\s\S]{0,220}MENU_CARD_IMG_W, MENU_CARD_IMG_H/.test(app));
   pass("no menu card is left on a bare <img>", !/<img src=\{optimizeImageUrl\(m\.imageUrl/.test(app));
-  pass("card photos request their rendered size", /MENU_CARD_IMG_W = 400/.test(app) && /MENU_CARD_IMG_H = 250/.test(app));
+  pass("card photos request their rendered size", /optimizeImageUrl\(m\.imageUrl, MENU_CARD_IMG_W, MENU_CARD_IMG_H\)/.test(app));
   pass("searching does not blink photos back to placeholders", /search\.trim\(\)\s*\?\s*\[\]/.test(app));
   pass("the branded loading skeleton is untouched", /menuLoading && menuItems\.length === 0/.test(app));
+}
+
+// ── 3b. Round 2 — server preload + below-the-fold streaming ─────────────────
+const imageUrl = read("src/lib/image-url.ts");
+const imageUtils = read("src/lib/image-utils.ts");
+const preview = read("src/lib/menu-preview.ts");
+const menuPage = read("src/app/menu/page.tsx");
+{
+  // The server <link> and the client batch must ask for IDENTICAL urls, or the
+  // browser downloads every first-screen photo twice.
+  pass("the photo box is defined once, in a server-safe module", /export const MENU_CARD_IMG_W = 400/.test(imageUrl) && /export const MENU_CARD_IMG_H = 250/.test(imageUrl));
+  pass("the first-screen count is shared too", /export const FIRST_SCREEN_PHOTOS = 8/.test(imageUrl));
+  pass("image-url.ts is server-safe (no \"use client\")", !/^"use client"/m.test(imageUrl));
+  pass("image-utils.ts re-exports it so existing callers are untouched", /from "@\/lib\/image-url"/.test(imageUtils) && /MENU_CARD_IMG_W/.test(imageUtils));
+  pass("the grid imports the shared constants instead of redefining them", /FIRST_SCREEN_PHOTOS,\s*\} from "@\/lib\/image-utils"/.test(app) && !/const MENU_CARD_IMG_W =/.test(app));
+
+  pass("/menu renders on the server and is never baked at build time", /export const dynamic = "force-dynamic"/.test(menuPage) && !/^"use client"/m.test(menuPage));
+  pass("/menu emits high-priority image preloads for the first screen", /rel="preload"/.test(menuPage) && /as="image"/.test(menuPage) && /fetchPriority="high"/.test(menuPage));
+  pass("the preload lookup uses the same order as /api/menu", /orderBy\(asc\(menuItems\.sortOrder\), asc\(menuItems\.id\)\)/.test(preview));
+  pass("the preload lookup builds urls through optimizeImageUrl", /optimizeImageUrl\(row\.imageUrl, MENU_CARD_IMG_W, MENU_CARD_IMG_H\)/.test(preview));
+  pass("a slow or unreachable database can never block the menu page", /PRELOAD_BUDGET_MS/.test(preview) && /catch \{\s*return \[\];/.test(preview));
+  pass("the Suspense shell around the menu app is kept", /<Suspense/.test(menuPage) && /<CustomerMenuApp \/>/.test(menuPage));
+
+  pass("the batch announces when the first screen has landed", /onReleased\?: \(\) => void/.test(reveal) && /if \(released\) onReleasedRef\.current\?\.\(\)/.test(reveal));
+  pass("the below-the-fold warm-up waits for that signal", /useIdleImagePrefetch\(nextScreenPhotoUrls\)/.test(app) && /releasedFor === firstScreenSignature/.test(app));
+  pass("the warm-up covers a few photos at LOW priority", /NEXT_SCREEN_PHOTOS = 4/.test(app) && /fetchpriority", "low"/.test(reveal));
+  pass("the warm-up is skipped on Data Saver / 2G", /connection\?\.saveData/.test(reveal) && /effectiveType === "2g"/.test(reveal));
+  pass("the warm-up runs while the browser is idle", /requestIdleCallback\(start/.test(reveal));
+  pass("the warm-up removes its links again", /for \(const link of links\) link\.remove\(\);/.test(reveal));
 }
 
 // ── 4. Shimmer styling + reduced motion ─────────────────────────────────────
@@ -90,9 +119,11 @@ const route = read("src/app/api/images/[id]/route.ts");
 }
 const utils = read("src/lib/image-utils.ts");
 {
-  pass("only /api/images refs are rewritten", /trimmed\.startsWith\("\/api\/images\/"\)/.test(utils));
-  pass("data: URLs are still returned untouched", /trimmed\.startsWith\("data:"\)/.test(utils));
-  pass("pexels optimisation is untouched", /images\.pexels\.com/.test(utils));
+  pass("only /api/images refs are rewritten", /trimmed\.startsWith\("\/api\/images\/"\)/.test(imageUrl));
+  pass("data: URLs are still returned untouched", /trimmed\.startsWith\("data:"\)/.test(imageUrl));
+  pass("pexels optimisation is untouched", /images\.pexels\.com/.test(imageUrl));
+  pass("optimizeImageUrl still comes out of image-utils", /optimizeImageUrl,\n\} from "@\/lib\/image-url"/.test(imageUtils) || /optimizeImageUrl/.test(imageUtils));
+  pass("the browser-only uploader still lives in image-utils", /export function compressImage/.test(imageUtils));
 }
 
 // ── Report ──────────────────────────────────────────────────────────────────
@@ -105,3 +136,4 @@ console.log("\n✅ Image reveal regression test PASSED");
 console.log("   • first-screen photos preload in one parallel high-priority batch");
 console.log("   • the batch fades in together, with a timeout so it can never stall");
 console.log("   • the customer QR menu is wired to it and nothing else changed");
+console.log("   • /menu preloads the first screen server-side; the next screen warms at idle");

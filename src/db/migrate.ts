@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-08-30-1";
+const SCHEMA_VERSION = "2026-09-02-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -221,6 +221,21 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    // Group 8: one row per accepted order submission, so identical lines can be
+    // folded into an existing row without losing the duplicate-submission guard.
+    "order_submissions",
+    `CREATE TABLE IF NOT EXISTS order_submissions (
+      id serial PRIMARY KEY,
+      ticket_id integer NOT NULL,
+      idempotency_key varchar(64) NOT NULL,
+      source varchar(20),
+      waiter_name varchar(100),
+      lines integer DEFAULT 0,
+      merged_lines integer DEFAULT 0,
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
     "cdn_images",
     `CREATE TABLE IF NOT EXISTS cdn_images (
       id serial PRIMARY KEY,
@@ -262,6 +277,17 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     // Group 5: payment verification audit
     verified_by: { type: "text" },
     verified_at: { type: "timestamp", dropNotNull: true },
+    // Group 8: guest "bring us the bill/receipt" request
+    receipt_requested_at: { type: "timestamp", dropNotNull: true },
+  },
+  order_submissions: {
+    ticket_id: { type: "integer", def: "0", castText: true },
+    idempotency_key: { type: "text" },
+    source: { type: "text" },
+    waiter_name: { type: "text" },
+    lines: { type: "integer", def: "0", castText: true },
+    merged_lines: { type: "integer", def: "0", castText: true },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
   },
   ticket_items: {
     ticket_id: { type: "integer", def: "0", castText: true },
@@ -451,6 +477,7 @@ async function runFullMigrate(force: boolean) {
     "tickets",
     "ticket_items",
     "announcements",
+    "order_submissions",
   ];
   for (const t of serialTables) {
     await run(`CREATE SEQUENCE IF NOT EXISTS ${t}_id_seq`);
@@ -530,6 +557,11 @@ async function runFullMigrate(force: boolean) {
   await run(`CREATE INDEX IF NOT EXISTS tickets_created_at_idx ON tickets (created_at)`);
   await run(`CREATE INDEX IF NOT EXISTS tickets_updated_at_idx ON tickets (updated_at)`);
   await run(`CREATE INDEX IF NOT EXISTS tickets_status_closed_at_idx ON tickets (status, closed_at)`);
+  //    8. order_submissions(idempotency_key) UNIQUE: the submission-level
+  //       duplicate guard that survives line merging (Group 8)
+  //    9. order_submissions(ticket_id): "what did this table send, and when"
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS order_submissions_idempotency_key_key ON order_submissions (idempotency_key) WHERE idempotency_key IS NOT NULL`);
+  await run(`CREATE INDEX IF NOT EXISTS order_submissions_ticket_id_idx ON order_submissions (ticket_id)`);
 
   //  • payment_status backfill: existing paid/completed bills get a concrete
   //    status derived from their stored method so reports/history stay correct

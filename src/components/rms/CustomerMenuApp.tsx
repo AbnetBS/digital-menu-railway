@@ -13,22 +13,29 @@ import { calculateDailyPromotionLinePrices, dailyPromotionLabel, isDailyPromotio
 import { fixBrandText } from "@/lib/brand";
 import { useMenuText, useT } from "@/lib/i18n";
 import LanguageToggle from "@/components/LanguageToggle";
-import { optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
-import { ImageBatchProvider, RevealImage } from "@/components/ImageReveal";
+import {
+  optimizeImageUrl,
+  FALLBACK_FOOD_IMAGE,
+  MENU_CARD_IMG_W,
+  MENU_CARD_IMG_H,
+  FIRST_SCREEN_PHOTOS,
+} from "@/lib/image-utils";
+import { ImageBatchProvider, RevealImage, useIdleImagePrefetch } from "@/components/ImageReveal";
+import { OrderStatusProvider, OrderStatusFab, OrderStatusBanner } from "@/components/rms/OrderStatus";
 import { FACEBOOK_URL, GOOGLE_MAPS_DIRECTIONS_URL, INSTAGRAM_URL, TIKTOK_URL } from "@/lib/business-links";
 
 /**
- * Menu-card photo size. Cards are ~190 CSS px wide, so 400x250 covers 2x-DPR
- * phones without shipping the stored 900px original (~150-250KB → ~15-30KB).
+ * Photo box + first-screen count are imported from `@/lib/image-utils` so the
+ * server-side `<link rel="preload">` tags emitted by `src/app/menu/page.tsx`
+ * always ask for byte-identical URLs (see `src/lib/menu-preview.ts`).
  */
-const MENU_CARD_IMG_W = 400;
-const MENU_CARD_IMG_H = 250;
+
 /**
- * How many dish photos fit on the first screen (2 columns × ~3 rows + a little
- * scroll buffer). These are preloaded in parallel and revealed together; the
- * rest stay lazy so scrolling is what costs data, not opening the menu.
+ * How many photos BELOW the first screen are warmed while the browser is idle.
+ * Deliberately small: a guest who never scrolls must not pay for the whole menu
+ * on a metered connection.
  */
-const FIRST_SCREEN_PHOTOS = 8;
+const NEXT_SCREEN_PHOTOS = 4;
 
 interface CartEntry {
   /** Stable per-cart-line key: promotions can contain the same menu item twice. */
@@ -86,6 +93,30 @@ export default function CustomerMenuApp() {
   const menuGridRef = useRef<HTMLDivElement | null>(null);
   const stickyBarRef = useRef<HTMLDivElement | null>(null);
 
+  // ── LIVE ORDER STATUS (Group 8): bumping this refetches /api/table-status the
+  //    moment a submission lands, so the guest never waits a poll cycle to see
+  //    their own order appear.
+  const [statusRefreshKey, setStatusRefreshKey] = useState(0);
+  // Brief gold ring so the "Rate your visit" shortcut visibly lands on the review card.
+  const [reviewPulse, setReviewPulse] = useState(false);
+  const reviewPulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (reviewPulseTimer.current) clearTimeout(reviewPulseTimer.current);
+    },
+    []
+  );
+
+  /** Scroll to the review card at the end of the flow and highlight it. */
+  const openReview = useCallback(() => {
+    const node = document.getElementById("guest-review");
+    if (node) node.scrollIntoView({ behavior: "smooth", block: "center" });
+    setReviewPulse(true);
+    if (reviewPulseTimer.current) clearTimeout(reviewPulseTimer.current);
+    reviewPulseTimer.current = setTimeout(() => setReviewPulse(false), 2400);
+  }, []);
+
   useEffect(() => {
     const sig = JSON.stringify(cart);
     if (pendingKeyRef.current && lastCartSigRef.current && sig !== lastCartSigRef.current) {
@@ -109,6 +140,8 @@ export default function CustomerMenuApp() {
   const [revText, setRevText] = useState("");
   const [revSending, setRevSending] = useState(false);
   const [revMsg, setRevMsg] = useState("");
+  /** After a successful submit the form turns into a thank-you card (feature 5). */
+  const [reviewSent, setReviewSent] = useState(false);
 
   const logoUrl = String(settings.logo_url || "/logo.png");
   // Brand guard: business is Fana Cafe & Restaurant — never show FanaQueen text
@@ -247,6 +280,7 @@ export default function CustomerMenuApp() {
       setRevName("");
       setRevText("");
       setRevMsg(t("review_thanks"));
+      setReviewSent(true);
     } else setRevMsg(t("review_fail"));
   };
 
@@ -279,6 +313,24 @@ export default function CustomerMenuApp() {
             .map((m) => optimizeImageUrl(m.imageUrl, MENU_CARD_IMG_W, MENU_CARD_IMG_H)),
     [filteredMenu, search]
   );
+
+  // ── BELOW-THE-FOLD STREAMING (image round 2) ───────────────────────────────
+  // The first screen is preloaded by the server AND revealed as one batch. Once
+  // THAT has landed we warm a few photos of the next screen while the browser is
+  // idle, so scrolling keeps streaming instead of uncovering shimmer boxes.
+  // Tracking which batch was released (not just a boolean) matters: when the menu
+  // JSON arrives the batch re-gates, and a stale `true` would let the next screen
+  // start competing with the first one.
+  const firstScreenSignature = firstScreenPhotoUrls.join("|");
+  const [releasedFor, setReleasedFor] = useState("");
+  const firstScreenReleased = firstScreenSignature !== "" && releasedFor === firstScreenSignature;
+  const nextScreenPhotoUrls = useMemo(() => {
+    if (!firstScreenReleased) return [];
+    return filteredMenu
+      .slice(FIRST_SCREEN_PHOTOS, FIRST_SCREEN_PHOTOS + NEXT_SCREEN_PHOTOS)
+      .map((m) => optimizeImageUrl(m.imageUrl, MENU_CARD_IMG_W, MENU_CARD_IMG_H));
+  }, [firstScreenReleased, filteredMenu]);
+  useIdleImagePrefetch(nextScreenPhotoUrls);
 
   // When a category chip is tapped, jump the menu list back to the TOP of that
   // category instead of leaving the user at the scrolled-down position of the
@@ -406,6 +458,9 @@ export default function CustomerMenuApp() {
         setSubmitted(true);
         setCart([]);
         setReviewMode(false);
+        // Pull the fresh kitchen status straight away so the new pill/banner show
+        // this order without waiting for the next 12s poll.
+        setStatusRefreshKey((k) => k + 1);
       } else {
         // Server returns customer-friendly messages (raw DB errors are logged
         // server-side, never shown to guests). One special case: the tab holds
@@ -585,8 +640,12 @@ export default function CustomerMenuApp() {
 
   /* ── MAIN MENU ── */
   return (
+    <OrderStatusProvider tableId={tableId ?? 0} refreshKey={statusRefreshKey} onOpenReview={openReview}>
     <div className="min-h-screen bg-[#FAF6F0] pb-28">
       <LanguageToggle />
+      {/* "Order status" pill — stacked above the አማርኛ toggle, appears once this
+          table has an order (whoever sent it). */}
+      <OrderStatusFab />
       {/* Header with logo */}
       <header className="bg-[#2C1B17] text-white sticky top-0 z-40 shadow-xl">
         <div className="px-4 py-2.5 flex items-center justify-between max-w-lg mx-auto">
@@ -606,6 +665,12 @@ export default function CustomerMenuApp() {
       {/* intro */}
       <div className="bg-gradient-to-r from-[#4E342E] to-[#2C1B17] text-amber-100 text-center text-xs py-2.5 px-4">
         {t("intro")}
+      </div>
+
+      {/* live status line under the header — one sentence the guest understands.
+          `empty:hidden` keeps the gap away while this table has no order yet. */}
+      <div className="max-w-lg mx-auto px-4 pt-3 empty:hidden">
+        <OrderStatusBanner />
       </div>
 
       {/* ── 📢 DAILY BOARD — rotating announcements (auto-slide every few seconds when 2+) ── */}
@@ -799,7 +864,10 @@ export default function CustomerMenuApp() {
       {/* menu grid — first-screen dish photos are preloaded in parallel and
           revealed TOGETHER (see ImageBatchProvider) instead of trickling in one
           card at a time on a phone that has never visited before. */}
-      <ImageBatchProvider urls={firstScreenPhotoUrls}>
+      <ImageBatchProvider
+        urls={firstScreenPhotoUrls}
+        onReleased={() => setReleasedFor(firstScreenSignature)}
+      >
         <div ref={menuGridRef} className="px-4 grid grid-cols-2 gap-3 max-w-lg mx-auto">
           {filteredMenu.map((m, index) => {
             const qty = cartQty(m.id);
@@ -1107,8 +1175,14 @@ export default function CustomerMenuApp() {
           </a>
         </section>
 
-        {/* 7. REVIEWS — 3–5 recent + leave a review */}
-        <section className="space-y-3">
+        {/* 7. REVIEWS — the LAST step of the guest flow (feature 5): the order
+            status panel's "Rate your visit" button scrolls here. */}
+        <section
+          id="guest-review"
+          className={`space-y-3 scroll-mt-24 rounded-3xl transition-all duration-500 ${
+            reviewPulse ? "ring-4 ring-[#C9A227] bg-[#C9A227]/10 p-2" : ""
+          }`}
+        >
           <h3 className="font-serif font-bold text-lg text-[#2C1B17] flex items-center gap-2">
             <Star className="w-5 h-5 text-[#C9A227] fill-[#C9A227]" /> {t("what_guests_say")}
           </h3>
@@ -1122,7 +1196,26 @@ export default function CustomerMenuApp() {
             </div>
           ))}
 
+          {/* "Rate your visit" call-to-action — shown once this table has actually
+              ordered, so the ask lands at the end of the visit, not on arrival. */}
+          {submitted && !reviewSent && (
+            <div className="bg-gradient-to-r from-[#C9A227] to-amber-500 rounded-2xl px-4 py-3.5 flex items-center gap-3 shadow-lg">
+              <Star className="w-7 h-7 text-[#2C1B17] fill-[#2C1B17] shrink-0" />
+              <div className="min-w-0">
+                <p className="font-black text-sm text-[#2C1B17] leading-tight">{t("review_cta_title")}</p>
+                <p className="text-[11px] font-bold text-[#3D2314] leading-snug">{t("review_cta_sub")}</p>
+              </div>
+            </div>
+          )}
+
           {/* leave a review — inline quick form */}
+          {reviewSent ? (
+            <div className="bg-emerald-50 border-2 border-emerald-300 rounded-2xl p-6 text-center space-y-2">
+              <CheckCircle2 className="w-10 h-10 text-emerald-600 mx-auto" />
+              <p className="font-serif font-bold text-base text-emerald-900">{t("review_thanks_title")}</p>
+              <p className="text-xs text-emerald-800 font-semibold leading-relaxed">{t("review_thanks_sub")}</p>
+            </div>
+          ) : (
           <div className="bg-[#2C1B17] rounded-2xl p-5 space-y-3">
             <p className="font-bold text-sm text-amber-100 flex items-center gap-2">
               <MessageSquare className="w-4 h-4 text-[#C9A227]" /> {t("leave_review")}
@@ -1162,6 +1255,7 @@ export default function CustomerMenuApp() {
             </button>
             <p className="text-[10px] text-stone-500 text-center">{t("reviews_note")}</p>
           </div>
+          )}
         </section>
       </div>
 
@@ -1217,5 +1311,6 @@ export default function CustomerMenuApp() {
         </div>
       )}
     </div>
+    </OrderStatusProvider>
   );
 }

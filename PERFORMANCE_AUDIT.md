@@ -672,6 +672,171 @@ card was a bare `<img loading="lazy">`. Three things then worked against us:
 5. `/api/images/{id}` **without** parameters still returns the original JPEG (right-click a
    receipt photo in the cashier → open in a new tab).
 
+## 5p. Group 8 — six guest-facing order features (2026-09-02)
+
+Requested by the owner after the photo fix: live order status on the guest's own phone, arrival
+time + waiter name on the crew/staff screens, duplicate lines merged, a "bring us the bill"
+button, the review as the last step of the flow, and one more round on image loading.
+
+### 1 · Live order status on the guest's phone (`/api/table-status`, `src/components/rms/OrderStatus.tsx`)
+
+- **New public endpoint** `GET /api/table-status?table=N` → the table's open bill: order number,
+  phase, kitchen progress, barista progress, every line (name/qty/note/state), totals, arrival
+  time, bill-request time. `POST /api/table-status` → the guest's "bring us the bill/receipt" tap.
+- **Table-scoped on purpose**: a bill can be opened by the *waiter's* phone, and the guest who
+  then scans the same QR must see that same order. There is no per-device token to key on, and
+  the table id is already public (it is printed on the QR).
+- **What it never exposes**: no staff names, no PIN/session data, no receipt photos, no payment
+  verification audit, no other table's rows, no bill older than the 30-minute grace window (which
+  exists only so the thank-you/review step survives payment). Rate-limited per IP
+  (240 reads / 20 requests per 10 min) and `Cache-Control: no-store`.
+- **The only write it performs** is `receipt_requested_at` (+ `updated_at`) on that table's open
+  ticket, guarded by `WHERE receipt_requested_at IS NULL` so two guests tapping at once keep the
+  *first* request time. It can never touch a status, a price or a quantity.
+- **Phases** (`customerOrderPhase`, `src/lib/order-lines.ts`): `waiting` (sent, waiter has not
+  confirmed) → `confirmed` → `preparing` → `ready`, then `bill` / `paid`. A bill with **no kitchen
+  items** reports `drinks_only` and shows **no progress bar** — coffee, juice and cake are handed
+  over in seconds, so a "preparing…" bar for a macchiato would be noise. Drinks are still listed.
+- **UI**: a pill above the አማርኛ toggle (only once the table has an order), a slim status line
+  under the header, and a full panel with the kitchen progress bar, every dish, the bill button and
+  the review shortcut. Polls every 12 s **only while the tab is visible** — a phone left open on a
+  table must not hammer the server all evening — and refreshes immediately after a submit.
+- Staff see the request the instant it happens: the POST publishes on the realtime `orders`
+  channel that the waiter/cashier/kitchen screens already subscribe to. The cashier can clear it
+  ("bill already handed over") via `PUT /api/tickets {receiptRequested:false}` (staff-only route).
+
+### 2 · Arrival time, date and waiter name (`station-items`, `/api/tables`, crew + staff UIs)
+
+- `/api/station-items` now returns `createdAt`, `updatedAt`, `receiptRequestedAt` per ticket and
+  `createdAt` per item; `/api/tables` returns `activeTicketAt` + `activeTicketReceiptRequestedAt`.
+- **Kitchen/barista**: "Arrived 14:35 · waiting 12 min" on every ticket, red from 10 minutes,
+  the same clock on each individual item, and a 🧾 badge when the table asked for the bill. A 30 s
+  ticker keeps the waiting labels live without a reload.
+- **Waiter**: arrival date/time + who sent it on the bill header, "open since 14:35 · 12 min" and
+  a bill-requested flag on each table card.
+- **Cashier**: arrival + waiting on every active order, the guest's bill request with a Clear
+  button, and date/time/waiter on the Recently Paid cards.
+- **Order history**: "🕒 arrived …" next to the existing close time and waiter.
+
+### 3 · Duplicate lines merged — "2 Tea", never "1 Tea + 1 Tea"
+
+Ordering tea, then tea again ten minutes later, used to leave two `ticket_items` rows and every
+screen (including the receipt the cashier prints) read "1 Tea, 1 Sandwich, 1 Tea".
+
+- **In the database** (`POST /api/tickets`): a new line that is identical to an existing
+  **pending, not-removed** row of the same ticket (same dish, unit price, note and station —
+  `canMergeLines`) is folded in with `UPDATE quantity = quantity + n` instead of inserted, capped
+  at 999. Deliberately **not** merged: rows the crew already `accepted`/`done` (folding new work
+  into a cooked dish would hide it), cashier-removed rows, and Daily Board offer lines (they are
+  expanded per unit so a combo's exact integer total survives).
+- **Idempotency had to move up a level**: a submission whose lines *all* merge inserts no item
+  rows, so the old per-row `<key>#0` probe would not recognise a retry of it — and a replayed
+  request would then double the quantities. New table **`order_submissions`** (UNIQUE
+  `idempotency_key`) records every accepted submission, is probed first, and the legacy per-row
+  probe remains as the fallback for bills recorded before it existed. A unique-violation race
+  (`23505`) is caught and answered with the already-recorded bill.
+- **On screen** (`groupOrderLines`): bills created before this change are collapsed for read-only
+  views (guest panel, order history), including `removed` rows kept apart so a struck-through item
+  can never inflate a paid bill's quantity. **Editable staff lists still render raw rows** — their
+  ± buttons write to a single row id, so they rely on the database-level merge instead.
+
+### 4 · "Request the bill/receipt" — see item 1
+
+The button lives in the guest's status panel and is offered **only once the customer has been
+served**: every kitchen unit is `done` (or the bill never contained food — a drinks/cake-only table
+has nothing to wait for). While the food is still cooking the panel says so instead of showing a
+dead control. Drinks are deliberately NOT part of the gate: the crew does not tick them off one by
+one, and waiting on a barista "done" tap would leave a guest unable to pay. Once tapped, the button
+is replaced by the request time and a confirmation that a waiter is coming.
+
+### 5 · Review as the last step of the flow
+
+- The status panel offers **Rate your visit** once the bill has been requested or paid; it closes
+  the panel, scrolls to the review card (`#guest-review`) and pulses a gold ring around it.
+- After an order is sent, the review card gains a "Enjoyed your visit?" call-to-action, and a
+  successful submit replaces the form with a **thank-you card** (name/comment cleared, message
+  that it awaits admin approval). No change to `/api/reviews` or the approval flow.
+
+### 6 · Image loading, round 2 (`src/app/menu/page.tsx`, `src/lib/menu-preview.ts`)
+
+§5o made the first screen download in parallel *once the menu JSON arrived*. That still left the
+radio idle while the page's JS downloaded and booted — 1-2 s on a phone connection.
+
+- `/menu` is now a **server** component (`force-dynamic`) that asks Postgres for the first eight
+  photos — same order as `/api/menu` (`sortOrder`, `id`) and same `?w=&h=` box — and emits them as
+  `<link rel="preload" as="image" fetchpriority="high">`. The bytes are in flight during the JS
+  download, so the first screen is usually ready the moment the skeleton clears.
+  The URL rules moved to `src/lib/image-url.ts` (no `"use client"`) and are re-exported by
+  `image-utils.ts`, so **both sides build byte-identical URLs** — a one-parameter mismatch would
+  mean downloading every photo twice.
+- **Fails soft**: the lookup is capped at 1.2 s and any error (slow DB, no tables yet) yields `[]`,
+  in which case the page behaves exactly as it did before.
+- **Below the fold keeps streaming**: once the first batch has been released
+  (`ImageBatchProvider onReleased`), `useIdleImagePrefetch` warms **4** more photos at
+  `fetchpriority="low"` during browser idle time — skipped entirely on Data Saver or 2G, cancelled
+  and cleaned up if the list changes. Everything further down stays `loading="lazy"`.
+
+### Schema / deployment
+
+- New: `tickets.receipt_requested_at` (nullable timestamp), table `order_submissions`
+  (`id`, `ticket_id`, `idempotency_key` UNIQUE, `source`, `waiter_name`, `lines`, `merged_lines`,
+  `created_at`) + index on `ticket_id`.
+- Applied automatically by `ensureTablesExist()` on the first request after deploy
+  (`SCHEMA_VERSION = "2026-09-02-1"`); all statements are `IF NOT EXISTS` / additive, so an
+  already-migrated database is untouched and an old one keeps working (see `canRecordSubmissions`).
+- No data backfill, no destructive change and no new RUNTIME dependency (`jsdom` +
+  `@types/jsdom` were added as devDependencies for the UI test below and are never bundled).
+  `/menu` becomes server-rendered
+  (`ƒ Dynamic` in the build output) — that is required, a prerendered page would bake in whatever
+  the database held at build time.
+
+### Regression guards (wired into `npm test`)
+
+- `scripts/verify-order-lines.ts` — 71 unit assertions on the shared helpers: line identity,
+  the merge rule (pending only, never promotions/removed/other tickets), grouping (quantity sums,
+  preserved order, removed rows never inflating a live line), per-station progress in units,
+  every customer phase including `drinks_only`, and the arrival/waiting time helpers.
+- `scripts/verify-order-status.mjs` — the endpoint's scope, rate limits, `no-store`, its single
+  guarded write, the payload's privacy, the schema + migration, the database merge, every crew and
+  staff screen, the guest UI wiring, the review shortcut, and **English/Amharic key parity** (155
+  keys each, every `os_*` string the UI asks for exists in both, Amharic values really are Amharic).
+- `scripts/verify-order-status-ui.tsx` — actually MOUNTS the guest status UI in jsdom (no browser,
+  no database, no server) and clicks through it: 34 assertions — the pill and banner appear only
+  once the table has a real order, the kitchen bar reads 50% for "1 done + 1 of 2 cooking out of 3
+  units", the panel lists every dish with quantity/notes/state/total/waiting minutes, **the bill
+  button is absent while the food is cooking and appears the moment the kitchen finishes**, the
+  bill request POSTs exactly `{table:N}` and swaps to a confirmation with the request time, the
+  review shortcut fires the callback and closes the panel, a drinks-only bill shows the pill and
+  offers the bill but draws **no** progress bar, a QR with no table never polls, and a 500 from the
+  endpoint is swallowed and recovers on the next poll.
+- `scripts/verify-image-reveal.mjs` — extended with the round-2 guards (server preload, shared
+  constants, fail-soft budget, idle prefetch and its data-saver/low-priority rules).
+
+### How to verify after deploying
+
+1. Scan a table QR, order two teas **ten minutes apart** → kitchen, waiter, cashier, history and
+   the guest panel all read **"Tea ×2"** on one line; the total is unchanged.
+2. On the guest phone: the pill appears above አማርኛ, the panel shows "your food is being prepared"
+   with a progress bar; tap Accept/Done in the kitchen → the guest's phone updates within ~12 s.
+3. Order **only** a macchiato → the panel lists it but shows **no progress bar** and no banner.
+4. Kitchen marks everything done → **Request the bill/receipt** appears; tap it → the cashier and
+   waiter screens show 🧾 immediately (no refresh); the cashier's **Clear** removes it again.
+5. Kitchen/barista cards show "Arrived 14:35 · waiting N min", turning red at 10 minutes.
+6. After the bill is requested, **Rate your visit** jumps to the review card; submitting it shows
+   the thank-you card.
+7. Cold-cache phone on DevTools → Network: the eight `?w=400&h=250` requests now start with the
+   **document** (initiator `other`, from the server `<link>`), before `/api/menu` returns.
+
+### Known pre-existing issues (not touched by this change)
+
+- `npm test` ends on one failing assertion, **"developer credit is AB Web"**
+  (`scripts/verify-translation-safety.mjs`): it expects the string "AB Web" inside
+  `CustomerMenuApp.tsx`, which has not been there since the customer footer was changed to
+  "Powered by - +251 91 908 1802". Fails identically on the base commit — left alone on purpose.
+- `npm run lint` reports 34 errors / 33 warnings, **the exact same count as before this change**
+  (verified against a clean worktree of the previous commit): repo-wide `setState`-in-effect,
+  `<img>` and unescaped-entity patterns. New files add none.
+
 ## 5. How to measure after deploying
 
 1. Open the deployed homepage in Chrome DevTools → Network: confirm `settings/categories/menu/reviews/gallery` load **in parallel** and return `Cache-Control: public, max-age=60, stale-while-revalidate=300` (no `no-store`).

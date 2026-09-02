@@ -1,18 +1,49 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { tickets, ticketItems, cafeTables, menuItems, announcements } from "@/db/schema";
+import { tickets, ticketItems, cafeTables, menuItems, announcements, orderSubmissions } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
-import { eq, asc, desc, and, notInArray, inArray } from "drizzle-orm";
+import { eq, asc, desc, and, notInArray, inArray, sql } from "drizzle-orm";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireStaffOrAdmin, requireAdmin } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
+import { canMergeLines } from "@/lib/order-lines";
 
 const CUSTOMER_ORDER_LIMIT = 30;
 const CUSTOMER_ORDER_WINDOW_MS = 10 * 60 * 1000;
+
+/** A folded line may never grow past this (defensive; a single submission is capped at 100). */
+const MAX_MERGED_LINE_QUANTITY = 999;
+
+/**
+ * Is the `order_submissions` table usable? Checked ONCE per process, OUTSIDE any
+ * transaction (a failed statement would poison the transaction it ran in). If an
+ * old database somehow never got the Group 8 migration, ordering keeps working
+ * exactly as before — the submission record is simply skipped and the legacy
+ * per-item idempotency probe still guards against duplicates.
+ */
+let submissionsTableUsable: boolean | null = null;
+let submissionsProbedAt = 0;
+/** A failed probe is retried this often — a late migration needs no restart. */
+const SUBMISSIONS_REPROBE_MS = 60_000;
+
+async function canRecordSubmissions(): Promise<boolean> {
+  if (submissionsTableUsable === true) return true;
+  if (submissionsTableUsable === false && Date.now() - submissionsProbedAt < SUBMISSIONS_REPROBE_MS) {
+    return false;
+  }
+  try {
+    await db.execute(sql`SELECT 1 FROM order_submissions LIMIT 1`);
+    submissionsTableUsable = true;
+  } catch {
+    submissionsTableUsable = false;
+    submissionsProbedAt = Date.now();
+  }
+  return submissionsTableUsable;
+}
 
 // The transaction client and the root Drizzle client share the query methods used here.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -108,8 +139,12 @@ export async function GET(request: Request) {
 // POST: customer (QR) or waiter submits order — creates new ticket OR merges into active ticket for that table
 // customer source → pending_waiter; waiter source → confirmed
 export async function POST(request: Request) {
+  // Kept OUTSIDE the try so the concurrency backstop at the bottom can identify a
+  // raced duplicate submission even after its transaction rolled back.
+  let racedKey = "";
   try {
     const body = await request.json();
+    racedKey = body?.idempotencyKey ? String(body.idempotencyKey).slice(0, 64) : "";
     const { tableId, items, waiterName, source } = body;
 
     // Public customers may submit orders (source === "customer") → these become
@@ -146,20 +181,37 @@ export async function POST(request: Request) {
     }
 
     const initialStatus = isCustomer ? "pending_waiter" : "confirmed";
+    const recordSubmissions = idemKey ? await canRecordSubmissions() : false;
 
     const transactionResult = await db.transaction(async (tx) => {
-    // ── IDEMPOTENCY CHECK (Group 1) ──
+    // ── IDEMPOTENCY CHECK (Group 1, extended by Group 8) ──
     // A retry/double-tap of the SAME submission must never duplicate the order.
-    // If the first item of this submission is already recorded, the whole order
-    // was already applied → return it unchanged (the kitchen won't cook twice).
+    // Two records are checked, either of which proves the submission was applied:
+    //   (a) `order_submissions` — the submission itself. This is the one that
+    //       still works when every line of the submission was FOLDED into an
+    //       existing row (Group 8) and therefore inserted no item rows at all.
+    //   (b) the legacy per-item key `<key>#0` — submissions recorded before (a)
+    //       existed, and any order placed while (a) was unavailable.
     if (idemKey) {
-      const keyRow = await tx
-        .select({ ticketId: ticketItems.ticketId })
-        .from(ticketItems)
-        .where(eq(ticketItems.idempotencyKey, idemProbe))
-        .limit(1);
-      if (keyRow.length > 0) {
-        const existing = await tx.select().from(tickets).where(eq(tickets.id, keyRow[0].ticketId)).limit(1);
+      let recordedTicketId: number | null = null;
+      if (recordSubmissions) {
+        const subRow = await tx
+          .select({ ticketId: orderSubmissions.ticketId })
+          .from(orderSubmissions)
+          .where(eq(orderSubmissions.idempotencyKey, idemKey))
+          .limit(1);
+        recordedTicketId = subRow[0]?.ticketId ?? null;
+      }
+      if (recordedTicketId === null) {
+        const keyRow = await tx
+          .select({ ticketId: ticketItems.ticketId })
+          .from(ticketItems)
+          .where(eq(ticketItems.idempotencyKey, idemProbe))
+          .limit(1);
+        recordedTicketId = keyRow[0]?.ticketId ?? null;
+      }
+      if (recordedTicketId !== null) {
+        const existing = await tx.select().from(tickets).where(eq(tickets.id, recordedTicketId)).limit(1);
         if (existing.length > 0) {
           const replayItems = await tx
             .select()
@@ -376,6 +428,28 @@ export async function POST(request: Request) {
       }
     }
 
+    // ── GROUP 8: fold a repeated dish into the line already on the bill ──
+    // Ordering tea, then ordering tea again ten minutes later used to leave the
+    // bill reading "1 Tea, 1 Sandwich, 1 Tea" on the waiter, cashier, kitchen and
+    // receipt screens. Identical lines that the crew has NOT started yet are now
+    // added to the existing row instead (canMergeLines is the single rule, and it
+    // keeps Daily Board offer lines, removed lines and already-accepted/done lines
+    // separate on purpose).
+    const mergeCandidates =
+      activeTickets.length > 0
+        ? await tx
+            .select()
+            .from(ticketItems)
+            .where(
+              and(
+                eq(ticketItems.ticketId, ticketId),
+                eq(ticketItems.removed, false),
+                eq(ticketItems.stationStatus, "pending")
+              )
+            )
+        : [];
+    let mergedLineCount = 0;
+
     // Insert the submission's items. If a CONCURRENT duplicate of this exact
     // submission already inserted rows, the UNIQUE index on (ticket_id, key)
     // rejects ours → we return the already-recorded bill instead.
@@ -384,17 +458,62 @@ export async function POST(request: Request) {
         const it = ticketRows[idx];
         const catSlug = String(it.category || "").toLowerCase();
         const stationName = routing[catSlug] || "kitchen";
-        await tx.insert(ticketItems).values({
+        const incoming = {
           ticketId,
           menuItemId: it.menuItemId,
           name: it.name,
-          category: it.category || "",
           price: Number(it.price),
-          quantity: it.quantity,
           notes: it.notes || "",
           stationName,
-          stationStatus: "pending",
-          idempotencyKey: idemKey ? `${idemKey}#${idx}` : null,
+          removed: false,
+        };
+
+        const target = mergeCandidates.find(
+          (row) =>
+            canMergeLines(row, incoming) &&
+            (Number(row.quantity) || 0) + it.quantity <= MAX_MERGED_LINE_QUANTITY
+        );
+        if (target) {
+          const foldedQuantity = (Number(target.quantity) || 0) + it.quantity;
+          // Keep the in-memory copy in sync so a second identical line in this
+          // same submission folds into the same row rather than inserting a new one.
+          target.quantity = foldedQuantity;
+          await tx
+            .update(ticketItems)
+            .set({ quantity: foldedQuantity })
+            .where(eq(ticketItems.id, target.id));
+          mergedLineCount += 1;
+          continue;
+        }
+
+        const inserted = await tx
+          .insert(ticketItems)
+          .values({
+            ticketId,
+            menuItemId: it.menuItemId,
+            name: it.name,
+            category: it.category || "",
+            price: Number(it.price),
+            quantity: it.quantity,
+            notes: it.notes || "",
+            stationName,
+            stationStatus: "pending",
+            idempotencyKey: idemKey ? `${idemKey}#${idx}` : null,
+          })
+          .returning();
+        if (inserted[0]) mergeCandidates.push(inserted[0]);
+      }
+
+      // Record the submission itself, so a retry is still recognised even when
+      // every one of its lines was folded into an existing row above.
+      if (recordSubmissions) {
+        await tx.insert(orderSubmissions).values({
+          ticketId,
+          idempotencyKey: idemKey,
+          source: isCustomer ? "customer" : "staff",
+          waiterName: waiterName ? String(waiterName).slice(0, 100) : null,
+          lines: ticketRows.length,
+          mergedLines: mergedLineCount,
         });
       }
     } catch (err) {
@@ -420,6 +539,41 @@ export async function POST(request: Request) {
     publish(CHANNELS.orders);
     return NextResponse.json({ ...transactionResult.ticket, totalAmount: transactionResult.total, merged: transactionResult.merged });
   } catch (error) {
+    // CONCURRENCY BACKSTOP (Group 8): two identical submissions raced and the
+    // UNIQUE index on order_submissions rejected the second one. The first is
+    // already on the bill, so return THAT bill instead of an error — the kitchen
+    // still never cooks twice.
+    const failure = String(error);
+    if (racedKey && failure.includes("order_submissions") && (failure.includes("23505") || /duplicate key/i.test(failure))) {
+      try {
+        const recorded = await db
+          .select({ ticketId: orderSubmissions.ticketId })
+          .from(orderSubmissions)
+          .where(eq(orderSubmissions.idempotencyKey, racedKey))
+          .limit(1);
+        const ticketId = recorded[0]?.ticketId;
+        if (ticketId) {
+          const ticket = await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1);
+          if (ticket.length > 0) {
+            const items = await db
+              .select()
+              .from(ticketItems)
+              .where(eq(ticketItems.ticketId, ticketId))
+              .orderBy(asc(ticketItems.id));
+            return NextResponse.json({
+              ...ticket[0],
+              items,
+              totalAmount: ticket[0].totalAmount,
+              merged: false,
+              duplicate: true,
+            });
+          }
+        }
+      } catch {
+        // fall through to the friendly error below
+      }
+    }
+
     // Never leak raw SQL/driver errors to customers (they were seeing strings
     // like "column idempotency_key does not exist"). Log the full detail
     // server-side and return one friendly, actionable message instead.
@@ -486,6 +640,13 @@ export async function PUT(request: Request) {
     if (body.status === "confirmed") {
       updates.confirmedBy = body.confirmedBy ? String(body.confirmedBy).slice(0, 100) : cur.confirmedBy || "(staff)";
     }
+    // GROUP 8 — the guest asked for the bill from their own phone; staff clear the
+    // flag once the receipt has actually reached the table. This is the ONLY thing
+    // a guest request can influence, and clearing it never moves the order status.
+    if (body.receiptRequested === false || body.receiptRequested === null) {
+      updates.receiptRequestedAt = null;
+    }
+
     // GROUP 5 — payment verification audit: record WHO marked the bill paid and
     // WHEN (the cashier's receipt-verification step for digital/card payments).
     // Only the paid transition stamps these; nothing else can overwrite them.

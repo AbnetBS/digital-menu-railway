@@ -837,6 +837,111 @@ radio idle while the page's JS downloaded and booted — 1-2 s on a phone connec
   (verified against a clean worktree of the previous commit): repo-wide `setState`-in-effect,
   `<img>` and unescaped-entity patterns. New files add none.
 
+## 5q. Group 9 — "the café opens tomorrow, everyone scans at once" (2026-09-02)
+
+**Question:** can one Node instance serve a full room of guests who all arrive through the
+café's single public IP? **Answer after this change: yes for a 40-table venue with 3–6 phones
+per table (~240 simultaneous guests), with headroom.** Measured, not assumed — numbers below.
+
+### The four things that would have broken on day one
+
+1. **Rate limits were per-IP.** Every guest in the café shares one NAT IP, so the old
+   `checkRateLimit("table-status:" + ip)` counted the *whole venue* as one abusive client.
+   Replay of the same traffic under the old limits: **23,560 blocked requests, including 90
+   order submissions**, and the live status pill dies within minutes.
+   → `src/lib/rate-limit.ts` now exports `checkSharedIpRateLimit()` plus **`VENUE_POLICIES`**,
+   one object that is the single source of truth for both tiers (per table, then per venue):
+
+   | scope | per table / 10 min | per venue / 10 min | why |
+   |---|---|---|---|
+   | `customerOrder` | 30 | 600 | a table re-orders a few times; venue cap stops scripted floods |
+   | `statusRead` | 600 | 20,000 | 20k ≈ 33 reads/s ≈ 80 tables polling every 12 s with 4 phones each |
+   | `statusRequest` (bill) | 12 | 300 | one bill per table, retries allowed |
+   | `review` (per hour) | 5 | 200 | admin approval still required |
+
+   Consumed by `table-status/route.ts`, `tickets/route.ts`, `reviews/route.ts`. Blocked requests
+   get `Retry-After`, and a hammering phone is cut at **its own table's** limit without touching
+   neighbouring tables.
+2. **Image encode thundering herd.** N guests requesting the same photo at the same moment each
+   ran their own `sharp` decode+resize+encode. → `inFlightVariants` in
+   `src/app/api/images/[id]/route.ts` dedupes concurrent identical variants into one encode.
+3. **`/menu` queried the DB on every scan.** → `src/lib/menu-preview.ts` caches
+   `firstScreenPhotoUrls()` for **30 s positive / 5 s negative** and shares one in-flight query
+   between concurrent scans, so a burst of QR scans costs one DB round-trip.
+4. **pg pool was the driver default (10).** → `src/db/index.ts` reads `PG_POOL_MAX`
+   (default **20**, safely parsed) and sets `idleTimeoutMillis: 30_000` so idle connections are
+   released back to the server between rushes.
+
+### Evidence 1 — venue replay against the real policies (`scripts/verify-shared-ip-limits.ts`, in `npm test`)
+
+Clock-controlled, in-memory replay of the actual `VENUE_POLICIES` (no HTTP, no DB):
+
+| scenario | requests | blocked |
+|---|---|---|
+| seeded venue: 10 tables × 4 phones, 60 min, 12 s poll | — | **0** |
+| 40 tables × 3 phones, one shared IP, 60 min (~7 req/s) | 25,135 | **0** |
+| 80 tables × 4 phones (double the venue, ~19 req/s) | 66,900 | **0** |
+| same 40-table traffic under the OLD per-IP limits | 25,135 | **23,560** (incl. 90 orders) |
+| one phone hammering 5× the normal rate | cut at 600/table | neighbour table unaffected |
+| flood rotating fake table ids | stopped at the venue ceiling | 600 of 5,000 |
+
+### Evidence 2 — real HTTP load test (production build, `next start`)
+
+Harness: `next build && next start` on Node 22, **2 vCPU / 3.9 GB** sandbox, Postgres replaced by
+an in-memory stub (40 menu items, 10 tables, one open ticket with 4 lines, a real 141 KB JPEG
+that `sharp` genuinely re-encodes to ~41 KB WebP). The load generator ran **in the same sandbox**,
+so it stole CPU from the server — every latency below is pessimistic. The stub is *not* committed;
+`src/db/index.ts` was restored with `git checkout` afterwards.
+
+All requests carried one shared `x-forwarded-for` (41.200.1.1), i.e. the whole venue behind one IP.
+
+**A · Opening rush — 60 guests (10 tables × 6 phones) arriving over 20 s, then polling every 12 s**
+660 requests in 62 s, **0 errors, 0 rate-limit blocks**:
+
+| endpoint | n | p50 | p95 | max |
+|---|---|---|---|---|
+| `GET /menu` (SSR HTML, 31 KB) | 60 | 12 ms | 20 ms | 71 ms |
+| `GET /api/images/N?w=360` | 192 | 9 ms | 22 ms | 33 ms |
+| `GET /api/menu` | 60 | 3 ms | 8 ms | 11 ms |
+| `GET /api/table-status` (polls) | 168 | 3 ms | 4 ms | 7 ms |
+
+**D · Worst case — 240 guests (40 tables × 6 phones) all scanning within 5 s**
+1,760 requests, **0 errors, 0 blocks**: `/menu` p50 8 ms / p95 285 ms / max 311 ms;
+320 photo requests (13 MB) p50 20 ms / p95 478 ms / max 770 ms; `/api/menu` p50 2 ms / p95 29 ms;
+status polls p50 2 ms.
+
+**B · Steady state — 120 concurrent pollers, 12 s interval, 36 s:** 360 requests,
+p50 13 ms, p95 228 ms, max 248 ms, 0 blocks. (The p95 tail is the harness starting all 120
+pollers in the same tick — real guests are never synchronised like that.)
+
+**E · Peak throughput — 32 workers hammering `/api/table-status` for 10 s:**
+**9,798 requests = 977 req/s**, p50 28 ms, p95 58 ms, p99 84 ms, max 542 ms, 0 errors, 0 blocks.
+
+**C · Cold photo burst — 8 unique photos × 6 concurrent requests (cache empty):**
+all 48 served in **312 ms** wall (p95 271 ms) — the in-flight dedupe collapsed 48 requests into
+8 encodes. Same burst with the LRU warm: **156 ms** (p50 59 ms).
+
+**F · Order writes:** 40 tables POSTing `/api/tickets` at the same instant → **40/40 HTTP 200**,
+p50 140 ms, p95 192 ms, max 195 ms, 0 blocks. Double-tap retry (3 phones × 2 sends, identical
+idempotency keys) → 6/6 HTTP 200, p50 15 ms, **no duplicate tickets** (merge/replay path).
+
+### Honest caveats
+
+- **The DB was stubbed.** These numbers measure the app layer: routing, rate limiting, payload
+  building, SSR and real `sharp` work. A same-region Postgres adds roughly 1–5 ms per query
+  (`/api/table-status` = 2 indexed SELECTs; the order POST = ~6 statements in one transaction),
+  so real p95 for status reads lands in the tens of ms, not single digits. The venue ceiling
+  (33 status reads/s sustained) is ~66 queries/s — trivial for any managed Postgres.
+- **Single instance.** The rate-limit counters, the menu-preview TTL cache and the photo
+  LRU/dedupe are all in-process. Scaling to 2+ instances keeps correctness (limits become
+  per-instance, i.e. looser) but halves cache hit rates; move the counters to Redis/Upstash if
+  you ever run more than one.
+- **Photos are encoded on demand, then cached in memory.** The durable win is uploading
+  already-right-sized WebP originals so `sharp` never runs on the request path.
+- Watch after go-live: `429` count on `/api/table-status` (should be ~0), p95 of `/menu`,
+  Postgres connection count vs `PG_POOL_MAX`, and instance memory (the photo LRU is the main
+  consumer).
+
 ## 5. How to measure after deploying
 
 1. Open the deployed homepage in Chrome DevTools → Network: confirm `settings/categories/menu/reviews/gallery` load **in parallel** and return `Cache-Control: public, max-age=60, stale-while-revalidate=300` (no `no-store`).

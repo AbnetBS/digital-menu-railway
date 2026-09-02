@@ -44,8 +44,8 @@ const i18n = read("src/lib/i18n.ts");
   pass("GET /api/table-status exists", /export async function GET/.test(status));
   pass("POST /api/table-status exists", /export async function POST/.test(status));
   pass("it is table-scoped and validates the table id", /searchParams\.get\("table"\)/.test(status) && /Number\.isInteger\(tableId\) \|\| tableId <= 0/.test(status));
-  pass("guest reads are rate-limited per IP", /checkRateLimit\(`table-status:\$\{getClientIp\(request\)\}`/.test(status));
-  pass("bill requests are rate-limited separately", /checkRateLimit\(`table-status-request:\$\{getClientIp\(request\)\}`/.test(status));
+  pass("guest reads are rate-limited per TABLE and per venue", /checkSharedIpRateLimit\("table-status", request, tableId, VENUE_POLICIES\.statusRead\)/.test(status));
+  pass("bill requests are rate-limited separately", /table-status-request:venue:/.test(status) && /table-status-request:\$\{ip\}:\$\{tableId\}/.test(status));
   pass("responses are never cached (status must be live)", /"Cache-Control": "no-store"/.test(status));
   pass("no staff auth is required (guests have no session)", !/requireAdmin|requireStaff|requireCashier|requireWaiter/.test(status));
   // Every single ticket query in this file must be scoped to the requested table.
@@ -68,6 +68,12 @@ const i18n = read("src/lib/i18n.ts");
   pass("the only write it performs is the bill-request stamp", (status.match(/\.update\(/g) || []).length === 1 && !/\.insert\(|\.delete\(/.test(status));
   pass("that write touches only receipt_requested_at + updated_at", /\.set\(\{ receiptRequestedAt: new Date\(\), updatedAt: new Date\(\) \}\)/.test(status) && !/\.set\(\{[^}]*(status|totalAmount|quantity|price)/.test(status));
   pass("the route is registered as a public mutation (auth-guard test)", /table-status/.test(read("scripts/verify-auth-guards.mjs")));
+  // Every guest in the room shares ONE public IP (café NAT / mobile CGNAT), so a
+  // per-IP-only limit would cap the venue instead of one person.
+  const limits = read("src/lib/rate-limit.ts");
+  pass("public guest endpoints are limited per (IP + table) AND per venue", /export function checkSharedIpRateLimit/.test(limits) && /:venue:/.test(limits));
+  pass("the venue limits live in one shared policy object", /export const VENUE_POLICIES/.test(limits));
+  pass("the order route uses the shared-IP limiter", /checkSharedIpRateLimit\("customer-order", request, Number\(tableId\) \|\| 0, VENUE_POLICIES\.customerOrder\)/.test(tickets));
   pass("staff can clear the request again (cashier: 'already served')", /body\.receiptRequested === false \|\| body\.receiptRequested === null/.test(tickets) && /updates\.receiptRequestedAt = null/.test(tickets));
 }
 

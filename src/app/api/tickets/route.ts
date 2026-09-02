@@ -8,12 +8,17 @@ import { eq, asc, desc, and, notInArray, inArray, sql } from "drizzle-orm";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireStaffOrAdmin, requireAdmin } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
-import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
 
-const CUSTOMER_ORDER_LIMIT = 30;
-const CUSTOMER_ORDER_WINDOW_MS = 10 * 60 * 1000;
+/**
+ * Customer order limits are TWO-TIER (per table + per venue) because every guest
+ * in the room arrives through the SAME public IP — café WiFi NAT or a mobile
+ * carrier's CGNAT — so a plain per-IP cap would limit the whole restaurant
+ * instead of one person, and at lunch time real guests would get HTTP 429 and be
+ * unable to order. Numbers: `VENUE_POLICIES.customerOrder`.
+ */
 
 /** A folded line may never grow past this (defensive; a single submission is capped at 100). */
 const MAX_MERGED_LINE_QUANTITY = 999;
@@ -153,7 +158,7 @@ export async function POST(request: Request) {
     // staff/admin session — so a public request cannot impersonate a waiter.
     const isCustomer = source === "customer";
     if (isCustomer) {
-      const rl = checkRateLimit(`customer-order:${getClientIp(request)}`, CUSTOMER_ORDER_LIMIT, CUSTOMER_ORDER_WINDOW_MS);
+      const rl = checkSharedIpRateLimit("customer-order", request, Number(tableId) || 0, VENUE_POLICIES.customerOrder);
       if (!rl.allowed) {
         return NextResponse.json(
           { error: "Too many order attempts. Please wait a few minutes and try again." },

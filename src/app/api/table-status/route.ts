@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { tickets, ticketItems } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { and, asc, desc, eq, isNull, notInArray } from "drizzle-orm";
-import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
+import { checkRateLimit, checkSharedIpRateLimit, getClientIp, VENUE_POLICIES } from "@/lib/rate-limit";
 import { publish, CHANNELS } from "@/lib/realtime";
 import {
   customerOrderPhase,
@@ -40,11 +40,14 @@ import {
  * change an order status, a payment status, a price or a quantity.
  */
 
-/** A guest's phone polls every ~12s while the menu is open. */
-const READ_LIMIT = 240;
-/** "Bring the bill" is a human tap — a handful is plenty. */
-const REQUEST_LIMIT = 20;
-const WINDOW_MS = 10 * 60 * 1000;
+/**
+ * Limits are TWO-TIER (per table + per venue) because every guest in the room
+ * arrives through the SAME public IP — café WiFi NAT or a mobile carrier's
+ * CGNAT. A per-IP-only limit would cap the whole restaurant instead of one
+ * person. The numbers live in `VENUE_POLICIES` so the load simulation in
+ * `scripts/verify-shared-ip-limits.ts` tests the real configuration.
+ */
+const WINDOW_MS = VENUE_POLICIES.statusRead.windowMs;
 
 /** After payment the panel stays available this long (thank-you + review prompt). */
 const RECENTLY_CLOSED_GRACE_MS = 30 * 60 * 1000;
@@ -157,7 +160,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Valid table required" }, { status: 400 });
     }
 
-    const rl = checkRateLimit(`table-status:${getClientIp(request)}`, READ_LIMIT, WINDOW_MS);
+    const rl = checkSharedIpRateLimit("table-status", request, tableId, VENUE_POLICIES.statusRead);
     if (!rl.allowed) {
       return NextResponse.json(
         { error: "Too many requests" },
@@ -182,11 +185,14 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    const rl = checkRateLimit(`table-status-request:${getClientIp(request)}`, REQUEST_LIMIT, WINDOW_MS);
-    if (!rl.allowed) {
+    // Venue tier BEFORE the body is read: a flood of oversized payloads is
+    // stopped without ever buffering them.
+    const ip = getClientIp(request);
+    const venue = checkRateLimit(`table-status-request:venue:${ip}`, VENUE_POLICIES.statusRequest.perIp, WINDOW_MS);
+    if (!venue.allowed) {
       return NextResponse.json(
         { error: "Too many requests. Please wave at your waiter." },
-        { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } }
+        { status: 429, headers: { "Retry-After": String(venue.retryAfterSeconds) } }
       );
     }
 
@@ -194,6 +200,15 @@ export async function POST(request: Request) {
     const tableId = Number(body?.table || 0);
     if (!Number.isInteger(tableId) || tableId <= 0) {
       return NextResponse.json({ error: "Valid table required" }, { status: 400 });
+    }
+
+    // Table tier: one guest may tap a dozen times, a whole room may tap far more.
+    const perTable = checkRateLimit(`table-status-request:${ip}:${tableId}`, VENUE_POLICIES.statusRequest.perClient, WINDOW_MS);
+    if (!perTable.allowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Please wave at your waiter." },
+        { status: 429, headers: { "Retry-After": String(perTable.retryAfterSeconds) } }
+      );
     }
 
     await ensureTablesExist();

@@ -35,6 +35,22 @@ import { buildImageVariant, createVariantCache, type ImageVariant } from "@/lib/
 
 const variantCache = createVariantCache();
 
+/**
+ * IN-FLIGHT DEDUPE (opening-time thundering herd).
+ *
+ * The LRU above only helps AFTER a variant exists. On a cold instance — a fresh
+ * deploy, a restart, or the first minute of service — 100 phones scanning their
+ * QR codes ask for the SAME eight `?w=400&h=250` photos at the same moment, and
+ * without this map every one of those requests runs its own Postgres fetch and
+ * its own `sharp` encode of the same bytes. That is a CPU cliff exactly when the
+ * room is busiest.
+ *
+ * One promise per variant key: the first request does the work, everybody else
+ * awaits the same result. Entries are removed as soon as the work settles, so
+ * the map cannot grow.
+ */
+const inFlightVariants = new Map<string, Promise<ImageVariant | null>>();
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -55,32 +71,68 @@ export async function GET(
     if (cacheKey) {
       const cached = variantCache.get(cacheKey);
       if (cached) return photoResponse(cached);
-    }
 
-    const rows = await db.execute(
-      sql`SELECT mime_type, data FROM cdn_images WHERE id = ${numId} LIMIT 1`
-    );
-
-    const list = (rows as unknown as { rows: Array<{ mime_type: string; data: string }> }).rows ?? (rows as unknown as Array<{ mime_type: string; data: string }>);
-    const row = list[0];
-    if (!row?.data) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-    const base64 = row.data.includes(",") ? row.data.split(",")[1] : row.data;
-    const buffer = Buffer.from(base64, "base64");
-
-    let payload: ImageVariant = { body: buffer, type: row.mime_type || "image/jpeg" };
-    if (wantsVariant) {
-      const variant = await buildImageVariant(buffer, payload.type, width, height, quality);
-      if (variant) {
-        payload = variant;
-        if (cacheKey) variantCache.set(cacheKey, variant);
+      // Somebody is already deriving this exact variant — wait for their result
+      // instead of encoding the same photo a second time.
+      const pending = inFlightVariants.get(cacheKey);
+      if (pending) {
+        const shared = await pending;
+        if (!shared) return NextResponse.json({ error: "Not found" }, { status: 404 });
+        return photoResponse(shared);
       }
     }
 
+    const work = loadPhoto(numId, width, height, quality, wantsVariant, cacheKey);
+    if (cacheKey) {
+      inFlightVariants.set(cacheKey, work);
+      void work
+        .catch(() => null)
+        .finally(() => {
+          if (inFlightVariants.get(cacheKey) === work) inFlightVariants.delete(cacheKey);
+        });
+    }
+
+    const payload = await work;
+    if (!payload) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return photoResponse(payload);
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
+}
+
+/**
+ * Fetch the stored bytes and (when asked) derive the display-size variant.
+ * `null` means "no such photo" — every derivation failure still returns the
+ * original bytes, exactly as before.
+ */
+async function loadPhoto(
+  numId: number,
+  width: number | undefined,
+  height: number | undefined,
+  quality: number,
+  wantsVariant: boolean,
+  cacheKey: string
+): Promise<ImageVariant | null> {
+  const rows = await db.execute(
+    sql`SELECT mime_type, data FROM cdn_images WHERE id = ${numId} LIMIT 1`
+  );
+
+  const list = (rows as unknown as { rows: Array<{ mime_type: string; data: string }> }).rows ?? (rows as unknown as Array<{ mime_type: string; data: string }>);
+  const row = list[0];
+  if (!row?.data) return null;
+
+  const base64 = row.data.includes(",") ? row.data.split(",")[1] : row.data;
+  const buffer = Buffer.from(base64, "base64");
+
+  let payload: ImageVariant = { body: buffer, type: row.mime_type || "image/jpeg" };
+  if (wantsVariant) {
+    const variant = await buildImageVariant(buffer, payload.type, width, height, quality);
+    if (variant) {
+      payload = variant;
+      if (cacheKey) variantCache.set(cacheKey, variant);
+    }
+  }
+  return payload;
 }
 
 /**

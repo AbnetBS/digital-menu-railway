@@ -35,6 +35,20 @@ import { optimizeImageUrl, MENU_CARD_IMG_W, MENU_CARD_IMG_H, FIRST_SCREEN_PHOTOS
  * download every first-screen photo twice. */
 /** Hard cap on how long a page render may wait for the preload lookup. */
 export const PRELOAD_BUDGET_MS = 1200;
+/**
+ * The menu changes a few times a day, not a few times a second — and a room full
+ * of phones scanning QR codes must not turn this optimisation into one extra
+ * Postgres query per guest. The answer is therefore kept in process memory:
+ * 30s when it found photos, 5s when it did not (so a database that is briefly
+ * unreachable is retried quickly but never hammered by every single scan).
+ */
+export const PREVIEW_TTL_MS = 30_000;
+const PREVIEW_NEGATIVE_TTL_MS = 5_000;
+
+let cachedAt = 0;
+let cachedUrls: string[] = [];
+let cachedLimit = 0;
+let inFlight: Promise<string[]> | null = null;
 
 /**
  * Photo URLs of the first menu cards, in the same order `/api/menu` returns
@@ -46,6 +60,27 @@ export async function firstScreenPhotoUrls(
 ): Promise<string[]> {
   if (limit <= 0) return [];
 
+  const now = Date.now();
+  if (cachedLimit === limit && now - cachedAt < (cachedUrls.length > 0 ? PREVIEW_TTL_MS : PREVIEW_NEGATIVE_TTL_MS)) {
+    return cachedUrls;
+  }
+  // One query at a time: 100 simultaneous scans share a single lookup.
+  if (inFlight && cachedLimit === limit) return inFlight;
+
+  const work = query(limit, budgetMs);
+  inFlight = work;
+  cachedLimit = limit;
+  try {
+    const urls = await work;
+    cachedUrls = urls;
+    cachedAt = Date.now();
+    return urls;
+  } finally {
+    if (inFlight === work) inFlight = null;
+  }
+}
+
+async function query(limit: number, budgetMs: number): Promise<string[]> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     // Any failure (no tables yet, no DATABASE_URL, a dropped connection) simply

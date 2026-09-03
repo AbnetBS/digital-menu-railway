@@ -115,7 +115,7 @@ const i18n = read("src/lib/i18n.ts");
   pass("the waiter sees a guest's bill request on the table AND on the bill", /activeTicketReceiptRequestedAt/.test(waiterApp) && /activeTicket\.receiptRequestedAt/.test(waiterApp));
   pass("the cashier sees when the order arrived and how long it has waited", /arrived \{formatClock\(t\.createdAt\)\}/.test(cashier) && /waiting \{waitingLabel\(t\.createdAt\)\}/.test(cashier));
   pass("the cashier sees a guest's bill request and can clear it", /Guest asked for the bill at \{formatClock\(t\.receiptRequestedAt\)\}/.test(cashier) && /onClick=\{\(\) => clearReceiptRequest\(t\)\}/.test(cashier) && /receiptRequested: false/.test(cashier));
-  pass("paid history cards show date/time and the waiter", /formatDateTime\(t\.closedAt \|\| t\.updatedAt \|\| t\.createdAt\)/.test(cashier));
+  pass("paid history cards show date/time and the waiter", /formatDateTime\(printQueueMode \? \(t\.printedAt \|\| t\.createdAt\) : \(t\.closedAt \|\| t\.updatedAt \|\| t\.createdAt\)\)/.test(cashier));
   pass("order history shows when the order ARRIVED and who took it", /arrived \{formatDateTime\(o\.createdAt\)\}/.test(history) && /by \{o\.createdBy/.test(history));
 }
 

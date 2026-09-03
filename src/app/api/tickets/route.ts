@@ -4,7 +4,7 @@ import { tickets, ticketItems, cafeTables, menuItems, announcements, orderSubmis
 import { ensureTablesExist } from "@/db/migrate";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
-import { eq, asc, desc, and, notInArray, inArray, sql, gt, isNotNull } from "drizzle-orm";
+import { eq, asc, desc, and, notInArray, inArray, sql, gt, gte, isNotNull } from "drizzle-orm";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireStaffOrAdmin, requireAdmin } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
@@ -98,9 +98,14 @@ const PAYMENT_METHODS = ["cash", "telebirr", "cbe", "card", "online"] as const;
 //      ?paid=1&limit=N → ONLY the N most recent PAID tickets, WITHOUT items —
 //      the lightweight payload for the cashier's "Recently Paid" panel
 //      (history cards render only table/method/total, so items are wasted bytes).
-//      ?finished=1&limit=N → the N most recent FINISHED bills (paid OR closed
-//      by table-clear) without items — the print-queue cashier's "Printed Today"
-//      history. Closed bills never pass through "paid", so both count as done.
+//      ?printedToday=1 → every bill with printedAt TODAY (any status: printed,
+//      later closed), newest print first, WITH items (cards expand to the bill
+//      detail). "Printed Today" is the cashier's daily cross-check against the
+//      EFD receipt count, so it must count HER action (the print) — a bill
+//      enters the list the moment she taps ✓ PRINTED, not when the waiter
+//      clears the table, and cleared bills STAY (they were printed today).
+//      ?finished=1&limit=N → legacy finished-bills query (paid OR closed by
+//      table-clear); kept for older clients/tests.
 // TRAFFIC FIX: list responses EXCLUDE receipt photos (they're heavy base64 polygons).
 // Receipts are fetched on-demand via /api/tickets/receipt?id=X when someone clicks "View Receipt".
 export async function GET(request: Request) {
@@ -112,6 +117,11 @@ export async function GET(request: Request) {
     const activeOnly = searchParams.get("active") === "1";
     const paidOnly = searchParams.get("paid") === "1";
     const finishedOnly = searchParams.get("finished") === "1";
+    // "Printed Today": bills keyed into the EFD since local midnight. The cutoff
+    // is START OF TODAY in the server's timezone — old bills can never pollute
+    // the cashier's daily cross-check, and a bill printed today stays today even
+    // after the waiter clears the table (it is still printed; it is not lost).
+    const printedTodayOnly = searchParams.get("printedToday") === "1";
     const limit = Math.min(200, Math.max(1, Number(searchParams.get("limit") || 100)));
 
     let list;
@@ -120,6 +130,16 @@ export async function GET(request: Request) {
     } else if (paidOnly) {
       // Only the most recent paid bills — no items, no receipt, small response.
       list = await db.select().from(tickets).where(eq(tickets.status, "paid")).orderBy(desc(tickets.updatedAt)).limit(limit);
+    } else if (printedTodayOnly) {
+      // Every bill printed TODAY, any status (printed → later closed), newest
+      // print first. Cards carry items so a tap expands the full bill.
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      list = await db
+        .select()
+        .from(tickets)
+        .where(and(isNotNull(tickets.printedAt), gte(tickets.printedAt, startOfToday)))
+        .orderBy(desc(tickets.printedAt));
     } else if (finishedOnly) {
       // Print-queue history: closed bills (table cleared) + paid bills, newest first.
       list = await db.select().from(tickets).where(inArray(tickets.status, ["paid", "closed"])).orderBy(desc(tickets.updatedAt)).limit(limit);
@@ -134,7 +154,8 @@ export async function GET(request: Request) {
       return clone;
     });
 
-    // Paid-history payload doesn't need items at all (cards show table/method/total only).
+    // Paid/finished-history cards render only table/method/total (no items);
+    // the Printed Today cards EXPAND to the full bill, so they carry items.
     const needItems = !paidOnly && !finishedOnly;
 
     // PERFORMANCE: only fetch items for the tickets being returned — never the
@@ -482,7 +503,7 @@ export async function POST(request: Request) {
       }
 
       const customerNotes = String(it.notes || "").trim().slice(0, 500);
-      const notes = [`Daily special: ${promotionLine.title}`, customerNotes].filter(Boolean).join(" — ");
+      const notes = [`Daily special: ${promotionLine.title}`, customerNotes].filter(Boolean).join(" • ");
       for (const unitPrice of promotionLine.unitPrices) {
         ticketRows.push({ menuItemId: menuId, name: menuRow.name, category: menuRow.category, price: unitPrice, quantity: 1, notes });
       }
@@ -610,15 +631,16 @@ export async function POST(request: Request) {
       if (isCustomer && pushed.status === "pending_waiter") {
         void sendPushToRoles(["waiter"], {
           title: "🍽 New QR order",
-          body: `${pushed.tableName} • ${transactionResult.total} ETB — tap to confirm`,
+          body: `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`,
           tag: `fana-qr-${pushed.id}`,
         }).catch(() => {});
       } else if (pushed.status === "printed") {
         // Additions landed on a bill the cashier already keyed into the EFD —
-        // she must print it again (the old "guest holds two receipts" moment).
+        // she prints the second receipt for the NEW items only (her queue
+        // card shows exactly those, never the whole bill again).
         void sendPushToRoles(["cashier"], {
           title: "⚠ Items ADDED",
-          body: `${pushed.tableName} — print the bill again`,
+          body: `${pushed.tableName} • new items on the bill, print receipt #2`,
           tag: `fana-add-${pushed.id}`,
         }).catch(() => {});
       } else {
@@ -808,7 +830,7 @@ export async function PUT(request: Request) {
         if (stations.length > 0) {
           void sendPushToRoles(stations, {
             title: "👨‍🍳 New items",
-            body: `${updated[0].tableName} — check your station list`,
+            body: `${updated[0].tableName} • check your station list`,
             tag: `fana-station-${updated[0].id}`,
           }).catch(() => {});
         }

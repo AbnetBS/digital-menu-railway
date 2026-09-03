@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Terms of Service — Fana Cafe & Restaurant",
+  title: "Terms of Service • Fana Cafe & Restaurant",
   description:
     "The terms for using the Fana Cafe & Restaurant website, including ordering from your table, menu availability, and user-submitted reviews.",
 };
@@ -39,7 +39,7 @@ export default function TermsPage() {
         <Section title="2. Ordering from your table">
           You can order by scanning the QR code at your table. Orders are sent to our staff for
           confirmation and preparation. Ordering through the website does not in itself create a
-          completed sale — your order is finalized and paid at the restaurant.
+          completed sale. Your order is finalized and paid at the restaurant.
         </Section>
 
         <Section title="3. Menu, prices, and availability">

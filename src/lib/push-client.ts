@@ -102,7 +102,7 @@ export async function testPocketAlert(): Promise<void> {
     const reg = await navigator.serviceWorker.getRegistration();
     if (!reg) return;
     await reg.showNotification("✓ Pocket alerts work!", {
-      body: "You will hear this ring when new orders arrive — even with the browser closed.",
+      body: "You will hear this ring when new orders arrive, even with the browser closed.",
       tag: "fana-test",
       icon: "/logo.png",
     });

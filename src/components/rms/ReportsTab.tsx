@@ -24,7 +24,7 @@ export default function ReportsTab() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-serif font-bold text-amber-100">Today's Reports & Analytics</h2>
-          <p className="text-xs text-stone-400">Live numbers from paid & completed bills — refreshes from the database.</p>
+          <p className="text-xs text-stone-400">Live numbers from paid & completed bills, refreshed from the database.</p>
         </div>
         <button onClick={load} className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl" title="Refresh">
           <RefreshCw className="w-4 h-4" />
@@ -118,7 +118,7 @@ export default function ReportsTab() {
                   </div>
                 </>
               ) : (
-                <p className="text-xs text-stone-500">No sales yet today — peaks will appear once the first bills close.</p>
+                <p className="text-xs text-stone-500">No sales yet today. Peaks will appear once the first bills close.</p>
               )}
             </div>
 

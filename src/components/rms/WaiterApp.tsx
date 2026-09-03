@@ -152,7 +152,7 @@ export default function WaiterApp() {
       void enablePocketAlerts();
     }
     playAlarm();
-    showToast("🔔 Alerts ON — pocket notifications armed");
+    showToast("🔔 Alerts ON • pocket notifications armed");
   };
 
   const loadTables = async () => {
@@ -177,7 +177,7 @@ export default function WaiterApp() {
         const t0 = fresh[0];
         triggerDesktopNotification({
           title: "Fana Cafe • Waiter Alert",
-          message: `🍽 New order request — ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`,
+          message: `🍽 New order request • ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`,
           tag: `fana-waiter-${t0.id}`,
         });
         showToast(`🔔 New order request: ${t0.tableName}`);
@@ -217,7 +217,7 @@ export default function WaiterApp() {
       setAlertsOn(true);
       void enablePocketAlerts().then((res) => {
         if (res === "denied") {
-          showToast("Notifications blocked — allow them in the browser to hear pocket alerts.");
+          showToast("Notifications blocked. Allow them in the browser to hear pocket alerts.");
         }
       });
     } else {
@@ -290,11 +290,11 @@ export default function WaiterApp() {
       const d = await r.json();
       pendingKeyRef.current = "";
       setCart([]);
-      showToast(d.duplicate ? "✓ Already sent — not sent twice" : d.merged ? "✓ Items added to the table bill" : "✓ Order sent to cashier");
+      showToast(d.duplicate ? "✓ Already sent • not sent twice" : d.merged ? "✓ Items added to the table bill" : "✓ Order sent to cashier");
       await loadTables();
       onGoBack();
     } else {
-      showToast("Failed to send order — press Send again, it will not duplicate.");
+      showToast("Failed to send order. Press Send again, it will not duplicate.");
     }
   };
 
@@ -349,7 +349,7 @@ export default function WaiterApp() {
     setSelectedTable(null);
     setPayMethod(null);
     setReceiptImage("");
-    showToast("✓ Payment completed — cashier will verify and release the table");
+    showToast("✓ Payment completed • cashier will verify and release the table");
     setView("tables");
     loadTables();
   };
@@ -374,7 +374,7 @@ export default function WaiterApp() {
     );
     if (cooking.length > 0) {
       const okToClear = confirm(
-        `Kitchen/Barista is still preparing ${cooking.length} item(s) for ${activeTicket.tableName} — the station lists will drop them.\n\nClear the table anyway?`
+        `Kitchen/Barista is still preparing ${cooking.length} item(s) for ${activeTicket.tableName}. The station lists will drop them.\n\nClear the table anyway?`
       );
       if (!okToClear) return;
     }
@@ -409,9 +409,9 @@ export default function WaiterApp() {
       ? s === "pending_waiter"
         ? "Waiting for your confirmation"
         : s === "confirmed"
-        ? "Sent — cashier will print it in the EFD"
+        ? "Sent • cashier will print it in the EFD"
         : s === "printed"
-        ? "Printed — crew is preparing"
+        ? "Printed • crew is preparing"
         : s === "preparing"
         ? "In progress"
         : s === "ready_for_payment"
@@ -450,7 +450,7 @@ export default function WaiterApp() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: activeTicket.id, status: "confirmed", confirmedBy: staffName }),
     });
-    showToast("✓ Order confirmed — sent to cashier & kitchen");
+    showToast("✓ Order confirmed • sent to cashier & kitchen");
     onGoBack();
     loadTables();
   };
@@ -597,18 +597,18 @@ export default function WaiterApp() {
                     : "Occupied"}
                 </span>
                 {t.activeTicketTotal ? (
-                  <p className="text-[11px] text-stone-400 mt-1">{t.activeTicketTotal} ETB open</p>
+                  <p className="text-xs font-bold text-stone-200 mt-1">{t.activeTicketTotal} ETB open</p>
                 ) : null}
                 {t.activeTicketBy ? (
-                  <p className="text-[10px] text-[#C9A227] mt-1 font-semibold">👤 {t.activeTicketBy}</p>
+                  <p className="text-[11px] text-[#D8B93E] mt-1 font-black">👤 {t.activeTicketBy}</p>
                 ) : null}
                 {t.activeTicketAt ? (
-                  <p className="text-[10px] text-stone-500 mt-0.5 font-semibold">
+                  <p className="text-[11px] text-stone-300 mt-0.5 font-bold">
                     🕒 since {formatClock(t.activeTicketAt)} • {waitingLabel(t.activeTicketAt)}
                   </p>
                 ) : null}
                 {t.activeTicketReceiptRequestedAt ? (
-                  <p className="text-[10px] text-emerald-400 mt-1 font-black">🧾 bill requested</p>
+                  <p className="text-[11px] text-emerald-300 mt-1 font-black">🧾 bill requested</p>
                 ) : null}
               </button>
             ))}
@@ -620,7 +620,7 @@ export default function WaiterApp() {
                 <>
                   Tap a <span className="text-emerald-400 font-bold">green table</span> to take a new order.
                   When the guests leave and you have cleared the table, open its bill and tap{" "}
-                  <span className="text-emerald-400 font-bold">Table Cleared</span> — it turns green for the next guests.
+                  <span className="text-emerald-400 font-bold">Table Cleared</span> • it turns green for the next guests.
                 </>
               ) : (
                 <>
@@ -712,7 +712,7 @@ export default function WaiterApp() {
                       <span className="text-[10px] font-bold text-rose-400 bg-rose-900/40 px-2 py-0.5 rounded">Unavailable</span>
                     ) : (
                       <span className="w-full mt-1 bg-[#C9A227] text-[#2C1B17] text-[11px] font-extrabold py-1.5 rounded-lg flex items-center justify-center gap-1 pointer-events-none">
-                        <Plus className="w-3 h-3" /> {inCart ? `In cart (${inCart.quantity})` : "Add — tap anywhere"}
+                        <Plus className="w-3 h-3" /> {inCart ? `In cart (${inCart.quantity})` : "Add • tap anywhere"}
                       </span>
                     )}
                   </div>
@@ -764,12 +764,12 @@ export default function WaiterApp() {
           <div className="flex items-center gap-3">
             <button onClick={onGoBack} className="p-2 rounded-xl bg-white/10"><ArrowLeft className="w-4 h-4" /></button>
             <div className="flex-1">
-              <h2 className="font-serif font-bold text-amber-100 text-lg leading-none">{selectedTable.name} — Bill</h2>
-              <p className="text-[11px] text-stone-400 capitalize">Status: {ticketStatusLabel(activeTicket.status)}</p>
+              <h2 className="font-serif font-bold text-amber-100 text-lg leading-none">{selectedTable.name} • Bill</h2>
+              <p className="text-xs font-bold text-stone-300 capitalize mt-0.5">Status: {ticketStatusLabel(activeTicket.status)}</p>
               {/* Group 8: WHEN the order arrived and WHO sent it — the two things
                   staff keep asking for — plus the guest's own bill request. */}
-              <p className="text-[11px] text-[#C9A227] font-bold mt-0.5">
-                🕒 {formatDateTime(activeTicket.createdAt)} • by {activeTicket.confirmedBy || activeTicket.createdBy || "—"}
+              <p className="text-xs text-[#D8B93E] font-black mt-0.5">
+                🕒 {formatDateTime(activeTicket.createdAt)} • by {activeTicket.confirmedBy || activeTicket.createdBy || "staff"}
               </p>
               {activeTicket.receiptRequestedAt && (
                 <p className="mt-1 inline-block text-[10px] font-black text-emerald-300 bg-emerald-950/60 border border-emerald-700 rounded-lg px-2 py-0.5">
@@ -803,7 +803,7 @@ export default function WaiterApp() {
                   </div>
                 )}
                 {printQueueMode && (
-                  <p className="text-[10px] text-stone-500">× {i.quantity} — tell the cashier about changes</p>
+                  <p className="text-[11px] font-bold text-stone-400">× {i.quantity} • tell the cashier about changes</p>
                 )}
               </div>
             ))}
@@ -829,7 +829,7 @@ export default function WaiterApp() {
                   counter is the money system. Her only closing job is physical. */}
               {activeTicket.status === "confirmed" && (
                 <div className="w-full bg-[#2C1B17] border border-amber-500/40 rounded-xl px-4 py-3 text-center text-xs font-bold text-amber-300">
-                  🧾 Sent — waiting for the cashier to print it in the EFD
+                  🧾 Sent • waiting for the cashier to print it in the EFD
                 </div>
               )}
               {(activeTicket.status === "printed" ||
@@ -840,7 +840,7 @@ export default function WaiterApp() {
                   onClick={clearTable}
                   className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
                 >
-                  <CheckCircle2 className="w-4 h-4" /> Table Cleared — Free Table
+                  <CheckCircle2 className="w-4 h-4" /> Table Cleared • Free Table
                 </button>
               )}
             </>
@@ -873,7 +873,7 @@ export default function WaiterApp() {
         <div className="p-4 max-w-md mx-auto space-y-5">
           <div className="flex items-center gap-3">
             <button onClick={() => setView("bill")} className="p-2 rounded-xl bg-white/10"><ArrowLeft className="w-4 h-4" /></button>
-            <h2 className="font-serif font-bold text-amber-100 text-lg">Payment — {selectedTable.name}</h2>
+            <h2 className="font-serif font-bold text-amber-100 text-lg">Payment • {selectedTable.name}</h2>
           </div>
 
           <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/40 p-4 text-center">
@@ -882,7 +882,7 @@ export default function WaiterApp() {
           </div>
 
           <div className="space-y-2">
-            <p className="text-xs font-bold text-amber-200">Ask the customer — payment method:</p>
+            <p className="text-xs font-bold text-amber-200">Ask the customer • payment method:</p>
             {([
               { m: "cash", icon: <Banknote className="w-5 h-5 text-emerald-400" />, label: "Cash" },
               { m: "telebirr", icon: <Smartphone className="w-5 h-5 text-amber-400" />, label: "Telebirr" },
@@ -932,7 +932,7 @@ export default function WaiterApp() {
                       const small = await compressImage(f, 800, 0.65);
                       setReceiptImage(small);
                     } catch {
-                      showToast("Could not read that photo — try again");
+                      showToast("Could not read that photo. Try again");
                     }
                   }}
                 />
@@ -954,7 +954,7 @@ export default function WaiterApp() {
 
           <div className="flex items-center gap-2 text-[11px] text-stone-400 bg-[#2C1B17] rounded-xl p-3">
             <ClipboardList className="w-4 h-4 text-[#C9A227] shrink-0" />
-            After confirmation, the cashier verifies and marks the order <strong className="text-white">Paid</strong> — the table then becomes Available automatically.
+            After confirmation, the cashier verifies and marks the order <strong className="text-white">Paid</strong>. The table then becomes Available automatically.
           </div>
         </div>
       )}

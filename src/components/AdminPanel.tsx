@@ -90,7 +90,7 @@ export default function AdminPanel({
         body: JSON.stringify({ [key]: value }),
       });
       if (res.ok) {
-        setSettingsMsg(`✓ ${label} saved instantly — refresh the site to see it!`);
+        setSettingsMsg(`✓ ${label} saved instantly. Refresh the site to see it!`);
         onRefreshData();
       } else {
         setSettingsMsg(`✗ Failed to save ${label}. Try a smaller JPG/PNG.`);
@@ -214,8 +214,8 @@ export default function AdminPanel({
             <Lock className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="font-serif font-black text-2xl text-amber-100">Fana Cafe — Owner Dashboard</h1>
-            <p className="text-xs text-amber-200/70">Menu, tables, staff, reports, reviews & business info — all under your control</p>
+            <h1 className="font-serif font-black text-2xl text-amber-100">Fana Cafe • Owner Dashboard</h1>
+            <p className="text-xs text-amber-200/70">Menu, tables, staff, reports, reviews & business info • all under your control</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -294,7 +294,7 @@ export default function AdminPanel({
                 </h3>
                 <p className="text-[11px] text-stone-400 mt-1">
                   ON = waiter photographs each card/Telebirr receipt (stored in DB, ~70KB each).
-                  OFF = receipts skipped entirely (payments still recorded normally — zero photo storage).
+                  OFF = receipts skipped entirely (payments still recorded normally, with zero photo storage).
                 </p>
               </div>
               <button
@@ -322,8 +322,8 @@ export default function AdminPanel({
                   <Monitor className="w-4 h-4 text-[#C9A227]" /> Cashier Print-Queue Mode
                 </h3>
                 <p className="text-[11px] text-stone-400 mt-1">
-                  ON = cashier does ONE click per order (keys it into the EFD/POS, prints, taps ✓ PRINTED) — payments stay in the EFD; waiters free tables with &quot;Table cleared&quot;.
-                  OFF = full payment mode (cashier records payment method and marks bills Paid — for cafes without an EFD/POS).
+                  ON = cashier does ONE click per order (keys it into the EFD/POS, prints, taps ✓ PRINTED) • payments stay in the EFD; waiters free tables with &quot;Table cleared&quot;.
+                  OFF = full payment mode (cashier records payment method and marks bills Paid, for cafes without an EFD/POS).
                 </p>
               </div>
               <button
@@ -350,7 +350,7 @@ export default function AdminPanel({
                 <Camera className="w-4 h-4 text-[#C9A227]" /> Restaurant Logo (navbar, QR menu & staff apps)
               </h3>
               <p className="text-[11px] text-stone-400">
-                Tip: the logo shows inside a <strong>small circle</strong> — a square or round icon (not wide text banners) looks best, like the official Fana Cafe badge.
+                Tip: the logo shows inside a <strong>small circle</strong>: a square or round icon (not wide text banners) looks best, like the official Fana Cafe badge.
               </p>
               <div className="flex items-center gap-4">
                 <img
@@ -454,7 +454,7 @@ export default function AdminPanel({
               <h3 className="font-serif font-black text-lg text-rose-300 flex items-center gap-2">🗑 Factory Reset (Danger Zone)</h3>
               <p className="text-[11px] text-rose-200/70 mt-1">
                 One-time setup zone before launching live. Deletes test orders, photos & announcements you uploaded while testing.
-                This is PERMANENT — there is no undo button. Read each button before pressing.
+                This is PERMANENT, there is no undo button. Read each button before pressing.
               </p>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -496,7 +496,7 @@ export default function AdminPanel({
             <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-bold text-amber-200">📂 Menu Categories ({categories.length})</h3>
-                <p className="text-[10px] text-stone-500">Rename or organize food groups — dishes follow automatically.</p>
+                <p className="text-[10px] text-stone-500">Rename or organize food groups, dishes follow automatically.</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {categories.map((c) => (
@@ -590,7 +590,7 @@ export default function AdminPanel({
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-bold text-emerald-300">📋 Bulk Menu Import</h3>
-                  <p className="text-[11px] text-stone-400 mt-0.5">Paste your full dish list — one line per item in the format below. Items matching an existing name are updated in place (only the differences change, e.g. a new prep time).</p>
+                  <p className="text-[11px] text-stone-400 mt-0.5">Paste your full dish list, one line per item in the format below. Items matching an existing name are updated in place (only the differences change, e.g. a new prep time).</p>
                 </div>
                 <button
                   id="bulk-import-btn"
@@ -627,7 +627,7 @@ export default function AdminPanel({
                   <input
                     value={bulkPrepTime}
                     onChange={(e) => setBulkPrepTime(e.target.value)}
-                    placeholder="e.g. 15-20 min — leave empty to keep existing times"
+                    placeholder="e.g. 15-20 min • leave empty to keep existing times"
                     className="w-full bg-black/30 border border-stone-700 rounded-xl p-2.5 text-xs text-stone-200"
                   />
                   <p className="text-[10px] text-stone-500 mt-1">Type a time here to set/update it on EVERY item in your paste (even existing ones). Leave empty to keep each item's current time. A per-line &quot;Name | Category | Price | PrepTime | Description&quot; value wins for that item.</p>

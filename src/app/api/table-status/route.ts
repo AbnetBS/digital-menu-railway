@@ -243,7 +243,7 @@ export async function POST(request: Request) {
       // AND the cashier (she prints the final EFD receipt). Fire-and-forget.
       void sendPushToRoles(["waiter", "cashier"], {
         title: "🧾 Bill requested",
-        body: `${open[0].tableName} — the guest asked for the bill`,
+        body: `${open[0].tableName} • the guest asked for the bill`,
         tag: `fana-bill-${open[0].id}`,
       }).catch(() => {});
     }

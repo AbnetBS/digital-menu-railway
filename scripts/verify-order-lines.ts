@@ -204,9 +204,11 @@ function line(over: Partial<OrderLine> & { id: number; name: string }): OrderLin
   assert("waiting label survives a missing timestamp", waitingLabel(null, now) === "just now");
 
   assert("clock renders HH:MM", /^\d{2}:\d{2}$/.test(formatClock(at)));
-  assert("clock shows a dash when unknown", formatClock(null) === "—" && formatClock("garbage") === "—");
+  assert("clock shows 'n/a' when unknown", formatClock(null) === "n/a" && formatClock("garbage") === "n/a");
   assert("day/month/year renders a real date", /\d{4}/.test(formatDayMonthYear(at)));
+  assert("day/month/year shows 'n/a' when unknown", formatDayMonthYear(null) === "n/a");
   assert("date+time combines both", formatDateTime(at).includes(formatClock(at)) && formatDateTime(at).includes("·"));
+  assert("date+time shows 'n/a' when unknown", formatDateTime(null) === "n/a");
   assert("a Date object works as well as a string", formatClock(new Date(at)) === formatClock(at));
 }
 

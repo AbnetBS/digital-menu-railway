@@ -547,7 +547,7 @@ export default function CustomerMenuApp() {
       <div className="min-h-screen bg-[#FAF6F0] pb-32">
         <header className="bg-[#2C1B17] text-white sticky top-0 z-40 px-4 py-3 flex items-center gap-3 shadow-xl">
           <button onClick={() => setReviewMode(false)} className="text-amber-200"><X className="w-5 h-5" /></button>
-          <h1 className="font-serif font-bold">{t("review_your_order")} — {menuText(tableName)}</h1>
+          <h1 className="font-serif font-bold">{t("review_your_order")} • {menuText(tableName)}</h1>
         </header>
 
         <div className="max-w-lg mx-auto p-4 space-y-3">
@@ -913,7 +913,7 @@ export default function CustomerMenuApp() {
                       );
                     })()}
                     {out ? (
-                      <span className="text-[10px] text-stone-400 font-bold">—</span>
+                      <span className="text-[10px] text-stone-400 font-bold">n/a</span>
                     ) : qty > 0 ? (
                     // Inline −/+ stepper — customer can decrease or remove
                       <div className="flex items-center gap-1.5 bg-stone-100 rounded-lg p-1">
@@ -1039,7 +1039,7 @@ export default function CustomerMenuApp() {
                       onClick={() => setQty(detailItem, 1)}
                       className="flex-1 bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] font-black text-sm uppercase py-3.5 rounded-xl flex items-center justify-center gap-2 shadow-lg"
                     >
-                      <Plus className="w-4 h-4" /> {t("add_to_order")} — {effectivePrice(detailItem).price} ETB
+                      <Plus className="w-4 h-4" /> {t("add_to_order")} • {effectivePrice(detailItem).price} ETB
                     </button>
                   )}
                 </div>

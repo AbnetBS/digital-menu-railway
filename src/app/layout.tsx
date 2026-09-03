@@ -36,11 +36,11 @@ const localBusinessSchema = {
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: {
-    default: "Fana Cafe & Restaurant — Addis Ababa",
-    template: "%s — Fana Cafe & Restaurant",
+    default: "Fana Cafe & Restaurant • Addis Ababa",
+    template: "%s • Fana Cafe & Restaurant",
   },
   description:
-    "Fana Cafe & Restaurant in Addis Ababa — specialty coffee, authentic Ethiopian meals, and fresh juices at Town Square Building, 22 Square. Scan your table QR to order, or browse the menu, gallery, and reviews online.",
+    "Fana Cafe & Restaurant in Addis Ababa. Specialty coffee, authentic Ethiopian meals, and fresh juices at Town Square Building, 22 Square. Scan your table QR to order, or browse the menu, gallery, and reviews online.",
   alternates: {
     canonical: "/",
   },

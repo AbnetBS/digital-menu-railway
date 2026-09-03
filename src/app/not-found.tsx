@@ -21,7 +21,7 @@ export default function NotFound() {
         <h1 className="font-serif text-5xl sm:text-6xl font-black text-[#2C1B17]">404</h1>
         <h2 className="mt-3 text-xl font-bold text-[#4E342E]">Page not found</h2>
         <p className="mt-3 text-sm text-[#6D4C41] leading-relaxed">
-          Sorry — the page you&apos;re looking for doesn&apos;t exist or may have been moved.
+          Sorry, the page you&apos;re looking for doesn&apos;t exist or may have been moved.
           Let&apos;s get you back to something delicious.
         </p>
 

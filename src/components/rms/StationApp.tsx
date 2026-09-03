@@ -245,7 +245,7 @@ export default function StationApp({ station }: { station: Station }) {
             <Icon className="w-5 h-5 text-[#2C1B17]" />
           </div>
           <div>
-            <h1 className="font-serif font-bold text-amber-100 leading-none">Fana Cafe — {meta.label}</h1>
+            <h1 className="font-serif font-bold text-amber-100 leading-none">Fana Cafe • {meta.label}</h1>
             <p className="text-[10px] text-stone-400">{meta.desc} • {staffName}</p>
           </div>
         </div>
@@ -293,7 +293,7 @@ export default function StationApp({ station }: { station: Station }) {
       <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5 space-y-4">
         {tickets.length === 0 ? (
           <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
-            All clear — no incoming items for the {meta.label} right now. New orders appear here instantly when the cashier accepts them.
+            All clear • no incoming items for the {meta.label} right now. New orders appear here instantly when the cashier accepts them.
           </div>
         ) : (
           tickets.map((t) => (
@@ -308,27 +308,27 @@ export default function StationApp({ station }: { station: Station }) {
                       </span>
                     )}
                   </p>
-                  <p className="text-[10px] text-stone-500 flex items-center gap-1.5 uppercase font-bold">
-                    <Clock className="w-3 h-3 text-[#C9A227]" /> {t.status.replace(/_/g, " ")}
+                  <p className="text-[11px] text-stone-300 flex items-center gap-1.5 uppercase font-black">
+                    <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {t.status.replace(/_/g, " ")}
                   </p>
                   {/* ARRIVAL TIME — the crew's first question: when did this land,
                       and how long has the table been waiting? */}
-                  <p className="mt-1 flex items-center gap-1.5 flex-wrap text-[13px] font-black text-amber-200">
-                    <Clock className="w-3.5 h-3.5 text-[#C9A227]" />
+                  <p className="mt-1 flex items-center gap-1.5 flex-wrap text-sm font-black text-amber-200">
+                    <Clock className="w-4 h-4 text-[#C9A227]" />
                     Arrived {formatClock(t.createdAt)}
-                    <span className="text-[10px] font-bold text-stone-400">{formatDayMonthYear(t.createdAt)}</span>
+                    <span className="text-[11px] font-bold text-stone-300">{formatDayMonthYear(t.createdAt)}</span>
                     <span
-                      className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                      className={`text-[11px] font-black uppercase px-2 py-0.5 rounded-full ${
                         minutesSince(t.createdAt, now) >= 10
                           ? "bg-rose-600 text-white"
-                          : "bg-stone-800 text-stone-300"
+                          : "bg-stone-800 text-stone-200"
                       }`}
                     >
                       waiting {waitingLabel(t.createdAt, now)}
                     </span>
                   </p>
-                  <p className="text-[11px] text-[#C9A227] mt-0.5 font-semibold">
-                    👤 Ordered by {t.createdBy || "—"}
+                  <p className="text-xs text-[#D8B93E] mt-0.5 font-black">
+                    👤 Ordered by {t.createdBy || "staff"}
                     {t.confirmedBy ? ` • Confirmed by ${t.confirmedBy}` : ""}
                   </p>
                   {t.receiptRequestedAt && (
@@ -355,7 +355,7 @@ export default function StationApp({ station }: { station: Station }) {
                         {i.name} <span className="text-[#C9A227]">x{i.quantity}</span>
                       </p>
                       {i.createdAt && (
-                        <p className="text-[10px] font-bold text-stone-500 mt-0.5">
+                        <p className="text-[11px] font-bold text-stone-300 mt-0.5">
                           🕒 {formatClock(i.createdAt)} • waiting {waitingLabel(i.createdAt, now)}
                         </p>
                       )}

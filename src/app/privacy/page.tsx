@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy — Fana Cafe & Restaurant",
+  title: "Privacy Policy • Fana Cafe & Restaurant",
   description:
     "How Fana Cafe & Restaurant collects, uses, and protects your information when you browse the menu, submit a review, or place a table/QR order.",
 };
@@ -58,7 +58,7 @@ export default function PrivacyPage() {
             <li>
               <strong className="text-[#4E342E]">Staff and admin accounts.</strong> We store the
               names and roles of our own staff, together with login credentials (PINs and
-              passwords) that are stored in a protected (hashed) form — never as plain text.
+              passwords) that are stored in a protected (hashed) form, never as plain text.
             </li>
             <li>
               <strong className="text-[#4E342E]">Basic technical information.</strong> Like most
@@ -70,7 +70,7 @@ export default function PrivacyPage() {
 
         <Section title="3. What we do NOT collect">
           We do not run advertising, analytics, or tracking. We do not collect or store your
-          payment card number — we only record the method used to pay. Unless you provide it in
+          payment card number. We only record the method used to pay. Unless you provide it in
           a review, we do not collect your email address or phone number.
         </Section>
 
@@ -85,7 +85,7 @@ export default function PrivacyPage() {
 
         <Section title="5. How we protect your information">
           Your information is stored in a secure database that is accessed only by the website
-          behind the scenes — not directly by visitors. Staff login credentials are stored
+          behind the scenes, not directly by visitors. Staff login credentials are stored
           using password hashing, and login attempts are rate-limited to help prevent
           unauthorized access. Only authorized staff can access the management dashboard.
         </Section>

@@ -65,7 +65,7 @@ export default function OrderHistoryTab() {
 
   const fmtTime = (t: Ticket) => {
     const d = t.closedAt || t.updatedAt;
-    return d ? new Date(d).toLocaleString() : "—";
+    return d ? new Date(d).toLocaleString() : "n/a";
   };
 
   /**
@@ -80,7 +80,7 @@ export default function OrderHistoryTab() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-serif font-bold text-amber-100">Order History ({filtered.length})</h2>
-          <p className="text-xs text-stone-400">Every completed & cancelled bill — search by date, table, waiter, method or status.</p>
+          <p className="text-xs text-stone-400">Every completed & cancelled bill • search by date, table, waiter, method or status.</p>
         </div>
         <div className="flex gap-2 self-start">
           <button
@@ -137,7 +137,7 @@ export default function OrderHistoryTab() {
                 <div>
                   <p className="font-serif font-bold text-amber-100">{o.tableName}</p>
                   <p className="text-[10px] text-stone-500">
-                    {fmtTime(o)} • by {o.createdBy || "—"}
+                    {fmtTime(o)} • by {o.createdBy || "staff"}
                   </p>
                   {/* Group 8: when the order actually ARRIVED, not just when it closed. */}
                   <p className="text-[10px] text-stone-500">

@@ -710,8 +710,9 @@ export default function CashierDashboard() {
                           <button
                             onClick={() => markPrinted(t)}
                             className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black py-4 rounded-xl flex items-center justify-center gap-2"
+                            title="Confirms the EFD receipt is printed — this is what releases the items to the kitchen/barista"
                           >
-                            <Printer className="w-5 h-5" /> ✓ PRINTED
+                            <Printer className="w-5 h-5" /> ✓ PRINTED & SEND
                           </button>
                           <button
                             onClick={() => toggleProblem(t.id)}

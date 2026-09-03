@@ -600,29 +600,19 @@ export async function POST(request: Request) {
 
     // ── GROUP 10 (pocket mode): ring every relevant phone — including browsers
     // that are CLOSED. Fire-and-forget by design: a push outage must never
-    // delay or fail an order. Who gets woken depends on who must ACT:
-    //   • QR order waiting for confirmation  → waiters (+ the crew: items exist)
-    //   • printed bill that received items   → cashier must print AGAIN (+ crew)
-    //   • waiter order / additions           → cashier to print + the crew
+    // delay or fail an order.
+    // GROUP 11 (release gate): the crew is deliberately NOT notified here —
+    // a waiter's order goes to the CASHIER only. Kitchen/barista are woken by
+    // the PUT below when she taps ✓ PRINTED ("printed") or, in full mode,
+    // "Accept → Kitchen" ("preparing"). Nothing gets cooked without a bill.
     {
       const pushed = transactionResult.ticket;
-      const pushedItems = transactionResult.items || [];
-      const stations = [...new Set(pushedItems.map((i) => (i.stationName === "barista" ? "barista" : "kitchen")))];
-      const stationPush = () =>
-        stations.length > 0
-          ? sendPushToRoles(stations, {
-              title: "👨‍🍳 New items",
-              body: `${pushed.tableName} — check your station list`,
-              tag: `fana-station-${pushed.id}`,
-            })
-          : Promise.resolve();
-
       if (isCustomer && pushed.status === "pending_waiter") {
         void sendPushToRoles(["waiter"], {
           title: "🍽 New QR order",
           body: `${pushed.tableName} • ${transactionResult.total} ETB — tap to confirm`,
           tag: `fana-qr-${pushed.id}`,
-        }).then(stationPush).catch(() => {});
+        }).catch(() => {});
       } else if (pushed.status === "printed") {
         // Additions landed on a bill the cashier already keyed into the EFD —
         // she must print it again (the old "guest holds two receipts" moment).
@@ -630,13 +620,13 @@ export async function POST(request: Request) {
           title: "⚠ Items ADDED",
           body: `${pushed.tableName} — print the bill again`,
           tag: `fana-add-${pushed.id}`,
-        }).then(stationPush).catch(() => {});
+        }).catch(() => {});
       } else {
         void sendPushToRoles(["cashier"], {
           title: "🧾 To print",
           body: `${pushed.tableName} • ${transactionResult.total} ETB`,
           tag: `fana-print-${pushed.id}`,
-        }).then(stationPush).catch(() => {});
+        }).catch(() => {});
       }
     }
 
@@ -794,6 +784,37 @@ export async function PUT(request: Request) {
     // If the receipt photo was replaced/cleared, drop the old cdn_images row.
     if (body.receiptImage !== undefined) {
       await deleteOrphanedCdnImages([cur.receiptImage]);
+    }
+
+    // ── GROUP 11 (release gate): THIS is the moment the crew receives the
+    // order. The cashier tapped ✓ PRINTED — the bill now exists in the EFD/POS
+    // world, so kitchen/barista may finally start cooking. (Full-payment
+    // deployments release at "Accept → Kitchen" → "preparing" instead.) Only
+    // stations with NEWLY released items are woken: items added after the
+    // previous print (created_at > old printedAt) wait for the re-print, and a
+    // re-print that releases nothing (e.g. clearing the ADDED flag) must not
+    // re-ring a station for food it already has.
+    if (body.status === "printed" || (body.status === "preparing" && body.status !== cur.status)) {
+      try {
+        const stationRows = await db
+          .select({ stationName: ticketItems.stationName, createdAt: ticketItems.createdAt })
+          .from(ticketItems)
+          .where(and(eq(ticketItems.ticketId, Number(body.id)), eq(ticketItems.removed, false)));
+        const prevStamp = cur.printedAt ? new Date(cur.printedAt).getTime() : null;
+        const fresh = stationRows.filter(
+          (r) => prevStamp === null || !r.createdAt || new Date(r.createdAt).getTime() > prevStamp
+        );
+        const stations = [...new Set(fresh.map((r) => (r.stationName === "barista" ? "barista" : "kitchen")))];
+        if (stations.length > 0) {
+          void sendPushToRoles(stations, {
+            title: "👨‍🍳 New items",
+            body: `${updated[0].tableName} — check your station list`,
+            tag: `fana-station-${updated[0].id}`,
+          }).catch(() => {});
+        }
+      } catch {
+        // A push hiccup must never fail the cashier's print confirmation.
+      }
     }
 
     publish(CHANNELS.orders);

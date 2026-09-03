@@ -19,6 +19,9 @@
  *   5. The waiter screen frees tables with "Table cleared" and warns when the
  *      crew is still preparing items.
  *   6. The owner can switch modes (cashier_mode setting, default print-queue).
+ *   7. GROUP 11 release gate: stations only see items the cashier released —
+ *      a waiter's order reaches the crew when she taps ✓ PRINTED, additions
+ *      wait for the re-print.
  *
  * Run with: node scripts/verify-print-queue.mjs  (wired into `npm test`)
  */
@@ -65,7 +68,7 @@ function pass(name, cond) {
   pass("migration: one-active-per-table index excludes closed (and is recreated when old)", migrate.includes("NOT IN ('paid','cancelled','closed')") && /pg_indexes/.test(migrate) && /DROP INDEX IF EXISTS tickets_one_active_per_table_idx/.test(migrate));
   pass("migration: duplicate-active repair also treats closed as finished", (migrate.match(/WHERE status NOT IN \('paid','cancelled','closed'\)/g) || []).length >= 2);
   pass("tables board: closed bills free the table, printed shows as in-progress", /notInArray\(tickets\.status, \["paid", "cancelled", "closed"\]\)/.test(tablesApi) && /tk\.status === "preparing" \|\| tk\.status === "printed"/.test(tablesApi));
-  pass("station lists drop closed bills (crew stops seeing cleared tables)", /notInArray\(tickets\.status, \["paid", "cancelled", "closed"\]\)/.test(stationsApi));
+  pass("station lists drop closed bills (crew stops seeing cleared tables)", /notInArray\(tickets\.status, \["paid", "cancelled", "closed"/.test(stationsApi));
   pass("guest status: closed bills are not 'open' and get the thank-you window", /notInArray\(tickets\.status, \["paid", "cancelled", "closed"\]\)/.test(tableStatusApi) && /inArray\(tickets\.status, \["paid", "closed"\]\)/.test(tableStatusApi));
   pass("guest phase: a closed bill reads as finished (thank-you, not 'preparing')", /status === "paid" \|\| status === "closed"/.test(orderLines));
 }
@@ -102,6 +105,23 @@ function pass(name, cond) {
   pass("admin Settings tab can switch the workflow", /Cashier Print-Queue Mode/.test(admin) && /cashier_mode: settingsForm\.cashier_mode === "print-queue" \? "full" : "print-queue"/.test(admin));
 }
 
+/* ── 7. GROUP 11 — the printed-receipt release gate ──────────────────────── */
+/* Nothing gets cooked without a bill: a waiter's order goes ONLY to the
+ * cashier's queue. Kitchen/barista see the items only after her ✓ PRINTED
+ * (full mode: "Accept → Kitchen" → preparing). Additions to a printed bill
+ * stay invisible to the crew until she prints AGAIN. */
+{
+  pass("stations never see pending_waiter/confirmed orders (waiter sends → cashier only)", /notInArray\(tickets\.status, \["paid", "cancelled", "closed", "pending_waiter", "confirmed"\]\)/.test(stationsApi));
+  pass("station query selects the print stamp (printedAt)", /printedAt: tickets\.printedAt/.test(stationsApi));
+  pass("printed tickets only release items that existed at print time", /status !== "printed" \|\| !printedAt/.test(stationsApi) && /new Date\(it\.createdAt\)\.getTime\(\) <= cutoff/.test(stationsApi));
+  pass("legacy items without a timestamp stay visible (old DBs keep working)", /if \(!it\.createdAt\) return true/.test(stationsApi));
+  pass("a ticket with zero released items disappears from the station list", /\.filter\(\(t\) => t\.items\.length > 0\)/.test(stationsApi));
+  pass("cashier's one click says what it does: ✓ PRINTED & SEND", /✓ PRINTED & SEND/.test(cashier));
+  pass("the order POST wakes the cashier only — not the stations", !/stationPush/.test(tickets) && !/sendPushToRoles\(stations/.test(tickets.split("export async function PUT")[0] || ""));
+  pass("✓ PRINTED (or Accept → Kitchen) wakes the crew", /body\.status === "printed" \|\| \(body\.status === "preparing"/.test(tickets) && /fana-station-/.test(tickets));
+  pass("re-print only wakes stations that got NEW items (no idle re-ring)", /prevStamp === null \|\| !r\.createdAt \|\| new Date\(r\.createdAt\)\.getTime\(\) > prevStamp/.test(tickets));
+}
+
 if (failures.length > 0) {
   console.error("\n❌ PRINT-QUEUE REGRESSION TEST FAILED\n");
   for (const f of failures) console.error("  • " + f);
@@ -111,3 +131,4 @@ console.log("\n✅ Print-queue regression test PASSED");
 console.log("   • cashier: key into EFD → print → tap ✓ PRINTED (one click per order)");
 console.log("   • waiter: guests leave → clear table → table turns green");
 console.log("   • payments stay in the EFD/POS — full mode still available via Settings");
+console.log("   • GROUP 11: nothing gets cooked without a bill — ✓ PRINTED releases the crew");

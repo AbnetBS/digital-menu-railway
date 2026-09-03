@@ -123,10 +123,15 @@ function pass(name, cond) {
 
 /* ── 6. Who gets woken, for which event ───────────────────────────────────── */
 {
-  pass("QR order → waiters (+ stations with items)", /fana-qr-/.test(tickets) && /\["waiter"\]/.test(tickets));
-  pass("waiter order → cashier to print", /fana-print-/.test(tickets) && /\["cashier"\]/.test(tickets));
+  // GROUP 11 (release gate): the order POST wakes the CASHIER (or waiters for
+  // a QR order) — never the stations. The crew is woken by the PUT when the
+  // cashier confirms the printed receipt (or full-mode "Accept → Kitchen").
+  pass("QR order → waiters only (crew waits for the print)", /fana-qr-/.test(tickets) && /\["waiter"\]/.test(tickets));
+  pass("waiter order → cashier to print (no station push on POST)", /fana-print-/.test(tickets) && /\["cashier"\]/.test(tickets));
   pass("additions on a printed bill → cashier must reprint", /fana-add-/.test(tickets) && /print the bill again/.test(tickets));
-  pass("only stations that actually have items are pinged", /stationName === "barista" \? "barista" : "kitchen"/.test(tickets));
+  pass("POST never pushes to stations (receipt must exist first)", !/stationPush/.test(tickets) && !/sendPushToRoles\(stations/.test(tickets.split("export async function PUT")[0] || ""));
+  pass("✓ PRINTED releases the crew — PUT wakes kitchen/barista", /body\.status === "printed" \|\| \(body\.status === "preparing"/.test(tickets) && /fana-station-/.test(tickets));
+  pass("only stations with newly released items are pinged", /prevStamp === null \|\| !r\.createdAt \|\| new Date\(r\.createdAt\)\.getTime\(\) > prevStamp/.test(tickets));
   pass("bill request → waiter + cashier", /fana-bill-/.test(tableStatus) && /\["waiter", "cashier"\]/.test(tableStatus));
   pass("login (the one gesture browsers need) arms everything", /enablePocketAlerts\(\)/.test(waiter) && /enablePocketAlerts\(\)/.test(cashier) && /enablePocketAlerts\(\)/.test(station));
 }

@@ -86,7 +86,7 @@ const i18n = read("src/lib/i18n.ts");
   pass("the migration adds the new ticket column", /receipt_requested_at/.test(migrate));
   pass("the submission key is UNIQUE at the database level", /CREATE UNIQUE INDEX IF NOT EXISTS order_submissions_idempotency_key_key/.test(migrate));
   pass("submissions are indexed per ticket", /CREATE INDEX IF NOT EXISTS order_submissions_ticket_id_idx/.test(migrate));
-  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-03-1"/.test(migrate));
+  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-03-2"/.test(migrate));
 }
 
 /* ── 3. duplicate lines merge in the DATABASE, not just on screen ─────────── */

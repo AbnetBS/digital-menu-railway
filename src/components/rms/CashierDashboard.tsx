@@ -8,7 +8,9 @@ import {
 import { Ticket, TicketItem, CafeTable, StaffUser } from "@/types";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
-import { unlockAudio, playDing } from "@/lib/sound";
+import { unlockAudio, playDing, playAlarm } from "@/lib/sound";
+import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
+import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 
 interface StaffLite {
   id: number;
@@ -79,8 +81,11 @@ export default function CashierDashboard() {
     }
     localStorage.setItem("fana_alerts", "1");
     setAlertsOn(true);
-    playDing();
-    triggerDesktopNotification({ title: "Fana Cafe • Cashier", message: "🔔 Ring bell + desktop alerts are now ON for this device!" });
+    // GROUP 10: (re)arm pocket alerts too, then ring a sample so she KNOWS
+    // the device is armed instead of guessing.
+    if (pushSupported()) void enablePocketAlerts();
+    playAlarm();
+    triggerDesktopNotification({ title: "Fana Cafe • Cashier", message: "🔔 Ring bell + desktop + pocket alerts are now ON for this device!" });
   };
 
   const eventMessage = (t: Ticket): string | null => {
@@ -97,8 +102,10 @@ export default function CashierDashboard() {
   };
 
   const loadAll = async () => {
-    // TRAFFIC FIX: don't poll when this browser tab isn't on-screen (TikTok breaks don't cost data)
-    if (typeof document !== "undefined" && document.hidden) return;
+    // GROUP 10 FIX: this used to return early while the tab was hidden (screen
+    // off, tablet on the counter) — exactly when the alarm matters most — so it
+    // never rang. SSE messages only arrive when something CHANGED, so we always
+    // process them; the sound and vibration fire even with the screen off.
     try {
       const [tRes, tkRes] = await Promise.all([fetch("/api/tables"), fetch("/api/tickets?active=1")]);
       // Connection indicator: ONLINE only when the backend actually answered both
@@ -116,7 +123,7 @@ export default function CashierDashboard() {
       // ── EVENT DETECTION: any order action (QR order, confirmation, payment request, payment done)
       const newEvents: Ticket[] = [];
       for (const t of active) {
-        const key = `${t.id}:${t.status}`;
+        const key = `${t.id}:${t.status}:${t.unprintedSubmissions || 0}`;
         if (!seenEventsRef.current.has(key)) {
           seenEventsRef.current.add(key);
           newEvents.push(t);
@@ -124,11 +131,18 @@ export default function CashierDashboard() {
       }
 
       if (initializedRef.current && alertsOn && newEvents.length > 0) {
-        playDing();
+        // A card entering HER print queue gets the full alarm; anything else
+        // (status moves, cleared tables…) gets the standard ring.
+        const needsMe = newEvents.some(
+          (t) => t.status === "confirmed" || t.status === "pending_waiter" || (t.status === "printed" && (t.unprintedSubmissions || 0) > 0)
+        );
+        if (needsMe) playAlarm();
+        else playDing();
         const first = newEvents[0];
         triggerDesktopNotification({
           title: "Fana Cafe • Cashier Alert",
           message: eventMessage(first) || `${first.tableName} updated`,
+          tag: `fana-cashier-${first.id}`,
         });
       }
       initializedRef.current = true;
@@ -191,6 +205,17 @@ export default function CashierDashboard() {
     if (r.ok && d.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem("fana_cashier", JSON.stringify(d.staff));
+      // GROUP 10: the login tap unlocks audio AND arms pocket notifications —
+      // the cashier's phone/tablet rings even when the browser is closed.
+      unlockAudio();
+      localStorage.setItem("fana_alerts", "1");
+      setAlertsOn(true);
+      void enablePocketAlerts().then((res) => {
+        if (res === "denied") {
+          // notifications blocked in the browser — the in-app alarm still works
+          console.warn("Pocket notifications blocked by the browser settings");
+        }
+      });
     } else {
       setLoginError("Wrong name or PIN. Ask admin for your PIN.");
     }
@@ -502,6 +527,9 @@ export default function CashierDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-8">
+        {/* iPhone pocket-mode instruction (Android needs nothing) */}
+        <PocketAlertsHint />
+
         {/* TABLE OVERVIEW */}
         <section>
           <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200/80 mb-3 flex items-center gap-2">

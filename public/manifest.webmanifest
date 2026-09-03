@@ -1,0 +1,31 @@
+{
+  "name": "Fana Cafe & Restaurant",
+  "short_name": "Fana Cafe",
+  "description": "Fana Cafe & Restaurant — QR menu, orders and staff apps. Install to your home screen so order alerts reach you even when the browser is closed.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1C120F",
+  "theme_color": "#C9A227",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

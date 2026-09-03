@@ -11,6 +11,7 @@ import { publish, CHANNELS } from "@/lib/realtime";
 import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
+import { sendPushToRoles } from "@/lib/push";
 
 /**
  * Customer order limits are TWO-TIER (per table + per venue) because every guest
@@ -596,6 +597,49 @@ export async function POST(request: Request) {
       });
     }
     publish(CHANNELS.orders);
+
+    // ── GROUP 10 (pocket mode): ring every relevant phone — including browsers
+    // that are CLOSED. Fire-and-forget by design: a push outage must never
+    // delay or fail an order. Who gets woken depends on who must ACT:
+    //   • QR order waiting for confirmation  → waiters (+ the crew: items exist)
+    //   • printed bill that received items   → cashier must print AGAIN (+ crew)
+    //   • waiter order / additions           → cashier to print + the crew
+    {
+      const pushed = transactionResult.ticket;
+      const pushedItems = transactionResult.items || [];
+      const stations = [...new Set(pushedItems.map((i) => (i.stationName === "barista" ? "barista" : "kitchen")))];
+      const stationPush = () =>
+        stations.length > 0
+          ? sendPushToRoles(stations, {
+              title: "👨‍🍳 New items",
+              body: `${pushed.tableName} — check your station list`,
+              tag: `fana-station-${pushed.id}`,
+            })
+          : Promise.resolve();
+
+      if (isCustomer && pushed.status === "pending_waiter") {
+        void sendPushToRoles(["waiter"], {
+          title: "🍽 New QR order",
+          body: `${pushed.tableName} • ${transactionResult.total} ETB — tap to confirm`,
+          tag: `fana-qr-${pushed.id}`,
+        }).then(stationPush).catch(() => {});
+      } else if (pushed.status === "printed") {
+        // Additions landed on a bill the cashier already keyed into the EFD —
+        // she must print it again (the old "guest holds two receipts" moment).
+        void sendPushToRoles(["cashier"], {
+          title: "⚠ Items ADDED",
+          body: `${pushed.tableName} — print the bill again`,
+          tag: `fana-add-${pushed.id}`,
+        }).then(stationPush).catch(() => {});
+      } else {
+        void sendPushToRoles(["cashier"], {
+          title: "🧾 To print",
+          body: `${pushed.tableName} • ${transactionResult.total} ETB`,
+          tag: `fana-print-${pushed.id}`,
+        }).then(stationPush).catch(() => {});
+      }
+    }
+
     return NextResponse.json({ ...transactionResult.ticket, totalAmount: transactionResult.total, merged: transactionResult.merged });
   } catch (error) {
     // CONCURRENCY BACKSTOP (Group 8): two identical submissions raced and the

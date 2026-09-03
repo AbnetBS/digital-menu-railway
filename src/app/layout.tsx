@@ -48,6 +48,8 @@ export const metadata: Metadata = {
     icon: "/logo.png",
     apple: "/logo.png",
   },
+  // PWA manifest — lets staff "Add to Home Screen" so pocket alerts work on iPhone.
+  manifest: "/manifest.webmanifest",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

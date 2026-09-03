@@ -6,10 +6,12 @@ import {
   Smartphone, Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing,
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
+import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
-import { unlockAudio, playDing } from "@/lib/sound";
+import { unlockAudio, playAlarm } from "@/lib/sound";
+import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { useRef } from "react";
 
@@ -144,13 +146,21 @@ export default function WaiterApp() {
     }
     localStorage.setItem("fana_alerts_waiter", "1");
     setAlertsOn(true);
-    playDing();
-    showToast("🔔 Ring bell alerts ON");
+    // GROUP 10: also (re)subscribe this phone to pocket alerts and ring a
+    // sample so the waiter KNOWS the device is armed — no guessing.
+    if (pushSupported()) {
+      void enablePocketAlerts();
+    }
+    playAlarm();
+    showToast("🔔 Alerts ON — pocket notifications armed");
   };
 
   const loadTables = async () => {
-    // TRAFFIC FIX: skip polling while the tab is not visible
-    if (typeof document !== "undefined" && document.hidden) return;
+    // GROUP 10 FIX: this used to return early while the screen was off / the
+    // tab hidden — which is exactly when a phone sits in a pocket — so the
+    // alarm NEVER rang. SSE messages arrive on change (not polling), so we
+    // always process them now; sound and vibration fire even with the screen
+    // off as long as the tab is alive.
     const r = await fetch("/api/tables");
     if (r.ok) setTables(await r.json());
 
@@ -163,11 +173,12 @@ export default function WaiterApp() {
       fresh.forEach((t) => seenPendingRef.current.add(t.id));
 
       if (alertsInitRef.current && alertsOn && fresh.length > 0) {
-        playDing(3);
+        playAlarm();
         const t0 = fresh[0];
         triggerDesktopNotification({
           title: "Fana Cafe • Waiter Alert",
           message: `🍽 New order request — ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`,
+          tag: `fana-waiter-${t0.id}`,
         });
         showToast(`🔔 New order request: ${t0.tableName}`);
       }
@@ -198,6 +209,17 @@ export default function WaiterApp() {
       setStaffName(d.staff.name);
       sessionStorage.setItem("fana_waiter", JSON.stringify(d.staff));
       setView("tables");
+      // GROUP 10: the login tap is the ONE user gesture browsers demand —
+      // unlock the loud alarm AND arm pocket notifications right here, so the
+      // waiter never has to find a separate "enable" button.
+      unlockAudio();
+      localStorage.setItem("fana_alerts_waiter", "1");
+      setAlertsOn(true);
+      void enablePocketAlerts().then((res) => {
+        if (res === "denied") {
+          showToast("Notifications blocked — allow them in the browser to hear pocket alerts.");
+        }
+      });
     } else {
       setLoginError("Wrong name or PIN. Ask admin for your PIN.");
     }
@@ -530,6 +552,7 @@ export default function WaiterApp() {
       {/* ── TABLES VIEW ── */}
       {view === "tables" && (
         <div className="p-4 space-y-4 max-w-3xl mx-auto">
+          <PocketAlertsHint />
           <div className="flex items-center justify-between">
             <h1 className="font-serif text-xl font-bold text-amber-100">Select Table</h1>
             <div className="flex gap-3 text-[10px]">
@@ -658,20 +681,39 @@ export default function WaiterApp() {
               const inCart = cart.find((c) => c.menuItemId === m.id);
               const out = !m.isAvailable;
               return (
-                <div key={m.id} className={`bg-[#2C1B17] rounded-2xl overflow-hidden border ${out ? "border-stone-800 opacity-50" : "border-stone-700"}`}>
-                  <img src={optimizeImageUrl(m.imageUrl, 300, 200)} alt={m.name} className="w-full h-24 object-cover bg-stone-900" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
+                <div
+                  key={m.id}
+                  // GROUP 10 (staff request): the WHOLE card adds the food —
+                  // image, title, price, any part of it. Staff kept tapping the
+                  // photo first; now that works.
+                  onClick={() => addToCart(m)}
+                  role="button"
+                  tabIndex={out ? -1 : 0}
+                  onKeyDown={(e) => {
+                    if (!out && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      addToCart(m);
+                    }
+                  }}
+                  className={`bg-[#2C1B17] rounded-2xl overflow-hidden border transition relative ${out ? "border-stone-800 opacity-50" : "border-stone-700 active:scale-95 active:border-[#C9A227] cursor-pointer"}`}
+                >
+                  <div className="relative">
+                    <img src={optimizeImageUrl(m.imageUrl, 300, 200)} alt={m.name} className="w-full h-24 object-cover bg-stone-900" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
+                    {inCart && (
+                      <span className="absolute top-1.5 right-1.5 bg-[#C9A227] text-[#2C1B17] text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center shadow-lg">
+                        {inCart.quantity}
+                      </span>
+                    )}
+                  </div>
                   <div className="p-2.5 space-y-1">
                     <p className="text-xs font-bold text-amber-100 leading-tight line-clamp-2">{m.name}</p>
                     <p className="text-[11px] text-[#C9A227] font-extrabold">{effectivePrice(m).onSale ? <span><span className="line-through text-stone-500 text-[10px]">{m.price} </span>{effectivePrice(m).price}</span> : m.price} ETB</p>
                     {out ? (
                       <span className="text-[10px] font-bold text-rose-400 bg-rose-900/40 px-2 py-0.5 rounded">Unavailable</span>
                     ) : (
-                      <button
-                        onClick={() => addToCart(m)}
-                        className="w-full mt-1 bg-[#C9A227] text-[#2C1B17] text-[11px] font-extrabold py-1.5 rounded-lg flex items-center justify-center gap-1"
-                      >
-                        <Plus className="w-3 h-3" /> Add {inCart ? `(${inCart.quantity})` : ""}
-                      </button>
+                      <span className="w-full mt-1 bg-[#C9A227] text-[#2C1B17] text-[11px] font-extrabold py-1.5 rounded-lg flex items-center justify-center gap-1 pointer-events-none">
+                        <Plus className="w-3 h-3" /> {inCart ? `In cart (${inCart.quantity})` : "Add — tap anywhere"}
+                      </span>
                     )}
                   </div>
                 </div>
@@ -750,12 +792,18 @@ export default function WaiterApp() {
                   <span className="font-extrabold text-[#C9A227] shrink-0">{i.price * i.quantity} ETB</span>
                 </div>
                 {i.notes && <p className="text-[11px] text-amber-300 italic">📝 {i.notes}</p>}
-                {activeTicket.status !== "ready_for_payment" && (
+                {/* Group 9: in print-queue mode the waiter's job is confirm →
+                    send → clear; quantity corrections belong to the cashier's
+                    ✗ Problem path, so the edit controls are full-mode only. */}
+                {!printQueueMode && activeTicket.status !== "ready_for_payment" && (
                   <div className="flex items-center gap-2 pt-1">
                     <button onClick={() => updateItemQty(i, Math.max(1, i.quantity - 1))} className="w-6 h-6 bg-white/10 rounded-md flex items-center justify-center"><Minus className="w-3 h-3" /></button>
                     <span className="text-xs font-bold w-4 text-center">{i.quantity}</span>
                     <button onClick={() => updateItemQty(i, i.quantity + 1)} className="w-6 h-6 bg-[#C9A227] text-black rounded-md flex items-center justify-center"><Plus className="w-3 h-3" /></button>
                   </div>
+                )}
+                {printQueueMode && (
+                  <p className="text-[10px] text-stone-500">× {i.quantity} — tell the cashier about changes</p>
                 )}
               </div>
             ))}

@@ -6,7 +6,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node scripts/verify-no-runtime-seeding.mjs && node scripts/verify-image-cleanup.mjs && node scripts/verify-image-reveal.mjs && tsx scripts/verify-image-display.ts && node scripts/verify-auth-guards.mjs && node scripts/verify-order-integrity.mjs && tsx scripts/verify-order-lines.ts && node scripts/verify-order-status.mjs && tsx scripts/verify-order-status-ui.tsx && tsx scripts/verify-shared-ip-limits.ts && tsx scripts/verify-daily-promotions.ts && node scripts/verify-review-exposure.mjs && node scripts/verify-realtime.mjs && node scripts/verify-native-language-order-flow.mjs && node scripts/verify-translation-safety.mjs && node scripts/verify-print-queue.mjs",
+    "test": "node scripts/verify-no-runtime-seeding.mjs && node scripts/verify-image-cleanup.mjs && node scripts/verify-image-reveal.mjs && tsx scripts/verify-image-display.ts && node scripts/verify-auth-guards.mjs && node scripts/verify-order-integrity.mjs && tsx scripts/verify-order-lines.ts && node scripts/verify-order-status.mjs && tsx scripts/verify-order-status-ui.tsx && tsx scripts/verify-shared-ip-limits.ts && tsx scripts/verify-daily-promotions.ts && node scripts/verify-review-exposure.mjs && node scripts/verify-realtime.mjs && node scripts/verify-native-language-order-flow.mjs && node scripts/verify-translation-safety.mjs && node scripts/verify-print-queue.mjs && node scripts/verify-pocket-alerts.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,7 +19,8 @@
     "pg": "8.20.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "tailwind-merge": "^3.6.0"
+    "tailwind-merge": "^3.6.0",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.17",
@@ -28,6 +29,7 @@
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/web-push": "^3.6.4",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",

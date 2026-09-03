@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-09-03-1";
+const SCHEMA_VERSION = "2026-09-03-2";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -236,6 +236,20 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    // Group 10 (pocket-mode alerts): one row per staff device subscribed to
+    // Web Push. Unique endpoint = one row per device, re-subscribing refreshes it.
+    "push_subscriptions",
+    `CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id serial PRIMARY KEY,
+      endpoint text NOT NULL,
+      p256dh text NOT NULL,
+      auth text NOT NULL,
+      role varchar(20) NOT NULL,
+      name varchar(100),
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
     "cdn_images",
     `CREATE TABLE IF NOT EXISTS cdn_images (
       id serial PRIMARY KEY,
@@ -308,6 +322,14 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
     // Group 1: idempotent order submission (unique per ticket + key)
     idempotency_key: { type: "text" },
+  },
+  push_subscriptions: {
+    endpoint: { type: "text" },
+    p256dh: { type: "text" },
+    auth: { type: "text" },
+    role: { type: "text", def: "'waiter'" },
+    name: { type: "text" },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
   },
 };
 
@@ -483,6 +505,7 @@ async function runFullMigrate(force: boolean) {
     "ticket_items",
     "announcements",
     "order_submissions",
+    "push_subscriptions",
   ];
   for (const t of serialTables) {
     await run(`CREATE SEQUENCE IF NOT EXISTS ${t}_id_seq`);
@@ -583,6 +606,10 @@ async function runFullMigrate(force: boolean) {
   //    9. order_submissions(ticket_id): "what did this table send, and when"
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS order_submissions_idempotency_key_key ON order_submissions (idempotency_key) WHERE idempotency_key IS NOT NULL`);
   await run(`CREATE INDEX IF NOT EXISTS order_submissions_ticket_id_idx ON order_submissions (ticket_id)`);
+
+  // Group 10 (pocket-mode alerts): one row per device — re-subscribing the same
+  // device replaces its row instead of duplicating it.
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint_key ON push_subscriptions (endpoint)`);
 
   //  • payment_status backfill: existing paid/completed bills get a concrete
   //    status derived from their stored method so reports/history stay correct

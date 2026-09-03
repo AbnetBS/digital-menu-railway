@@ -5,6 +5,7 @@ import { ensureTablesExist } from "@/db/migrate";
 import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import { checkRateLimit, checkSharedIpRateLimit, getClientIp, VENUE_POLICIES } from "@/lib/rate-limit";
 import { publish, CHANNELS } from "@/lib/realtime";
+import { sendPushToRoles } from "@/lib/push";
 import {
   customerOrderPhase,
   groupOrderLines,
@@ -216,7 +217,7 @@ export async function POST(request: Request) {
     await ensureTablesExist();
 
     const open = await db
-      .select({ id: tickets.id, receiptRequestedAt: tickets.receiptRequestedAt })
+      .select({ id: tickets.id, tableName: tickets.tableName, receiptRequestedAt: tickets.receiptRequestedAt })
       .from(tickets)
       .where(and(eq(tickets.tableId, tableId), notInArray(tickets.status, ["paid", "cancelled", "closed"])))
       .orderBy(desc(tickets.updatedAt))
@@ -237,6 +238,14 @@ export async function POST(request: Request) {
         .set({ receiptRequestedAt: new Date(), updatedAt: new Date() })
         .where(and(eq(tickets.id, open[0].id), isNull(tickets.receiptRequestedAt)));
       publish(CHANNELS.orders);
+
+      // GROUP 10 (pocket mode): the guest asked for the bill — ring the waiter
+      // AND the cashier (she prints the final EFD receipt). Fire-and-forget.
+      void sendPushToRoles(["waiter", "cashier"], {
+        title: "🧾 Bill requested",
+        body: `${open[0].tableName} — the guest asked for the bill`,
+        tag: `fana-bill-${open[0].id}`,
+      }).catch(() => {});
     }
 
     return NextResponse.json(await buildPayload(tableId), { headers: NO_STORE });

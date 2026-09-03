@@ -183,3 +183,18 @@ export const translations = pgTable("translations", {
   translatedText: text("translated_text").notNull(),
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// ─── WEB PUSH ("POCKET MODE") ───────────────────────────────────────────────
+// One row per staff DEVICE that asked for system notifications. The waiter's
+// phone is in her pocket with the browser closed — Web Push is the only way to
+// reach it. Role + name come from the staff SESSION (server-side), never from
+// the client, so a logged-in waiter can only subscribe AS a waiter.
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: serial("id").primaryKey(),
+  endpoint: text("endpoint").notNull(), // push service URL (unique)
+  p256dh: text("p256dh").notNull(), // client public key
+  auth: text("auth").notNull(), // client auth secret
+  role: varchar("role", { length: 20 }).notNull(), // waiter | cashier | kitchen | barista
+  name: varchar("name", { length: 100 }), // which staff member's device
+  createdAt: timestamp("created_at").defaultNow(),
+});

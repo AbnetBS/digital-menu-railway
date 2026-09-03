@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-09-02-1";
+const SCHEMA_VERSION = "2026-09-03-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -277,6 +277,11 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     // Group 5: payment verification audit
     verified_by: { type: "text" },
     verified_at: { type: "timestamp", dropNotNull: true },
+    // Group 9 (print-queue mode): cashier printed the bill in the EFD/POS,
+    // and the waiter later physically cleared the table (closes the bill).
+    printed_at: { type: "timestamp", dropNotNull: true },
+    printed_by: { type: "text" },
+    closed_by: { type: "text" },
     // Group 8: guest "bring us the bill/receipt" request
     receipt_requested_at: { type: "timestamp", dropNotNull: true },
   },
@@ -511,7 +516,7 @@ async function runFullMigrate(force: boolean) {
     WITH dups AS (
       SELECT table_id, min(id) AS keep_id, array_agg(id ORDER BY id) AS ids
       FROM tickets
-      WHERE status NOT IN ('paid','cancelled')
+      WHERE status NOT IN ('paid','cancelled','closed')
       GROUP BY table_id HAVING count(*) > 1
     )
     UPDATE ticket_items ti
@@ -524,14 +529,30 @@ async function runFullMigrate(force: boolean) {
     USING (
       SELECT table_id, min(id) AS keep_id, array_agg(id ORDER BY id) AS ids
       FROM tickets
-      WHERE status NOT IN ('paid','cancelled')
+      WHERE status NOT IN ('paid','cancelled','closed')
       GROUP BY table_id HAVING count(*) > 1
     ) d
     WHERE t.table_id = d.table_id AND t.id <> d.keep_id
-      AND t.status NOT IN ('paid','cancelled')
+      AND t.status NOT IN ('paid','cancelled','closed')
   `);
+  // GROUP 9 (print-queue mode): `closed` (waiter cleared the table) is now also
+  // an INACTIVE status — a closed bill must never block the next guest seated
+  // at that table. `CREATE ... IF NOT EXISTS` cannot evolve an existing index
+  // definition, so inspect what is on disk and recreate when it still uses the
+  // old predicate (paid/cancelled only).
+  try {
+    const idxProbe = await db.execute(
+      sql`SELECT indexdef FROM pg_indexes WHERE indexname = 'tickets_one_active_per_table_idx' LIMIT 1`
+    );
+    const idxRows = (idxProbe as unknown as { rows?: Array<{ indexdef: string }> }).rows ?? [];
+    if (idxRows.length > 0 && !idxRows[0].indexdef.includes("'closed'")) {
+      await run(`DROP INDEX IF EXISTS tickets_one_active_per_table_idx`);
+    }
+  } catch {
+    // pg_indexes unreadable → fall through, the create below still runs
+  }
   await run(
-    `CREATE UNIQUE INDEX IF NOT EXISTS tickets_one_active_per_table_idx ON tickets (table_id) WHERE status NOT IN ('paid','cancelled')`
+    `CREATE UNIQUE INDEX IF NOT EXISTS tickets_one_active_per_table_idx ON tickets (table_id) WHERE status NOT IN ('paid','cancelled','closed')`
   );
 
   //  • GROUP 3 indexes — each justified by a real query pattern:

@@ -33,6 +33,8 @@ export async function GET(request: Request) {
     // fetched EVERY historical item for the station (e.g. ~15k rows at 10k
     // tickets) every 8s and then filtered in JS. Now: read the small set of
     // open ticket ids first, then fetch only THEIR items for this station.
+    // (Group 9: a CLOSED bill — waiter cleared the table — is no longer open,
+    // so the station lists drop it exactly like paid/cancelled ones.)
     const open = await db
       .select({
         id: tickets.id,
@@ -49,7 +51,7 @@ export async function GET(request: Request) {
         updatedAt: tickets.updatedAt,
       })
       .from(tickets)
-      .where(notInArray(tickets.status, ["paid", "cancelled"]));
+      .where(notInArray(tickets.status, ["paid", "cancelled", "closed"]));
 
     if (open.length === 0) return NextResponse.json([], { headers: { "Cache-Control": "no-store" } });
 

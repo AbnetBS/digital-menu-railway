@@ -60,7 +60,7 @@ const i18n = read("src/lib/i18n.ts");
 /* ── 4. "bring us the bill" ───────────────────────────────────────────────── */
 {
   pass("the request stamps receipt_requested_at", /\.set\(\{ receiptRequestedAt: new Date\(\)/.test(status));
-  pass("only an OPEN ticket can be stamped", /notInArray\(tickets\.status, \["paid", "cancelled"\]\)/.test(status));
+  pass("only an OPEN ticket can be stamped", /notInArray\(tickets\.status, \["paid", "cancelled", "closed"\]\)/.test(status));
   pass("two guests tapping at once keep the FIRST request time", /isNull\(tickets\.receiptRequestedAt\)/.test(status));
   pass("staff are told immediately (realtime publish)", /publish\(CHANNELS\.orders\)/.test(status));
   pass("a table with no open order gets a friendly 404", /no open order for this table/i.test(status));
@@ -86,7 +86,7 @@ const i18n = read("src/lib/i18n.ts");
   pass("the migration adds the new ticket column", /receipt_requested_at/.test(migrate));
   pass("the submission key is UNIQUE at the database level", /CREATE UNIQUE INDEX IF NOT EXISTS order_submissions_idempotency_key_key/.test(migrate));
   pass("submissions are indexed per ticket", /CREATE INDEX IF NOT EXISTS order_submissions_ticket_id_idx/.test(migrate));
-  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-02-1"/.test(migrate));
+  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-03-1"/.test(migrate));
 }
 
 /* ── 3. duplicate lines merge in the DATABASE, not just on screen ─────────── */

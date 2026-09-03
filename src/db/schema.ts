@@ -113,6 +113,14 @@ export const tickets = pgTable("tickets", {
   // verification step for digital/card payments). Null for unpaid/cancelled.
   verifiedBy: varchar("verified_by", { length: 100 }),
   verifiedAt: timestamp("verified_at"),
+  // Print-queue mode: the cashier keyed this bill into the government EFD/POS
+  // and printed the order paper. Re-printed (updated) whenever additions arrive.
+  printedAt: timestamp("printed_at"),
+  printedBy: varchar("printed_by", { length: 100 }),
+  // Print-queue mode: the waiter physically cleared the table, closing the
+  // bill. This is a PHYSICAL event (table bussed), deliberately decoupled from
+  // payment — the EFD/POS remains the financial system of record.
+  closedBy: varchar("closed_by", { length: 100 }),
   // Guest "we are done — please bring the bill/receipt" request (Group 8).
   // Stamped from the guest's own phone via the public table-status endpoint
   // once the food is served; cleared by staff after the receipt is delivered.

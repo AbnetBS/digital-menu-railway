@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { tickets, ticketItems } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { and, asc, desc, eq, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import { checkRateLimit, checkSharedIpRateLimit, getClientIp, VENUE_POLICIES } from "@/lib/rate-limit";
 import { publish, CHANNELS } from "@/lib/realtime";
 import {
@@ -92,15 +92,17 @@ async function findVisibleTicket(tableId: number) {
   const open = await db
     .select()
     .from(tickets)
-    .where(and(eq(tickets.tableId, tableId), notInArray(tickets.status, ["paid", "cancelled"])))
+    .where(and(eq(tickets.tableId, tableId), notInArray(tickets.status, ["paid", "cancelled", "closed"])))
     .orderBy(desc(tickets.updatedAt))
     .limit(1);
   if (open.length > 0) return open[0];
 
+  // Group 9: in print-queue mode bills finish as "closed" (table cleared) — the
+  // guest deserves the same thank-you screen paid bills get.
   const closed = await db
     .select()
     .from(tickets)
-    .where(and(eq(tickets.tableId, tableId), eq(tickets.status, "paid")))
+    .where(and(eq(tickets.tableId, tableId), inArray(tickets.status, ["paid", "closed"])))
     .orderBy(desc(tickets.closedAt))
     .limit(1);
   const row = closed[0];
@@ -216,7 +218,7 @@ export async function POST(request: Request) {
     const open = await db
       .select({ id: tickets.id, receiptRequestedAt: tickets.receiptRequestedAt })
       .from(tickets)
-      .where(and(eq(tickets.tableId, tableId), notInArray(tickets.status, ["paid", "cancelled"])))
+      .where(and(eq(tickets.tableId, tableId), notInArray(tickets.status, ["paid", "cancelled", "closed"])))
       .orderBy(desc(tickets.updatedAt))
       .limit(1);
 

@@ -28,7 +28,7 @@ export async function GET() {
     const activeTickets = await db
       .select()
       .from(tickets)
-      .where(notInArray(tickets.status, ["paid", "cancelled"]));
+      .where(notInArray(tickets.status, ["paid", "cancelled", "closed"]));
 
     const result = tables.map((t) => {
       const tk = activeTickets.find((x) => x.tableId === t.id);
@@ -36,8 +36,10 @@ export async function GET() {
       if (tk) {
         if (tk.status === "pending_waiter") status = "waiting";
         else if (tk.status === "ready_for_payment" || tk.status === "completed") status = "ready-for-payment";
-        else if (tk.status === "preparing") status = "preparing";
-        else status = "occupied"; // confirmed
+        // Print-queue mode: once the cashier printed the bill, the crew is
+        // working on it — same board color as the classic "preparing" state.
+        else if (tk.status === "preparing" || tk.status === "printed") status = "preparing";
+        else status = "occupied"; // confirmed — in print-queue mode: waiting for the cashier to print
       }
       return {
         id: t.id,

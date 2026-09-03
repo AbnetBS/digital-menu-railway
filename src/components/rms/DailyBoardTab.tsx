@@ -6,7 +6,7 @@ import { Announcement, DailyPromotion, DailyPromotionItem, DailyPromotionType, M
 import { compressImage } from "@/lib/image-utils";
 
 const PROMOTION_OPTIONS: Array<{ value: "none" | DailyPromotionType; label: string }> = [
-  { value: "none", label: "None — announcement only" },
+  { value: "none", label: "None (announcement only)" },
   { value: "special_price", label: "Special Price" },
   { value: "percentage_discount", label: "Percentage Discount" },
   { value: "fixed_amount_discount", label: "Fixed Amount Discount" },
@@ -145,7 +145,7 @@ export default function DailyBoardTab() {
             onClick={() =>
               setEditing({
                 title: "🔥 Today's Special",
-                description: "Buy 2 Cappuccinos, get 1 Cookie FREE — today only!",
+                description: "Buy 2 Cappuccinos, get 1 Cookie FREE • today only!",
                 startDate: new Date().toISOString().slice(0, 10),
                 endDate: new Date().toISOString().slice(0, 10),
                 priority: items.length,
@@ -195,7 +195,7 @@ export default function DailyBoardTab() {
         ))}
         {items.length === 0 && (
           <div className="col-span-2 bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
-            No announcements yet — create your first daily special above!
+            No announcements yet. Create your first daily special above!
           </div>
         )}
       </div>
@@ -227,7 +227,7 @@ export default function DailyBoardTab() {
                 rows={2}
                 value={editing.description || ""}
                 onChange={(e) => setEditing({ ...editing, description: e.target.value })}
-                placeholder="20% OFF Chicken Sandwich — today only!"
+                placeholder="20% OFF Chicken Sandwich • today only!"
                 className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
               />
             </div>
@@ -311,7 +311,7 @@ export default function DailyBoardTab() {
                         <div className="flex gap-2">
                           <select value={promotionItem.menuItemId || ""} onChange={(e) => updatePromotionItem(index, { menuItemId: Number(e.target.value) })} className="min-w-0 flex-1 bg-[#3D2314] border border-stone-700 rounded-lg px-2 py-2 text-xs text-white">
                             <option value="" disabled>Select menu item</option>
-                            {menuItems.map((m) => <option key={m.id} value={m.id}>{m.name} — {m.price} ETB</option>)}
+                            {menuItems.map((m) => <option key={m.id} value={m.id}>{m.name} • {m.price} ETB</option>)}
                           </select>
                           {canAddPromotionItem && (
                             <button type="button" onClick={() => updatePromotion({ items: promotion.items.filter((_, itemIndex) => itemIndex !== index) })} className="w-8 h-8 shrink-0 rounded-lg bg-rose-500/15 text-rose-300 hover:bg-rose-500 hover:text-white flex items-center justify-center" aria-label="Remove promotion item">

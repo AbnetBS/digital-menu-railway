@@ -104,7 +104,7 @@ export default function DedicatedAdminPage() {
             <div className="w-14 h-14 rounded-2xl bg-[#C9A227] text-[#2C1B17] flex items-center justify-center mx-auto shadow-lg font-bold">
               <Lock className="w-7 h-7" />
             </div>
-            <h1 className="text-2xl font-serif font-bold text-amber-100">Owner Dashboard — Fana Cafe</h1>
+            <h1 className="text-2xl font-serif font-bold text-amber-100">Owner Dashboard • Fana Cafe</h1>
             <p className="text-xs text-stone-300">Enter your security credentials to access the management dashboard.</p>
           </div>
 

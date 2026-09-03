@@ -241,21 +241,21 @@ function toDate(value?: string | Date | null): Date | null {
 /** "14:35" — the clock time an order arrived (the crew's #1 question). */
 export function formatClock(value?: string | Date | null): string {
   const d = toDate(value);
-  if (!d) return "—";
+  if (!d) return "n/a";
   return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 /** "02 Sep 2026" — the date an order arrived. */
 export function formatDayMonthYear(value?: string | Date | null): string {
   const d = toDate(value);
-  if (!d) return "—";
+  if (!d) return "n/a";
   return d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
 }
 
 /** "14:35 · 02 Sep 2026" */
 export function formatDateTime(value?: string | Date | null): string {
   const d = toDate(value);
-  if (!d) return "—";
+  if (!d) return "n/a";
   return `${formatClock(d)} · ${formatDayMonthYear(d)}`;
 }
 

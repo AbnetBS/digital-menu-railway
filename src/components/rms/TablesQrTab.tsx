@@ -42,7 +42,7 @@ export default function TablesQrTab() {
     });
     if (r.ok) {
       setBaseUrl(customBase.trim() || window.location.origin);
-      setSavedMsg("✓ QR base URL saved — all codes updated");
+      setSavedMsg("✓ QR base URL saved • all codes updated");
       setTimeout(() => setSavedMsg(""), 3000);
     }
   };
@@ -96,7 +96,7 @@ export default function TablesQrTab() {
         </div>
         <p className="text-xs text-stone-400 leading-relaxed">
           QRs currently encode: <strong className="text-[#C9A227]">{baseUrl || "..."}</strong>
-          {" "}— leave empty to auto-use the site you're currently on. For permanent printed QRs, enter your final domain
+          {" "}• leave empty to auto-use the site you're currently on. For permanent printed QRs, enter your final domain
           (e.g. <code className="text-amber-300">https://fanacafe.com</code>) and save, then print once.
         </p>
         <div className="flex flex-col sm:flex-row gap-2">
@@ -116,11 +116,11 @@ export default function TablesQrTab() {
         {savedMsg && <p className="text-xs text-emerald-400 font-bold">{savedMsg}</p>}
         {baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1") ? (
           <div className="bg-rose-950/60 border border-rose-600 text-rose-200 text-xs p-3 rounded-xl font-bold">
-            ⚠️ You're on localhost — customer phones CAN'T reach these QRs. Deploy to your host (e.g. Railway) first, open the live site, then print.
+            ⚠️ You're on localhost: customer phones CAN'T reach these QRs. Deploy to your host (e.g. Railway) first, open the live site, then print.
           </div>
         ) : (
           <div className="bg-emerald-950/60 border border-emerald-700 text-emerald-200 text-xs p-3 rounded-xl font-bold">
-            ✓ Live domain detected — scan any QR below with your phone to test it right now.
+            ✓ Live domain detected • scan any QR below with your phone to test it right now.
           </div>
         )}
       </div>
@@ -174,7 +174,7 @@ export default function TablesQrTab() {
         <QrCode className="w-5 h-5 text-[#C9A227] shrink-0 mt-0.5" />
         <p className="text-xs text-stone-400 leading-relaxed">
           <strong className="text-white">Printing tip:</strong> use the Print button once your real domain (e.g. fanacafe.com) is connected,
-          so the QR codes encode your permanent URL — they never need replacing.
+          so the QR codes encode your permanent URL, they never need replacing.
         </p>
       </div>
     </div>

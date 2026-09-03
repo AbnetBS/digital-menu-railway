@@ -128,7 +128,7 @@ function pass(name, cond) {
   // cashier confirms the printed receipt (or full-mode "Accept → Kitchen").
   pass("QR order → waiters only (crew waits for the print)", /fana-qr-/.test(tickets) && /\["waiter"\]/.test(tickets));
   pass("waiter order → cashier to print (no station push on POST)", /fana-print-/.test(tickets) && /\["cashier"\]/.test(tickets));
-  pass("additions on a printed bill → cashier must reprint", /fana-add-/.test(tickets) && /print the bill again/.test(tickets));
+  pass("additions on a printed bill → cashier prints the new receipt", /fana-add-/.test(tickets) && /new items on the bill, print receipt #2/.test(tickets));
   pass("POST never pushes to stations (receipt must exist first)", !/stationPush/.test(tickets) && !/sendPushToRoles\(stations/.test(tickets.split("export async function PUT")[0] || ""));
   pass("✓ PRINTED releases the crew — PUT wakes kitchen/barista", /body\.status === "printed" \|\| \(body\.status === "preparing"/.test(tickets) && /fana-station-/.test(tickets));
   pass("only stations with newly released items are pinged", /prevStamp === null \|\| !r\.createdAt \|\| new Date\(r\.createdAt\)\.getTime\(\) > prevStamp/.test(tickets));
@@ -138,7 +138,7 @@ function pass(name, cond) {
 
 /* ── 7. Staff-requested menu card behavior ────────────────────────────────── */
 {
-  pass("the WHOLE menu card adds the food (image/text/anywhere)", /role="button"/.test(waiter) && /Add — tap anywhere/.test(waiter));
+  pass("the WHOLE menu card adds the food (image/text/anywhere)", /role="button"/.test(waiter) && /Add • tap anywhere/.test(waiter));
   pass("cart count badge shows on the card", /inCart\.quantity/.test(waiter));
   pass("print-queue waiter bill is read-only (confirm → send → clear only)", /printQueueMode && activeTicket\.status !== "ready_for_payment"/.test(waiter));
 }

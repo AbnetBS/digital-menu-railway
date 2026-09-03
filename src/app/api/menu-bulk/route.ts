@@ -95,7 +95,7 @@ export async function POST(request: Request) {
       const key = r.name.toLowerCase().trim();
       // Resolve the effective prep time: per-line value → global default → keep existing.
       const prepTime = r.prepTime || globalPrepTime || existingByName.get(key)?.prepTime || DEFAULT_PREP_TIME;
-      const description = r.description || existingByName.get(key)?.description || `${r.name} — freshly prepared daily at Fana Cafe.`;
+      const description = r.description || existingByName.get(key)?.description || `${r.name}, freshly prepared daily at Fana Cafe.`;
 
       const match = existingByName.get(key);
       if (match) {

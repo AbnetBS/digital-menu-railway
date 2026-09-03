@@ -41,7 +41,7 @@ export default function StationsTab() {
     });
     setSaving(false);
     if (res.ok) {
-      setSavedMsg("✓ Stations routing saved — all new orders will split correctly by station");
+      setSavedMsg("✓ Stations routing saved • all new orders will split correctly by station");
       setTimeout(() => setSavedMsg(""), 3500);
     } else alert("Failed to save routing.");
   };

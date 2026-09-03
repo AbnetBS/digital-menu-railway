@@ -24,7 +24,7 @@ export default function FaqSection() {
     },
     {
       q: "Is Fana Cafe suitable for remote work or business meetings?",
-      a: "Absolutely! Fana Cafe provides a calm, comfortable environment with relaxed seating, ideal lighting, and great coffee—making it a favorite spot for business meetings, study sessions, and remote work.",
+      a: "Absolutely! Fana Cafe provides a calm, comfortable environment with relaxed seating, ideal lighting, and great coffee, making it a favorite spot for business meetings, study sessions, and remote work.",
     },
     {
       q: "Are vegetarian, vegan, and fasting options available?",

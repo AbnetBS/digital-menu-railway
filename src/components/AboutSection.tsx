@@ -13,7 +13,7 @@ export default function AboutSection({ settings }: AboutProps) {
   const aboutTitle = settings.about_title || "Experience Modern Ethiopian Hospitality";
   const aboutDesc =
     settings.about_description ||
-    "Ethiopia is recognized as the birthplace of Arabica coffee, and coffee is more than a beverage—it's part of our culture and hospitality. At Fana Cafe, every detail is centered around comfort, flavor, and warm service. Enjoy carefully prepared coffee, freshly made meals, refreshing beverages, and a calm environment that lets you slow down and enjoy the moment.";
+    "Ethiopia is recognized as the birthplace of Arabica coffee, and coffee is more than a beverage; it's part of our culture and hospitality. At Fana Cafe, every detail is centered around comfort, flavor, and warm service. Enjoy carefully prepared coffee, freshly made meals, refreshing beverages, and a calm environment that lets you slow down and enjoy the moment.";
 
   return (
     <section id="about" className="py-20 bg-[#FAF6F0] relative overflow-hidden">
@@ -83,7 +83,7 @@ export default function AboutSection({ settings }: AboutProps) {
                   {tx("“At Fana Cafe, every cup is poured with warmth, and every guest is treated like long-time family.”")}
                 </p>
                 <p className="text-xs text-[#C9A227] font-bold mt-1 uppercase tracking-wider">
-                  {tx("— The Fana Hospitality Team")}
+                  {tx("The Fana Hospitality Team")}
                 </p>
               </div>
             </div>

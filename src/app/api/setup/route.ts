@@ -46,7 +46,7 @@ export async function GET() {
     {
       status: allOk ? "ready" : "needs_attention",
       message: allOk
-        ? "Database fully initialized and verified — orders, reservations and menu inserts all work."
+        ? "Database fully initialized and verified. Orders, reservations and menu inserts all work."
         : "Some steps need attention. See details below.",
       migration_errors: migrateResult.errors ?? [],
       seed_result: seedResult,

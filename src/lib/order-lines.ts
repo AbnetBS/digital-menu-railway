@@ -214,7 +214,9 @@ export function customerOrderPhase(ticket: PhaseTicket | null, lines: OrderLine[
   if (!ticket) return "none";
   const status = String(ticket.status ?? "");
   if (status === "cancelled") return "cancelled";
-  if (status === "paid" || String(ticket.paymentStatus ?? "").startsWith("paid_")) return "paid";
+  // Group 9: "closed" = the waiter cleared the table after the bill was settled
+  // in the EFD/POS — for the guest this is the finished/thank-you state.
+  if (status === "paid" || status === "closed" || String(ticket.paymentStatus ?? "").startsWith("paid_")) return "paid";
   if (status === "ready_for_payment" || status === "completed") return "bill";
   if (status === "pending_waiter") return "waiting";
 

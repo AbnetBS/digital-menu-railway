@@ -33,6 +33,8 @@ export async function GET(request: Request) {
     // fetched EVERY historical item for the station (e.g. ~15k rows at 10k
     // tickets) every 8s and then filtered in JS. Now: read the small set of
     // open ticket ids first, then fetch only THEIR items for this station.
+    // (Group 9: a CLOSED bill — waiter cleared the table — is no longer open,
+    // so the station lists drop it exactly like paid/cancelled ones.)
     const open = await db
       .select({
         id: tickets.id,
@@ -47,9 +49,11 @@ export async function GET(request: Request) {
         // has been waiting), not just that it exists.
         createdAt: tickets.createdAt,
         updatedAt: tickets.updatedAt,
+        // Group 11: the print stamp decides which items the crew may cook.
+        printedAt: tickets.printedAt,
       })
       .from(tickets)
-      .where(notInArray(tickets.status, ["paid", "cancelled"]));
+      .where(notInArray(tickets.status, ["paid", "cancelled", "closed", "pending_waiter", "confirmed"]));
 
     if (open.length === 0) return NextResponse.json([], { headers: { "Cache-Control": "no-store" } });
 
@@ -74,22 +78,44 @@ export async function GET(request: Request) {
       map.get(it.ticketId)!.push(it);
     }
 
+    // GROUP 11 (release gate): in the print-queue workflow the EFD/POS receipt
+    // must EXIST before the crew starts cooking — "nothing gets cooked without
+    // a bill". A waiter sending an order only moves it to the CASHIER's queue;
+    // the kitchen/barista lists receive it when she taps ✓ PRINTED (status
+    // "printed"). Additions that land on an already-printed bill stay invisible
+    // to the crew until she prints AGAIN: only items that existed at the last
+    // print (item created_at <= printed_at) are released. (Full-payment mode
+    // uses the classic release: the cashier's "Accept → Kitchen" move to
+    // "preparing" — the status filter above already handles both.)
+    const releasedItems = (status: string, printedAt: Date | string | null, items: any[]) => {
+      if (status !== "printed" || !printedAt) return items; // preparing/…: all items released
+      const cutoff = new Date(printedAt).getTime();
+      return items.filter((it) => {
+        if (!it.createdAt) return true; // legacy rows without a timestamp → released
+        return new Date(it.createdAt).getTime() <= cutoff;
+      });
+    };
+
     const payload = open
       .filter((t) => map.has(t.id))
-      .map((t) => ({
-        id: t.id,
-        tableName: t.tableName,
-        orderNumber: t.orderNumber,
-        status: t.status,
-        totalAmount: t.totalAmount,
-        createdBy: t.createdBy,
-        confirmedBy: t.confirmedBy,
-        createdAt: t.createdAt,
-        updatedAt: t.updatedAt,
-        // A guest asking for the bill is the crew's cue that the table is waiting.
-        receiptRequestedAt: t.receiptRequestedAt,
-        items: map.get(t.id) || [],
-      }));
+      .map((t) => {
+        const items = releasedItems(t.status, t.printedAt, map.get(t.id) || []);
+        return {
+          id: t.id,
+          tableName: t.tableName,
+          orderNumber: t.orderNumber,
+          status: t.status,
+          totalAmount: t.totalAmount,
+          createdBy: t.createdBy,
+          confirmedBy: t.confirmedBy,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+          // A guest asking for the bill is the crew's cue that the table is waiting.
+          receiptRequestedAt: t.receiptRequestedAt,
+          items,
+        };
+      })
+      .filter((t) => t.items.length > 0);
 
     return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

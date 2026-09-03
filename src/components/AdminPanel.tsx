@@ -3,7 +3,7 @@
 import { useState } from "react";
 import {
   Settings, Utensils, Star, Lock, Plus, Trash2, Edit3, CheckCircle2, Save, LogOut, RefreshCw,
-  Eye, EyeOff, Upload, Image as ImageIcon, Camera, TrendingUp, Users, QrCode, CreditCard,
+  Eye, EyeOff, Upload, Image as ImageIcon, Camera, TrendingUp, Users, QrCode, CreditCard, Monitor,
 } from "lucide-react";
 import { MenuItem, SiteSettings, Review, Category, GalleryItem } from "@/types";
 import { compressImage } from "@/lib/image-utils";
@@ -48,6 +48,7 @@ export default function AdminPanel({
       "https://images.pexels.com/photos/16563658/pexels-photo-16563658.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=800&w=1200",
     logo_url: String(settings.logo_url || ""),
     receipt_enabled: String(settings.receipt_enabled ?? "true"),
+    cashier_mode: settings.cashier_mode === "full" ? "full" : "print-queue",
     phone: settings.phone || "0911 065 022",
     address: settings.address || "Town Square Building, 22 Square, Djibouti Street, Bole, Addis Ababa, Ethiopia",
     plus_code: settings.plus_code || "2Q7Q+W2 Addis Ababa",
@@ -311,6 +312,35 @@ export default function AdminPanel({
                 }`}
               >
                 {settingsForm.receipt_enabled === "true" ? "ON" : "OFF"}
+              </button>
+            </div>
+
+            {/* Cashier mode switch — print-queue (EFD workflow) vs full payment recording */}
+            <div className="bg-[#3D2314] p-5 rounded-2xl border border-[#C9A227]/30 flex items-center justify-between gap-4">
+              <div className="flex-1">
+                <h3 className="text-sm font-bold text-amber-200 flex items-center gap-2">
+                  <Monitor className="w-4 h-4 text-[#C9A227]" /> Cashier Print-Queue Mode
+                </h3>
+                <p className="text-[11px] text-stone-400 mt-1">
+                  ON = cashier does ONE click per order (keys it into the EFD/POS, prints, taps ✓ PRINTED) — payments stay in the EFD; waiters free tables with &quot;Table cleared&quot;.
+                  OFF = full payment mode (cashier records payment method and marks bills Paid — for cafes without an EFD/POS).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setSettingsForm({
+                    ...settingsForm,
+                    cashier_mode: settingsForm.cashier_mode === "print-queue" ? "full" : "print-queue",
+                  })
+                }
+                className={`px-4 py-2.5 rounded-xl text-xs font-black transition shrink-0 ${
+                  settingsForm.cashier_mode === "print-queue"
+                    ? "bg-emerald-600 text-white"
+                    : "bg-stone-700 text-stone-300"
+                }`}
+              >
+                {settingsForm.cashier_mode === "print-queue" ? "ON" : "OFF"}
               </button>
             </div>
 

@@ -129,6 +129,8 @@ export type TicketStatus =
   | "preparing"
   | "ready_for_payment"
   | "completed"
+  | "printed"
+  | "closed"
   | "paid"
   | "cancelled";
 
@@ -189,6 +191,17 @@ export interface Ticket {
   confirmedBy?: string | null;
   verifiedBy?: string | null;
   verifiedAt?: string | null;
+  /** Print-queue mode: cashier keyed the bill into the EFD/POS and printed it. */
+  printedAt?: string | null;
+  printedBy?: string | null;
+  /** Print-queue mode: waiter physically cleared the table (ticket closed). */
+  closedBy?: string | null;
+  /**
+   * Print-queue mode: order submissions accepted AFTER the last print — every
+   * value > 0 re-queues an already-printed ticket so the cashier prints again
+   * (the "TABLE 5 — ADDED" card). Computed server-side in GET /api/tickets.
+   */
+  unprintedSubmissions?: number;
   /** Guest asked for the bill/receipt (Group 8). Null until they tap it. */
   receiptRequestedAt?: string | null;
   items?: TicketItem[];

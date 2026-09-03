@@ -9,7 +9,9 @@ import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireAdmin } from "@/lib/session";
 
 // Sensitive settings keys that must never be returned to a client.
-const SECRET_KEYS = new Set(["admin_password"]);
+// vapid_private is the server's Web Push identity — leaking it would let
+// anyone send notifications to every subscribed staff phone.
+const SECRET_KEYS = new Set(["admin_password", "vapid_private"]);
 
 // Settings keys that hold an uploaded image (stored as a cdn_images reference).
 const IMAGE_SETTING_KEYS = new Set(["logo_url", "hero_bg_image"]);

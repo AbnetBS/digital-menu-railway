@@ -4,13 +4,14 @@ import { tickets, ticketItems, cafeTables, menuItems, announcements, orderSubmis
 import { ensureTablesExist } from "@/db/migrate";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
-import { eq, asc, desc, and, notInArray, inArray, sql } from "drizzle-orm";
+import { eq, asc, desc, and, notInArray, inArray, sql, gt, isNotNull } from "drizzle-orm";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireStaffOrAdmin, requireAdmin } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
+import { sendPushToRoles } from "@/lib/push";
 
 /**
  * Customer order limits are TWO-TIER (per table + per venue) because every guest
@@ -63,16 +64,29 @@ async function recomputeTotal(client: any, ticketId: number) {
  * Allowed ticket status transitions (Group 1) — prevents accidental, skipped or
  * backwards moves (e.g. paid → preparing, or double-paid). Same-status updates are
  * allowed as an idempotent no-op; paid/cancelled are terminal.
+ *
+ * GROUP 9 (print-queue mode) adds the Fana workflow:
+ *   confirmed → printed  (cashier keyed the bill into the EFD/POS and printed)
+ *   printed  → closed    (waiter physically cleared the table — bill closed,
+ *                         table free; payment itself lives in the EFD/POS world)
+ * Full-payment deployments simply never send these two transitions.
  */
 const TICKET_STATUS_TRANSITIONS: Record<string, string[]> = {
   pending_waiter: ["confirmed", "cancelled"],
-  confirmed: ["preparing", "ready_for_payment", "cancelled"],
-  preparing: ["ready_for_payment", "cancelled"],
-  ready_for_payment: ["completed", "cancelled"],
-  completed: ["paid", "cancelled"],
+  confirmed: ["preparing", "ready_for_payment", "printed", "cancelled"],
+  printed: ["closed", "cancelled"],
+  // "closed" is also reachable from the classic mid-flow states so a deployment
+  // that switches to print-queue mode never traps bills that were already in
+  // flight (the owner's EFD/POS stays the money record either way).
+  preparing: ["ready_for_payment", "closed", "cancelled"],
+  ready_for_payment: ["completed", "closed", "cancelled"],
+  completed: ["paid", "closed", "cancelled"],
   paid: [],
   cancelled: [],
 };
+
+/** Statuses that mean "this bill is finished — the table can be re-seated". */
+const INACTIVE_TICKET_STATUSES = ["paid", "cancelled", "closed"] as const;
 
 /** Payment status is separate from order status (food done ≠ paid). */
 const PAYMENT_STATUSES = ["unpaid", "paid_cash", "paid_telebirr", "paid_cbe", "paid_card"] as const;
@@ -84,6 +98,9 @@ const PAYMENT_METHODS = ["cash", "telebirr", "cbe", "card", "online"] as const;
 //      ?paid=1&limit=N → ONLY the N most recent PAID tickets, WITHOUT items —
 //      the lightweight payload for the cashier's "Recently Paid" panel
 //      (history cards render only table/method/total, so items are wasted bytes).
+//      ?finished=1&limit=N → the N most recent FINISHED bills (paid OR closed
+//      by table-clear) without items — the print-queue cashier's "Printed Today"
+//      history. Closed bills never pass through "paid", so both count as done.
 // TRAFFIC FIX: list responses EXCLUDE receipt photos (they're heavy base64 polygons).
 // Receipts are fetched on-demand via /api/tickets/receipt?id=X when someone clicks "View Receipt".
 export async function GET(request: Request) {
@@ -94,14 +111,18 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const activeOnly = searchParams.get("active") === "1";
     const paidOnly = searchParams.get("paid") === "1";
+    const finishedOnly = searchParams.get("finished") === "1";
     const limit = Math.min(200, Math.max(1, Number(searchParams.get("limit") || 100)));
 
     let list;
     if (activeOnly) {
-      list = await db.select().from(tickets).where(notInArray(tickets.status, ["paid", "cancelled"])).orderBy(desc(tickets.updatedAt));
+      list = await db.select().from(tickets).where(notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])).orderBy(desc(tickets.updatedAt));
     } else if (paidOnly) {
       // Only the most recent paid bills — no items, no receipt, small response.
       list = await db.select().from(tickets).where(eq(tickets.status, "paid")).orderBy(desc(tickets.updatedAt)).limit(limit);
+    } else if (finishedOnly) {
+      // Print-queue history: closed bills (table cleared) + paid bills, newest first.
+      list = await db.select().from(tickets).where(inArray(tickets.status, ["paid", "closed"])).orderBy(desc(tickets.updatedAt)).limit(limit);
     } else {
       list = await db.select().from(tickets).orderBy(desc(tickets.updatedAt)).limit(limit);
     }
@@ -114,7 +135,7 @@ export async function GET(request: Request) {
     });
 
     // Paid-history payload doesn't need items at all (cards show table/method/total only).
-    const needItems = !paidOnly;
+    const needItems = !paidOnly && !finishedOnly;
 
     // PERFORMANCE: only fetch items for the tickets being returned — never the
     // whole ticket_items table (it grows forever). Group by ticketId once.
@@ -129,9 +150,43 @@ export async function GET(request: Request) {
       itemsByTicket.get(it.ticketId)!.push(it);
     }
 
+    // GROUP 9 (print-queue): count order submissions accepted AFTER the cashier's
+    // last print. > 0 → this printed bill received additions → the cashier queue
+    // re-shows the card as "TABLE X — ADDED" so she prints the bill again (the
+    // old paper world's "print a second receipt and hand the guest two papers").
+    // Submissions are used (not items) because a folded line updates an existing
+    // item row without inserting anything, while every submission records a row.
+    const unprintedByTicket = new Map<number, number>();
+    if (needItems) {
+      const printedIds = slim
+        .filter((t) => (t as { printedAt?: string | Date | null }).printedAt)
+        .map((t) => (t as { id: number }).id);
+      if (printedIds.length > 0) {
+        try {
+          const counted = await db
+            .select({ ticketId: orderSubmissions.ticketId, n: sql<number>`count(*)::int` })
+            .from(orderSubmissions)
+            .innerJoin(tickets, eq(tickets.id, orderSubmissions.ticketId))
+            .where(
+              and(
+                inArray(orderSubmissions.ticketId, printedIds),
+                isNotNull(tickets.printedAt),
+                gt(orderSubmissions.createdAt, tickets.printedAt)
+              )
+            )
+            .groupBy(orderSubmissions.ticketId);
+          for (const row of counted) unprintedByTicket.set(row.ticketId, Number(row.n));
+        } catch {
+          // order_submissions missing on a very old DB → additions flag simply
+          // stays 0; the queue itself keeps working (same graceful mode as POST).
+        }
+      }
+    }
+
     const result = slim.map((t) => ({
       ...t,
       receiptImage: null, // keep field defined so clients know it needs fetching on demand
+      unprintedSubmissions: unprintedByTicket.get((t as { id: number }).id) || 0,
       items: itemsByTicket.get((t as { id: number }).id) || [],
     }));
 
@@ -241,7 +296,7 @@ export async function POST(request: Request) {
     const activeTickets = await tx
       .select()
       .from(tickets)
-      .where(and(eq(tickets.tableId, Number(tableId)), notInArray(tickets.status, ["paid", "cancelled"])));
+      .where(and(eq(tickets.tableId, Number(tableId)), notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])));
 
     let ticketId: number;
 
@@ -282,7 +337,7 @@ export async function POST(request: Request) {
           const existing = await tx
             .select()
             .from(tickets)
-            .where(and(eq(tickets.tableId, Number(tableId)), notInArray(tickets.status, ["paid", "cancelled"])))
+            .where(and(eq(tickets.tableId, Number(tableId)), notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])))
             .limit(1);
           if (existing.length > 0) {
             ticketId = existing[0].id;
@@ -542,6 +597,39 @@ export async function POST(request: Request) {
       });
     }
     publish(CHANNELS.orders);
+
+    // ── GROUP 10 (pocket mode): ring every relevant phone — including browsers
+    // that are CLOSED. Fire-and-forget by design: a push outage must never
+    // delay or fail an order.
+    // GROUP 11 (release gate): the crew is deliberately NOT notified here —
+    // a waiter's order goes to the CASHIER only. Kitchen/barista are woken by
+    // the PUT below when she taps ✓ PRINTED ("printed") or, in full mode,
+    // "Accept → Kitchen" ("preparing"). Nothing gets cooked without a bill.
+    {
+      const pushed = transactionResult.ticket;
+      if (isCustomer && pushed.status === "pending_waiter") {
+        void sendPushToRoles(["waiter"], {
+          title: "🍽 New QR order",
+          body: `${pushed.tableName} • ${transactionResult.total} ETB — tap to confirm`,
+          tag: `fana-qr-${pushed.id}`,
+        }).catch(() => {});
+      } else if (pushed.status === "printed") {
+        // Additions landed on a bill the cashier already keyed into the EFD —
+        // she must print it again (the old "guest holds two receipts" moment).
+        void sendPushToRoles(["cashier"], {
+          title: "⚠ Items ADDED",
+          body: `${pushed.tableName} — print the bill again`,
+          tag: `fana-add-${pushed.id}`,
+        }).catch(() => {});
+      } else {
+        void sendPushToRoles(["cashier"], {
+          title: "🧾 To print",
+          body: `${pushed.tableName} • ${transactionResult.total} ETB`,
+          tag: `fana-print-${pushed.id}`,
+        }).catch(() => {});
+      }
+    }
+
     return NextResponse.json({ ...transactionResult.ticket, totalAmount: transactionResult.total, merged: transactionResult.merged });
   } catch (error) {
     // CONCURRENCY BACKSTOP (Group 8): two identical submissions raced and the
@@ -638,12 +726,25 @@ export async function PUT(request: Request) {
     // ticket write cannot leave a newly inserted image blob orphaned.
     let persistedReceipt: string | undefined;
     if (body.receiptImage !== undefined) persistedReceipt = String(body.receiptImage);
-    if (body.status === "paid" || body.status === "cancelled") updates.closedAt = new Date();
+    if (body.status === "paid" || body.status === "cancelled" || body.status === "closed") updates.closedAt = new Date();
     // Record WHO confirmed the order (waiter or cashier accepting a customer QR
     // order). Only the confirmed transition stamps this, so it never overwrites
     // the original createdBy or the later verifiedBy.
     if (body.status === "confirmed") {
       updates.confirmedBy = body.confirmedBy ? String(body.confirmedBy).slice(0, 100) : cur.confirmedBy || "(staff)";
+    }
+    // GROUP 9 (print-queue): the cashier keyed the bill into the EFD/POS and
+    // printed the order paper. Re-printing after additions simply refreshes the
+    // stamp (same transition printed → printed is an idempotent no-op above).
+    if (body.status === "printed") {
+      updates.printedAt = new Date();
+      updates.printedBy = body.printedBy ? String(body.printedBy).slice(0, 100) : cur.printedBy || "(cashier)";
+    }
+    // GROUP 9 (print-queue): the waiter physically cleared the table — the bill
+    // is closed and the table becomes free. Payment is deliberately NOT touched:
+    // the EFD/POS remains the financial system of record.
+    if (body.status === "closed") {
+      updates.closedBy = body.closedBy ? String(body.closedBy).slice(0, 100) : cur.closedBy || "(waiter)";
     }
     // GROUP 8 — the guest asked for the bill from their own phone; staff clear the
     // flag once the receipt has actually reached the table. This is the ONLY thing
@@ -683,6 +784,37 @@ export async function PUT(request: Request) {
     // If the receipt photo was replaced/cleared, drop the old cdn_images row.
     if (body.receiptImage !== undefined) {
       await deleteOrphanedCdnImages([cur.receiptImage]);
+    }
+
+    // ── GROUP 11 (release gate): THIS is the moment the crew receives the
+    // order. The cashier tapped ✓ PRINTED — the bill now exists in the EFD/POS
+    // world, so kitchen/barista may finally start cooking. (Full-payment
+    // deployments release at "Accept → Kitchen" → "preparing" instead.) Only
+    // stations with NEWLY released items are woken: items added after the
+    // previous print (created_at > old printedAt) wait for the re-print, and a
+    // re-print that releases nothing (e.g. clearing the ADDED flag) must not
+    // re-ring a station for food it already has.
+    if (body.status === "printed" || (body.status === "preparing" && body.status !== cur.status)) {
+      try {
+        const stationRows = await db
+          .select({ stationName: ticketItems.stationName, createdAt: ticketItems.createdAt })
+          .from(ticketItems)
+          .where(and(eq(ticketItems.ticketId, Number(body.id)), eq(ticketItems.removed, false)));
+        const prevStamp = cur.printedAt ? new Date(cur.printedAt).getTime() : null;
+        const fresh = stationRows.filter(
+          (r) => prevStamp === null || !r.createdAt || new Date(r.createdAt).getTime() > prevStamp
+        );
+        const stations = [...new Set(fresh.map((r) => (r.stationName === "barista" ? "barista" : "kitchen")))];
+        if (stations.length > 0) {
+          void sendPushToRoles(stations, {
+            title: "👨‍🍳 New items",
+            body: `${updated[0].tableName} — check your station list`,
+            tag: `fana-station-${updated[0].id}`,
+          }).catch(() => {});
+        }
+      } catch {
+        // A push hiccup must never fail the cashier's print confirmation.
+      }
     }
 
     publish(CHANNELS.orders);

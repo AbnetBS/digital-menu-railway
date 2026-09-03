@@ -17,6 +17,15 @@ export const DEFAULT_SETTINGS = {
   announcement: "☕ Welcome to Fana Cafe & Restaurant (22 Square, Town Square Building)! Scan your table QR to order.",
   logo_url: "",
   receipt_enabled: "true",
+  // Group 9 (print-queue workflow): how the cashier screen works.
+  //   "print-queue" = Fana workflow — the cashier's job is ONE click per order
+  //                   (key it into the EFD/POS, print, tap ✓ PRINTED). Payment
+  //                   tracking lives in the EFD/POS, not in this app. Waiters
+  //                   close bills by tapping "Table cleared".
+  //   "full"        = full-payment mode — cashier records payment methods and
+  //                   marks bills Paid (for future customers without an EFD or
+  //                   with in-app digital payments).
+  cashier_mode: "print-queue",
   admin_password: "fana2026",
 };
 

@@ -113,6 +113,14 @@ export const tickets = pgTable("tickets", {
   // verification step for digital/card payments). Null for unpaid/cancelled.
   verifiedBy: varchar("verified_by", { length: 100 }),
   verifiedAt: timestamp("verified_at"),
+  // Print-queue mode: the cashier keyed this bill into the government EFD/POS
+  // and printed the order paper. Re-printed (updated) whenever additions arrive.
+  printedAt: timestamp("printed_at"),
+  printedBy: varchar("printed_by", { length: 100 }),
+  // Print-queue mode: the waiter physically cleared the table, closing the
+  // bill. This is a PHYSICAL event (table bussed), deliberately decoupled from
+  // payment — the EFD/POS remains the financial system of record.
+  closedBy: varchar("closed_by", { length: 100 }),
   // Guest "we are done — please bring the bill/receipt" request (Group 8).
   // Stamped from the guest's own phone via the public table-status endpoint
   // once the food is served; cleared by staff after the receipt is delivered.
@@ -173,5 +181,20 @@ export const translations = pgTable("translations", {
   sourceHash: varchar("source_hash", { length: 64 }).notNull(), // sha256(sourceText)
   sourceText: text("source_text").notNull(),
   translatedText: text("translated_text").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// ─── WEB PUSH ("POCKET MODE") ───────────────────────────────────────────────
+// One row per staff DEVICE that asked for system notifications. The waiter's
+// phone is in her pocket with the browser closed — Web Push is the only way to
+// reach it. Role + name come from the staff SESSION (server-side), never from
+// the client, so a logged-in waiter can only subscribe AS a waiter.
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: serial("id").primaryKey(),
+  endpoint: text("endpoint").notNull(), // push service URL (unique)
+  p256dh: text("p256dh").notNull(), // client public key
+  auth: text("auth").notNull(), // client auth secret
+  role: varchar("role", { length: 20 }).notNull(), // waiter | cashier | kitchen | barista
+  name: varchar("name", { length: 100 }), // which staff member's device
   createdAt: timestamp("created_at").defaultNow(),
 });

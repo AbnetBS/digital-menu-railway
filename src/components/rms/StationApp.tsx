@@ -2,9 +2,11 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Coffee, CookingPot, RefreshCw, LogOut, CheckCircle2, BellRing, Clock } from "lucide-react";
-import { unlockAudio, playDing } from "@/lib/sound";
+import { unlockAudio, playAlarm } from "@/lib/sound";
 import { formatClock, formatDayMonthYear, minutesSince, waitingLabel } from "@/lib/order-lines";
 import { triggerDesktopNotification } from "@/lib/notifications";
+import { enablePocketAlerts } from "@/lib/push-client";
+import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import Link from "next/link";
 
 type Station = "barista" | "kitchen";
@@ -92,6 +94,12 @@ export default function StationApp({ station }: { station: Station }) {
     if (r.ok && d.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem(`fana_${station}`, JSON.stringify(d.staff));
+      // GROUP 10: the login tap is the gesture browsers need — unlock the loud
+      // alarm AND arm pocket notifications for this crew tablet/phone.
+      unlockAudio();
+      localStorage.setItem(`fana_alerts_${station}`, "1");
+      setAlertsOn(true);
+      void enablePocketAlerts();
     } else {
       setLoginError(`Wrong name or PIN. Ask admin for your ${meta.label} PIN.`);
     }
@@ -105,7 +113,9 @@ export default function StationApp({ station }: { station: Station }) {
   };
 
   const load = async () => {
-    if (typeof document !== "undefined" && document.hidden) return;
+    // GROUP 10 FIX: used to skip while the tab was hidden — but the kitchen
+    // tablet dims its screen! SSE messages only arrive on change, so always
+    // process them: the alarm rings even with a dimmed screen.
     const r = await fetch(`/api/station-items?station=${station}`);
     if (!r.ok) return;
     const data: StationTicket[] = await r.json();
@@ -118,7 +128,8 @@ export default function StationApp({ station }: { station: Station }) {
     fresh.forEach((id) => pendingSeenRef.current.add(id));
 
     if (initRef.current && alertsOn && fresh.length > 0) {
-      playDing(2);
+      // New food to cook = the crew must ACT → full alarm, not a gentle ding.
+      playAlarm();
       // find table info for popup
       for (const t of data) for (const i of t.items) {
         if (fresh.includes(i.id)) {
@@ -160,7 +171,9 @@ export default function StationApp({ station }: { station: Station }) {
     if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
     localStorage.setItem(`fana_alerts_${station}`, "1");
     setAlertsOn(true);
-    playDing();
+    // GROUP 10: (re)arm pocket alerts + a sample ring so the crew knows it works.
+    void enablePocketAlerts();
+    playAlarm();
   };
 
   const setStatus = async (item: StationItem, status: "accepted" | "done" | "pending") => {
@@ -253,6 +266,11 @@ export default function StationApp({ station }: { station: Station }) {
             <LogOut className="w-4 h-4" />
           </button>
         </div>
+      </div>
+
+      {/* iPhone pocket-mode instruction (Android needs nothing) */}
+      <div className="max-w-4xl mx-auto px-4 md:px-6 pt-4">
+        <PocketAlertsHint />
       </div>
 
       {/* counters */}

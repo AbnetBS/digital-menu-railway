@@ -3,12 +3,14 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Coffee, RefreshCw, LogOut, BellRing, CheckCircle2, XCircle, CreditCard,
-  Banknote, Smartphone, Users, Clock, Image as ImageIcon, Monitor,
+  Banknote, Smartphone, Users, Clock, Image as ImageIcon, Monitor, Printer, AlertTriangle,
 } from "lucide-react";
 import { Ticket, TicketItem, CafeTable, StaffUser } from "@/types";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
-import { unlockAudio, playDing } from "@/lib/sound";
+import { unlockAudio, playDing, playAlarm } from "@/lib/sound";
+import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
+import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 
 interface StaffLite {
   id: number;
@@ -28,6 +30,17 @@ export default function CashierDashboard() {
   const [history, setHistory] = useState<Ticket[]>([]);
   const [receiptModal, setReceiptModal] = useState<string | null>(null);
   const prevCountRef = useRef(0);
+
+  // ── GROUP 9: PRINT-QUEUE MODE ──
+  // Fana's real workflow: the cashier's ONLY system job is one click per order —
+  // she keys the bill into the government EFD/POS on her desktop, prints the
+  // order paper, and taps ✓ PRINTED here. Payment tracking stays in the EFD
+  // world; waiters close bills by tapping "Table cleared". Mode comes from the
+  // owner's Settings tab (cashier_mode), defaulting to print-queue.
+  const [printQueueMode, setPrintQueueMode] = useState(true);
+  const modeRef = useRef(true);
+  // Which queue cards have the ✗ Problem panel open (cancel / correction).
+  const [problemOpen, setProblemOpen] = useState<Set<number>>(new Set());
 
   // ── CONNECTION INDICATOR (Group 3) ──
   // Reflects REAL backend communication (fetch success/failure), NOT the browser's
@@ -49,6 +62,15 @@ export default function CashierDashboard() {
       .then((r) => r.json())
       .then((d) => setStaffList(d.filter((s: StaffLite) => s.role === "cashier")))
       .catch(() => {});
+    // Owner switch: print-queue (EFD workflow) vs full payment recording.
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((s) => {
+        const mode = String(s.cashier_mode ?? "print-queue") === "full" ? false : true;
+        setPrintQueueMode(mode);
+        modeRef.current = mode;
+      })
+      .catch(() => {});
   }, []);
 
   // One-time unlock: browsers need a user click before sound + desktop popups can play
@@ -59,24 +81,31 @@ export default function CashierDashboard() {
     }
     localStorage.setItem("fana_alerts", "1");
     setAlertsOn(true);
-    playDing();
-    triggerDesktopNotification({ title: "Fana Cafe • Cashier", message: "🔔 Ring bell + desktop alerts are now ON for this device!" });
+    // GROUP 10: (re)arm pocket alerts too, then ring a sample so she KNOWS
+    // the device is armed instead of guessing.
+    if (pushSupported()) void enablePocketAlerts();
+    playAlarm();
+    triggerDesktopNotification({ title: "Fana Cafe • Cashier", message: "🔔 Ring bell + desktop + pocket alerts are now ON for this device!" });
   };
 
   const eventMessage = (t: Ticket): string | null => {
     const m: Record<string, string> = {
       pending_waiter: `🍽 New QR order — ${t.tableName} • ${t.totalAmount} ETB • needs confirmation`,
-      confirmed: `✅ Order confirmed — ${t.tableName} • ${t.totalAmount} ETB`,
+      confirmed: `🧾 TO PRINT — ${t.tableName} • ${t.totalAmount} ETB`,
       preparing: `👨‍🍳 Preparing — ${t.tableName}`,
+      printed: `🖨 Printed — ${t.tableName}`,
       ready_for_payment: `💳 Payment requested — ${t.tableName} • ${t.totalAmount} ETB`,
       completed: `✓ Payment completed — ${t.tableName} • verify & mark Paid`,
+      closed: `✓ Table cleared — ${t.tableName} is free`,
     };
     return m[t.status] || null;
   };
 
   const loadAll = async () => {
-    // TRAFFIC FIX: don't poll when this browser tab isn't on-screen (TikTok breaks don't cost data)
-    if (typeof document !== "undefined" && document.hidden) return;
+    // GROUP 10 FIX: this used to return early while the tab was hidden (screen
+    // off, tablet on the counter) — exactly when the alarm matters most — so it
+    // never rang. SSE messages only arrive when something CHANGED, so we always
+    // process them; the sound and vibration fire even with the screen off.
     try {
       const [tRes, tkRes] = await Promise.all([fetch("/api/tables"), fetch("/api/tickets?active=1")]);
       // Connection indicator: ONLINE only when the backend actually answered both
@@ -94,7 +123,7 @@ export default function CashierDashboard() {
       // ── EVENT DETECTION: any order action (QR order, confirmation, payment request, payment done)
       const newEvents: Ticket[] = [];
       for (const t of active) {
-        const key = `${t.id}:${t.status}`;
+        const key = `${t.id}:${t.status}:${t.unprintedSubmissions || 0}`;
         if (!seenEventsRef.current.has(key)) {
           seenEventsRef.current.add(key);
           newEvents.push(t);
@@ -102,11 +131,18 @@ export default function CashierDashboard() {
       }
 
       if (initializedRef.current && alertsOn && newEvents.length > 0) {
-        playDing();
+        // A card entering HER print queue gets the full alarm; anything else
+        // (status moves, cleared tables…) gets the standard ring.
+        const needsMe = newEvents.some(
+          (t) => t.status === "confirmed" || t.status === "pending_waiter" || (t.status === "printed" && (t.unprintedSubmissions || 0) > 0)
+        );
+        if (needsMe) playAlarm();
+        else playDing();
         const first = newEvents[0];
         triggerDesktopNotification({
           title: "Fana Cafe • Cashier Alert",
           message: eventMessage(first) || `${first.tableName} updated`,
+          tag: `fana-cashier-${first.id}`,
         });
       }
       initializedRef.current = true;
@@ -119,12 +155,14 @@ export default function CashierDashboard() {
     }
   };
 
-  // "Recently Paid" panel — loaded on login + every 60s (NOT on the 8s hot loop).
-  // Group 3: uses the lightweight ?paid=1 endpoint (only the 12 most recent paid
-  // bills, no items/receipts) instead of re-downloading up to 100 tickets + items.
+  // "Recently Paid" / "Printed Today" panel — loaded on login + every 60s (NOT on
+  // the 8s hot loop). Group 3: uses the lightweight ?paid=1 / ?finished=1 endpoint
+  // (only the 12 most recent finished bills, no items/receipts) instead of
+  // re-downloading up to 100 tickets + items. Group 9: in print-queue mode a bill
+  // ends as "closed" (table cleared) rather than "paid", so both are included.
   const loadHistory = async () => {
     if (typeof document !== "undefined" && document.hidden) return;
-    const r = await fetch("/api/tickets?paid=1&limit=12");
+    const r = await fetch(modeRef.current ? "/api/tickets?finished=1&limit=12" : "/api/tickets?paid=1&limit=12");
     if (r.ok) {
       setHistory(await r.json());
     }
@@ -167,6 +205,17 @@ export default function CashierDashboard() {
     if (r.ok && d.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem("fana_cashier", JSON.stringify(d.staff));
+      // GROUP 10: the login tap unlocks audio AND arms pocket notifications —
+      // the cashier's phone/tablet rings even when the browser is closed.
+      unlockAudio();
+      localStorage.setItem("fana_alerts", "1");
+      setAlertsOn(true);
+      void enablePocketAlerts().then((res) => {
+        if (res === "denied") {
+          // notifications blocked in the browser — the in-app alarm still works
+          console.warn("Pocket notifications blocked by the browser settings");
+        }
+      });
     } else {
       setLoginError("Wrong name or PIN. Ask admin for your PIN.");
     }
@@ -252,6 +301,31 @@ export default function CashierDashboard() {
     if (confirm("Cancel this whole order/bill?")) await setStatus(id, "cancelled");
   };
 
+  // ── GROUP 9 (print-queue): the cashier's ONE click per order. She keys the
+  // bill into the government EFD/POS, the order paper prints on her desktop,
+  // and this tap moves the card out of her queue. Payment is not recorded here
+  // by design — the EFD/POS remains the financial system of record.
+  const markPrinted = async (t: Ticket) => {
+    await fetch("/api/tickets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: t.id, status: "printed", printedBy: staffName || "(cashier)" }),
+    });
+    loadAll();
+    loadHistory();
+  };
+
+  // Rare path: something is wrong with the order (item unavailable, wrong
+  // table…) — reveals the correction tools (remove item / cancel order).
+  const toggleProblem = (id: number) => {
+    setProblemOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   /* ── LOGIN ── */
   if (!staffName) {
     return (
@@ -304,6 +378,32 @@ export default function CashierDashboard() {
   const pendingCount = tickets.filter((t) => t.status === "pending_waiter").length;
   const newCount = tickets.filter((t) => t.status === "confirmed").length;
   const payCount = tickets.filter((t) => t.status === "ready_for_payment" || t.status === "completed").length;
+
+  // ── GROUP 9 (print-queue): what the cashier's queue is made of ──
+  // Orders a waiter has confirmed but nobody keyed into the EFD yet, plus
+  // already-printed bills that received ADDITIONS since the last print
+  // (the old paper world's "print a second receipt" — now one re-print).
+  const waitingConfirm = tickets.filter((t) => t.status === "pending_waiter");
+  const toPrint = tickets.filter((t) => t.status === "confirmed");
+  const addedCards = tickets.filter((t) => t.status === "printed" && (t.unprintedSubmissions || 0) > 0);
+  const printQueue = [...addedCards, ...toPrint];
+
+  // Board tile labels mean different things per mode. In print-queue mode the
+  // board is the cashier's ambient awareness: rose = an order is waiting to be
+  // keyed into the EFD, orange = printed and the crew is working on it.
+  const boardLabel = (s?: string) => {
+    if (s === "available") return "Free";
+    if (printQueueMode) {
+      if (s === "waiting") return "Confirm";
+      if (s === "preparing") return "In progress";
+      if (s === "ready-for-payment") return "Bill";
+      return "TO PRINT";
+    }
+    if (s === "waiting") return "Waiting";
+    if (s === "ready-for-payment") return "Pay";
+    if (s === "preparing") return "Kitchen";
+    return "Busy";
+  };
 
   const statusMeta: Record<string, { label: string; cls: string }> = {
     pending_waiter: { label: "⏳ NEEDS CONFIRMATION", cls: "bg-violet-600 text-white" },
@@ -387,18 +487,35 @@ export default function CashierDashboard() {
             <BellRing className="w-3.5 h-3.5" />
             {alertsOn ? "ALERTS ON" : "🔔 ENABLE ALERTS"}
           </button>
-          {pendingCount > 0 && (
-            <span className="bg-violet-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full animate-pulse flex items-center gap-1">
-              <BellRing className="w-3 h-3" /> {pendingCount} TO CONFIRM
-            </span>
-          )}
-          {newCount > 0 && (
-            <span className="bg-amber-500 text-black text-[10px] font-black px-2.5 py-1 rounded-full animate-pulse flex items-center gap-1">
-              <BellRing className="w-3 h-3" /> {newCount} NEW
-            </span>
-          )}
-          {payCount > 0 && (
-            <span className="bg-purple-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full">{payCount} PAY</span>
+          {printQueueMode ? (
+            <>
+              {printQueue.length > 0 && (
+                <span className="bg-amber-500 text-black text-[10px] font-black px-2.5 py-1 rounded-full animate-pulse flex items-center gap-1">
+                  <Printer className="w-3 h-3" /> {printQueue.length} TO PRINT
+                </span>
+              )}
+              {waitingConfirm.length > 0 && (
+                <span className="bg-violet-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1">
+                  <BellRing className="w-3 h-3" /> {waitingConfirm.length} WAITER
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              {pendingCount > 0 && (
+                <span className="bg-violet-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full animate-pulse flex items-center gap-1">
+                  <BellRing className="w-3 h-3" /> {pendingCount} TO CONFIRM
+                </span>
+              )}
+              {newCount > 0 && (
+                <span className="bg-amber-500 text-black text-[10px] font-black px-2.5 py-1 rounded-full animate-pulse flex items-center gap-1">
+                  <BellRing className="w-3 h-3" /> {newCount} NEW
+                </span>
+              )}
+              {payCount > 0 && (
+                <span className="bg-purple-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full">{payCount} PAY</span>
+              )}
+            </>
           )}
           <button onClick={() => { loadAll(); loadHistory(); }} className="p-2 rounded-xl bg-white/10 text-amber-200" title="Refresh">
             <RefreshCw className="w-4 h-4" />
@@ -410,6 +527,9 @@ export default function CashierDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-8">
+        {/* iPhone pocket-mode instruction (Android needs nothing) */}
+        <PocketAlertsHint />
+
         {/* TABLE OVERVIEW */}
         <section>
           <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200/80 mb-3 flex items-center gap-2">
@@ -445,13 +565,187 @@ export default function CashierDashboard() {
                       : "text-rose-400"
                   }`}
                 >
-                  {t.status === "available" ? "Free" : t.status === "waiting" ? "Waiting" : t.status === "ready-for-payment" ? "Pay" : t.status === "preparing" ? "Kitchen" : "Busy"}
+                  {boardLabel(t.status)}
                 </p>
+                {/* Group 8/9: the guest asked for the bill — the cashier keys the
+                    final receipt into the EFD, so this is HER action item. */}
+                {t.activeTicketReceiptRequestedAt && (
+                  <p className="text-[9px] font-black text-emerald-300 mt-1">🧾 BILL!</p>
+                )}
+                {!printQueueMode || t.status === "available" ? null : (
+                  <p className="text-[9px] text-stone-500 mt-0.5">{t.activeTicketTotal ?? 0} ETB</p>
+                )}
               </div>
             ))}
           </div>
         </section>
 
+        {/* ═══ GROUP 9: PRINT-QUEUE MODE — the cashier's whole job, one click per order ═══ */}
+        {printQueueMode && (
+          <>
+            {/* QR orders still waiting for a WAITER to verify — deliberately NOT
+                in the print queue: the cashier must never key an order into the
+                EFD before a waiter has physically confirmed it with the guest. */}
+            {waitingConfirm.length > 0 && (
+              <section>
+                <h2 className="text-xs font-bold uppercase tracking-widest text-violet-300/80 mb-3 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-violet-400" /> Waiting for waiter confirmation ({waitingConfirm.length})
+                </h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {waitingConfirm.map((t) => (
+                    <div key={t.id} className="bg-[#241714] border border-violet-700/60 rounded-2xl p-4 flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-serif font-bold text-amber-100">
+                          {t.tableName}
+                          {t.orderNumber && <span className="ml-1.5 text-[10px] font-black text-stone-500">#{t.orderNumber}</span>}
+                        </p>
+                        <p className="text-[10px] text-stone-500">🕒 arrived {formatClock(t.createdAt)} • {t.totalAmount} ETB</p>
+                        <p className="text-[10px] text-violet-300 truncate">by {t.createdBy || "Customer (QR)"}</p>
+                      </div>
+                      <button
+                        onClick={() => setStatus(t.id, "confirmed")}
+                        className="shrink-0 bg-violet-600 hover:bg-violet-500 text-white text-[10px] font-black px-3 py-2.5 rounded-xl"
+                        title="Only if the waiter already verified it with the guest — normally the waiter does this"
+                      >
+                        ✓ Confirm myself
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* THE PRINT QUEUE — key the card into the EFD, print the order paper, tap ✓ PRINTED */}
+            <section>
+              <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200/80 mb-3 flex items-center gap-2">
+                <Printer className="w-4 h-4 text-[#C9A227]" /> To Print ({printQueue.length}) — key into EFD → print → tap ✓
+              </h2>
+              {printQueue.length === 0 ? (
+                <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-8 text-center text-stone-500 text-sm">
+                  Nothing to print. Orders the waiters send appear here instantly.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {printQueue.map((t) => {
+                    const added = t.status === "printed" && (t.unprintedSubmissions || 0) > 0;
+                    const items = t.items || [];
+                    const visible = items.filter((i) => !i.removed);
+                    const problem = problemOpen.has(t.id);
+                    return (
+                      <div key={t.id} className={`bg-[#2C1B17] rounded-2xl border-2 p-4 space-y-3 ${added ? "border-amber-400 animate-pulse" : "border-[#C9A227]/70"}`}>
+                        {/* header */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-serif font-bold text-xl text-amber-100">
+                              {t.tableName}
+                              {t.orderNumber && (
+                                <span className="ml-2 align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
+                                  #{t.orderNumber}
+                                </span>
+                              )}
+                            </p>
+                            <p className="text-[10px] text-stone-500 flex items-center gap-1">
+                              <Clock className="w-3 h-3" /> {t.confirmedBy ? `by ${t.confirmedBy}` : `by ${t.createdBy || "waiter"}`}
+                            </p>
+                            <p className="text-[10px] text-stone-500">
+                              🕒 arrived {formatClock(t.createdAt)} • waiting {waitingLabel(t.createdAt)}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            {added ? (
+                              <span className="inline-block text-[10px] font-black px-2.5 py-1 rounded-full bg-amber-400 text-black">⚠ ADDED — PRINT AGAIN</span>
+                            ) : (
+                              <span className="inline-block text-[10px] font-black px-2.5 py-1 rounded-full bg-amber-500 text-black">🔔 NEW ORDER</span>
+                            )}
+                            <p className="font-serif font-black text-2xl text-[#C9A227] mt-1">{t.totalAmount} ETB</p>
+                            <p className="text-[10px] text-stone-500">{visible.reduce((s, i) => s + i.quantity, 0)} items</p>
+                          </div>
+                        </div>
+
+                        {/* The guest tapped "bring us the bill" on their own phone.
+                            Arrives instantly over the realtime orders channel. */}
+                        {t.receiptRequestedAt && (
+                          <div className="flex items-center justify-between gap-2 bg-emerald-500/15 border border-emerald-500/50 rounded-xl px-3 py-2">
+                            <p className="text-[11px] font-black text-emerald-300">
+                              🧾 Guest asked for the bill at {formatClock(t.receiptRequestedAt)}
+                            </p>
+                            <button
+                              onClick={() => clearReceiptRequest(t)}
+                              className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg bg-black/30 text-emerald-200 hover:bg-black/50"
+                              title="Clear the request (bill already handed over)"
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        )}
+
+                        {/* items — the list she reads while keying into the EFD
+                            (corrections only appear when ✗ Problem is open) */}
+                        <div className="bg-[#3D2314] rounded-xl divide-y divide-stone-800">
+                          {items.map((i) => (
+                            <div key={i.id} className={`p-2.5 text-xs flex items-center justify-between gap-2 ${i.removed ? "opacity-40 line-through" : ""}`}>
+                              <div className="flex-1 min-w-0">
+                                <p className="font-bold text-amber-100 truncate">
+                                  {i.name} <span className="text-stone-400 font-normal">({i.price} ETB)</span>
+                                </p>
+                                {i.notes && <p className="text-[10px] text-amber-300 italic">📝 {i.notes}</p>}
+                              </div>
+                              <span className="font-extrabold text-amber-100 shrink-0">× {i.quantity}</span>
+                              {problem && !i.removed ? (
+                                <button
+                                  onClick={() => removeItem(i.id)}
+                                  className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
+                                  title="Remove (unavailable)"
+                                >
+                                  Remove
+                                </button>
+                              ) : null}
+                            </div>
+                          ))}
+                          {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">All items removed.</p>}
+                        </div>
+
+                        {/* the two buttons that are her entire job */}
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            onClick={() => markPrinted(t)}
+                            className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black py-4 rounded-xl flex items-center justify-center gap-2"
+                            title="Confirms the EFD receipt is printed — this is what releases the items to the kitchen/barista"
+                          >
+                            <Printer className="w-5 h-5" /> ✓ PRINTED & SEND
+                          </button>
+                          <button
+                            onClick={() => toggleProblem(t.id)}
+                            className={`px-4 py-4 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
+                              problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
+                            }`}
+                          >
+                            <AlertTriangle className="w-4 h-4" /> Problem
+                          </button>
+                        </div>
+                        {problem && (
+                          <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
+                            <p>Use <strong>Remove</strong> on an item above if it is unavailable, or cancel the whole order:</p>
+                            <button
+                              onClick={() => cancelTicket(t.id)}
+                              className="bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-black px-3 py-2 rounded-xl"
+                            >
+                              ✗ Cancel whole order
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {/* ═══ FULL-PAYMENT MODE — the original cashier workflow ═══ */}
+        {!printQueueMode && (
+        <>
         {/* ACTIVE TICKETS */}
         <section>
           <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200/80 mb-3">
@@ -629,27 +923,39 @@ export default function CashierDashboard() {
           )}
         </section>
 
-        {/* TODAY'S PAID HISTORY */}
+        </>
+        )}
+
+        {/* HISTORY — print-queue mode: "Printed Today" (bills keyed into the EFD,
+            closed when the waiter cleared the table); full mode: "Recently Paid". */}
         <section>
           <h2 className="text-xs font-bold uppercase tracking-widest text-stone-400 mb-3 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Recently Paid ({history.length})
+            <CheckCircle2 className="w-4 h-4 text-emerald-500" /> {printQueueMode ? `Printed Today (${history.length})` : `Recently Paid (${history.length})`}
           </h2>
           {history.length === 0 ? (
-            <p className="text-xs text-stone-600">Paid bills will appear here after you mark them Paid.</p>
+            <p className="text-xs text-stone-600">
+              {printQueueMode ? "Bills you print will appear here — one tap to check what was already keyed into the EFD." : "Paid bills will appear here after you mark them Paid."}
+            </p>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {history.map((t) => (
                 <div key={t.id} className="bg-[#241714] border border-stone-800 rounded-xl p-3 flex items-center justify-between">
                   <div className="min-w-0">
                     <p className="text-xs font-bold text-stone-300">{t.tableName}</p>
-                    <p className="text-[10px] text-stone-500 capitalize flex items-center gap-1">{methodIcon(t.paymentMethod)} {t.paymentMethod || "cash"}</p>
+                    {printQueueMode ? (
+                      <p className="text-[10px] text-stone-500 truncate flex items-center gap-1">
+                        <Printer className="w-3 h-3" /> {t.printedBy || "—"}
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-stone-500 capitalize flex items-center gap-1">{methodIcon(t.paymentMethod)} {t.paymentMethod || "cash"}</p>
+                    )}
                     {/* Group 8: table, date, time and waiter on every history card. */}
                     <p className="text-[10px] text-stone-500 mt-0.5 truncate">🕒 {formatDateTime(t.closedAt || t.updatedAt || t.createdAt)}</p>
                     <p className="text-[10px] text-[#C9A227]/80 truncate">👤 {t.confirmedBy || t.createdBy || "—"}</p>
                   </div>
                   <div className="text-right">
                     <p className="text-xs font-extrabold text-emerald-400">{t.totalAmount} ETB</p>
-                    <span className="text-[9px] font-black text-emerald-600 uppercase">PAID</span>
+                    <span className="text-[9px] font-black text-emerald-600 uppercase">{printQueueMode ? (t.status === "closed" ? "CLEARED" : "PAID") : "PAID"}</span>
                   </div>
                 </div>
               ))}

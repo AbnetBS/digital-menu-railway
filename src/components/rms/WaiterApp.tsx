@@ -6,10 +6,12 @@ import {
   Smartphone, Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing,
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
+import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
-import { unlockAudio, playDing } from "@/lib/sound";
+import { unlockAudio, playAlarm } from "@/lib/sound";
+import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { useRef } from "react";
 
@@ -73,6 +75,9 @@ export default function WaiterApp() {
   const [payMethod, setPayMethod] = useState<"cash" | "telebirr" | "cbe" | "card" | null>(null);
   const [receiptImage, setReceiptImage] = useState("");
   const [receiptEnabled, setReceiptEnabled] = useState(true);
+  // GROUP 9 (print-queue): payments live in the EFD/POS world — the waiter's
+  // closing action becomes "Table cleared", and the payment screens are hidden.
+  const [printQueueMode, setPrintQueueMode] = useState(true);
   const [categories, setCategories] = useState<Array<{ slug: string; name: string }>>([
     { slug: "all", name: "All" },
   ]);
@@ -94,8 +99,14 @@ export default function WaiterApp() {
       .then((r) => r.json())
       .then((d) => setStaffList(d.filter((s: StaffLite) => s.role === "waiter")))
       .catch(() => {});
-    // Read owner switch: require receipt photo on card/online payments or not
-    fetch("/api/settings").then((r) => r.json()).then((s) => setReceiptEnabled(String(s.receipt_enabled ?? "true") !== "false")).catch(() => {});
+    // Read owner switches: receipt-photo requirement + cashier workflow mode
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((s) => {
+        setReceiptEnabled(String(s.receipt_enabled ?? "true") !== "false");
+        setPrintQueueMode(String(s.cashier_mode ?? "print-queue") !== "full");
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -135,13 +146,21 @@ export default function WaiterApp() {
     }
     localStorage.setItem("fana_alerts_waiter", "1");
     setAlertsOn(true);
-    playDing();
-    showToast("🔔 Ring bell alerts ON");
+    // GROUP 10: also (re)subscribe this phone to pocket alerts and ring a
+    // sample so the waiter KNOWS the device is armed — no guessing.
+    if (pushSupported()) {
+      void enablePocketAlerts();
+    }
+    playAlarm();
+    showToast("🔔 Alerts ON — pocket notifications armed");
   };
 
   const loadTables = async () => {
-    // TRAFFIC FIX: skip polling while the tab is not visible
-    if (typeof document !== "undefined" && document.hidden) return;
+    // GROUP 10 FIX: this used to return early while the screen was off / the
+    // tab hidden — which is exactly when a phone sits in a pocket — so the
+    // alarm NEVER rang. SSE messages arrive on change (not polling), so we
+    // always process them now; sound and vibration fire even with the screen
+    // off as long as the tab is alive.
     const r = await fetch("/api/tables");
     if (r.ok) setTables(await r.json());
 
@@ -154,11 +173,12 @@ export default function WaiterApp() {
       fresh.forEach((t) => seenPendingRef.current.add(t.id));
 
       if (alertsInitRef.current && alertsOn && fresh.length > 0) {
-        playDing(3);
+        playAlarm();
         const t0 = fresh[0];
         triggerDesktopNotification({
           title: "Fana Cafe • Waiter Alert",
           message: `🍽 New order request — ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`,
+          tag: `fana-waiter-${t0.id}`,
         });
         showToast(`🔔 New order request: ${t0.tableName}`);
       }
@@ -189,6 +209,17 @@ export default function WaiterApp() {
       setStaffName(d.staff.name);
       sessionStorage.setItem("fana_waiter", JSON.stringify(d.staff));
       setView("tables");
+      // GROUP 10: the login tap is the ONE user gesture browsers demand —
+      // unlock the loud alarm AND arm pocket notifications right here, so the
+      // waiter never has to find a separate "enable" button.
+      unlockAudio();
+      localStorage.setItem("fana_alerts_waiter", "1");
+      setAlertsOn(true);
+      void enablePocketAlerts().then((res) => {
+        if (res === "denied") {
+          showToast("Notifications blocked — allow them in the browser to hear pocket alerts.");
+        }
+      });
     } else {
       setLoginError("Wrong name or PIN. Ask admin for your PIN.");
     }
@@ -330,6 +361,35 @@ export default function WaiterApp() {
     setView("tables");
   };
 
+  // ── GROUP 9 (print-queue): the waiter's closing action. The guest paid at the
+  // counter (EFD/POS), the guests left, and she has PHYSICALLY cleared the
+  // table — one tap closes the bill and frees the table for the next guests.
+  // Deliberately decoupled from payment: the waiter never needs to know how or
+  // when the bill was settled.
+  const clearTable = async () => {
+    if (!activeTicket) return;
+    // Guard: food still being prepared — warn, don't silently block.
+    const cooking = (activeTicket.items || []).filter(
+      (i) => !i.removed && i.stationStatus && i.stationStatus !== "done"
+    );
+    if (cooking.length > 0) {
+      const okToClear = confirm(
+        `Kitchen/Barista is still preparing ${cooking.length} item(s) for ${activeTicket.tableName} — the station lists will drop them.\n\nClear the table anyway?`
+      );
+      if (!okToClear) return;
+    }
+    await fetch("/api/tickets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: activeTicket.id, status: "closed", closedBy: staffName }),
+    });
+    showToast(`✓ ${activeTicket.tableName} is free for new guests`);
+    setActiveTicket(null);
+    setSelectedTable(null);
+    setView("tables");
+    loadTables();
+  };
+
   const filteredMenu = useMemo(
     () =>
       menu.filter(
@@ -342,6 +402,24 @@ export default function WaiterApp() {
 
   const billItems = (activeTicket?.items || []).filter((i) => !i.removed);
   const billTotal = billItems.reduce((s, i) => s + i.price * i.quantity, 0);
+
+  // Group 9: plain-language status for the bill header, per workflow mode.
+  const ticketStatusLabel = (s: string) =>
+    printQueueMode
+      ? s === "pending_waiter"
+        ? "Waiting for your confirmation"
+        : s === "confirmed"
+        ? "Sent — cashier will print it in the EFD"
+        : s === "printed"
+        ? "Printed — crew is preparing"
+        : s === "preparing"
+        ? "In progress"
+        : s === "ready_for_payment"
+        ? "Bill requested"
+        : s === "completed"
+        ? "Payment stage"
+        : s.replace(/_/g, " ")
+      : s.replace(/_/g, " ");
 
   const statusChip = (status?: string) =>
     status === "waiting"
@@ -474,13 +552,14 @@ export default function WaiterApp() {
       {/* ── TABLES VIEW ── */}
       {view === "tables" && (
         <div className="p-4 space-y-4 max-w-3xl mx-auto">
+          <PocketAlertsHint />
           <div className="flex items-center justify-between">
             <h1 className="font-serif text-xl font-bold text-amber-100">Select Table</h1>
             <div className="flex gap-3 text-[10px]">
               <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />Free</span>
               <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-violet-500 inline-block" />Waiting</span>
-            <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />Busy</span>
-              <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />Pay</span>
+            <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />{printQueueMode ? "Sent" : "Busy"}</span>
+              <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />{printQueueMode ? "Bill" : "Pay"}</span>
             </div>
           </div>
 
@@ -499,7 +578,23 @@ export default function WaiterApp() {
               >
                 <p className="font-serif font-bold text-lg text-amber-100">{t.name}</p>
                 <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(t.status)}`}>
-                  {t.status === "available" ? "Available" : t.status === "ready-for-payment" ? "Pay Requested" : t.status === "preparing" ? "Preparing" : "Occupied"}
+                  {printQueueMode
+                    ? t.status === "available"
+                      ? "Available"
+                      : t.status === "waiting"
+                      ? "Confirm Order"
+                      : t.status === "preparing"
+                      ? "👨‍🍳 In Progress"
+                      : t.status === "ready-for-payment"
+                      ? "Bill Requested"
+                      : "Sent to Cashier"
+                    : t.status === "available"
+                    ? "Available"
+                    : t.status === "ready-for-payment"
+                    ? "Pay Requested"
+                    : t.status === "preparing"
+                    ? "Preparing"
+                    : "Occupied"}
                 </span>
                 {t.activeTicketTotal ? (
                   <p className="text-[11px] text-stone-400 mt-1">{t.activeTicketTotal} ETB open</p>
@@ -521,8 +616,18 @@ export default function WaiterApp() {
 
           <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-4">
             <p className="text-xs text-stone-400 leading-relaxed">
-              Tap a <span className="text-emerald-400 font-bold">green table</span> to start a new order.
-              Tap an <span className="text-rose-400 font-bold">occupied table</span> to view its bill, add more items, or request payment.
+              {printQueueMode ? (
+                <>
+                  Tap a <span className="text-emerald-400 font-bold">green table</span> to take a new order.
+                  When the guests leave and you have cleared the table, open its bill and tap{" "}
+                  <span className="text-emerald-400 font-bold">Table Cleared</span> — it turns green for the next guests.
+                </>
+              ) : (
+                <>
+                  Tap a <span className="text-emerald-400 font-bold">green table</span> to start a new order.
+                  Tap an <span className="text-rose-400 font-bold">occupied table</span> to view its bill, add more items, or request payment.
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -576,20 +681,39 @@ export default function WaiterApp() {
               const inCart = cart.find((c) => c.menuItemId === m.id);
               const out = !m.isAvailable;
               return (
-                <div key={m.id} className={`bg-[#2C1B17] rounded-2xl overflow-hidden border ${out ? "border-stone-800 opacity-50" : "border-stone-700"}`}>
-                  <img src={optimizeImageUrl(m.imageUrl, 300, 200)} alt={m.name} className="w-full h-24 object-cover bg-stone-900" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
+                <div
+                  key={m.id}
+                  // GROUP 10 (staff request): the WHOLE card adds the food —
+                  // image, title, price, any part of it. Staff kept tapping the
+                  // photo first; now that works.
+                  onClick={() => addToCart(m)}
+                  role="button"
+                  tabIndex={out ? -1 : 0}
+                  onKeyDown={(e) => {
+                    if (!out && (e.key === "Enter" || e.key === " ")) {
+                      e.preventDefault();
+                      addToCart(m);
+                    }
+                  }}
+                  className={`bg-[#2C1B17] rounded-2xl overflow-hidden border transition relative ${out ? "border-stone-800 opacity-50" : "border-stone-700 active:scale-95 active:border-[#C9A227] cursor-pointer"}`}
+                >
+                  <div className="relative">
+                    <img src={optimizeImageUrl(m.imageUrl, 300, 200)} alt={m.name} className="w-full h-24 object-cover bg-stone-900" onError={(e) => { const el = e.currentTarget; if (!el.src.includes("placeholder")) el.src = FALLBACK_FOOD_IMAGE; }} />
+                    {inCart && (
+                      <span className="absolute top-1.5 right-1.5 bg-[#C9A227] text-[#2C1B17] text-[10px] font-black w-6 h-6 rounded-full flex items-center justify-center shadow-lg">
+                        {inCart.quantity}
+                      </span>
+                    )}
+                  </div>
                   <div className="p-2.5 space-y-1">
                     <p className="text-xs font-bold text-amber-100 leading-tight line-clamp-2">{m.name}</p>
                     <p className="text-[11px] text-[#C9A227] font-extrabold">{effectivePrice(m).onSale ? <span><span className="line-through text-stone-500 text-[10px]">{m.price} </span>{effectivePrice(m).price}</span> : m.price} ETB</p>
                     {out ? (
                       <span className="text-[10px] font-bold text-rose-400 bg-rose-900/40 px-2 py-0.5 rounded">Unavailable</span>
                     ) : (
-                      <button
-                        onClick={() => addToCart(m)}
-                        className="w-full mt-1 bg-[#C9A227] text-[#2C1B17] text-[11px] font-extrabold py-1.5 rounded-lg flex items-center justify-center gap-1"
-                      >
-                        <Plus className="w-3 h-3" /> Add {inCart ? `(${inCart.quantity})` : ""}
-                      </button>
+                      <span className="w-full mt-1 bg-[#C9A227] text-[#2C1B17] text-[11px] font-extrabold py-1.5 rounded-lg flex items-center justify-center gap-1 pointer-events-none">
+                        <Plus className="w-3 h-3" /> {inCart ? `In cart (${inCart.quantity})` : "Add — tap anywhere"}
+                      </span>
                     )}
                   </div>
                 </div>
@@ -641,7 +765,7 @@ export default function WaiterApp() {
             <button onClick={onGoBack} className="p-2 rounded-xl bg-white/10"><ArrowLeft className="w-4 h-4" /></button>
             <div className="flex-1">
               <h2 className="font-serif font-bold text-amber-100 text-lg leading-none">{selectedTable.name} — Bill</h2>
-              <p className="text-[11px] text-stone-400 capitalize">Status: {activeTicket.status.replace(/_/g, " ")}</p>
+              <p className="text-[11px] text-stone-400 capitalize">Status: {ticketStatusLabel(activeTicket.status)}</p>
               {/* Group 8: WHEN the order arrived and WHO sent it — the two things
                   staff keep asking for — plus the guest's own bill request. */}
               <p className="text-[11px] text-[#C9A227] font-bold mt-0.5">
@@ -668,12 +792,18 @@ export default function WaiterApp() {
                   <span className="font-extrabold text-[#C9A227] shrink-0">{i.price * i.quantity} ETB</span>
                 </div>
                 {i.notes && <p className="text-[11px] text-amber-300 italic">📝 {i.notes}</p>}
-                {activeTicket.status !== "ready_for_payment" && (
+                {/* Group 9: in print-queue mode the waiter's job is confirm →
+                    send → clear; quantity corrections belong to the cashier's
+                    ✗ Problem path, so the edit controls are full-mode only. */}
+                {!printQueueMode && activeTicket.status !== "ready_for_payment" && (
                   <div className="flex items-center gap-2 pt-1">
                     <button onClick={() => updateItemQty(i, Math.max(1, i.quantity - 1))} className="w-6 h-6 bg-white/10 rounded-md flex items-center justify-center"><Minus className="w-3 h-3" /></button>
                     <span className="text-xs font-bold w-4 text-center">{i.quantity}</span>
                     <button onClick={() => updateItemQty(i, i.quantity + 1)} className="w-6 h-6 bg-[#C9A227] text-black rounded-md flex items-center justify-center"><Plus className="w-3 h-3" /></button>
                   </div>
+                )}
+                {printQueueMode && (
+                  <p className="text-[10px] text-stone-500">× {i.quantity} — tell the cashier about changes</p>
                 )}
               </div>
             ))}
@@ -693,22 +823,47 @@ export default function WaiterApp() {
             </button>
           )}
 
-          {activeTicket.status !== "ready_for_payment" && activeTicket.status !== "pending_waiter" && (
-            <button
-              onClick={requestPayment}
-              className="w-full bg-amber-500 text-black font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
-            >
-              <CreditCard className="w-4 h-4" /> Request Payment
-            </button>
-          )}
+          {printQueueMode ? (
+            <>
+              {/* Group 9: no payment screens for the waiter — the EFD/POS at the
+                  counter is the money system. Her only closing job is physical. */}
+              {activeTicket.status === "confirmed" && (
+                <div className="w-full bg-[#2C1B17] border border-amber-500/40 rounded-xl px-4 py-3 text-center text-xs font-bold text-amber-300">
+                  🧾 Sent — waiting for the cashier to print it in the EFD
+                </div>
+              )}
+              {(activeTicket.status === "printed" ||
+                activeTicket.status === "preparing" ||
+                activeTicket.status === "ready_for_payment" ||
+                activeTicket.status === "completed") && (
+                <button
+                  onClick={clearTable}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
+                >
+                  <CheckCircle2 className="w-4 h-4" /> Table Cleared — Free Table
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              {activeTicket.status !== "ready_for_payment" && activeTicket.status !== "pending_waiter" && (
+                <button
+                  onClick={requestPayment}
+                  className="w-full bg-amber-500 text-black font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
+                >
+                  <CreditCard className="w-4 h-4" /> Request Payment
+                </button>
+              )}
 
-          {activeTicket.status === "ready_for_payment" && (
-            <button
-              onClick={() => setView("payment")}
-              className="w-full bg-emerald-600 text-white font-black text-sm uppercase py-4 rounded-xl"
-            >
-              Continue to Payment →
-            </button>
+              {activeTicket.status === "ready_for_payment" && (
+                <button
+                  onClick={() => setView("payment")}
+                  className="w-full bg-emerald-600 text-white font-black text-sm uppercase py-4 rounded-xl"
+                >
+                  Continue to Payment →
+                </button>
+              )}
+            </>
           )}
         </div>
       )}

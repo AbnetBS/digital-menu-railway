@@ -68,6 +68,7 @@ const hook = read("src/lib/use-pocket-alerts.ts");
 const chip = read("src/components/rms/PocketAlertsChip.tsx");
 const testRoute = read("src/app/api/push/test/route.ts");
 const overlay = read("src/components/rms/UrgentAlertOverlay.tsx");
+const alertsMatrix = read("src/lib/alerts.ts");
 
 const failures = [];
 function pass(name, cond) {
@@ -179,9 +180,9 @@ function pass(name, cond) {
   pass("QR order → waiters only (crew waits for the print)", /fana-qr-/.test(tickets) && /\["waiter"\]/.test(tickets));
   pass("waiter order → cashier to print (no station push on POST)", /fana-print-/.test(tickets) && /\["cashier"\]/.test(tickets));
   pass("additions on a printed bill → cashier prints the new receipt", /fana-add-/.test(tickets) && /new items on the bill, print receipt #2/.test(tickets));
-  pass("POST never pushes to stations (receipt must exist first)", !/stationPush/.test(tickets) && !/sendPushToRoles\(stations/.test(tickets.split("export async function PUT")[0] || ""));
-  pass("✓ PRINTED releases the crew — PUT wakes kitchen/barista", /body\.status === "printed" \|\| \(body\.status === "preparing"/.test(tickets) && /fana-station-/.test(tickets));
-  pass("only stations with newly released items are pinged", /prevStamp === null \|\| !r\.createdAt \|\| new Date\(r\.createdAt\)\.getTime\(\) > prevStamp/.test(tickets));
+  pass("a brand-new QR order wakes the waiter, never the crew (nobody accepted it yet)", /pushed\.status !== "pending_waiter" && stations\.length > 0/.test(tickets));
+  pass("accepting an order wakes kitchen + barista too", /case "confirmed"/.test(alertsMatrix) && /roles: STATION_ROLES/.test(alertsMatrix));
+  pass("items added to an accepted bill wake the crew straight away", /New items to cook/.test(tickets) && /fana-station-add-/.test(tickets));
   pass("bill request → waiter + cashier", /fana-bill-/.test(tableStatus) && /\["waiter", "cashier"\]/.test(tableStatus));
 
   /* ── 6b. EVERY customer top-up rings the waiter, not just the first order ──
@@ -222,7 +223,7 @@ function pass(name, cond) {
     });
     pass("staff-originated sends never ring the waiter (all waiter pushes need isCustomer)", waiterPushes.length >= 2 && guarded.length === waiterPushes.length);
   }
-  pass("POST still never pushes to stations (Group 11 gate holds)", !/sendPushToRoles\(stations/.test(postHalf));
+  pass("POST wakes the crew ONLY for bills that are already accepted", /pushed\.status !== "pending_waiter" && stations\.length > 0/.test(postHalf));
   pass("waiter diffs per-ticket ITEM UNITS, not just new ticket IDs", /itemCountRef/.test(waiter) && /Number\(i\.quantity\)/.test(waiter));
   pass("waiter's own keying never alarms her (own-send credit)", /ownAddRef/.test(waiter));
   pass("top-up alert names the table and says what to do", /guest added items/.test(waiter) && /go confirm!/.test(waiter) && /check the bill!/.test(waiter));
@@ -273,7 +274,7 @@ function pass(name, cond) {
   pass("answering stops the buzzing", /navigator\.vibrate\(0\)/.test(overlay));
   pass("the waiter phone shows it for orders, top-ups and bill requests", /<UrgentAlertOverlay/.test(waiter) && (waiter.match(/raiseUrgent\(\{/g) || []).length >= 3);
   pass("the waiter's big button opens that table's bill", /openTicketById/.test(waiter));
-  pass("the cashier tablet shows it too, with a one-tap confirm", /<UrgentAlertOverlay/.test(cashier) && /✓ CONFIRM ORDER/.test(cashier) && /setStatusRef\.current\(guestEvent\.id, "confirmed"\)/.test(cashier));
+  pass("the cashier tablet shows it too, with a one-tap confirm", /<UrgentAlertOverlay/.test(cashier) && /✓ ACCEPT ORDER/.test(cashier) && /setStatusRef\.current\(guestEvent\.id, "confirmed"\)/.test(cashier));
   pass("an answered guest event never pops up again", /answeredRef/.test(waiter) && /answeredRef/.test(cashier));
 
   // The guest side: the status bar became the bill button.

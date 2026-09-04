@@ -55,7 +55,14 @@ export async function GET(request: Request) {
         printedAt: tickets.printedAt,
       })
       .from(tickets)
-      .where(notInArray(tickets.status, ["paid", "cancelled", "closed", "pending_waiter", "confirmed"]));
+      // WORKFLOW (owner's decision, Sept 2026): staff ACCEPTANCE releases the
+      // food, not the print. The moment a waiter taps ✓ ACCEPT & SEND (or the
+      // cashier confirms a QR order) the ticket becomes "confirmed" and the
+      // kitchen, the barista AND the cashier all receive it in the same second.
+      // The cashier still keys it into the EFD and prints, but the crew no
+      // longer waits for that tap. Only orders nobody has accepted yet
+      // (pending_waiter) stay hidden here.
+      .where(notInArray(tickets.status, ["paid", "cancelled", "closed", "pending_waiter"]));
 
     if (open.length === 0) return NextResponse.json([], { headers: { "Cache-Control": "no-store" } });
 
@@ -80,23 +87,12 @@ export async function GET(request: Request) {
       map.get(it.ticketId)!.push(it);
     }
 
-    // GROUP 11 (release gate): in the print-queue workflow the EFD/POS receipt
-    // must EXIST before the crew starts cooking — "nothing gets cooked without
-    // a bill". A waiter sending an order only moves it to the CASHIER's queue;
-    // the kitchen/barista lists receive it when she taps ✓ PRINTED (status
-    // "printed"). Additions that land on an already-printed bill stay invisible
-    // to the crew until she prints AGAIN: only items that existed at the last
-    // print (item created_at <= printed_at) are released. (Full-payment mode
-    // uses the classic release: the cashier's "Accept → Kitchen" move to
-    // "preparing" — the status filter above already handles both.)
-    const releasedItems = (status: string, printedAt: Date | string | null, items: any[]) => {
-      if (status !== "printed" || !printedAt) return items; // preparing/…: all items released
-      const cutoff = new Date(printedAt).getTime();
-      return items.filter((it) => {
-        if (!it.createdAt) return true; // legacy rows without a timestamp → released
-        return new Date(it.createdAt).getTime() <= cutoff;
-      });
-    };
+    // RELEASE RULE (replaces the old "wait for the print" gate): every live item
+    // on an accepted ticket is released. Dishes a guest adds to a bill that is
+    // already accepted go straight onto the crew's list too — the waiter and
+    // the cashier both get the loud guest alarm for them, so nothing is
+    // unnoticed, and nobody has to tap anything to get the food cooking.
+    const releasedItems = (_status: string, _printedAt: Date | string | null, items: any[]) => items;
 
     const payload = open
       .filter((t) => map.has(t.id))

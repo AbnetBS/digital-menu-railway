@@ -78,10 +78,10 @@ walks the whole table so no event can be dropped by accident.
 |---|---|---|---|---|
 | Guest submits a QR order | **ring** | - | - | - |
 | Guest adds items to an existing bill | **ring** | ring (if confirmed/printed) | - | - |
-| Waiter sends an order | - | **ring** | - | - |
-| Waiter confirms a QR order | - | **ring** | - | - |
-| Cashier taps PRINTED | ring | - | **ring** (new items only) | **ring** (new items only) |
-| Additions on an already printed bill | - | **ring** | - | - |
+| Waiter accepts / sends an order | - | **ring** | **ring** | **ring** |
+| Waiter or cashier accepts a QR order | ring | **ring** | **ring** | **ring** |
+| Cashier taps PRINTED | ring | - | - | - |
+| Items added to an already accepted bill | **ring** | **ring** | **ring** (if theirs) | **ring** (if theirs) |
 | Kitchen/barista starts an item | ring | - | - | - |
 | Kitchen/barista finishes an item | **ring** | - | - | - |
 | Last item finished (whole order ready) | **ring "ORDER READY TO SERVE"** | - | - | - |
@@ -104,6 +104,28 @@ Two rules keep this from becoming noise:
   tablet scream, and a waiter keying items never alarms her own phone.
 - **A cancelled order is the loudest thing in the system.** It reaches all four
   roles and re-rings three times, because food already on the fire has to stop.
+
+## One tap feeds everybody (the release rule)
+
+The kitchen and the barista used to wait for the cashier to tap PRINTED before
+they could see an order. They no longer wait. **Acceptance is the release:**
+
+- The waiter takes the order and taps **✓ ACCEPT & SEND → Kitchen, Barista &
+  Cashier**. In that same second the dish list appears on the kitchen and
+  barista screens and the bill appears in the cashier's print queue. All three
+  phones ring.
+- The cashier still keys the bill into the EFD and taps **✓ PRINTED**. That tap
+  is now only the record of the print (it feeds "Printed Today", the daily
+  cross-check against the EFD receipt count). Nobody is waiting for it, and it
+  does not ring the crew a second time for food they are already cooking.
+- A QR order from a guest is the one thing that still waits: it must be
+  accepted by the waiter or the cashier first. That single tap then reaches all
+  three screens exactly the same way.
+- Dishes a guest adds to a bill that is already accepted go straight to the
+  crew, and the waiter and cashier both get the loud guest alarm for them.
+
+That is two taps for the whole order (waiter accepts, cashier prints), and
+nothing in the chain waits for anybody.
 
 ## The three GUEST events ring the loudest
 

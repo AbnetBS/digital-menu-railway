@@ -51,10 +51,11 @@ const money = (t: TicketAlertInfo) =>
   typeof t.totalAmount === "number" && t.totalAmount > 0 ? ` • ${t.totalAmount} ETB` : "";
 
 /**
- * A ticket moved to a new status. `printed` and `preparing` deliberately do
- * NOT wake the stations here: the tickets route wakes only the stations that
- * received NEWLY released items (a re-print must not re-ring a crew for food
- * they already have), so that push stays where that knowledge lives.
+ * A ticket moved to a new status. `confirmed` is the moment the food is
+ * released, so it wakes the stations, the cashier and the waiter at once.
+ * `printed` and `preparing` deliberately do NOT wake the stations: by then the
+ * crew is already cooking, and a re-print must never re-ring them for food
+ * they already have.
  */
 export function ticketStatusAlerts(status: string, t: TicketAlertInfo): RoleAlert[] {
   const table = t.tableName;
@@ -71,8 +72,19 @@ export function ticketStatusAlerts(status: string, t: TicketAlertInfo): RoleAler
         },
       ];
 
+    // ONE TAP FEEDS EVERYBODY. Accepting an order used to reach the cashier
+    // only, and the crew waited for her print. Now the same tap reaches the
+    // kitchen, the barista and the cashier at the same second.
     case "confirmed":
       return [
+        {
+          roles: STATION_ROLES,
+          title: "👨‍🍳 New order to cook",
+          body: `${table} • accepted • start now`,
+          tag: `fana-cook-${t.id}`,
+          urgent: true,
+          repeat: 2,
+        },
         {
           roles: ["cashier"],
           title: "🧾 To print",
@@ -83,8 +95,8 @@ export function ticketStatusAlerts(status: string, t: TicketAlertInfo): RoleAler
         },
         {
           roles: ["waiter"],
-          title: "✓ Order confirmed",
-          body: `${table} • sent to the cashier`,
+          title: "✓ Order accepted",
+          body: `${table} • kitchen, barista and cashier all have it`,
           tag: `fana-confirmed-${t.id}`,
           urgent: false,
           repeat: 0,
@@ -96,7 +108,7 @@ export function ticketStatusAlerts(status: string, t: TicketAlertInfo): RoleAler
         {
           roles: ["waiter"],
           title: "🖨 Bill printed",
-          body: `${table} • the crew can start cooking`,
+          body: `${table} • the EFD receipt is out`,
           tag: `fana-printed-${t.id}`,
           urgent: false,
           repeat: 0,

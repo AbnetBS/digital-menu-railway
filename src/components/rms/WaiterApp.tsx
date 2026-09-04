@@ -445,7 +445,7 @@ export default function WaiterApp() {
             kind: "order",
             table: t0.tableName,
             detail: `${t0.totalAmount} ETB • new QR order`,
-            actionLabel: "OPEN & CONFIRM",
+            actionLabel: "OPEN & ACCEPT",
             onAction: () => void openTicketById(t0.id),
           });
           triggerDesktopNotification({
@@ -463,7 +463,7 @@ export default function WaiterApp() {
             kind: "added",
             table: t0.tableName,
             detail: `${t0.totalAmount} ETB • guest added items`,
-            actionLabel: stillPending ? "OPEN & CONFIRM" : "OPEN BILL",
+            actionLabel: stillPending ? "OPEN & ACCEPT" : "OPEN BILL",
             onAction: () => void openTicketById(t0.id),
           });
           triggerDesktopNotification({
@@ -780,7 +780,7 @@ export default function WaiterApp() {
       body: JSON.stringify({ id: activeTicket.id, status: "confirmed", confirmedBy: staffName }),
     });
     noteOwnStatus(activeTicket.id, "confirmed");
-    showToast("✓ Order confirmed • sent to cashier & kitchen");
+    showToast("✓ Accepted • kitchen, barista and cashier all have it");
     onGoBack();
     loadTables();
   };
@@ -1159,7 +1159,7 @@ export default function WaiterApp() {
               onClick={confirmOrder}
               className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
             >
-              <CheckCircle2 className="w-4 h-4" /> Confirm Order → Send to Cashier
+              <CheckCircle2 className="w-4 h-4" /> Accept & Send → Kitchen, Barista & Cashier
             </button>
           )}
 
@@ -1168,8 +1168,8 @@ export default function WaiterApp() {
               {/* Group 9: no payment screens for the waiter — the EFD/POS at the
                   counter is the money system. Her only closing job is physical. */}
               {activeTicket.status === "confirmed" && (
-                <div className="w-full bg-[#2C1B17] border border-amber-500/40 rounded-xl px-4 py-3 text-center text-xs font-bold text-amber-300">
-                  🧾 Sent • waiting for the cashier to print it in the EFD
+                <div className="w-full bg-[#2C1B17] border border-emerald-500/40 rounded-xl px-4 py-3 text-center text-xs font-bold text-emerald-300">
+                  ✓ Sent • the kitchen and barista are cooking, the cashier is printing
                 </div>
               )}
               {(activeTicket.status === "printed" ||

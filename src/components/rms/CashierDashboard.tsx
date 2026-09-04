@@ -233,7 +233,7 @@ export default function CashierDashboard() {
                 : isNew
                   ? `${guestEvent.totalAmount} ETB • new QR order`
                   : `${guestEvent.totalAmount} ETB • guest added items`,
-              actionLabel: isNew ? "✓ CONFIRM ORDER" : "GOT IT",
+              actionLabel: isNew ? "✓ ACCEPT ORDER" : "GOT IT",
               onAction: isNew ? () => setStatusRef.current(guestEvent.id, "confirmed") : undefined,
             });
           }
@@ -276,7 +276,7 @@ export default function CashierDashboard() {
   // not the waiter's table-clear. ?printedToday=1 returns every bill whose
   // printedAt is today (any status: freshly printed, crew working, or later
   // cleared), newest print first, WITH items so a tap opens the full bill.
-  // A bill enters here the moment she taps ✓ PRINTED & SEND and STAYS after
+  // A bill enters here the moment she taps ✓ PRINTED and STAYS after
   // the waiter clears the table (it was printed today — she still needs it
   // for the end-of-shift receipt count). Full mode keeps "Recently Paid".
   const loadHistory = async () => {
@@ -989,9 +989,9 @@ export default function CashierDashboard() {
                           <button
                             onClick={() => markPrinted(t)}
                             className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black py-4 rounded-xl flex items-center justify-center gap-2"
-                            title="Confirms the EFD receipt is printed. This is what releases the items to the kitchen/barista"
+                            title="Records that the EFD receipt is printed. The crew already received this order when it was accepted"
                           >
-                            <Printer className="w-5 h-5" /> ✓ PRINTED & SEND
+                            <Printer className="w-5 h-5" /> ✓ PRINTED
                           </button>
                           <button
                             onClick={() => toggleProblem(t.id)}
@@ -1214,7 +1214,7 @@ export default function CashierDashboard() {
           </h2>
           {history.length === 0 ? (
             <p className="text-xs font-bold text-stone-500">
-              {printQueueMode ? "Bills appear here the moment you tap ✓ PRINTED & SEND. Tap any card to check the whole bill against the EFD receipt." : "Paid bills will appear here after you mark them Paid."}
+              {printQueueMode ? "Bills appear here the moment you tap ✓ PRINTED. Tap any card to check the whole bill against the EFD receipt." : "Paid bills will appear here after you mark them Paid."}
             </p>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

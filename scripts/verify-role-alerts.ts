@@ -147,7 +147,7 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   pass("everyone else still gets it", rolesOf(asCashier).join() === "barista,kitchen,waiter");
 
   const confirmedByWaiter = withoutActor(ticketStatusAlerts("confirmed", TICKET), "waiter");
-  pass("a waiter confirming rings only the cashier", rolesOf(confirmedByWaiter).join() === "cashier");
+  pass("a waiter accepting rings the kitchen, the barista and the cashier", rolesOf(confirmedByWaiter).join() === "barista,cashier,kitchen");
 
   const soloAlert = withoutActor(stationProgressAlerts("done", { ...TICKET, station: "kitchen", itemName: "Shiro", quantity: 1, wholeOrderReady: true }), "waiter");
   pass("an alert with no recipients left is dropped entirely", soloAlert.length === 0);

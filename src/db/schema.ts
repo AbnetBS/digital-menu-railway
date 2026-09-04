@@ -99,6 +99,10 @@ export const tickets = pgTable("tickets", {
   totalAmount: integer("total_amount").notNull().default(0),
   createdBy: varchar("created_by", { length: 100 }), // waiter name / "Customer (QR)"
   confirmedBy: varchar("confirmed_by", { length: 100 }), // who confirmed the order (waiter/cashier)
+  // WHEN it was accepted. This is the crew's release stamp: everything on the
+  // bill at that moment goes to the kitchen/barista immediately. Anything
+  // added AFTER it waits for the cashier's next print, exactly like before.
+  confirmedAt: timestamp("confirmed_at"),
   closedAt: timestamp("closed_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),

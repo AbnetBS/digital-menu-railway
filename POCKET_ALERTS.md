@@ -80,8 +80,8 @@ walks the whole table so no event can be dropped by accident.
 | Guest adds items to an existing bill | **ring** | ring (if confirmed/printed) | - | - |
 | Waiter accepts / sends an order | - | **ring** | **ring** | **ring** |
 | Waiter or cashier accepts a QR order | ring | **ring** | **ring** | **ring** |
-| Cashier taps PRINTED | ring | - | - | - |
-| Items added to an already accepted bill | **ring** | **ring** | **ring** (if theirs) | **ring** (if theirs) |
+| Items added to an already accepted bill | **ring** | **ring** | - | - |
+| Cashier taps PRINTED & SEND (additions) | ring | - | **ring** (new items only) | **ring** (new items only) |
 | Kitchen/barista starts an item | ring | - | - | - |
 | Kitchen/barista finishes an item | **ring** | - | - | - |
 | Last item finished (whole order ready) | **ring "ORDER READY TO SERVE"** | - | - | - |
@@ -105,27 +105,37 @@ Two rules keep this from becoming noise:
 - **A cancelled order is the loudest thing in the system.** It reaches all four
   roles and re-rings three times, because food already on the fire has to stop.
 
-## One tap feeds everybody (the release rule)
+## Who receives what, and when (the release rule)
 
-The kitchen and the barista used to wait for the cashier to tap PRINTED before
-they could see an order. They no longer wait. **Acceptance is the release:**
+**The first order: one tap feeds everybody.**
+The waiter takes the order and taps **✓ ACCEPT & SEND → Kitchen, Barista &
+Cashier**. In that same second:
 
-- The waiter takes the order and taps **✓ ACCEPT & SEND → Kitchen, Barista &
-  Cashier**. In that same second the dish list appears on the kitchen and
-  barista screens and the bill appears in the cashier's print queue. All three
-  phones ring.
-- The cashier still keys the bill into the EFD and taps **✓ PRINTED**. That tap
-  is now only the record of the print (it feeds "Printed Today", the daily
-  cross-check against the EFD receipt count). Nobody is waiting for it, and it
-  does not ring the crew a second time for food they are already cooking.
-- A QR order from a guest is the one thing that still waits: it must be
-  accepted by the waiter or the cashier first. That single tap then reaches all
-  three screens exactly the same way.
-- Dishes a guest adds to a bill that is already accepted go straight to the
-  crew, and the waiter and cashier both get the loud guest alarm for them.
+- the kitchen screen shows the kitchen dishes, and only those;
+- the barista screen shows the drinks, and only those;
+- the cashier's queue shows the bill to key into the EFD and print.
 
-That is two taps for the whole order (waiter accepts, cashier prints), and
-nothing in the chain waits for anybody.
+All three ring. Nobody waits for the print. A QR order from a guest is the one
+thing that must be accepted first (waiter or cashier) - that single tap then
+feeds the same three screens.
+
+**Food added later: the print-and-send flow, unchanged.**
+When a dish is added to a bill that is already accepted (the guest orders more,
+or the waiter adds it):
+
+1. The **cashier** is alarmed and notified. Her card shows **only the new
+   items**, never the whole bill again, with the total for those items.
+2. She keys those items into the EFD and taps **✓ PRINTED & SEND**.
+3. Only then do the new items appear on the kitchen/barista list for that table
+   number, added to the order that is already there - and only the crew that
+   actually got new work is rung.
+
+The waiter is alarmed for guest additions too, so she knows the table changed.
+
+**The cashier taps once per print.** On a first print the button reads
+`✓ PRINTED` (the record for "Printed Today", your daily EFD cross-check); on an
+addition card it reads `✓ PRINTED & SEND`, because that tap is what sends the
+new items to the crew.
 
 ## The three GUEST events ring the loudest
 

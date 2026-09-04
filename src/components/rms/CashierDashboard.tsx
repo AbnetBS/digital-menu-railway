@@ -989,9 +989,13 @@ export default function CashierDashboard() {
                           <button
                             onClick={() => markPrinted(t)}
                             className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black py-4 rounded-xl flex items-center justify-center gap-2"
-                            title="Records that the EFD receipt is printed. The crew already received this order when it was accepted"
+                            title={
+                              added
+                                ? "Prints receipt #2 and sends the NEW items to the kitchen/barista for this table"
+                                : "Records that the EFD receipt is printed. The crew received this order when it was accepted"
+                            }
                           >
-                            <Printer className="w-5 h-5" /> ✓ PRINTED
+                            <Printer className="w-5 h-5" /> {added ? "✓ PRINTED & SEND" : "✓ PRINTED"}
                           </button>
                           <button
                             onClick={() => toggleProblem(t.id)}

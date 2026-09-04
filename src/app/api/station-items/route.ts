@@ -51,8 +51,10 @@ export async function GET(request: Request) {
         // has been waiting), not just that it exists.
         createdAt: tickets.createdAt,
         updatedAt: tickets.updatedAt,
-        // Group 11: the print stamp decides which items the crew may cook.
+        // The two release stamps: acceptance releases the original order, the
+        // print releases anything added after it.
         printedAt: tickets.printedAt,
+        confirmedAt: tickets.confirmedAt,
       })
       .from(tickets)
       // WORKFLOW (owner's decision, Sept 2026): staff ACCEPTANCE releases the
@@ -87,17 +89,39 @@ export async function GET(request: Request) {
       map.get(it.ticketId)!.push(it);
     }
 
-    // RELEASE RULE (replaces the old "wait for the print" gate): every live item
-    // on an accepted ticket is released. Dishes a guest adds to a bill that is
-    // already accepted go straight onto the crew's list too — the waiter and
-    // the cashier both get the loud guest alarm for them, so nothing is
-    // unnoticed, and nobody has to tap anything to get the food cooking.
-    const releasedItems = (_status: string, _printedAt: Date | string | null, items: any[]) => items;
+    // ── THE RELEASE RULE ──
+    // 1. The ORIGINAL order is released the moment staff ACCEPT it: kitchen,
+    //    barista and cashier all receive it in the same second (no waiting for
+    //    the print).
+    // 2. Anything ADDED after that acceptance follows the old print-and-send
+    //    flow: it stays off the crew's list until the cashier prints again, and
+    //    her card shows ONLY the new items. Her print appends them to that
+    //    table's order for the crew.
+    // So the cutoff is the LATER of the two stamps: accepted-at and printed-at.
+    const releaseCutoff = (confirmedAt: Date | string | null, printedAt: Date | string | null) => {
+      const c = confirmedAt ? new Date(confirmedAt).getTime() : null;
+      const p = printedAt ? new Date(printedAt).getTime() : null;
+      if (c === null && p === null) return null; // legacy ticket, no stamps → release all
+      return Math.max(c ?? 0, p ?? 0);
+    };
+
+    const releasedItems = (
+      confirmedAt: Date | string | null,
+      printedAt: Date | string | null,
+      items: any[]
+    ) => {
+      const cutoff = releaseCutoff(confirmedAt, printedAt);
+      if (cutoff === null) return items;
+      return items.filter((it) => {
+        if (!it.createdAt) return true; // legacy rows without a timestamp → released
+        return new Date(it.createdAt).getTime() <= cutoff;
+      });
+    };
 
     const payload = open
       .filter((t) => map.has(t.id))
       .map((t) => {
-        const items = releasedItems(t.status, t.printedAt, map.get(t.id) || []);
+        const items = releasedItems(t.confirmedAt, t.printedAt, map.get(t.id) || []);
         return {
           id: t.id,
           tableName: t.tableName,

@@ -288,6 +288,40 @@ const ORDER = {
   pass("a logged-out phone is told to open the app instead of failing silently", expired.shown.some((n) => /log in/i.test(n.options.body)));
 }
 
+/* ── 5c. THE ALERTS THAT REMAIN REACH A POCKET IN EVERY STATE ─────────────── */
+{
+  // The four states staff actually hold their phone in. Every one of them must
+  // produce a real system notification, with sound and vibration.
+  const states = [
+    ["phone locked in a pocket, staff tab still open", [{ url: "https://fana.example/kitchen", focused: true, visibilityState: "hidden" }]],
+    ["watching something else on the phone (browser in the background)", [{ url: "https://fana.example/kitchen", focused: false, visibilityState: "hidden" }]],
+    ["browser completely closed", []],
+  ];
+  for (const [label, clients] of states) {
+    const w = loadWorker({ clients });
+    await w.fire("push", pushEvent({
+      title: "⛔ ORDER CANCELLED",
+      body: "Table 4 - stop preparing and do not serve",
+      tag: "fana-cancelled-91",
+      url: "/kitchen",
+      urgent: true,
+      repeat: 1,
+    }));
+    const first = w.shown[0];
+    pass(
+      `${label}: the phone rings, buzzes and keeps the alert on screen`,
+      !!first && first.options.silent !== true && (first.options.vibrate || []).length > 0 && first.options.requireInteraction === true
+    );
+    pass(`${label}: tapping it opens the right screen`, first.options.data.url === "/kitchen");
+  }
+
+  // Someone is actually looking at the screen: the page rings its own alarm and
+  // the system notification stays quiet, so the room does not hear it twice.
+  const looking = loadWorker({ clients: [{ url: "https://fana.example/kitchen", focused: true, visibilityState: "visible" }] });
+  await looking.fire("push", pushEvent({ ...ORDER, url: "/kitchen", repeat: 0 }));
+  pass("staff already looking at the screen get the in-app alarm, not a second ring", looking.posted.some((p) => p.msg && p.msg.type === "fana-alert"));
+}
+
 /* ── 6. The fix actually reaches phones running the old worker ────────────── */
 {
   const w = loadWorker();

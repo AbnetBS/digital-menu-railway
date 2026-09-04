@@ -127,84 +127,27 @@ export function ticketStatusAlerts(status: string, t: TicketAlertInfo): RoleAler
         },
       ];
 
+    // ── THE MONEY AND CLOSING STEPS ARE SILENT (owner's decision) ──
+    // "Guest is ready to pay", "payment completed", "bill settled" and "table
+    // cleared" all happen while staff are already looking at the screen, or in
+    // the EFD/POS world where this app is not the system of record. Ringing a
+    // pocket for them was noise, and noise is what makes people ignore the
+    // alerts that matter. The screens still update instantly; they just do not
+    // wake anybody.
     case "ready_for_payment":
-      return [
-        {
-          roles: ["cashier"],
-          title: "💳 Payment requested",
-          body: `${table}${money(t)} • the guest is ready to pay`,
-          tag: `fana-pay-${t.id}`,
-          urgent: true,
-          repeat: 2,
-        },
-        {
-          roles: ["waiter"],
-          title: "💳 Bill time",
-          body: `${table}${money(t)} • take the bill to the table`,
-          tag: `fana-pay-w-${t.id}`,
-          urgent: true,
-          repeat: 2,
-        },
-      ];
-
     case "completed":
-      return [
-        {
-          roles: ["cashier"],
-          title: "✓ Payment completed",
-          body: `${table}${money(t)} • verify it and mark Paid`,
-          tag: `fana-completed-${t.id}`,
-          urgent: true,
-          repeat: 1,
-        },
-        {
-          roles: ["waiter"],
-          title: "✓ Guest paid",
-          body: `${table} • payment recorded`,
-          tag: `fana-completed-w-${t.id}`,
-          urgent: false,
-          repeat: 0,
-        },
-      ];
-
     case "paid":
-      return [
-        {
-          roles: ["waiter", "cashier"],
-          title: "✓ Bill settled",
-          body: `${table}${money(t)} • the bill is closed`,
-          tag: `fana-paid-${t.id}`,
-          urgent: false,
-          repeat: 0,
-        },
-      ];
-
     case "closed":
-      return [
-        {
-          roles: ["cashier"],
-          title: "✓ Table cleared",
-          body: `${table} • free for new guests`,
-          tag: `fana-closed-${t.id}`,
-          urgent: false,
-          repeat: 0,
-        },
-        {
-          roles: STATION_ROLES,
-          title: "✓ Table cleared",
-          body: `${table} • nothing more to prepare`,
-          tag: `fana-closed-s-${t.id}`,
-          urgent: false,
-          repeat: 0,
-        },
-      ];
+      return [];
 
     case "cancelled":
-      // The one event everybody must hear immediately: food already on a pan
-      // has to stop, and the bill must not be printed or served.
+      // Only the two crews that could be standing over a hot pan are rung: for
+      // them a cancellation is money burning. The waiter and the cashier see
+      // it on their screens without a sound (they are usually the ones who
+      // cancelled it in the first place).
       return [
         {
-          roles: ALL_STAFF_ROLES,
+          roles: STATION_ROLES,
           title: "⛔ ORDER CANCELLED",
           body: `${table} • stop preparing and do not serve`,
           tag: `fana-cancelled-${t.id}`,

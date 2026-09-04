@@ -258,14 +258,13 @@ export default function WaiterApp() {
 
   /** Plain-language line for a status somebody else moved the ticket to. */
   const statusMoveLabel = (status: string, tableName: string): string => {
+    // The money/closing steps (ready to pay, paid, settled, table cleared) are
+    // deliberately NOT here: they never ring and never notify. Their cards
+    // still update on screen; they simply do not wake a phone in a pocket.
     const map: Record<string, string> = {
       confirmed: `✓ ${tableName}: order confirmed`,
       printed: `🖨 ${tableName}: bill printed, crew is cooking`,
       preparing: `👨‍🍳 ${tableName}: kitchen started`,
-      ready_for_payment: `💳 ${tableName}: guest is ready to pay`,
-      completed: `✓ ${tableName}: payment completed`,
-      paid: `✓ ${tableName}: bill settled`,
-      closed: `✓ ${tableName} is free for new guests`,
       cancelled: `⛔ ${tableName}: ORDER CANCELLED, do not serve`,
     };
     return map[status] || "";
@@ -389,7 +388,19 @@ export default function WaiterApp() {
         }
       }
 
-      if (alertsInitRef.current && alertsOnRef.current && (readyItems.length > 0 || billAsks.length > 0 || statusMoves.length > 0)) {
+      // Silent statuses: the money and closing steps ring nobody (see
+      // statusMoveLabel). Dropping them here keeps even the short ding away.
+      // A cancellation is shown, never sounded: only the kitchen and barista
+      // are rung for it (they may have a pan on the fire). She reads it as a
+      // quiet line on her screen.
+      const quietMoves = statusMoves.filter((m) => m.to === "cancelled");
+      const loudMoves = statusMoves.filter(
+        (m) => m.to !== "cancelled" && statusMoveLabel(m.to, m.ticket.tableName) !== ""
+      );
+      if (alertsInitRef.current && quietMoves.length > 0) {
+        showToast(statusMoveLabel(quietMoves[0].to, quietMoves[0].ticket.tableName));
+      }
+      if (alertsInitRef.current && alertsOnRef.current && (readyItems.length > 0 || billAsks.length > 0 || loudMoves.length > 0)) {
         // Ready food and a waiting guest are ACT NOW events: full alarm.
         // A status move somebody else made is information: a short ring.
         if (readyItems.length > 0 || billAsks.length > 0) playAlarm();
@@ -422,8 +433,8 @@ export default function WaiterApp() {
           });
           if (readyItems.length === 0) showToast(`🧾 ${b.tableName} asked for the bill`);
         }
-        if (statusMoves.length > 0 && readyItems.length === 0 && billAsks.length === 0) {
-          const m = statusMoves[0];
+        if (loudMoves.length > 0 && readyItems.length === 0 && billAsks.length === 0) {
+          const m = loudMoves[0];
           const label = statusMoveLabel(m.to, m.ticket.tableName);
           if (label) {
             triggerDesktopNotification({

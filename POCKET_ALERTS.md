@@ -88,14 +88,28 @@ walks the whole table so no event can be dropped by accident.
 | Cashier removes an item from a bill | **ring** | - | **ring** (if theirs) | **ring** (if theirs) |
 | Quantity corrected on a bill | ring | - | **ring** (if theirs) | **ring** (if theirs) |
 | Guest asks for the bill | **ring** | **ring** | - | - |
-| Guest is ready to pay | **ring** | **ring** | - | - |
-| Payment completed | ring | **ring** (verify and mark paid) | - | - |
-| Bill settled / paid | ring | ring | - | - |
-| Table cleared | - | ring | ring | ring |
-| **Order cancelled** | **ring** | **ring** | **ring** | **ring** |
+| Guest is ready to pay | silent | silent | - | - |
+| Payment completed | silent | silent | - | - |
+| Bill settled / paid | silent | silent | - | - |
+| Table cleared | silent | silent | silent | silent |
+| **Order cancelled** | silent | silent | **ring** | **ring** |
 
 **bold** = urgent: the notification stays on the lock screen and re-rings until
 somebody answers it. Plain "ring" = informational, it fades on its own.
+"silent" = the screens update, but no phone is woken.
+
+### What is deliberately SILENT, and why
+
+The money and closing steps - guest is ready to pay, payment completed, bill
+settled, table cleared - make no sound and no notification. Staff are standing
+at the counter or at the table when those happen, and a phone that rings for
+everything is a phone people stop listening to. The cards still update the
+moment it happens.
+
+A **cancelled** order rings the kitchen and the barista only: they are the ones
+who may have a pan on the fire, and stopping them saves food. The waiter and
+the cashier see the cancellation on their screen (the waiter gets a quiet line
+at the top of hers) without any sound.
 
 Two rules keep this from becoming noise:
 

@@ -146,16 +146,15 @@ export default function CashierDashboard() {
   const eventMessage = (t: Ticket): string | null => {
     // A guest waiting for the bill outranks whatever the status says.
     if (t.receiptRequestedAt) return `🧾 BILL REQUESTED • ${t.tableName} • ${t.totalAmount} ETB`;
+    // The money/closing steps (ready to pay, payment completed, bill settled,
+    // table cleared) are deliberately missing: they update the screen but ring
+    // nobody. Payment lives in the EFD/POS, and constant ringing for it is the
+    // fastest way to make staff ignore the alerts that DO matter.
     const m: Record<string, string> = {
       pending_waiter: `🍽 New QR order • ${t.tableName} • ${t.totalAmount} ETB • needs confirmation`,
       confirmed: `🧾 TO PRINT • ${t.tableName} • ${t.totalAmount} ETB`,
       preparing: `👨‍🍳 Preparing • ${t.tableName}`,
       printed: `🖨 Printed • ${t.tableName}`,
-      ready_for_payment: `💳 Payment requested • ${t.tableName} • ${t.totalAmount} ETB`,
-      completed: `✓ Payment completed • ${t.tableName} • verify & mark Paid`,
-      closed: `✓ Table cleared • ${t.tableName} is free`,
-      cancelled: `⛔ ORDER CANCELLED • ${t.tableName}`,
-      paid: `✓ Bill settled • ${t.tableName}`,
     };
     return m[t.status] || null;
   };
@@ -197,18 +196,18 @@ export default function CashierDashboard() {
       if (initializedRef.current && alertsOnRef.current && newEvents.length > 0) {
         // A card entering HER print queue gets the full alarm; anything else
         // (status moves, cleared tables…) gets the standard ring.
-        const needsMe = newEvents.some(
+        // Only events that need HER hands make a sound. Everything else
+        // (payment steps, cleared tables) just refreshes the list.
+        const loudEvents = newEvents.filter((t) => eventMessage(t) !== null);
+        const needsMe = loudEvents.some(
           (t) =>
             t.status === "confirmed" ||
             t.status === "pending_waiter" ||
-            t.status === "ready_for_payment" ||
-            t.status === "completed" ||
-            t.status === "cancelled" ||
             !!t.receiptRequestedAt ||
             (t.status === "printed" && (t.unprintedSubmissions || 0) > 0)
         );
         if (needsMe) playAlarm();
-        else playDing();
+        else if (loudEvents.length > 0) playDing();
 
         // Which of these came from a GUEST? Those are the unpredictable ones
         // that deserve the full-screen alarm, not just a line in the list.
@@ -238,12 +237,14 @@ export default function CashierDashboard() {
             });
           }
         }
-        const first = newEvents[0];
-        triggerDesktopNotification({
-          title: "Fana Cafe • Cashier Alert",
-          message: eventMessage(first) || `${first.tableName} updated`,
-          tag: `fana-cashier-${first.id}`,
-        });
+        const first = loudEvents[0];
+        if (first) {
+          triggerDesktopNotification({
+            title: "Fana Cafe • Cashier Alert",
+            message: eventMessage(first) || `${first.tableName} updated`,
+            tag: `fana-cashier-${first.id}`,
+          });
+        }
       }
       // Remember what this refresh looked like, so the same guest event is
       // never announced twice.

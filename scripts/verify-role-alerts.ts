@@ -63,7 +63,15 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
     "closed",
     "cancelled",
   ];
-  for (const status of statuses) {
+  // Deliberately SILENT (owner's decision): the money and closing steps. They
+  // update the screens but never wake a phone, so the alerts that do matter
+  // keep their meaning.
+  const silentStatuses = ["ready_for_payment", "completed", "paid", "closed"];
+  for (const status of silentStatuses) {
+    pass(`status "${status}" rings NOBODY (money/closing steps are silent)`, ticketStatusAlerts(status, TICKET).length === 0);
+  }
+
+  for (const status of statuses.filter((x) => !silentStatuses.includes(x))) {
     const alerts = ticketStatusAlerts(status, TICKET);
     pass(`status "${status}" rings at least one role`, alerts.length > 0 && rolesOf(alerts).length > 0);
     pass(`status "${status}" names the table in every alert`, alerts.every((a) => a.body.includes(TICKET.tableName)));
@@ -73,21 +81,14 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   pass("confirmed puts the bill in the cashier's print queue, urgently", urgentFor(ticketStatusAlerts("confirmed", TICKET), "cashier"));
   pass("confirmed also tells the waiter it went through", hasRole(ticketStatusAlerts("confirmed", TICKET), "waiter"));
   pass("printed tells the waiter the crew can cook", hasRole(ticketStatusAlerts("printed", TICKET), "waiter"));
-  pass("ready_for_payment is urgent for BOTH waiter and cashier",
-    urgentFor(ticketStatusAlerts("ready_for_payment", TICKET), "waiter") &&
-      urgentFor(ticketStatusAlerts("ready_for_payment", TICKET), "cashier"));
-  pass("completed asks the cashier to verify and mark paid", urgentFor(ticketStatusAlerts("completed", TICKET), "cashier"));
-  pass("paid informs waiter and cashier without nagging",
-    rolesOf(ticketStatusAlerts("paid", TICKET)).join() === "cashier,waiter" &&
-      ticketStatusAlerts("paid", TICKET).every((a) => !a.urgent));
-  pass("closed frees the table for the cashier and stands the crew down",
-    hasRole(ticketStatusAlerts("closed", TICKET), "cashier") &&
-      hasRole(ticketStatusAlerts("closed", TICKET), "kitchen") &&
-      hasRole(ticketStatusAlerts("closed", TICKET), "barista"));
+  // The screens still show all of these; they simply make no sound.
+  pass("no money step wakes a phone", silentStatuses.every((st) => ticketStatusAlerts(st, TICKET).length === 0));
 
-  // The one event nobody may miss.
+  // A cancellation is money burning on a pan: the two cooking crews are rung,
+  // the waiter and cashier read it quietly on their screens.
   const cancelled = ticketStatusAlerts("cancelled", TICKET);
-  pass("CANCELLED reaches every single role", rolesOf(cancelled).join() === [...ALL_STAFF_ROLES].sort().join());
+  pass("CANCELLED rings the kitchen and the barista", rolesOf(cancelled).join() === "barista,kitchen");
+  pass("CANCELLED does not ring the waiter or the cashier", !hasRole(cancelled, "waiter") && !hasRole(cancelled, "cashier"));
   pass("CANCELLED is urgent and re-rings hardest", cancelled.every((a) => a.urgent && a.repeat >= 3));
   pass("CANCELLED says what to do (stop and do not serve)", cancelled.every((a) => /stop preparing/i.test(a.body)));
 
@@ -142,9 +143,9 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
 /* ── 5. Nobody rings their own phone ──────────────────────────────────────── */
 {
   const cancelled = ticketStatusAlerts("cancelled", TICKET);
-  const asCashier = withoutActor(cancelled, "cashier");
-  pass("the actor's own role is dropped", !hasRole(asCashier, "cashier") && hasRole(asCashier, "waiter"));
-  pass("everyone else still gets it", rolesOf(asCashier).join() === "barista,kitchen,waiter");
+  const confirmedAsCashier = withoutActor(ticketStatusAlerts("confirmed", TICKET), "cashier");
+  pass("the actor's own role is dropped", !hasRole(confirmedAsCashier, "cashier") && hasRole(confirmedAsCashier, "waiter"));
+  pass("everyone else still gets it", rolesOf(confirmedAsCashier).join() === "barista,kitchen,waiter");
 
   const confirmedByWaiter = withoutActor(ticketStatusAlerts("confirmed", TICKET), "waiter");
   pass("a waiter accepting rings the kitchen, the barista and the cashier", rolesOf(confirmedByWaiter).join() === "barista,cashier,kitchen");
@@ -188,7 +189,8 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   pass("station screen alarms when a line is removed or changed", /itemSigRef/.test(station) && /was REMOVED/.test(station));
   pass("station screen alarms when the whole order disappears", /stop preparing/.test(station));
   pass("cashier reacts to bill requests (no status change involved)", /receiptRequestedAt \? 1 : 0/.test(cashier));
-  pass("cashier treats payment/cancel moments as act-now", /t\.status === "ready_for_payment"/.test(cashier) && /t\.status === "cancelled"/.test(cashier));
+  pass("cashier only sounds for events in her message list", /const loudEvents = newEvents\.filter\(\(t\) => eventMessage\(t\) !== null\)/.test(cashier));
+  pass("payment and closing moments are not in that list", !/ready_for_payment: `/.test(cashier) && !/closed: `/.test(cashier) && !/paid: `/.test(cashier) && !/completed: `/.test(cashier));
 }
 
 if (failures.length > 0) {

@@ -67,6 +67,7 @@ const layout = read("src/app/layout.tsx");
 const hook = read("src/lib/use-pocket-alerts.ts");
 const chip = read("src/components/rms/PocketAlertsChip.tsx");
 const testRoute = read("src/app/api/push/test/route.ts");
+const overlay = read("src/components/rms/UrgentAlertOverlay.tsx");
 
 const failures = [];
 function pass(name, cond) {
@@ -251,6 +252,35 @@ function pass(name, cond) {
   pass("the test push route is staff-only and uses the session role", /requireStaff\(\)/.test(testRoute) && /staff\.role/.test(testRoute));
   pass("the test button is reachable from the staff screens", /Test ring/.test(chip));
   pass("alerts are delivered with high urgency (wakes a dozing phone)", /urgency: "high"/.test(pushServer) && /TTL/.test(pushServer));
+}
+
+/* ── 6d. GUEST EVENTS: 3 second alarm, hard vibration, one-tap confirm ────── */
+{
+  // The three things a guest can do that staff cannot predict.
+  pass("there is one shared 'guest event' ring setting", /export const CUSTOMER_ALERT_RING/.test(pushServer) && /gapMs: 1100/.test(pushServer) && /repeat: 3/.test(pushServer));
+  pass("a new QR order uses the guest ring", /CUSTOMER_ALERT_RING/.test(tickets) && /New QR order/.test(tickets));
+  pass("a guest adding items uses the guest ring", (tickets.match(/CUSTOMER_ALERT_RING/g) || []).length >= 3);
+  pass("a bill request uses the guest ring", /CUSTOMER_ALERT_RING/.test(tableStatus));
+  pass("the worker rings the guest burst close together, staff alerts slowly", /Number\(data\.gapMs\) \|\| 7000/.test(sw) && /await sleep\(gap\)/.test(sw));
+  pass("a guest event vibrates for about 3 seconds", /const CUSTOMER_VIBRATE = \[800, 150, 800, 150, 800, 150, 800\]/.test(sw) && /isCustomer \? CUSTOMER_VIBRATE : DEFAULT_VIBRATE/.test(sw));
+  pass("the notification itself carries a CONFIRM button", /action: "confirm", title: "✓ Confirm"/.test(sw));
+  pass("pressing CONFIRM calls the same API the app calls", /event\.action === "confirm"/.test(sw) && /"\/api\/tickets"/.test(sw) && /credentials: "same-origin"/.test(sw));
+  pass("an expired session is explained, not swallowed", /res\.status === 401/.test(sw));
+
+  // The screen that cannot be missed once the phone is picked up.
+  pass("a guest event takes over the whole screen with one big button", /export default function UrgentAlertOverlay/.test(overlay) && /fixed inset-0/.test(overlay));
+  pass("the screen keeps re-ringing until it is answered", /REPEAT_MS/.test(overlay) && /playAlarm\(\)/.test(overlay) && /MAX_REPEATS/.test(overlay));
+  pass("answering stops the buzzing", /navigator\.vibrate\(0\)/.test(overlay));
+  pass("the waiter phone shows it for orders, top-ups and bill requests", /<UrgentAlertOverlay/.test(waiter) && (waiter.match(/raiseUrgent\(\{/g) || []).length >= 3);
+  pass("the waiter's big button opens that table's bill", /openTicketById/.test(waiter));
+  pass("the cashier tablet shows it too, with a one-tap confirm", /<UrgentAlertOverlay/.test(cashier) && /✓ CONFIRM ORDER/.test(cashier) && /setStatusRef\.current\(guestEvent\.id, "confirmed"\)/.test(cashier));
+  pass("an answered guest event never pops up again", /answeredRef/.test(waiter) && /answeredRef/.test(cashier));
+
+  // The guest side: the status bar became the bill button.
+  {
+    const orderStatus = read("src/components/rms/OrderStatus.tsx");
+    pass("the guest's status bar is now a working bill button", /export function OrderStatusBanner/.test(orderStatus) && /onClick=\{requestBill\}/.test(orderStatus) && /Receipt className/.test(orderStatus));
+  }
 }
 
 /* ── 7. Staff-requested menu card behavior ────────────────────────────────── */

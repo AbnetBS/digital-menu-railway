@@ -40,7 +40,7 @@ function pass(name, cond) {
 }
 
 /** Build a fake service-worker world and evaluate the real sw.js inside it. */
-function loadWorker({ clients = [], notifications = [], onShow = null } = {}) {
+function loadWorker({ clients = [], notifications = [], onShow = null, fetchOk = true } = {}) {
   const listeners = new Map();
   const shown = [];
   const posted = [];
@@ -89,15 +89,21 @@ function loadWorker({ clients = [], notifications = [], onShow = null } = {}) {
     };
   }
 
+  const delays = [];
+  const fetches = [];
   const sandbox = {
     self,
-    fetch: async () => ({ ok: true }),
+    fetch: async (url, init) => {
+      fetches.push({ url, init });
+      return { ok: fetchOk, status: fetchOk ? 200 : 401 };
+    },
     URL,
     Date,
     console,
     // Instant timers: the worker's re-ring waits 7s between rings, which we do
     // not want to actually sit through in a test.
-    setTimeout: (fn) => {
+    setTimeout: (fn, ms) => {
+      delays.push(ms);
       Promise.resolve().then(fn);
       return 0;
     },
@@ -120,6 +126,8 @@ function loadWorker({ clients = [], notifications = [], onShow = null } = {}) {
     shown,
     posted,
     claimed,
+    delays,
+    fetches,
     emptyTray: () => {
       tray = [];
     },
@@ -231,6 +239,53 @@ const ORDER = {
     notification: { tag: "fana-station-3", data: { url: "/kitchen" }, close: () => {} },
   });
   pass("tap with no window open launches the right screen", cold.posted.some((p) => p.type === "openWindow" && p.url === "/kitchen"));
+}
+
+/* ── 5b. GUEST EVENTS: a ~3 second alarm and a one-tap confirm ────────────── */
+{
+  const GUEST = {
+    title: "🍽 New QR order",
+    body: "Table 4 - 320 ETB - tap to confirm",
+    tag: "fana-qr-91",
+    url: "/waiter",
+    urgent: true,
+    repeat: 3,
+    gapMs: 1100,
+    kind: "customer",
+    ticketId: 91,
+    action: "confirm",
+  };
+
+  const w = loadWorker({ clients: [] });
+  await w.fire("push", pushEvent(GUEST));
+  const first = w.shown[0].options;
+  const buzz = (first.vibrate || []).reduce((a, b) => a + b, 0);
+  pass("a guest event buzzes for about 3 seconds, not one polite tap", buzz >= 2800);
+  pass("a guest event rings 4 times back to back (~3s of alarm)", w.shown.length === 4);
+  pass("the rings run together (about 1.1s apart, not 7s)", w.delays.filter((d) => d === 1100).length === 3);
+  pass("the alert carries a CONFIRM button for the lock screen", (first.actions || []).some((a) => a.action === "confirm"));
+  pass("the alert remembers which order it belongs to", first.data.ticketId === 91);
+
+  const staff = loadWorker({ clients: [] });
+  await staff.fire("push", pushEvent({ ...ORDER, repeat: 1 }));
+  pass("a staff event still waits 7s between rings (never nagging)", staff.delays.includes(7000));
+
+  // Pressing CONFIRM on the notification must do the job without unlocking.
+  const tap = loadWorker({ clients: [{ url: "https://fana.example/waiter", focused: false, visibilityState: "hidden" }] });
+  await tap.fire("notificationclick", {
+    action: "confirm",
+    notification: { tag: "fana-qr-91", data: { url: "/waiter", ticketId: 91 }, close: () => {} },
+  });
+  const call = tap.fetches[0];
+  pass("pressing CONFIRM on the notification confirms the order", !!call && call.url === "/api/tickets" && call.init.method === "PUT" && call.init.body.includes("\"status\":\"confirmed\"") && call.init.credentials === "same-origin");
+  pass("the phone says it worked", tap.shown.some((n) => n.title.includes("confirmed")));
+
+  const expired = loadWorker({ clients: [], fetchOk: false });
+  await expired.fire("notificationclick", {
+    action: "confirm",
+    notification: { tag: "fana-qr-92", data: { url: "/waiter", ticketId: 92 }, close: () => {} },
+  });
+  pass("a logged-out phone is told to open the app instead of failing silently", expired.shown.some((n) => /log in/i.test(n.options.body)));
 }
 
 /* ── 6. The fix actually reaches phones running the old worker ────────────── */

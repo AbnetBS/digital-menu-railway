@@ -8,6 +8,7 @@ import {
 import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
@@ -84,6 +85,14 @@ export default function WaiterApp() {
     { slug: "all", name: "All" },
   ]);
 
+  // ── GUEST EVENTS TAKE OVER THE SCREEN ──
+  // A guest ordering, topping up, or asking for the bill cannot be predicted,
+  // so it does not get a small toast: it gets a full screen with one big
+  // button that keeps re-ringing until the waiter presses it.
+  const [urgent, setUrgent] = useState<UrgentAlert | null>(null);
+  /** Guest events already answered on this device, so they never come back. */
+  const answeredRef = useRef<Set<string>>(new Set());
+
   // Ring bell alerts (new QR orders + guest top-ups)
   const [alertsOn, setAlertsOn] = useState(false);
   // STALE-CLOSURE FIX: the SSE handler below is created once (deps [staffName])
@@ -122,12 +131,18 @@ export default function WaiterApp() {
   // Always points at the CURRENT loadTables (the SSE handler and the service
   // worker relay are created once and would otherwise call a stale copy).
   const loadTablesRef = useRef<() => void>(() => {});
+  /** Latest tables, for callbacks created in older renders. */
+  const tablesRef = useRef<CafeTable[]>([]);
 
   // Keep the refs in step with the latest render (in an effect, never during
   // render) so every callback below reads today's values, not login-time ones.
   useEffect(() => {
     alertsOnRef.current = alertsOn;
   }, [alertsOn]);
+
+  useEffect(() => {
+    tablesRef.current = tables;
+  }, [tables]);
 
   useEffect(() => {
     const saved = sessionStorage.getItem("fana_waiter");
@@ -256,6 +271,35 @@ export default function WaiterApp() {
     return map[status] || "";
   };
 
+  /** Jump straight to a table's bill (used by the full-screen guest alert). */
+  const openTicketById = async (ticketId: number) => {
+    const r = await fetch("/api/tickets?active=1");
+    if (!r.ok) return;
+    const all: Ticket[] = await r.json();
+    const tk = all.find((x) => x.id === ticketId);
+    if (!tk) return;
+    setSelectedTable(tablesRef.current.find((t) => t.activeTicketId === ticketId) || null);
+    setCart([]);
+    setActiveTicket(tk);
+    setView("bill");
+  };
+
+  /**
+   * Show the full-screen alert for a guest event. The newest event wins, and
+   * anything already answered on this device stays closed.
+   */
+  const raiseUrgent = (a: UrgentAlert) => {
+    if (answeredRef.current.has(a.id)) return;
+    setUrgent(a);
+  };
+
+  const closeUrgent = () => {
+    setUrgent((cur) => {
+      if (cur) answeredRef.current.add(cur.id);
+      return null;
+    });
+  };
+
   const loadTables = async () => {
     // GROUP 10 FIX: this used to return early while the screen was off / the
     // tab hidden — which is exactly when a phone sits in a pocket — so the
@@ -363,6 +407,14 @@ export default function WaiterApp() {
         }
         if (billAsks.length > 0) {
           const b = billAsks[0];
+          raiseUrgent({
+            id: `bill-${b.id}-${b.receiptRequestedAt || ""}`,
+            kind: "bill",
+            table: b.tableName,
+            detail: `${b.totalAmount} ETB • take the receipt over`,
+            actionLabel: "OPEN BILL",
+            onAction: () => void openTicketById(b.id),
+          });
           triggerDesktopNotification({
             title: "Fana Cafe • Bill requested",
             message: `🧾 ${b.tableName} asked for the bill • ${b.totalAmount} ETB`,
@@ -388,6 +440,14 @@ export default function WaiterApp() {
         playAlarm();
         if (fresh.length > 0) {
           const t0 = fresh[0];
+          raiseUrgent({
+            id: `order-${t0.id}`,
+            kind: "order",
+            table: t0.tableName,
+            detail: `${t0.totalAmount} ETB • new QR order`,
+            actionLabel: "OPEN & CONFIRM",
+            onAction: () => void openTicketById(t0.id),
+          });
           triggerDesktopNotification({
             title: "Fana Cafe • Waiter Alert",
             message: `🍽 New order request • ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`,
@@ -398,6 +458,14 @@ export default function WaiterApp() {
         if (added.length > 0) {
           const t0 = added[0];
           const stillPending = t0.status === "pending_waiter";
+          raiseUrgent({
+            id: `added-${t0.id}-${Date.now()}`,
+            kind: "added",
+            table: t0.tableName,
+            detail: `${t0.totalAmount} ETB • guest added items`,
+            actionLabel: stillPending ? "OPEN & CONFIRM" : "OPEN BILL",
+            onAction: () => void openTicketById(t0.id),
+          });
           triggerDesktopNotification({
             title: "Fana Cafe • Waiter Alert",
             message: stillPending
@@ -810,6 +878,9 @@ export default function WaiterApp() {
           </button>
         </div>
       </div>
+
+      {/* Full-screen guest alert (new order / added items / bill request) */}
+      <UrgentAlertOverlay alert={urgent} onClose={closeUrgent} />
 
       {/* Toast */}
       {toast && (

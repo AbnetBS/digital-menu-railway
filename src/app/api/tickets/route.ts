@@ -11,7 +11,7 @@ import { publish, CHANNELS } from "@/lib/realtime";
 import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
-import { sendPushToRoles } from "@/lib/push";
+import { sendPushToRoles, CUSTOMER_ALERT_RING } from "@/lib/push";
 import { ticketStatusAlerts, withoutActor } from "@/lib/alerts";
 
 /**
@@ -653,6 +653,11 @@ export async function POST(request: Request) {
           title: merged ? "🍽 Guest added items" : "🍽 New QR order",
           body: `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`,
           tag: merged ? additionTag : `fana-qr-${pushed.id}`,
+          // A GUEST just acted: 3 second alarm burst, hard vibration, and a
+          // Confirm button right on the lock screen.
+          ...CUSTOMER_ALERT_RING,
+          ticketId: pushed.id,
+          action: "confirm",
         }).catch(() => {});
       } else {
         if (pushed.status === "printed") {
@@ -663,6 +668,8 @@ export async function POST(request: Request) {
             title: "⚠ Items ADDED",
             body: `${pushed.tableName} • new items on the bill, print receipt #2`,
             tag: `fana-add-${pushed.id}`,
+            ...(isCustomer ? CUSTOMER_ALERT_RING : {}),
+            ticketId: pushed.id,
           }).catch(() => {});
         } else {
           void sendPushToRoles(["cashier"], {
@@ -682,6 +689,10 @@ export async function POST(request: Request) {
                 ? `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`
                 : `${pushed.tableName} • guest added items • ${transactionResult.total} ETB`,
             tag: additionTag,
+            // Same guest-grade alarm: she cannot predict a top-up either.
+            ...CUSTOMER_ALERT_RING,
+            ticketId: pushed.id,
+            action: pushed.status === "pending_waiter" ? "confirm" : null,
           }).catch(() => {});
         }
       }

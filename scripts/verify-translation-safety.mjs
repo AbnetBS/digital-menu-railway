@@ -105,7 +105,15 @@ const pass = (name, value) => {
 
   const footer = read("src/components/Footer.tsx");
   const menu = read("src/components/rms/CustomerMenuApp.tsx");
-  pass("developer credit is AB Web", /AB Web/.test(footer) && /AB Web/.test(menu) && !/Abnet Gobezay/i.test(footer + menu));
+  // The owner's credit line is "Powered by - +251919081802" (his phone number),
+  // shown on the public footer AND at the bottom of the guest QR menu. The old
+  // guard still expected the previous "AB Web" wording and failed the suite.
+  const CREDIT = "Powered by - +251919081802";
+  pass(
+    "developer credit is the owner's phone line, on the site and the QR menu",
+    footer.includes(CREDIT) && menu.includes(CREDIT) && !/Abnet Gobezay/i.test(footer + menu)
+  );
+  pass("the credit is tappable (tel: link)", /tel:\+251919081802/.test(footer) && /tel:\+251919081802/.test(menu));
 }
 
 if (failures.length) {

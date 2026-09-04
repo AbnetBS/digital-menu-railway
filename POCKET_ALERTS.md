@@ -105,6 +105,43 @@ Two rules keep this from becoming noise:
 - **A cancelled order is the loudest thing in the system.** It reaches all four
   roles and re-rings three times, because food already on the fire has to stop.
 
+## The three GUEST events ring the loudest
+
+A guest is the only person the crew cannot predict. Three things a guest can do
+now get a stronger alert than anything staff do:
+
+1. A **new QR order** arrives.
+2. The guest **adds items** to a bill that already exists.
+3. The guest **asks for the bill** from their own phone.
+
+What happens on the waiter's phone and the cashier's tablet:
+
+- **About 3 seconds of alarm, not one ding.** The notification is re-shown
+  three more times about 1.1 seconds apart, so the rings run together into one
+  continuous alarm. (Staff-to-staff alerts still wait 7 seconds between rings,
+  so they never nag.)
+- **A long, hard vibration** (four ~0.8 second buzzes). This is the part that
+  is felt through a pocket, and it is the only part that still works when the
+  phone is on silent.
+- **A CONFIRM button on the notification itself.** For a new order the waiter
+  can confirm it straight from the lock screen: no unlocking, no finding the
+  tab, no hunting for the table. If her session has expired, the phone says so
+  instead of failing quietly.
+- **A full-screen alert inside the app**, with the table name in big letters and
+  one big button (`OPEN & CONFIRM` / `OPEN BILL` / `GOT IT`). It re-plays the
+  alarm every 10 seconds, up to 5 times, until somebody presses the button.
+  Pressing it opens exactly that table.
+
+### The guest's own bill button
+
+On the customer menu, the old read-only status bar is now the **bill button**.
+Once the table has an order, the guest sees one line of live status plus a big
+`Request the bill / receipt` button with a receipt icon. One tap and the
+waiter's phone buzzes, rings, and shows the table. The guest no longer has to
+wave at anybody. A guest may ask for the bill while food is still cooking:
+during a rush that is exactly what people want, and the waiter decides when to
+walk over.
+
 ## Troubleshooting
 
 | Symptom | Cause | What to do |

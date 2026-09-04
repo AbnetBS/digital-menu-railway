@@ -181,12 +181,13 @@ async function main() {
   pass("the pill appears once the table has an order", /Order Status/.test(text()));
   pass("the banner states the phase in one sentence", /Your food is being prepared/.test(text()));
   pass("the banner shows the order number and arrival time", /#A-12/.test(text()) && /Arrived \d{2}:\d{2}/.test(text()));
-  const bar = host.querySelector('span[style*="width"]') as HTMLElement | null;
-  pass("the kitchen bar reads 50% (1 done + 1 of 2 cooking, of 3 units)", bar?.style.width === "50%");
+  pass("the status bar carries the bill button, not just words", byText("Request the bill") !== null);
 
   // ── 3. open the panel ────────────────────────────────────────────────────
   await click(byText("Order Status"));
   await flush();
+  const bar = host.querySelector('[role="dialog"] div[style*="width"]') as HTMLElement | null;
+  pass("the kitchen bar reads 50% (1 done + 1 of 2 cooking, of 3 units)", bar?.style.width === "50%");
   pass("the panel opens as a dialog", host.querySelector('[role="dialog"]') !== null);
   pass("every dish is listed with its quantity", /Beyaynet/.test(text()) && /×2/.test(text()) && /Soup/.test(text()));
   pass("item notes are shown", /No pepper/.test(text()));
@@ -194,15 +195,15 @@ async function main() {
   pass("drinks are listed with a note but get NO progress bar", /2 drinks\/cake/.test(text()));
   pass("the total is shown", /240 ETB/.test(text()));
   pass("arrival time and waiting minutes are shown", /12 min/.test(text()));
-  pass("while the food is still cooking there is NO bill button", byText("Request the bill") === null);
-  pass("  …the guest is told when it will appear instead", /as soon as your food has arrived/.test(text()));
+  pass("the guest can call for the bill even while the food cooks (busy hours)", byText("Request the bill") !== null);
+  pass("  …and is still told when the food is expected", /as soon as your food has arrived/.test(text()));
 
   // ── 3b. the kitchen finishes → the button appears ────────────────────────
   mode = "served";
   await mount(root, 5, 6);
   await flush();
   pass("the phase follows the kitchen to 'ready'", /Your food is ready/.test(text()));
-  pass("the bill button appears only once the food is served", byText("Request the bill") !== null);
+  pass("the bill button is still there once the food is served", byText("Request the bill") !== null);
   pass("the 'wait for your food' note is gone", !/as soon as your food has arrived/.test(text()));
 
   // ── 4. ask for the bill ──────────────────────────────────────────────────
@@ -234,7 +235,7 @@ async function main() {
   await click(host.querySelector('button[aria-label="Close"]'));
   await flush();
   pass("the panel closes from its own close button", host.querySelector('[role="dialog"]') === null);
-  pass("  …but no banner and no progress bar", !/on the way/.test(text()) && host.querySelectorAll('span[style*="width"]').length === 0);
+  pass("  …a drinks-only table still gets the bill button, with no progress bar", byText("Request the bill") !== null && host.querySelectorAll('span[style*="width"]').length === 0);
 
   // ── 7. no table / failing endpoint must never break the menu ─────────────
   await act(async () => root.unmount());

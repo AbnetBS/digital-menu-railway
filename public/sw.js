@@ -33,9 +33,15 @@
  *     ring its own in-app alarm instead, so there is one alarm, not two.
  */
 
-const SW_VERSION = "fana-pocket-v3";
+const SW_VERSION = "fana-pocket-v4";
 const FANA_ICON = "/logo.png";
 const DEFAULT_VIBRATE = [500, 200, 500, 200, 500, 200, 800];
+/**
+ * A GUEST just did something (ordered, added a dish, asked for the bill). The
+ * waiter cannot predict it and her phone is usually in a pocket, so this
+ * pattern buzzes for a solid ~3 seconds instead of one polite tap.
+ */
+const CUSTOMER_VIBRATE = [800, 150, 800, 150, 800, 150, 800];
 
 /* ── Lifecycle: take control IMMEDIATELY ───────────────────────────────────
  * Without skipWaiting/claim, a phone that already had the OLD (broken) worker
@@ -86,6 +92,12 @@ self.addEventListener("push", (event) => {
     url: "/waiter",
     urgent: true,
     repeat: 2,
+    // Milliseconds between re-rings. Guest events override this with ~1.1s so
+    // the rings run together into one continuous alarm.
+    gapMs: 7000,
+    kind: "staff",
+    ticketId: null,
+    action: null,
   };
   try {
     if (event.data) {
@@ -127,6 +139,15 @@ self.addEventListener("push", (event) => {
       }
 
       // ── POCKET MODE: nobody is looking. Ring like a phone call. ──
+      const isCustomer = data.kind === "customer";
+      // One-tap answer straight from the lock screen: a guest order can be
+      // confirmed without unlocking, finding the tab and hunting for the table.
+      const actions = [];
+      if (data.action === "confirm" && data.ticketId) {
+        actions.push({ action: "confirm", title: "✓ Confirm" });
+      }
+      actions.push({ action: "open", title: "Open" });
+
       const show = (ringTag) =>
         self.registration.showNotification(data.title, {
           body: data.body,
@@ -139,19 +160,22 @@ self.addEventListener("push", (event) => {
           requireInteraction: !!data.urgent,
           icon: FANA_ICON,
           badge: FANA_ICON,
-          vibrate: DEFAULT_VIBRATE,
+          vibrate: isCustomer ? CUSTOMER_VIBRATE : DEFAULT_VIBRATE,
           timestamp: Date.now(),
-          data: { url },
+          actions,
+          data: { url, ticketId: data.ticketId || null, kind: data.kind || "staff" },
         });
 
       await show(tag);
 
       // REPEAT RINGS: one ding can be missed in a loud room or a thick pocket.
-      // Re-ring the same alert a couple of times, and stop the moment staff
-      // dismiss/tap it or come back to the screen — never nag needlessly.
+      // A guest event re-rings every ~1.1s, which the ear hears as ONE ~3
+      // second alarm; staff events wait 7s so they never become nagging.
+      // Either way the rings stop the moment the alert is answered.
       const repeats = Math.max(0, Math.min(3, Number(data.repeat) || 0));
+      const gap = Math.max(600, Math.min(30000, Number(data.gapMs) || 7000));
       for (let i = 0; i < repeats; i += 1) {
-        await sleep(7000);
+        await sleep(gap);
         try {
           const stillThere = await self.registration.getNotifications({ tag });
           if (stillThere.length === 0) break; // tapped or swiped away → done
@@ -167,10 +191,48 @@ self.addEventListener("push", (event) => {
 });
 
 self.addEventListener("notificationclick", (event) => {
-  const url = (event.notification.data && event.notification.data.url) || "/waiter";
+  const info = event.notification.data || {};
+  const url = info.url || "/waiter";
+  const ticketId = info.ticketId || null;
+  const isConfirm = event.action === "confirm" && ticketId;
   event.notification.close();
   event.waitUntil(
     (async () => {
+      // ── ONE-TAP CONFIRM FROM THE LOCK SCREEN ──
+      // The waiter does not have to unlock, find the tab, find the table and
+      // tap Confirm: the worker calls the same API the app calls. The session
+      // cookie rides along because this is a same-origin request.
+      if (isConfirm) {
+        try {
+          const res = await fetch("/api/tickets", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({ id: ticketId, status: "confirmed" }),
+          });
+          if (res.ok) {
+            await self.registration.showNotification("✓ Order confirmed", {
+              body: "The order was confirmed from your notification.",
+              tag: `fana-confirm-ok-${ticketId}`,
+              icon: FANA_ICON,
+              badge: FANA_ICON,
+              silent: true,
+              data: { url },
+            });
+            await tellPages({ type: "fana-refresh" });
+            return;
+          }
+          await self.registration.showNotification("Could not confirm", {
+            body: res.status === 401 ? "Your session expired. Open the app and log in." : "Open the app and confirm it there.",
+            tag: `fana-confirm-fail-${ticketId}`,
+            icon: FANA_ICON,
+            badge: FANA_ICON,
+            data: { url },
+          });
+        } catch (e) {
+          /* offline: fall through and just open the app */
+        }
+      }
       try {
         // Close any repeat rings of the same alert still sitting in the tray.
         const siblings = await self.registration.getNotifications({ tag: event.notification.tag });

@@ -167,7 +167,7 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   pass("station route computes whether the WHOLE order is ready", /wholeOrderReady/.test(stationRoute));
   pass("item removal pushes waiter + station", /itemRemovedAlerts\(/.test(itemsRoute));
   pass("quantity edits push waiter + station", /itemQuantityAlerts\(/.test(itemsRoute));
-  pass("bill requests re-ring until answered", /urgent: true/.test(tableStatus) && /repeat: 2/.test(tableStatus));
+  pass("bill requests ring the full guest alarm until answered", /CUSTOMER_ALERT_RING/.test(tableStatus) && /urgent: true/.test(read("src/lib/push.ts")) && /repeat: 3/.test(read("src/lib/push.ts")));
 
   // Alerts may never take an order flow down with them.
   for (const [name, src] of [["tickets", ticketsRoute], ["station-items", stationRoute], ["tickets/items", itemsRoute]] as const) {

@@ -12,6 +12,7 @@ import { unlockAudio, playDing, playAlarm } from "@/lib/sound";
 import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 
 interface StaffLite {
@@ -64,6 +65,26 @@ export default function CashierDashboard() {
   // never reached it and the counter tablet stayed silent. Reads use the ref.
   const alertsOnRef = useRef(false);
   const [toast, setToast] = useState("");
+
+  // ── GUEST EVENTS TAKE OVER THE SCREEN ──
+  // The tablet lives behind the counter, often face down or asleep. A guest
+  // ordering, adding dishes, or asking for the bill therefore gets a full
+  // screen with one big button that keeps re-ringing until it is pressed.
+  const [urgent, setUrgent] = useState<UrgentAlert | null>(null);
+  /** Guest events already answered here, so they never pop up again. */
+  const answeredRef = useRef<Set<string>>(new Set());
+  /** Tickets already seen at all (a brand new one = a fresh guest order). */
+  const knownTicketsRef = useRef<Set<number>>(new Set());
+  /** Ticket id -> unprinted submission count, to spot guest top-ups. */
+  const addOnsRef = useRef<Map<number, number>>(new Map());
+  /** Tickets whose guest already asked for the bill. */
+  const billAskedRef = useRef<Set<number>>(new Set());
+  /**
+   * The big button on the guest alert confirms an order. `setStatus` is
+   * defined further down, so the alert reaches it through this ref (kept in
+   * step by an effect right after that definition).
+   */
+  const setStatusRef = useRef<(id: number, status: string) => void>(() => {});
   // Always points at the CURRENT loaders for the SSE + push relays.
   const loadAllRef = useRef<() => void>(() => {});
   const loadHistoryRef = useRef<() => void>(() => {});
@@ -188,12 +209,55 @@ export default function CashierDashboard() {
         );
         if (needsMe) playAlarm();
         else playDing();
+
+        // Which of these came from a GUEST? Those are the unpredictable ones
+        // that deserve the full-screen alarm, not just a line in the list.
+        const guestEvent = newEvents.find(
+          (t) =>
+            (t.status === "pending_waiter" && !knownTicketsRef.current.has(t.id)) ||
+            (!!t.receiptRequestedAt && !billAskedRef.current.has(t.id)) ||
+            (addOnsRef.current.has(t.id) &&
+              (t.unprintedSubmissions || 0) > (addOnsRef.current.get(t.id) || 0))
+        );
+        if (guestEvent) {
+          const isBill = !!guestEvent.receiptRequestedAt && !billAskedRef.current.has(guestEvent.id);
+          const isNew = guestEvent.status === "pending_waiter" && !knownTicketsRef.current.has(guestEvent.id);
+          const id = `${guestEvent.id}:${isBill ? "bill" : isNew ? "order" : `add${guestEvent.unprintedSubmissions || 0}`}`;
+          if (!answeredRef.current.has(id)) {
+            setUrgent({
+              id,
+              kind: isBill ? "bill" : isNew ? "order" : "added",
+              table: guestEvent.tableName,
+              detail: isBill
+                ? `${guestEvent.totalAmount} ETB • guest wants to pay`
+                : isNew
+                  ? `${guestEvent.totalAmount} ETB • new QR order`
+                  : `${guestEvent.totalAmount} ETB • guest added items`,
+              actionLabel: isNew ? "✓ CONFIRM ORDER" : "GOT IT",
+              onAction: isNew ? () => setStatusRef.current(guestEvent.id, "confirmed") : undefined,
+            });
+          }
+        }
         const first = newEvents[0];
         triggerDesktopNotification({
           title: "Fana Cafe • Cashier Alert",
           message: eventMessage(first) || `${first.tableName} updated`,
           tag: `fana-cashier-${first.id}`,
         });
+      }
+      // Remember what this refresh looked like, so the same guest event is
+      // never announced twice.
+      for (const t of active) {
+        knownTicketsRef.current.add(t.id);
+        addOnsRef.current.set(t.id, t.unprintedSubmissions || 0);
+        if (t.receiptRequestedAt) billAskedRef.current.add(t.id);
+        else billAskedRef.current.delete(t.id);
+      }
+      for (const id of [...addOnsRef.current.keys()]) {
+        if (!active.some((t) => t.id === id)) {
+          addOnsRef.current.delete(id);
+          billAskedRef.current.delete(id);
+        }
       }
       initializedRef.current = true;
 
@@ -355,6 +419,10 @@ export default function CashierDashboard() {
     });
     loadAll();
   };
+
+  useEffect(() => {
+    setStatusRef.current = setStatus;
+  });
 
   const removeItem = async (itemId: number) => {
     await fetch(`/api/tickets/items?id=${itemId}`, { method: "DELETE" });
@@ -672,6 +740,17 @@ export default function CashierDashboard() {
       </div>
 
       {/* Toast */}
+      {/* Full-screen guest alert (new order / added items / bill request) */}
+      <UrgentAlertOverlay
+        alert={urgent}
+        onClose={() =>
+          setUrgent((cur) => {
+            if (cur) answeredRef.current.add(cur.id);
+            return null;
+          })
+        }
+      />
+
       {toast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl max-w-[90vw] text-center">
           {toast}

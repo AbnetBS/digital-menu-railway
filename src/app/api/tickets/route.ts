@@ -626,29 +626,63 @@ export async function POST(request: Request) {
     // a waiter's order goes to the CASHIER only. Kitchen/barista are woken by
     // the PUT below when she taps ✓ PRINTED ("printed") or, in full mode,
     // "Accept → Kitchen" ("preparing"). Nothing gets cooked without a bill.
+    //
+    // WAITER TOP-UP ALARMS: a guest ordering from their phone hears nothing
+    // from staff, so EVERY customer submission must ring the waiter — not just
+    // the first one. A submission that merges into an existing bill (pending,
+    // confirmed, printed, ...) rings the waiter on a DISTINCT per-event tag
+    // (fana-qr-add-<ticket>-<submission>), because reusing the original
+    // fana-qr-<id> tag would silently REPLACE the previous notification instead
+    // of ringing as a new event. The cashier pushes below are UNCHANGED — she
+    // keeps exactly the signals she already had. Staff-originated sends
+    // (isCustomer false) ring nobody extra: the waiter keying items herself
+    // already knows what she did.
     {
       const pushed = transactionResult.ticket;
+      const merged = transactionResult.merged;
+      // One tag per submission: the idempotency key is unique per order submit
+      // (legacy clients without one fall back to a timestamp, still unique).
+      const additionTag = `fana-qr-add-${pushed.id}-${idemKey || Date.now()}`;
       if (isCustomer && pushed.status === "pending_waiter") {
+        // Brand-new QR order AND top-ups on a still-pending bill: the WAITER's
+        // job only — the cashier cannot print what nobody confirmed yet, so she
+        // keeps the silence she always had here. Merges use the per-submission
+        // tag so each top-up rings as its own notification.
         void sendPushToRoles(["waiter"], {
-          title: "🍽 New QR order",
+          title: merged ? "🍽 Guest added items" : "🍽 New QR order",
           body: `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`,
-          tag: `fana-qr-${pushed.id}`,
-        }).catch(() => {});
-      } else if (pushed.status === "printed") {
-        // Additions landed on a bill the cashier already keyed into the EFD —
-        // she prints the second receipt for the NEW items only (her queue
-        // card shows exactly those, never the whole bill again).
-        void sendPushToRoles(["cashier"], {
-          title: "⚠ Items ADDED",
-          body: `${pushed.tableName} • new items on the bill, print receipt #2`,
-          tag: `fana-add-${pushed.id}`,
+          tag: merged ? additionTag : `fana-qr-${pushed.id}`,
         }).catch(() => {});
       } else {
-        void sendPushToRoles(["cashier"], {
-          title: "🧾 To print",
-          body: `${pushed.tableName} • ${transactionResult.total} ETB`,
-          tag: `fana-print-${pushed.id}`,
-        }).catch(() => {});
+        if (pushed.status === "printed") {
+          // Additions landed on a bill the cashier already keyed into the EFD —
+          // she prints the second receipt for the NEW items only (her queue
+          // card shows exactly those, never the whole bill again).
+          void sendPushToRoles(["cashier"], {
+            title: "⚠ Items ADDED",
+            body: `${pushed.tableName} • new items on the bill, print receipt #2`,
+            tag: `fana-add-${pushed.id}`,
+          }).catch(() => {});
+        } else {
+          void sendPushToRoles(["cashier"], {
+            title: "🧾 To print",
+            body: `${pushed.tableName} • ${transactionResult.total} ETB`,
+            tag: `fana-print-${pushed.id}`,
+          }).catch(() => {});
+        }
+        // Customer top-up merged into an existing bill → the waiter must hear
+        // it too. Still-pending bill: her job is to go confirm. Confirmed or
+        // printed bill: her job is to check the updated bill.
+        if (isCustomer && merged) {
+          void sendPushToRoles(["waiter"], {
+            title: "🍽 Guest added items",
+            body:
+              pushed.status === "pending_waiter"
+                ? `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`
+                : `${pushed.tableName} • guest added items • ${transactionResult.total} ETB`,
+            tag: additionTag,
+          }).catch(() => {});
+        }
       }
     }
 

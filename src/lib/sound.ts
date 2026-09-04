@@ -7,12 +7,19 @@
  * Browsers require ONE user click to unlock audio — the LOGIN button now does
  * it automatically (and each screen still has the manual bell toggle).
  *
- * LOUDNESS strategy: a bell is two oscillators an octave apart (the ear reads
- * the sum as roughly twice as loud), gain at the compressor ceiling, and the
- * pattern repeats so a waiter half-hears the first ding and fully catches the
- * third. High frequencies (1.5–2.1 kHz) cut through cafe noise better than the
- * old 988 Hz single sine. On phones we ALSO vibrate — in a pocket, vibration
- * is felt when sound is muffled.
+ * LOUDNESS strategy: a bell is several oscillators an octave apart (the ear
+ * reads the sum as much louder), gains pushed at the compressor ceiling, and
+ * the pattern repeats so a waiter half-hears the first ding and fully catches
+ * the later ones. High frequencies (1.5–2.1 kHz) cut through cafe noise, the
+ * low-octave layer (G4/G5 body) carries the energy on small phone speakers
+ * that cannot move much air. On phones we ALSO vibrate — in a pocket,
+ * vibration is felt when sound is muffled.
+ *
+ * NOTE: no web page can out-shout the phone's OS MEDIA volume — if the device
+ * is muted or media volume is at minimum, this alarm is silent no matter how
+ * hot the signal is. That is why pocket mode ALSO sends a system push (which
+ * uses the notification channel) and vibrates: at least one channel gets
+ * through. Tell staff to keep media volume up.
  */
 
 let ctx: AudioContext | null = null;
@@ -26,11 +33,14 @@ export function unlockAudio() {
     if (!ctx) {
       ctx = new AC();
       // Route everything through a limiter: we deliberately push gains to the
-      // ceiling, the compressor keeps it loud-but-not-distorted.
+      // ceiling, the compressor keeps it loud-but-not-distorted. Threshold sits
+      // near -6 dB with a high ratio so the summed bells ride close to full
+      // scale without ever clipping — the compressor is the thing that makes
+      // "louder" safe instead of crunchy.
       compressor = ctx.createDynamicsCompressor();
-      compressor.threshold.value = -12;
-      compressor.knee.value = 6;
-      compressor.ratio.value = 12;
+      compressor.threshold.value = -6;
+      compressor.knee.value = 3;
+      compressor.ratio.value = 20;
       compressor.attack.value = 0.002;
       compressor.release.value = 0.2;
       compressor.connect(ctx.destination);
@@ -51,13 +61,14 @@ function vibrate(pattern: number[]) {
   }
 }
 
-/** One bell hit: fundamental + octave, fast attack, half-second decay. */
+/** One bell hit: fundamental + octaves, fast attack, half-second decay. */
 function bell(at: number, level: number) {
   if (!ctx || !compressor) return;
   for (const [freq, gainLevel] of [
     [1568, level], // G6 — cuts through kitchen noise
     [2093, level * 0.6], // C7 — shimmer an octave up
     [784, level * 0.5], // G5 — body
+    [392, level * 0.7], // G4 — low-octave layer, energy on small phone speakers
   ] as const) {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -109,13 +120,14 @@ export function playAlarm() {
     if (ctx.state === "suspended") ctx.resume();
 
     const start = ctx.currentTime + 0.01;
-    // 4 pairs × (ding + ding 160ms later), pair gap 380ms → ~2.4 s of ringing
-    for (let pair = 0; pair < 4; pair += 1) {
+    // 6 pairs × (ding + ding 160ms later), pair gap 380ms → ~3.6 s of ringing.
+    // Long on purpose: a customer top-up must punch through a lunch-rush room.
+    for (let pair = 0; pair < 6; pair += 1) {
       const base = start + pair * 0.62;
       bell(base, 1.0);
       bell(base + 0.16, 1.0);
     }
-    vibrate([400, 120, 400, 120, 400, 120, 400, 120, 400]);
+    vibrate([400, 120, 400, 120, 400, 120, 400, 120, 400, 120, 400, 120, 400]);
   } catch {
     /* ignore */
   }

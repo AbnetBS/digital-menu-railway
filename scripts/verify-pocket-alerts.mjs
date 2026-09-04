@@ -85,6 +85,10 @@ function pass(name, cond) {
   pass("gains run to the ceiling (0.9–1.0, was 0.5)", /0\.9/.test(sound) && /1\.0/.test(sound));
   pass("a limiter keeps the loud signal clean", /DynamicsCompressor/.test(sound));
   pass("phones vibrate too (pocket = felt, not heard)", /navigator\.vibrate/.test(sound));
+  pass("alarm runs 6 pairs (~3.6 s of ringing, was 4)", /pair < 6/.test(sound));
+  pass("low-octave bell layer carries on small phone speakers", /\[392,/.test(sound));
+  pass("limiter tightened toward full scale (threshold -6, high ratio)", /threshold\.value = -6/.test(sound) && /ratio\.value = 20/.test(sound));
+  pass("staff are told the OS media volume caps real loudness", /MEDIA volume/i.test(sound));
   pass("stations ring the full alarm on new items", /playAlarm\(\)/.test(station));
   pass("waiters ring the full alarm on new QR orders", /playAlarm\(\)/.test(waiter));
   pass("cashier distinguishes 'needs me' (alarm) from noise (ding)", /needsMe/.test(cashier) && /playAlarm\(\)/.test(cashier));
@@ -133,6 +137,50 @@ function pass(name, cond) {
   pass("✓ PRINTED releases the crew — PUT wakes kitchen/barista", /body\.status === "printed" \|\| \(body\.status === "preparing"/.test(tickets) && /fana-station-/.test(tickets));
   pass("only stations with newly released items are pinged", /prevStamp === null \|\| !r\.createdAt \|\| new Date\(r\.createdAt\)\.getTime\(\) > prevStamp/.test(tickets));
   pass("bill request → waiter + cashier", /fana-bill-/.test(tableStatus) && /\["waiter", "cashier"\]/.test(tableStatus));
+
+  /* ── 6b. EVERY customer top-up rings the waiter, not just the first order ──
+   * A guest adding dishes to an existing bill (pending, confirmed, printed)
+   * used to ring NOBODY on the waiter side: in-page detection watched ticket
+   * IDs (unchanged by additions) and the server only pushed waiters for fresh
+   * pending_waiter tickets — reusing one tag, so even that could silently
+   * replace the previous notification. */
+  const postHalf = tickets.split("export async function PUT")[0] || "";
+  pass("guest top-up merged into any bill rings the waiter", /fana-qr-add-/.test(postHalf) && /sendPushToRoles\(\["waiter"\]/.test(postHalf));
+  pass("top-up waiter push fires on customer merges (pending/confirmed/printed)", /isCustomer && merged/.test(postHalf));
+  pass("each top-up is its own notification (distinct tag per submission)", /fana-qr-add-\$\{pushed\.id\}-\$\{idemKey/.test(postHalf));
+  {
+    // Still-pending bills are the WAITER's job only: the cashier cannot print
+    // what nobody confirmed yet, so the pending branch must never wake her.
+    const anchor = postHalf.indexOf('if (isCustomer && pushed.status === "pending_waiter")');
+    let depth = 0, branch = "";
+    for (let i = postHalf.indexOf("{", anchor); i < postHalf.length; i++) {
+      const ch = postHalf[i];
+      if (ch === "{") depth++;
+      if (ch === "}") depth--;
+      branch += ch;
+      if (depth === 0) break;
+    }
+    pass("pending bills (new + top-ups) never push the cashier", anchor !== -1 && !/\["cashier"\]/.test(branch));
+  }
+  pass("cashier keeps her printed-bill ADDED push exactly as-is", /fana-add-/.test(postHalf) && /new items on the bill, print receipt #2/.test(postHalf));
+  pass("cashier keeps her To-print push exactly as-is", /fana-print-/.test(postHalf) && /To print/.test(postHalf));
+  {
+    // Staff-originated sends (waiter/cashier keying items) must ring NOBODY
+    // extra — every waiter push on the POST path sits directly inside an
+    // isCustomer-guarded branch (nearest enclosing `if (` must name it).
+    const waiterPushes = [...postHalf.matchAll(/sendPushToRoles\(\["waiter"\]/g)];
+    const guarded = waiterPushes.filter((m) => {
+      const ifIdx = postHalf.lastIndexOf("if (", m.index);
+      if (ifIdx === -1 || m.index - ifIdx > 800) return false;
+      return /isCustomer/.test(postHalf.slice(ifIdx, postHalf.indexOf(")", ifIdx) + 1));
+    });
+    pass("staff-originated sends never ring the waiter (all waiter pushes need isCustomer)", waiterPushes.length >= 2 && guarded.length === waiterPushes.length);
+  }
+  pass("POST still never pushes to stations (Group 11 gate holds)", !/sendPushToRoles\(stations/.test(postHalf));
+  pass("waiter diffs per-ticket ITEM UNITS, not just new ticket IDs", /itemCountRef/.test(waiter) && /Number\(i\.quantity\)/.test(waiter));
+  pass("waiter's own keying never alarms her (own-send credit)", /ownAddRef/.test(waiter));
+  pass("top-up alert names the table and says what to do", /guest added items/.test(waiter) && /go confirm!/.test(waiter) && /check the bill!/.test(waiter));
+  pass("in-page top-up notification never replaces the previous one", /fana-waiter-add-/.test(waiter));
   pass("login (the one gesture browsers need) arms everything", /enablePocketAlerts\(\)/.test(waiter) && /enablePocketAlerts\(\)/.test(cashier) && /enablePocketAlerts\(\)/.test(station));
 }
 
@@ -152,5 +200,8 @@ console.log("\n✅ Pocket-alerts regression test PASSED");
 console.log("   • screen off / tab hidden → the alarm still rings (hidden-guard removed)");
 console.log("   • browser closed → system notification via Web Push (Android automatic,");
 console.log("     iPhone via Add to Home Screen, with an in-app instruction banner)");
-console.log("   • loud: triple-frequency bells at the limiter ceiling + vibration");
+console.log("   • loud: 6-pair alarm, low-octave layer, limiter near full scale + vibration");
 console.log("   • armed automatically at staff login — no separate button to forget");
+console.log("   • every customer top-up (pending/confirmed/printed) rings the waiter on");
+console.log("     its own tag; staff keying never rings anyone extra; stations stay");
+console.log("     silent until the cashier's print (Group 11 gate)");

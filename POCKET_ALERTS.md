@@ -19,6 +19,7 @@ the browser closed**.
 | 6 | `alertsOn` was captured by the SSE handler at login time (stale closure) | Turning alerts on afterwards never reached the handler, so the alarm stayed off for the rest of the shift | Every alarm check reads a live ref |
 | 7 | The SSE stream could die silently (throttled background tab, proxy timeout) | A frozen order list and no alarm until the app was reopened | A watchdog rebuilds a CLOSED stream, and each push is relayed by the worker to the open page as a second, independent path |
 | 8 | The only "test" showed a local popup | It proved nothing: a dead subscription still looked fine | `POST /api/push/test` sends a **real** push through the push service, optionally delayed so the phone can be locked first |
+| 9 | Only a handful of moments pushed anything | Food went ready, bills were printed, items were removed and orders were CANCELLED without a single phone making a sound | Every workflow event now goes through one matrix (`src/lib/alerts.ts`); see the table below |
 
 Two automated tests protect all of this:
 
@@ -26,6 +27,9 @@ Two automated tests protect all of this:
 - `node scripts/verify-pocket-alerts-runtime.mjs` - **executes** `public/sw.js`
   in a fake service-worker world and asserts what a phone actually does
   (pocket, visible, browser closed, re-rings, taps)
+- `tsx scripts/verify-role-alerts.ts` - walks the whole role/event matrix: every
+  ticket status, every station action, every item change and every bill request
+  must wake the right roles, and the actor must never wake themselves
 
 Both run in `npm test`.
 
@@ -66,18 +70,40 @@ The app shows this instruction automatically on iPhones.
 
 ## Who gets rung, for which event
 
-| Event | Rings |
-|-------|-------|
-| Guest submits a QR order | Waiter |
-| Guest adds items to an existing bill (any status) | Waiter (own tag per submission), plus cashier when the bill is confirmed or printed |
-| Waiter sends an order | Cashier (print queue) |
-| Additions on an already printed bill | Cashier ("print receipt #2") |
-| Cashier taps **PRINTED** (or "Accept -> Kitchen" in full mode) | Kitchen and/or barista, only for newly released items |
-| Guest asks for the bill | Waiter and cashier |
+Every action in the workflow now wakes the roles that must react. The single
+source of truth is `src/lib/alerts.ts`, and `scripts/verify-role-alerts.ts`
+walks the whole table so no event can be dropped by accident.
 
-Staff keying items themselves never rings their own phone.
+| What happens | Waiter | Cashier | Kitchen | Barista |
+|---|---|---|---|---|
+| Guest submits a QR order | **ring** | - | - | - |
+| Guest adds items to an existing bill | **ring** | ring (if confirmed/printed) | - | - |
+| Waiter sends an order | - | **ring** | - | - |
+| Waiter confirms a QR order | - | **ring** | - | - |
+| Cashier taps PRINTED | ring | - | **ring** (new items only) | **ring** (new items only) |
+| Additions on an already printed bill | - | **ring** | - | - |
+| Kitchen/barista starts an item | ring | - | - | - |
+| Kitchen/barista finishes an item | **ring** | - | - | - |
+| Last item finished (whole order ready) | **ring "ORDER READY TO SERVE"** | - | - | - |
+| Cashier removes an item from a bill | **ring** | - | **ring** (if theirs) | **ring** (if theirs) |
+| Quantity corrected on a bill | ring | - | **ring** (if theirs) | **ring** (if theirs) |
+| Guest asks for the bill | **ring** | **ring** | - | - |
+| Guest is ready to pay | **ring** | **ring** | - | - |
+| Payment completed | ring | **ring** (verify and mark paid) | - | - |
+| Bill settled / paid | ring | ring | - | - |
+| Table cleared | - | ring | ring | ring |
+| **Order cancelled** | **ring** | **ring** | **ring** | **ring** |
 
----
+**bold** = urgent: the notification stays on the lock screen and re-rings until
+somebody answers it. Plain "ring" = informational, it fades on its own.
+
+Two rules keep this from becoming noise:
+
+- **You never ring yourself.** The role that performed the action is removed
+  from the recipients, so the cashier printing a bill does not make her own
+  tablet scream, and a waiter keying items never alarms her own phone.
+- **A cancelled order is the loudest thing in the system.** It reaches all four
+  roles and re-rings three times, because food already on the fire has to stop.
 
 ## Troubleshooting
 

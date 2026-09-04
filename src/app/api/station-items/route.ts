@@ -4,6 +4,8 @@ import { ticketItems, tickets } from "@/db/schema";
 import { and, eq, notInArray, asc, inArray } from "drizzle-orm";
 import { requireStaffOrAdmin, readStaffSession, readAdminSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
+import { sendPushToRoles } from "@/lib/push";
+import { stationProgressAlerts } from "@/lib/alerts";
 
 type Station = "barista" | "kitchen";
 
@@ -136,7 +138,13 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: "itemId and stationStatus required" }, { status: 400 });
     }
     const existing = await db
-      .select({ id: ticketItems.id, stationName: ticketItems.stationName })
+      .select({
+        id: ticketItems.id,
+        stationName: ticketItems.stationName,
+        ticketId: ticketItems.ticketId,
+        name: ticketItems.name,
+        quantity: ticketItems.quantity,
+      })
       .from(ticketItems)
       .where(eq(ticketItems.id, Number(body.itemId)))
       .limit(1);
@@ -150,6 +158,50 @@ export async function PUT(request: Request) {
       .set({ stationStatus: String(body.stationStatus) })
       .where(eq(ticketItems.id, Number(body.itemId)))
       .returning();
+
+    // ── THE ALERT THAT WAS MISSING COMPLETELY ──
+    // The crew finishing a dish rang nobody, so food sat on the pass until a
+    // waiter happened to look at her screen. Now every station action wakes
+    // the waiter's phone, and the last finished item says "whole order ready".
+    try {
+      const item = existing[0];
+      const ticketRows = await db
+        .select({ id: tickets.id, tableName: tickets.tableName, totalAmount: tickets.totalAmount })
+        .from(tickets)
+        .where(eq(tickets.id, item.ticketId))
+        .limit(1);
+      if (ticketRows.length > 0) {
+        // Is anything on this bill still unfinished (any station)?
+        const siblings = await db
+          .select({ id: ticketItems.id, stationStatus: ticketItems.stationStatus })
+          .from(ticketItems)
+          .where(and(eq(ticketItems.ticketId, item.ticketId), eq(ticketItems.removed, false)));
+        const wholeOrderReady = siblings.every((row) =>
+          row.id === item.id ? String(body.stationStatus) === "done" : row.stationStatus === "done"
+        );
+        const alerts = stationProgressAlerts(String(body.stationStatus), {
+          id: ticketRows[0].id,
+          tableName: ticketRows[0].tableName,
+          totalAmount: ticketRows[0].totalAmount,
+          station: String(item.stationName || ""),
+          itemName: item.name,
+          quantity: item.quantity,
+          wholeOrderReady,
+        });
+        for (const alert of alerts) {
+          void sendPushToRoles(alert.roles, {
+            title: alert.title,
+            body: alert.body,
+            tag: alert.tag,
+            urgent: alert.urgent,
+            repeat: alert.repeat,
+          }).catch(() => {});
+        }
+      }
+    } catch {
+      // A push hiccup must never fail the crew's tap.
+    }
+
     publish(CHANNELS.orders);
     return NextResponse.json(updated[0]);
   } catch (error) {

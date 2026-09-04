@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Coffee, CookingPot, RefreshCw, LogOut, CheckCircle2, BellRing, Clock } from "lucide-react";
-import { unlockAudio, playAlarm } from "@/lib/sound";
+import { unlockAudio, playAlarm, playDing } from "@/lib/sound";
 import { formatClock, formatDayMonthYear, minutesSince, waitingLabel } from "@/lib/order-lines";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { enablePocketAlerts } from "@/lib/push-client";
@@ -77,6 +77,14 @@ export default function StationApp({ station }: { station: Station }) {
   // even when no new order arrives to trigger a refresh.
   const [now, setNow] = useState(() => Date.now());
   const pendingSeenRef = useRef<Set<number>>(new Set());
+  // EVERY ROLE EVENT RINGS: the crew also has to hear when a line they are
+  // cooking is REMOVED or its quantity is corrected, and when a whole order
+  // disappears (cancelled or the table was cleared). Those changes used to be
+  // completely silent, so food was cooked for a bill that no longer wanted it.
+  /** Item id -> what the crew last saw for that line. */
+  const itemSigRef = useRef<Map<number, { quantity: number; name: string; ticketId: number; tableName: string }>>(new Map());
+  /** Ticket id -> table name, so a vanished order can still be named. */
+  const ticketNameRef = useRef<Map<number, string>>(new Map());
   const initRef = useRef(false);
 
   useEffect(() => {
@@ -100,6 +108,11 @@ export default function StationApp({ station }: { station: Station }) {
       .then((d) => setStaffList(d.filter((x: StaffLite) => x.role === station)))
       .catch(() => {});
   }, [station]);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 4000);
+  };
 
   const login = async () => {
     setLoginError("");
@@ -145,6 +158,60 @@ export default function StationApp({ station }: { station: Station }) {
     const fresh: number[] = [];
     for (const id of nowPendingIds) if (!pendingSeenRef.current.has(id)) fresh.push(id);
     fresh.forEach((id) => pendingSeenRef.current.add(id));
+
+    // ── REMOVED / CHANGED / VANISHED WORK ──
+    // A line the crew is cooking can be taken off the bill by the cashier, have
+    // its quantity corrected, or vanish because the order was cancelled or the
+    // table was cleared. All three used to be silent, so the pan kept going.
+    const liveIds = new Set<number>();
+    const changed: Array<{ tableName: string; name: string; from: number; to: number }> = [];
+    const removed: Array<{ tableName: string; name: string }> = [];
+    const gone: string[] = [];
+    for (const t of data) {
+      ticketNameRef.current.set(t.id, t.tableName);
+      for (const i of t.items) {
+        liveIds.add(i.id);
+        const prev = itemSigRef.current.get(i.id);
+        itemSigRef.current.set(i.id, { quantity: i.quantity, name: i.name, ticketId: t.id, tableName: t.tableName });
+        if (initRef.current && prev !== undefined && prev.quantity !== i.quantity) {
+          changed.push({ tableName: t.tableName, name: i.name, from: prev.quantity, to: i.quantity });
+        }
+      }
+    }
+    const nowTicketIds = new Set(data.map((t) => t.id));
+    for (const [id, seen] of [...itemSigRef.current.entries()]) {
+      if (liveIds.has(id)) continue;
+      itemSigRef.current.delete(id);
+      // The line disappeared while its bill is still open => it was removed.
+      // (A bill that left the list entirely is reported once, below.)
+      if (initRef.current && nowTicketIds.has(seen.ticketId)) {
+        removed.push({ tableName: seen.tableName, name: seen.name });
+      }
+    }
+    for (const [id, name] of [...ticketNameRef.current.entries()]) {
+      if (nowTicketIds.has(id)) continue;
+      ticketNameRef.current.delete(id);
+      if (initRef.current) gone.push(name);
+    }
+
+    if (initRef.current && alertsOnRef.current && (changed.length > 0 || removed.length > 0 || gone.length > 0)) {
+      // Stop-work news: a removal or a cancelled order is urgent (the pan is
+      // already on the fire), a quantity correction is a short ring.
+      if (removed.length > 0 || gone.length > 0) playAlarm();
+      else playDing();
+      const message =
+        removed.length > 0
+          ? `✗ ${removed[0].tableName}: ${removed[0].name} was REMOVED, do not prepare it`
+          : gone.length > 0
+            ? `⛔ ${gone[0]}: order closed or cancelled, stop preparing`
+            : `✎ ${changed[0].tableName}: ${changed[0].name} quantity ${changed[0].from} to ${changed[0].to}`;
+      triggerDesktopNotification({
+        title: `Fana Cafe • ${meta.label} update`,
+        message,
+        tag: `fana-station-change-${Date.now()}`,
+      });
+      showToast(message);
+    }
 
     if (initRef.current && alertsOnRef.current && fresh.length > 0) {
       // New food to cook = the crew must ACT → full alarm, not a gentle ding.
@@ -226,11 +293,6 @@ export default function StationApp({ station }: { station: Station }) {
       };
     }
   }, [staffName]);
-
-  const showToast = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(""), 4000);
-  };
 
   const enableAlerts = async () => {
     unlockAudio();

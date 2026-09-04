@@ -245,6 +245,10 @@ export async function POST(request: Request) {
         title: "🧾 Bill requested",
         body: `${open[0].tableName} • the guest asked for the bill`,
         tag: `fana-bill-${open[0].id}`,
+        // A guest sitting and waiting is an ACT NOW event: keep it on the lock
+        // screen and re-ring it until somebody walks over.
+        urgent: true,
+        repeat: 2,
       }).catch(() => {});
     }
 

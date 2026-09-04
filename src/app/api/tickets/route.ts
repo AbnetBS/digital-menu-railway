@@ -6,12 +6,13 @@ import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
 import { eq, asc, desc, and, notInArray, inArray, sql, gt, gte, isNotNull } from "drizzle-orm";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
-import { requireStaffOrAdmin, requireAdmin } from "@/lib/session";
+import { requireStaffOrAdmin, requireAdmin, readStaffSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
 import { sendPushToRoles } from "@/lib/push";
+import { ticketStatusAlerts, withoutActor } from "@/lib/alerts";
 
 /**
  * Customer order limits are TWO-TIER (per table + per venue) because every guest
@@ -739,6 +740,9 @@ export async function PUT(request: Request) {
   const __auth = await requireStaffOrAdmin();
   if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
+  // WHO is doing this? Used only to skip alerting the actor's own role: the
+  // cashier tapping PRINTED must not make her own tablet ring.
+  const actor = await readStaffSession();
   try {
     const body = await request.json();
     if (!body.id) return NextResponse.json({ error: "Ticket ID required" }, { status: 400 });
@@ -870,6 +874,37 @@ export async function PUT(request: Request) {
         }
       } catch {
         // A push hiccup must never fail the cashier's print confirmation.
+      }
+    }
+
+    // ── EVERY STATUS CHANGE RINGS THE ROLES THAT MUST REACT ──
+    // Before, only the print/preparing moment pushed anyone, so a waiter with
+    // her phone in a pocket never learned that a bill was confirmed, that the
+    // guest was ready to pay, or that an order had been CANCELLED while the
+    // kitchen was still cooking it. The matrix in @/lib/alerts covers the whole
+    // workflow; the actor's own role is skipped so nobody rings themselves.
+    if (body.status && body.status !== cur.status) {
+      try {
+        const alerts = withoutActor(
+          ticketStatusAlerts(String(body.status), {
+            id: updated[0].id,
+            tableName: updated[0].tableName,
+            totalAmount: updated[0].totalAmount,
+            orderNumber: updated[0].orderNumber,
+          }),
+          actor?.role
+        );
+        for (const alert of alerts) {
+          void sendPushToRoles(alert.roles, {
+            title: alert.title,
+            body: alert.body,
+            tag: alert.tag,
+            urgent: alert.urgent,
+            repeat: alert.repeat,
+          }).catch(() => {});
+        }
+      } catch {
+        // An alert hiccup must never fail a status change.
       }
     }
 

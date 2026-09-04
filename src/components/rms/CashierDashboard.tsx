@@ -123,6 +123,8 @@ export default function CashierDashboard() {
   };
 
   const eventMessage = (t: Ticket): string | null => {
+    // A guest waiting for the bill outranks whatever the status says.
+    if (t.receiptRequestedAt) return `🧾 BILL REQUESTED • ${t.tableName} • ${t.totalAmount} ETB`;
     const m: Record<string, string> = {
       pending_waiter: `🍽 New QR order • ${t.tableName} • ${t.totalAmount} ETB • needs confirmation`,
       confirmed: `🧾 TO PRINT • ${t.tableName} • ${t.totalAmount} ETB`,
@@ -131,6 +133,8 @@ export default function CashierDashboard() {
       ready_for_payment: `💳 Payment requested • ${t.tableName} • ${t.totalAmount} ETB`,
       completed: `✓ Payment completed • ${t.tableName} • verify & mark Paid`,
       closed: `✓ Table cleared • ${t.tableName} is free`,
+      cancelled: `⛔ ORDER CANCELLED • ${t.tableName}`,
+      paid: `✓ Bill settled • ${t.tableName}`,
     };
     return m[t.status] || null;
   };
@@ -157,7 +161,12 @@ export default function CashierDashboard() {
       // ── EVENT DETECTION: any order action (QR order, confirmation, payment request, payment done)
       const newEvents: Ticket[] = [];
       for (const t of active) {
-        const key = `${t.id}:${t.status}:${t.unprintedSubmissions || 0}`;
+        // The key is the fingerprint of "something the cashier must react to".
+        // receiptRequestedAt is part of it now: a guest asking for the bill does
+        // NOT change the status, so that event used to slip past her silently.
+        // The station progress is in there too, so she sees an order go ready.
+        const cooked = (t.items || []).filter((i) => !i.removed && i.stationStatus === "done").length;
+        const key = `${t.id}:${t.status}:${t.unprintedSubmissions || 0}:${t.receiptRequestedAt ? 1 : 0}:${cooked}`;
         if (!seenEventsRef.current.has(key)) {
           seenEventsRef.current.add(key);
           newEvents.push(t);
@@ -168,7 +177,14 @@ export default function CashierDashboard() {
         // A card entering HER print queue gets the full alarm; anything else
         // (status moves, cleared tables…) gets the standard ring.
         const needsMe = newEvents.some(
-          (t) => t.status === "confirmed" || t.status === "pending_waiter" || (t.status === "printed" && (t.unprintedSubmissions || 0) > 0)
+          (t) =>
+            t.status === "confirmed" ||
+            t.status === "pending_waiter" ||
+            t.status === "ready_for_payment" ||
+            t.status === "completed" ||
+            t.status === "cancelled" ||
+            !!t.receiptRequestedAt ||
+            (t.status === "printed" && (t.unprintedSubmissions || 0) > 0)
         );
         if (needsMe) playAlarm();
         else playDing();

@@ -12,7 +12,7 @@ import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
-import { unlockAudio, playAlarm } from "@/lib/sound";
+import { unlockAudio, playAlarm, playDing } from "@/lib/sound";
 import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { useRef } from "react";
@@ -104,6 +104,21 @@ export default function WaiterApp() {
   // keying items herself must NOT ring her own phone — the next refresh
   // consumes this credit once, so only units BEYOND her own send alarm her.
   const ownAddRef = useRef<{ ticketId: number; units: number } | null>(null);
+  // EVERY ROLE EVENT RINGS: besides new orders and guest top-ups, the waiter
+  // must hear food going READY, an order being cancelled or confirmed, and a
+  // guest asking for the bill. Each of these needs its own memory of the last
+  // refresh, otherwise the same event would ring forever (or never).
+  /** Ticket id -> last seen status. */
+  const statusRef = useRef<Map<number, string>>(new Map());
+  /** Item ids already announced as ready, so a done dish rings exactly once. */
+  const readyRef = useRef<Set<number>>(new Set());
+  /** Tickets whose guest already asked for the bill. */
+  const billAskedRef = useRef<Set<number>>(new Set());
+  /** Status changes THIS waiter just made, so she never alarms herself. */
+  const ownStatusRef = useRef<Set<string>>(new Set());
+  const noteOwnStatus = (ticketId: number, status: string) => {
+    ownStatusRef.current.add(`${ticketId}:${status}`);
+  };
   // Always points at the CURRENT loadTables (the SSE handler and the service
   // worker relay are created once and would otherwise call a stale copy).
   const loadTablesRef = useRef<() => void>(() => {});
@@ -226,6 +241,21 @@ export default function WaiterApp() {
     showToast("🔔 Alerts ON • pocket notifications armed");
   };
 
+  /** Plain-language line for a status somebody else moved the ticket to. */
+  const statusMoveLabel = (status: string, tableName: string): string => {
+    const map: Record<string, string> = {
+      confirmed: `✓ ${tableName}: order confirmed`,
+      printed: `🖨 ${tableName}: bill printed, crew is cooking`,
+      preparing: `👨‍🍳 ${tableName}: kitchen started`,
+      ready_for_payment: `💳 ${tableName}: guest is ready to pay`,
+      completed: `✓ ${tableName}: payment completed`,
+      paid: `✓ ${tableName}: bill settled`,
+      closed: `✓ ${tableName} is free for new guests`,
+      cancelled: `⛔ ${tableName}: ORDER CANCELLED, do not serve`,
+    };
+    return map[status] || "";
+  };
+
   const loadTables = async () => {
     // GROUP 10 FIX: this used to return early while the screen was off / the
     // tab hidden — which is exactly when a phone sits in a pocket — so the
@@ -271,6 +301,87 @@ export default function WaiterApp() {
       // the map cannot grow forever and a re-seated table starts clean.
       for (const id of [...itemCountRef.current.keys()]) {
         if (!all.some((t) => t.id === id)) itemCountRef.current.delete(id);
+      }
+
+      // ── READY TO SERVE / STATUS MOVES / BILL REQUESTS ──
+      // These are the events that previously changed in total silence.
+      const readyItems: Array<{ ticket: Ticket; name: string; quantity: number }> = [];
+      const statusMoves: Array<{ ticket: Ticket; from: string; to: string }> = [];
+      const billAsks: Ticket[] = [];
+      for (const t of all) {
+        // Food finished by the kitchen/barista.
+        for (const i of t.items || []) {
+          if (i.removed) continue;
+          const done = i.stationStatus === "done";
+          if (done && !readyRef.current.has(i.id)) {
+            readyRef.current.add(i.id);
+            if (alertsInitRef.current) readyItems.push({ ticket: t, name: i.name, quantity: i.quantity });
+          }
+          if (!done) readyRef.current.delete(i.id); // sent back to the pan
+        }
+        // Status moves made by somebody else (cashier printed, order cancelled).
+        const prevStatus = statusRef.current.get(t.id);
+        statusRef.current.set(t.id, t.status);
+        const ownKey = `${t.id}:${t.status}`;
+        if (ownStatusRef.current.has(ownKey)) {
+          ownStatusRef.current.delete(ownKey);
+        } else if (alertsInitRef.current && prevStatus !== undefined && prevStatus !== t.status) {
+          statusMoves.push({ ticket: t, from: prevStatus, to: t.status });
+        }
+        // Guest tapped "bring the bill" on their own phone.
+        if (t.receiptRequestedAt) {
+          if (!billAskedRef.current.has(t.id)) {
+            billAskedRef.current.add(t.id);
+            if (alertsInitRef.current) billAsks.push(t);
+          }
+        } else {
+          billAskedRef.current.delete(t.id);
+        }
+      }
+      for (const id of [...statusRef.current.keys()]) {
+        if (!all.some((t) => t.id === id)) {
+          statusRef.current.delete(id);
+          billAskedRef.current.delete(id);
+        }
+      }
+
+      if (alertsInitRef.current && alertsOnRef.current && (readyItems.length > 0 || billAsks.length > 0 || statusMoves.length > 0)) {
+        // Ready food and a waiting guest are ACT NOW events: full alarm.
+        // A status move somebody else made is information: a short ring.
+        if (readyItems.length > 0 || billAsks.length > 0) playAlarm();
+        else playDing();
+
+        if (readyItems.length > 0) {
+          const r = readyItems[0];
+          const more = readyItems.length > 1 ? ` (+${readyItems.length - 1} more)` : "";
+          triggerDesktopNotification({
+            title: "Fana Cafe • Ready to serve",
+            message: `🔔 ${r.ticket.tableName}: ${r.name} x${r.quantity} is ready${more} • pick it up!`,
+            tag: `fana-waiter-ready-${r.ticket.id}-${Date.now()}`,
+          });
+          showToast(`🔔 READY: ${r.ticket.tableName} • ${r.name}${more}`);
+        }
+        if (billAsks.length > 0) {
+          const b = billAsks[0];
+          triggerDesktopNotification({
+            title: "Fana Cafe • Bill requested",
+            message: `🧾 ${b.tableName} asked for the bill • ${b.totalAmount} ETB`,
+            tag: `fana-waiter-bill-${b.id}`,
+          });
+          if (readyItems.length === 0) showToast(`🧾 ${b.tableName} asked for the bill`);
+        }
+        if (statusMoves.length > 0 && readyItems.length === 0 && billAsks.length === 0) {
+          const m = statusMoves[0];
+          const label = statusMoveLabel(m.to, m.ticket.tableName);
+          if (label) {
+            triggerDesktopNotification({
+              title: "Fana Cafe • Order update",
+              message: label,
+              tag: `fana-waiter-status-${m.ticket.id}-${m.to}`,
+            });
+            showToast(label);
+          }
+        }
       }
 
       if (alertsInitRef.current && alertsOnRef.current && (fresh.length > 0 || added.length > 0)) {
@@ -471,6 +582,7 @@ export default function WaiterApp() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: activeTicket.id, status: "ready_for_payment" }),
     });
+    noteOwnStatus(activeTicket.id, "ready_for_payment");
     setView("payment");
     loadTables();
   };
@@ -491,6 +603,7 @@ export default function WaiterApp() {
         receiptImage: receiptImage || "",
       }),
     });
+    noteOwnStatus(activeTicket.id, "completed");
     setSending(false);
     setActiveTicket(null);
     setSelectedTable(null);
@@ -530,6 +643,7 @@ export default function WaiterApp() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: activeTicket.id, status: "closed", closedBy: staffName }),
     });
+    noteOwnStatus(activeTicket.id, "closed");
     showToast(`✓ ${activeTicket.tableName} is free for new guests`);
     setActiveTicket(null);
     setSelectedTable(null);
@@ -597,6 +711,7 @@ export default function WaiterApp() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: activeTicket.id, status: "confirmed", confirmedBy: staffName }),
     });
+    noteOwnStatus(activeTicket.id, "confirmed");
     showToast("✓ Order confirmed • sent to cashier & kitchen");
     onGoBack();
     loadTables();

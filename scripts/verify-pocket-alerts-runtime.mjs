@@ -319,7 +319,7 @@ const ORDER = {
   // the system notification stays quiet, so the room does not hear it twice.
   const looking = loadWorker({ clients: [{ url: "https://fana.example/kitchen", focused: true, visibilityState: "visible" }] });
   await looking.fire("push", pushEvent({ ...ORDER, url: "/kitchen", repeat: 0 }));
-  pass("staff already looking at the screen get the in-app alarm, not a second ring", looking.posted.some((p) => p.msg && p.msg.type === "fana-alert"));
+  pass("staff already looking at the screen get the in-app alarm, not a second ring", looking.posted.some((p) => p.msg && p.msg.type === "fana-push"));
 }
 
 /* ── 6. The fix actually reaches phones running the old worker ────────────── */

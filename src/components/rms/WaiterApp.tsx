@@ -82,10 +82,20 @@ export default function WaiterApp() {
     { slug: "all", name: "All" },
   ]);
 
-  // Ring bell alerts (new QR orders)
+  // Ring bell alerts (new QR orders + guest top-ups)
   const [alertsOn, setAlertsOn] = useState(false);
   const seenPendingRef = useRef<Set<number>>(new Set());
   const alertsInitRef = useRef(false);
+  // Per-ticket live item-unit baseline: a guest adding dishes to an EXISTING
+  // bill changes item counts, never the ticket ID — so new-ticket detection
+  // alone stays silent while the bill grows. Any increase over this baseline
+  // rings the alarm. Ticket ID → sum of quantities of non-removed lines
+  // (units, not rows: folding two teas into one line still grows the units).
+  const itemCountRef = useRef<Map<number, number>>(new Map());
+  // Units this device just sent itself (ticket ID + total units). The waiter
+  // keying items herself must NOT ring her own phone — the next refresh
+  // consumes this credit once, so only units BEYOND her own send alarm her.
+  const ownAddRef = useRef<{ ticketId: number; units: number } | null>(null);
 
   useEffect(() => {
     setAlertsOn(localStorage.getItem("fana_alerts_waiter") === "1");
@@ -164,7 +174,11 @@ export default function WaiterApp() {
     const r = await fetch("/api/tables");
     if (r.ok) setTables(await r.json());
 
-    // Ring bell when a NEW customer QR order (pending_waiter) appears on any table
+    // Ring bell when a NEW customer QR order (pending_waiter) appears on any table,
+    // AND when a guest adds items to an EXISTING bill (any status: pending,
+    // confirmed, printed). Additions never create a ticket ID — they only grow
+    // the item units — so each ticket's live unit count is diffed against the
+    // baseline from the previous refresh.
     const tkRes = await fetch("/api/tickets?active=1");
     if (tkRes.ok) {
       const all: Ticket[] = await tkRes.json();
@@ -172,15 +186,61 @@ export default function WaiterApp() {
       const fresh = pending.filter((t) => !seenPendingRef.current.has(t.id));
       fresh.forEach((t) => seenPendingRef.current.add(t.id));
 
-      if (alertsInitRef.current && alertsOn && fresh.length > 0) {
+      // Guest top-up detection: count live (non-removed) units per ticket and
+      // compare with the last refresh. This device's OWN sends are credited
+      // back (ownAddRef) so the waiter never alarms herself — only units
+      // beyond her own keying count as a guest addition.
+      const added: Ticket[] = [];
+      for (const t of all) {
+        const units = (t.items || [])
+          .filter((i) => !i.removed)
+          .reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+        const prev = itemCountRef.current.get(t.id);
+        itemCountRef.current.set(t.id, units);
+        let ownUnits = 0;
+        if (ownAddRef.current && ownAddRef.current.ticketId === t.id) {
+          ownUnits = ownAddRef.current.units;
+          ownAddRef.current = null;
+        }
+        if (alertsInitRef.current && prev !== undefined && units - ownUnits > prev) {
+          added.push(t);
+        }
+      }
+      // Forget baselines for tickets that left the active list (paid/closed) so
+      // the map cannot grow forever and a re-seated table starts clean.
+      for (const id of [...itemCountRef.current.keys()]) {
+        if (!all.some((t) => t.id === id)) itemCountRef.current.delete(id);
+      }
+
+      if (alertsInitRef.current && alertsOn && (fresh.length > 0 || added.length > 0)) {
         playAlarm();
-        const t0 = fresh[0];
-        triggerDesktopNotification({
-          title: "Fana Cafe • Waiter Alert",
-          message: `🍽 New order request • ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`,
-          tag: `fana-waiter-${t0.id}`,
-        });
-        showToast(`🔔 New order request: ${t0.tableName}`);
+        if (fresh.length > 0) {
+          const t0 = fresh[0];
+          triggerDesktopNotification({
+            title: "Fana Cafe • Waiter Alert",
+            message: `🍽 New order request • ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`,
+            tag: `fana-waiter-${t0.id}`,
+          });
+          showToast(`🔔 New order request: ${t0.tableName}`);
+        }
+        if (added.length > 0) {
+          const t0 = added[0];
+          const stillPending = t0.status === "pending_waiter";
+          triggerDesktopNotification({
+            title: "Fana Cafe • Waiter Alert",
+            message: stillPending
+              ? `🍽 Guest added items • ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`
+              : `🍽 Guest added items • ${t0.tableName} • ${t0.totalAmount} ETB • check the bill!`,
+            tag: `fana-waiter-add-${t0.id}-${Date.now()}`,
+          });
+          if (fresh.length === 0) {
+            showToast(
+              stillPending
+                ? `🔔 ${t0.tableName}: guest added items • go confirm!`
+                : `🔔 ${t0.tableName}: guest added items`
+            );
+          }
+        }
       }
       alertsInitRef.current = true;
     }
@@ -289,6 +349,18 @@ export default function WaiterApp() {
     if (r.ok) {
       const d = await r.json();
       pendingKeyRef.current = "";
+      // Suppression credit: these units are MINE, not the guest's — the next
+      // refresh carries them, and the addition detector credits them back so
+      // my own keying never rings my phone. Accumulated in case two sends land
+      // before a refresh runs.
+      const unitsSent = cart.reduce((s, c) => s + (Number(c.quantity) || 0), 0);
+      const sentTicketId = (d as { id?: unknown })?.id;
+      if (typeof sentTicketId === "number" && unitsSent > 0) {
+        ownAddRef.current = {
+          ticketId: sentTicketId,
+          units: (ownAddRef.current?.ticketId === sentTicketId ? ownAddRef.current.units : 0) + unitsSent,
+        };
+      }
       setCart([]);
       showToast(d.duplicate ? "✓ Already sent • not sent twice" : d.merged ? "✓ Items added to the table bill" : "✓ Order sent to cashier");
       await loadTables();

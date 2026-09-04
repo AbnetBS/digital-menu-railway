@@ -35,6 +35,17 @@ const nextConfig: NextConfig = {
         source: "/(.*)",
         headers: securityHeaders,
       },
+      {
+        // POCKET ALERTS: the service worker must never be served from a cache.
+        // A staff phone that keeps an old sw.js keeps the OLD alert behaviour
+        // (that is how the "no sound in my pocket" bug survived a deploy), so
+        // every check for an update has to hit the server.
+        source: "/sw.js",
+        headers: [
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+          { key: "Service-Worker-Allowed", value: "/" },
+        ],
+      },
     ];
   },
 };

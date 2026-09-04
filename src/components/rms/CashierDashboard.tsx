@@ -11,6 +11,8 @@ import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { unlockAudio, playDing, playAlarm } from "@/lib/sound";
 import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
+import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 
 interface StaffLite {
   id: number;
@@ -57,12 +59,29 @@ export default function CashierDashboard() {
 
   // ── RING BELL + DESKTOP POPUP ALERT SYSTEM ──
   const [alertsOn, setAlertsOn] = useState(false);
+  // STALE-CLOSURE FIX: the SSE handler is built once (deps [staffName]) and
+  // froze whatever `alertsOn` was at that moment, so enabling alerts later
+  // never reached it and the counter tablet stayed silent. Reads use the ref.
+  const alertsOnRef = useRef(false);
+  const [toast, setToast] = useState("");
+  // Always points at the CURRENT loaders for the SSE + push relays.
+  const loadAllRef = useRef<() => void>(() => {});
+  const loadHistoryRef = useRef<() => void>(() => {});
+
+  // Refs follow the latest render from an effect (never during render).
+  useEffect(() => {
+    alertsOnRef.current = alertsOn;
+  }, [alertsOn]);
   const seenEventsRef = useRef<Set<string>>(new Set());
   const initializedRef = useRef(false);
 
   useEffect(() => {
-    setAlertsOn(localStorage.getItem("fana_alerts") === "1");
     const saved = sessionStorage.getItem("fana_cashier");
+    // A restored session means the cashier is on shift: alerts default to ON.
+    const on = localStorage.getItem("fana_alerts") === "1" || !!saved;
+    setAlertsOn(on);
+    alertsOnRef.current = on;
+    if (on) localStorage.setItem("fana_alerts", "1");
     if (saved) setStaffName(JSON.parse(saved).name);
     fetch("/api/staff?public=1")
       .then((r) => r.json())
@@ -80,6 +99,11 @@ export default function CashierDashboard() {
   }, []);
 
   // One-time unlock: browsers need a user click before sound + desktop popups can play
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 4000);
+  };
+
   const enableAlerts = async () => {
     unlockAudio();
     if ("Notification" in window && Notification.permission === "default") {
@@ -87,9 +111,13 @@ export default function CashierDashboard() {
     }
     localStorage.setItem("fana_alerts", "1");
     setAlertsOn(true);
-    // GROUP 10: (re)arm pocket alerts too, then ring a sample so she KNOWS
-    // the device is armed instead of guessing.
-    if (pushSupported()) void enablePocketAlerts();
+    alertsOnRef.current = true;
+    // (Re)arm pocket alerts too, then ring a sample so she KNOWS the device is
+    // armed instead of guessing.
+    if (pushSupported()) {
+      await enablePocketAlerts();
+      void pocket.refreshStatus();
+    }
     playAlarm();
     triggerDesktopNotification({ title: "Fana Cafe • Cashier", message: "🔔 Ring bell + desktop + pocket alerts are now ON for this device!" });
   };
@@ -136,7 +164,7 @@ export default function CashierDashboard() {
         }
       }
 
-      if (initializedRef.current && alertsOn && newEvents.length > 0) {
+      if (initializedRef.current && alertsOnRef.current && newEvents.length > 0) {
         // A card entering HER print queue gets the full alarm; anything else
         // (status moves, cleared tables…) gets the standard ring.
         const needsMe = newEvents.some(
@@ -192,27 +220,72 @@ export default function CashierDashboard() {
     });
 
   useEffect(() => {
+    loadAllRef.current = loadAll;
+    loadHistoryRef.current = loadHistory;
+  });
+
+  // POCKET MODE: keeps this device subscribed (self-healing) and rings the
+  // alarm the moment a push lands, even if the SSE stream was frozen.
+  const pocket = usePocketAlerts({
+    active: !!staffName,
+    onAlert: () => {
+      loadAllRef.current();
+      loadHistoryRef.current();
+    },
+  });
+
+  useEffect(() => {
     if (staffName) {
       loadAll();
       loadHistory();
       // REALTIME (SSE): the server pushes a "refresh" signal only when an
       // order/payment changes, instead of polling every 8s/60s.
-      const es = new EventSource("/api/realtime?channel=orders");
-      es.onmessage = () => {
-        loadAll();
-        loadHistory();
+      //
+      // WATCHDOG: the counter tablet sleeps, the socket dies, and EventSource
+      // does not always reconnect by itself. Rebuild the stream whenever it is
+      // CLOSED so her queue is never quietly frozen.
+      let es: EventSource | null = null;
+      let stopped = false;
+
+      const connect = () => {
+        if (stopped) return;
+        try {
+          es?.close();
+        } catch {
+          /* ignore */
+        }
+        es = new EventSource("/api/realtime?channel=orders");
+        es.onmessage = () => {
+          loadAllRef.current();
+          loadHistoryRef.current();
+        };
+        es.onerror = () => {
+          loadAllRef.current();
+        };
       };
-      es.onerror = () => {
-        loadAll();
+
+      connect();
+
+      const revive = () => {
+        if (stopped) return;
+        if (!es || es.readyState === 2 /* CLOSED */) connect();
+        loadAllRef.current();
       };
+      const watchdog = setInterval(() => {
+        if (!es || es.readyState === 2) connect();
+      }, 30000);
       // Refresh immediately when the tab becomes visible again (user action).
       const onVisible = () => {
-        if (!document.hidden) loadAll();
+        if (!document.hidden) revive();
       };
       document.addEventListener("visibilitychange", onVisible);
+      window.addEventListener("online", revive);
       return () => {
-        es.close();
+        stopped = true;
+        clearInterval(watchdog);
+        es?.close();
         document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("online", revive);
       };
     }
   }, [staffName]);
@@ -233,7 +306,9 @@ export default function CashierDashboard() {
       unlockAudio();
       localStorage.setItem("fana_alerts", "1");
       setAlertsOn(true);
+      alertsOnRef.current = true;
       void enablePocketAlerts().then((res) => {
+        void pocket.refreshStatus();
         if (res === "denied") {
           // notifications blocked in the browser — the in-app alarm still works
           console.warn("Pocket notifications blocked by the browser settings");
@@ -521,6 +596,13 @@ export default function CashierDashboard() {
               <span className="text-[9px] text-stone-500 mt-0.5">last updated {lastUpdated}</span>
             )}
           </div>
+          <PocketAlertsChip
+            status={pocket.status}
+            busy={pocket.busy}
+            onArm={pocket.arm}
+            onTest={pocket.test}
+            onToast={showToast}
+          />
           {/* RING BELL enable button — click once on each cashier device */}
           <button
             onClick={enableAlerts}
@@ -572,6 +654,13 @@ export default function CashierDashboard() {
           </button>
         </div>
       </div>
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl max-w-[90vw] text-center">
+          {toast}
+        </div>
+      )}
 
       <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-8">
         {/* iPhone pocket-mode instruction (Android needs nothing) */}

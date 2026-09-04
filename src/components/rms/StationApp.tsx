@@ -7,6 +7,8 @@ import { formatClock, formatDayMonthYear, minutesSince, waitingLabel } from "@/l
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { enablePocketAlerts } from "@/lib/push-client";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
+import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import Link from "next/link";
 
 type Station = "barista" | "kitchen";
@@ -59,6 +61,18 @@ export default function StationApp({ station }: { station: Station }) {
   const [loginError, setLoginError] = useState("");
   const [tickets, setTickets] = useState<StationTicket[]>([]);
   const [alertsOn, setAlertsOn] = useState(false);
+  // STALE-CLOSURE FIX: the SSE handler is created once (deps [staffName]) and
+  // captured whatever `alertsOn` was then. Enabling alerts afterwards never
+  // reached that copy, so the crew alarm stayed off. Reads go through the ref.
+  const alertsOnRef = useRef(false);
+  const [toast, setToast] = useState("");
+  // Always points at the CURRENT load() for the SSE + push relays.
+  const loadRef = useRef<() => void>(() => {});
+
+  // Refs follow the latest render from an effect (never during render).
+  useEffect(() => {
+    alertsOnRef.current = alertsOn;
+  }, [alertsOn]);
   // Ticks every 30s so the "waiting N min" badge on each ticket stays honest
   // even when no new order arrives to trigger a refresh.
   const [now, setNow] = useState(() => Date.now());
@@ -71,8 +85,12 @@ export default function StationApp({ station }: { station: Station }) {
   }, []);
 
   useEffect(() => {
-    setAlertsOn(localStorage.getItem(`fana_alerts_${station}`) === "1");
     const saved = sessionStorage.getItem(`fana_${station}`);
+    // A restored crew session means someone is on shift: alerts default to ON.
+    const on = localStorage.getItem(`fana_alerts_${station}`) === "1" || !!saved;
+    setAlertsOn(on);
+    alertsOnRef.current = on;
+    if (on) localStorage.setItem(`fana_alerts_${station}`, "1");
     if (saved) {
       const s = JSON.parse(saved);
       setStaffName(s.name);
@@ -99,7 +117,8 @@ export default function StationApp({ station }: { station: Station }) {
       unlockAudio();
       localStorage.setItem(`fana_alerts_${station}`, "1");
       setAlertsOn(true);
-      void enablePocketAlerts();
+      alertsOnRef.current = true;
+      void enablePocketAlerts().then(() => pocket.refreshStatus());
     } else {
       setLoginError(`Wrong name or PIN. Ask admin for your ${meta.label} PIN.`);
     }
@@ -127,7 +146,7 @@ export default function StationApp({ station }: { station: Station }) {
     for (const id of nowPendingIds) if (!pendingSeenRef.current.has(id)) fresh.push(id);
     fresh.forEach((id) => pendingSeenRef.current.add(id));
 
-    if (initRef.current && alertsOn && fresh.length > 0) {
+    if (initRef.current && alertsOnRef.current && fresh.length > 0) {
       // New food to cook = the crew must ACT → full alarm, not a gentle ding.
       playAlarm();
       // find table info for popup
@@ -147,32 +166,81 @@ export default function StationApp({ station }: { station: Station }) {
   };
 
   useEffect(() => {
+    loadRef.current = load;
+  });
+
+  // POCKET MODE: keeps this tablet/phone subscribed (self-healing) and rings
+  // the loud alarm the moment a push lands, even if SSE was frozen.
+  const pocket = usePocketAlerts({
+    active: !!staffName,
+    onAlert: () => loadRef.current(),
+  });
+
+  useEffect(() => {
     if (staffName) {
       load();
       // REALTIME (SSE): the server pushes a "refresh" signal only when an
       // order/item changes, instead of polling every 8s.
-      const es = new EventSource("/api/realtime?channel=orders");
-      es.onmessage = () => load();
-      es.onerror = () => load();
+      //
+      // WATCHDOG: a dimmed kitchen tablet gets its background tab throttled
+      // and its socket dropped; EventSource does not always come back by
+      // itself. Rebuild the stream whenever it is CLOSED so the crew never
+      // sits in front of a frozen list.
+      let es: EventSource | null = null;
+      let stopped = false;
+
+      const connect = () => {
+        if (stopped) return;
+        try {
+          es?.close();
+        } catch {
+          /* ignore */
+        }
+        es = new EventSource("/api/realtime?channel=orders");
+        es.onmessage = () => loadRef.current();
+        es.onerror = () => loadRef.current();
+      };
+
+      connect();
+
+      const revive = () => {
+        if (stopped) return;
+        if (!es || es.readyState === 2 /* CLOSED */) connect();
+        loadRef.current();
+      };
+      const watchdog = setInterval(() => {
+        if (!es || es.readyState === 2) connect();
+      }, 30000);
       // Refresh immediately when the tab becomes visible again (user action).
       const onVisible = () => {
-        if (!document.hidden) load();
+        if (!document.hidden) revive();
       };
       document.addEventListener("visibilitychange", onVisible);
+      window.addEventListener("online", revive);
       return () => {
-        es.close();
+        stopped = true;
+        clearInterval(watchdog);
+        es?.close();
         document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("online", revive);
       };
     }
   }, [staffName]);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 4000);
+  };
 
   const enableAlerts = async () => {
     unlockAudio();
     if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
     localStorage.setItem(`fana_alerts_${station}`, "1");
     setAlertsOn(true);
-    // GROUP 10: (re)arm pocket alerts + a sample ring so the crew knows it works.
-    void enablePocketAlerts();
+    alertsOnRef.current = true;
+    // (Re)arm pocket alerts + a sample ring so the crew knows it works.
+    await enablePocketAlerts();
+    void pocket.refreshStatus();
     playAlarm();
   };
 
@@ -250,6 +318,13 @@ export default function StationApp({ station }: { station: Station }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <PocketAlertsChip
+            status={pocket.status}
+            busy={pocket.busy}
+            onArm={pocket.arm}
+            onTest={pocket.test}
+            onToast={showToast}
+          />
           <button
             onClick={enableAlerts}
             className={`text-[10px] font-black px-3 py-1.5 rounded-full flex items-center gap-1.5 transition ${
@@ -267,6 +342,13 @@ export default function StationApp({ station }: { station: Station }) {
           </button>
         </div>
       </div>
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl max-w-[90vw] text-center">
+          {toast}
+        </div>
+      )}
 
       {/* iPhone pocket-mode instruction (Android needs nothing) */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 pt-4">

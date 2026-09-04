@@ -1,20 +1,92 @@
 /* eslint-disable */
 /**
- * Fana Cafe — service worker for POCKET-MODE alerts (Group 10).
+ * Fana Cafe — service worker for POCKET-MODE alerts.
  *
- * This file is what makes notifications reach a phone whose browser is CLOSED.
- * The push service wakes this worker even when no page is open; we show a
- * SYSTEM notification (sound + vibration come from the OS, exactly like a
- * WhatsApp message) and tapping it opens the right staff screen.
+ * This file is what makes an alert reach a phone that is IN A POCKET: screen
+ * off, tab in the background, or the browser fully closed. The push service
+ * wakes this worker even when no page is running; we show a SYSTEM
+ * notification (sound + vibration come from the OS notification channel,
+ * exactly like a WhatsApp message) and tapping it opens the right staff
+ * screen.
  *
- * If a staff window IS open and focused, the page plays its own loud in-app
- * alarm already — showing a system notification too would be double noise, so
- * we skip it in that case.
+ * ─────────────────────────────────────────────────────────────────────────
+ * THE BUG THIS FILE USED TO HAVE (why staff heard nothing)
+ * ─────────────────────────────────────────────────────────────────────────
+ * The old version asked `clients.matchAll()` whether any window was "focused"
+ * and, if so, showed NOTHING (to avoid double noise with the in-page alarm).
+ *
+ * A phone in a pocket with the waiter screen still open is EXACTLY that case:
+ * the tab is still the focused window of the browser even though the screen
+ * is off. So every real alert hit the `return` and the phone stayed silent —
+ * the one moment the alarm mattered most.
+ *
+ * Worse, a push subscription is created with `userVisibleOnly: true`, which is
+ * a PROMISE to the browser that every push shows a notification. Silently
+ * swallowing pushes makes Chrome show "This site has been updated in the
+ * background" and can eventually revoke the subscription altogether.
+ *
+ * NEW RULE — a push ALWAYS produces a notification. No exceptions.
+ *   • Nobody looking at the screen  → loud notification, OS sound, vibration,
+ *     it stays in the tray until tapped, and it re-rings a couple of times.
+ *   • A staff page genuinely VISIBLE and focused → we still show the
+ *     notification (spec requirement) but silently, and we tell the page to
+ *     ring its own in-app alarm instead, so there is one alarm, not two.
  */
+
+const SW_VERSION = "fana-pocket-v3";
 const FANA_ICON = "/logo.png";
+const DEFAULT_VIBRATE = [500, 200, 500, 200, 500, 200, 800];
+
+/* ── Lifecycle: take control IMMEDIATELY ───────────────────────────────────
+ * Without skipWaiting/claim, a phone that already had the OLD (broken) worker
+ * installed would keep using it until every tab of the site was closed — the
+ * fix would never reach the staff who need it. */
+self.addEventListener("install", (event) => {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+/** Windows of this app that a human can actually see right now. */
+async function visibleClients() {
+  try {
+    const list = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    // visibilityState is the honest signal: locking the phone or switching
+    // apps flips it to "hidden" while `focused` can stay true.
+    return list.filter((c) => c.visibilityState === "visible" && c.focused);
+  } catch (e) {
+    return [];
+  }
+}
+
+function tellPages(message) {
+  return self.clients
+    .matchAll({ type: "window", includeUncontrolled: true })
+    .then((list) => {
+      for (const client of list) {
+        try {
+          client.postMessage(message);
+        } catch (e) {
+          /* client went away */
+        }
+      }
+    })
+    .catch(() => {});
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 self.addEventListener("push", (event) => {
-  let data = { title: "Fana Cafe", body: "", tag: "fana-orders", url: "/waiter" };
+  let data = {
+    title: "Fana Cafe",
+    body: "New activity, open the app.",
+    tag: "fana-orders",
+    url: "/waiter",
+    urgent: true,
+    repeat: 2,
+  };
   try {
     if (event.data) {
       const parsed = event.data.json();
@@ -24,30 +96,72 @@ self.addEventListener("push", (event) => {
     if (event.data) data.body = event.data.text();
   }
 
+  const tag = data.tag || "fana-orders";
+  const url = data.url || "/waiter";
+
   event.waitUntil(
     (async () => {
-      // Is one of our windows open and on-screen? Then the in-page alarm
-      // already rang — don't stack a system notification on top of it.
-      try {
-        const clientList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-        const anyFocused = clientList.some((client) => client.focused);
-        if (anyFocused) return;
-      } catch (e) {
-        /* matchAll unsupported → just show the notification */
+      const seen = await visibleClients();
+      const someoneIsLooking = seen.length > 0;
+
+      // Always tell open pages, so a page that IS on screen rings its loud
+      // in-app alarm (and refreshes its list) the instant the push lands.
+      await tellPages({ type: "fana-push", title: data.title, body: data.body, tag, url, urgent: !!data.urgent });
+
+      if (someoneIsLooking) {
+        // A notification MUST still be shown (userVisibleOnly), but the page
+        // is already ringing — keep this one quiet so there is no double noise.
+        // NOTE: `silent: true` together with `vibrate` throws a TypeError, so
+        // the quiet variant carries no vibration pattern.
+        await self.registration.showNotification(data.title, {
+          body: data.body,
+          tag,
+          renotify: false,
+          silent: true,
+          requireInteraction: false,
+          icon: FANA_ICON,
+          badge: FANA_ICON,
+          data: { url },
+        });
+        return;
       }
 
-      await self.registration.showNotification(data.title, {
-        body: data.body,
-        tag: data.tag || "fana-orders",
-        // Re-alert (sound + heads-up) even when an older notification with the
-        // same tag is still in the tray — each new order deserves a ring.
-        renotify: true,
-        requireInteraction: false,
-        icon: FANA_ICON,
-        badge: FANA_ICON,
-        vibrate: [400, 150, 400, 150, 400, 150, 400],
-        data: { url: data.url },
-      });
+      // ── POCKET MODE: nobody is looking. Ring like a phone call. ──
+      const show = (ringTag) =>
+        self.registration.showNotification(data.title, {
+          body: data.body,
+          tag: ringTag,
+          // Re-alert (sound + heads-up) even when an older notification with
+          // the same tag is still in the tray — each new order deserves a ring.
+          renotify: true,
+          // Stays in the tray until staff actually tap it: an order must not
+          // disappear from the lock screen after a few seconds.
+          requireInteraction: !!data.urgent,
+          icon: FANA_ICON,
+          badge: FANA_ICON,
+          vibrate: DEFAULT_VIBRATE,
+          timestamp: Date.now(),
+          data: { url },
+        });
+
+      await show(tag);
+
+      // REPEAT RINGS: one ding can be missed in a loud room or a thick pocket.
+      // Re-ring the same alert a couple of times, and stop the moment staff
+      // dismiss/tap it or come back to the screen — never nag needlessly.
+      const repeats = Math.max(0, Math.min(3, Number(data.repeat) || 0));
+      for (let i = 0; i < repeats; i += 1) {
+        await sleep(7000);
+        try {
+          const stillThere = await self.registration.getNotifications({ tag });
+          if (stillThere.length === 0) break; // tapped or swiped away → done
+          const back = await visibleClients();
+          if (back.length > 0) break; // staff are looking at the app now
+          await show(tag);
+        } catch (e) {
+          break;
+        }
+      }
     })()
   );
 });
@@ -58,14 +172,26 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     (async () => {
       try {
+        // Close any repeat rings of the same alert still sitting in the tray.
+        const siblings = await self.registration.getNotifications({ tag: event.notification.tag });
+        for (const n of siblings) n.close();
+      } catch (e) {
+        /* ignore */
+      }
+      try {
         const clientList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
         // Focus an already-open window on the right page if there is one…
         for (const client of clientList) {
           if (new URL(client.url).pathname === url && "focus" in client) {
+            try {
+              client.postMessage({ type: "fana-push-opened", url });
+            } catch (e) {
+              /* ignore */
+            }
             return client.focus();
           }
         }
-        // …otherwise open one.
+        // …otherwise reuse a window we already have.
         if (clientList.length > 0 && "focus" in clientList[0] && "navigate" in clientList[0]) {
           const focused = await clientList[0].focus();
           return focused.navigate(url);
@@ -78,18 +204,41 @@ self.addEventListener("notificationclick", (event) => {
   );
 });
 
+/**
+ * Pages can ask the worker things (used by the in-app "pocket alerts" chip to
+ * prove the worker is alive and which version is running).
+ */
+self.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type === "fana-ping") {
+    try {
+      event.source.postMessage({ type: "fana-pong", version: SW_VERSION });
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  if (data.type === "fana-skip-waiting") self.skipWaiting();
+});
+
 // The push service rotates subscription keys from time to time; resubscribe
 // with the new keys so the device keeps receiving alerts.
 self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil(
     (async () => {
       try {
-        const reg = await self.registration.pushManager.getSubscription();
-        if (!reg) return;
+        let sub = await self.registration.pushManager.getSubscription();
+        if (!sub && event.oldSubscription && event.oldSubscription.options) {
+          // Chrome hands us the old options — re-subscribe with the same key.
+          sub = await self.registration.pushManager.subscribe(event.oldSubscription.options);
+        }
+        if (!sub) return;
         await fetch("/api/push/resubscribe", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldEndpoint: event.oldSubscription ? event.oldSubscription.endpoint : null, subscription: reg }),
+          body: JSON.stringify({
+            oldEndpoint: event.oldSubscription ? event.oldSubscription.endpoint : null,
+            subscription: sub.toJSON ? sub.toJSON() : sub,
+          }),
         });
       } catch (e) {
         /* best effort */

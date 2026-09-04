@@ -7,6 +7,8 @@ import {
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
+import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
@@ -84,6 +86,12 @@ export default function WaiterApp() {
 
   // Ring bell alerts (new QR orders + guest top-ups)
   const [alertsOn, setAlertsOn] = useState(false);
+  // STALE-CLOSURE FIX: the SSE handler below is created once (deps [staffName])
+  // and captured `alertsOn` as it was at that moment. Turning alerts on later
+  // (the bell button, or the localStorage read landing in a later render) never
+  // reached the captured copy, so the alarm stayed switched off forever. Every
+  // alert check now reads the ref, which is always current.
+  const alertsOnRef = useRef(false);
   const seenPendingRef = useRef<Set<number>>(new Set());
   const alertsInitRef = useRef(false);
   // Per-ticket live item-unit baseline: a guest adding dishes to an EXISTING
@@ -96,10 +104,25 @@ export default function WaiterApp() {
   // keying items herself must NOT ring her own phone — the next refresh
   // consumes this credit once, so only units BEYOND her own send alarm her.
   const ownAddRef = useRef<{ ticketId: number; units: number } | null>(null);
+  // Always points at the CURRENT loadTables (the SSE handler and the service
+  // worker relay are created once and would otherwise call a stale copy).
+  const loadTablesRef = useRef<() => void>(() => {});
+
+  // Keep the refs in step with the latest render (in an effect, never during
+  // render) so every callback below reads today's values, not login-time ones.
+  useEffect(() => {
+    alertsOnRef.current = alertsOn;
+  }, [alertsOn]);
 
   useEffect(() => {
-    setAlertsOn(localStorage.getItem("fana_alerts_waiter") === "1");
     const saved = sessionStorage.getItem("fana_waiter");
+    // A restored session is a working waiter: alerts default to ON. (Before,
+    // alerts depended purely on a localStorage flag, so a device that had it
+    // cleared showed a logged-in waiter whose phone never rang.)
+    const on = localStorage.getItem("fana_alerts_waiter") === "1" || !!saved;
+    setAlertsOn(on);
+    alertsOnRef.current = on;
+    if (on) localStorage.setItem("fana_alerts_waiter", "1");
     if (saved) {
       const s = JSON.parse(saved);
       setStaffName(s.name);
@@ -125,21 +148,54 @@ export default function WaiterApp() {
       // REALTIME (SSE): instead of polling every 8s, the server pushes a
       // "refresh" signal only when an order/table actually changes. This keeps
       // the network and database idle until something real happens.
-      const es = new EventSource("/api/realtime?channel=orders");
-      es.onmessage = () => loadTables();
-      es.onerror = () => {
-        // On a dropped connection the browser auto-reconnects; refresh once to
-        // make sure nothing was missed while disconnected.
-        loadTables();
+      //
+      // WATCHDOG: a phone in a pocket has its background tab throttled and its
+      // sockets dropped, and EventSource does not always recover on its own
+      // (a proxy timeout leaves it CLOSED). If that happened, the waiter got
+      // no refresh and no alarm until she opened the app. We now rebuild the
+      // stream whenever it is closed, and re-check on visibility/online. The
+      // service worker push is the second, independent safety net.
+      let es: EventSource | null = null;
+      let stopped = false;
+
+      const connect = () => {
+        if (stopped) return;
+        try {
+          es?.close();
+        } catch {
+          /* ignore */
+        }
+        es = new EventSource("/api/realtime?channel=orders");
+        es.onmessage = () => loadTablesRef.current();
+        es.onerror = () => {
+          // On a dropped connection the browser auto-reconnects; refresh once to
+          // make sure nothing was missed while disconnected.
+          loadTablesRef.current();
+        };
       };
+
+      connect();
+
+      const revive = () => {
+        if (stopped) return;
+        if (!es || es.readyState === 2 /* CLOSED */) connect();
+        loadTablesRef.current();
+      };
+      const watchdog = setInterval(() => {
+        if (!es || es.readyState === 2) connect();
+      }, 30000);
       // Refresh immediately when the tab becomes visible again (user action).
       const onVisible = () => {
-        if (!document.hidden) loadTables();
+        if (!document.hidden) revive();
       };
       document.addEventListener("visibilitychange", onVisible);
+      window.addEventListener("online", revive);
       return () => {
-        es.close();
+        stopped = true;
+        clearInterval(watchdog);
+        es?.close();
         document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("online", revive);
       };
     }
   }, [staffName]);
@@ -156,10 +212,15 @@ export default function WaiterApp() {
     }
     localStorage.setItem("fana_alerts_waiter", "1");
     setAlertsOn(true);
-    // GROUP 10: also (re)subscribe this phone to pocket alerts and ring a
-    // sample so the waiter KNOWS the device is armed — no guessing.
+    alertsOnRef.current = true;
+    // Also (re)subscribe this phone to pocket alerts and ring a sample so the
+    // waiter KNOWS the device is armed, then refresh the status chip.
     if (pushSupported()) {
-      void enablePocketAlerts();
+      const res = await enablePocketAlerts();
+      void pocket.refreshStatus();
+      if (res === "denied") {
+        showToast("Notifications are blocked. Allow them in your browser settings.");
+      }
     }
     playAlarm();
     showToast("🔔 Alerts ON • pocket notifications armed");
@@ -212,7 +273,7 @@ export default function WaiterApp() {
         if (!all.some((t) => t.id === id)) itemCountRef.current.delete(id);
       }
 
-      if (alertsInitRef.current && alertsOn && (fresh.length > 0 || added.length > 0)) {
+      if (alertsInitRef.current && alertsOnRef.current && (fresh.length > 0 || added.length > 0)) {
         playAlarm();
         if (fresh.length > 0) {
           const t0 = fresh[0];
@@ -257,6 +318,18 @@ export default function WaiterApp() {
     }
   };
 
+  useEffect(() => {
+    loadTablesRef.current = loadTables;
+  });
+
+  // POCKET MODE: keeps this phone subscribed (self-healing, no login needed),
+  // and turns every push that lands while the app is open into the loud in-app
+  // alarm plus an instant refresh, even if the SSE stream was frozen.
+  const pocket = usePocketAlerts({
+    active: !!staffName,
+    onAlert: () => loadTablesRef.current(),
+  });
+
   const login = async () => {
     setLoginError("");
     const r = await fetch("/api/staff/login", {
@@ -275,7 +348,9 @@ export default function WaiterApp() {
       unlockAudio();
       localStorage.setItem("fana_alerts_waiter", "1");
       setAlertsOn(true);
+      alertsOnRef.current = true;
       void enablePocketAlerts().then((res) => {
+        void pocket.refreshStatus();
         if (res === "denied") {
           showToast("Notifications blocked. Allow them in the browser to hear pocket alerts.");
         }
@@ -598,6 +673,13 @@ export default function WaiterApp() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <PocketAlertsChip
+            status={pocket.status}
+            busy={pocket.busy}
+            onArm={pocket.arm}
+            onTest={pocket.test}
+            onToast={showToast}
+          />
           <button
             onClick={enableAlerts}
             className={`p-2 rounded-xl transition ${alertsOn ? "bg-emerald-600 text-white" : "bg-[#C9A227] text-[#2C1B17] animate-pulse"}`}

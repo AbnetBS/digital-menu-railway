@@ -6,7 +6,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node scripts/verify-no-runtime-seeding.mjs && node scripts/verify-image-cleanup.mjs && node scripts/verify-image-reveal.mjs && tsx scripts/verify-image-display.ts && node scripts/verify-auth-guards.mjs && node scripts/verify-order-integrity.mjs && tsx scripts/verify-order-lines.ts && node scripts/verify-order-status.mjs && tsx scripts/verify-order-status-ui.tsx && tsx scripts/verify-shared-ip-limits.ts && tsx scripts/verify-daily-promotions.ts && node scripts/verify-review-exposure.mjs && node scripts/verify-realtime.mjs && node scripts/verify-native-language-order-flow.mjs && node scripts/verify-translation-safety.mjs && node scripts/verify-print-queue.mjs && node scripts/verify-pocket-alerts.mjs && node scripts/verify-no-em-dash.mjs",
+    "test": "node scripts/verify-no-runtime-seeding.mjs && node scripts/verify-image-cleanup.mjs && node scripts/verify-image-reveal.mjs && tsx scripts/verify-image-display.ts && node scripts/verify-auth-guards.mjs && node scripts/verify-order-integrity.mjs && tsx scripts/verify-order-lines.ts && node scripts/verify-order-status.mjs && tsx scripts/verify-order-status-ui.tsx && tsx scripts/verify-shared-ip-limits.ts && tsx scripts/verify-daily-promotions.ts && node scripts/verify-review-exposure.mjs && node scripts/verify-realtime.mjs && node scripts/verify-native-language-order-flow.mjs && node scripts/verify-translation-safety.mjs && node scripts/verify-print-queue.mjs && node scripts/verify-pocket-alerts.mjs && node scripts/verify-pocket-alerts-runtime.mjs && node scripts/verify-no-em-dash.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

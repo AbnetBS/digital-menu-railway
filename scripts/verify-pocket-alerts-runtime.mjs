@@ -18,7 +18,10 @@
  *      → a notification is STILL shown (userVisibleOnly is a promise to the
  *      browser) but silent, and the page is told to ring its own alarm.
  *   3. Browser fully closed (no clients at all) → loud notification.
- *   4. An unanswered alert re-rings; a dismissed one does not.
+ *   4. Each event rings EXACTLY ONCE: a staff event with repeat: 0 never
+ *      rings again, even when nobody answers it. The only repeat left is the
+ *      guest burst (repeat: 3, ~1.1s apart), whose four rings ARE one ~3
+ *      second alarm.
  *   5. Tapping the notification opens/focuses the right staff screen.
  *   6. install/activate take control immediately (skipWaiting + claim), so a
  *      phone running the old worker actually receives the fix.
@@ -100,8 +103,8 @@ function loadWorker({ clients = [], notifications = [], onShow = null, fetchOk =
     URL,
     Date,
     console,
-    // Instant timers: the worker's re-ring waits 7s between rings, which we do
-    // not want to actually sit through in a test.
+    // Instant timers: the worker's ring-gap sleeps (7s for legacy payloads,
+    // ~1.1s inside the guest burst) must not actually sit through in a test.
     setTimeout: (fn, ms) => {
       delays.push(ms);
       Promise.resolve().then(fn);
@@ -144,7 +147,8 @@ const ORDER = {
   tag: "fana-qr-91",
   url: "/waiter",
   urgent: true,
-  repeat: 1,
+  // What the server sends for a staff event now: one ring, no repeats.
+  repeat: 0,
 };
 
 /* ── 1. POCKET: screen off, tab open (client focused but hidden) ─────────── */
@@ -184,36 +188,19 @@ const ORDER = {
   pass("browser closed: the phone still rings", w.shown.length === 1 && w.shown[0].options.silent !== true);
 }
 
-/* ── 4. Re-ring until answered ────────────────────────────────────────────── */
+/* ── 4. One ring per event, even when nobody answers ──────────────────────── */
 {
+  // A staff event arrives with repeat: 0 (the server no longer re-rings an
+  // unanswered event): the phone rings ONCE and then stays silent, even with
+  // nobody answering and no page open at all.
   const w = loadWorker({ clients: [] });
-  await w.fire("push", pushEvent({ ...ORDER, repeat: 2 }));
-  pass("an ignored alert rings again (repeat rings)", w.shown.length === 3);
+  await w.fire("push", pushEvent({ ...ORDER }));
+  pass("a staff event now rings ONCE only (no re-rings while unanswered)", w.shown.length === 1);
+  pass("the staff event never schedules another ring", w.delays.length === 0);
 
-  // Staff swipe the notification away after the first ring: the tray empties,
-  // and the worker must stop nagging.
-  const dismissed = loadWorker({
-    clients: [],
-    onShow: (count, api) => {
-      if (count === 1) api.emptyTray();
-    },
-  });
-  await dismissed.fire("push", pushEvent({ ...ORDER, repeat: 2 }));
-  pass("a dismissed alert stops re-ringing", dismissed.shown.length === 1);
-
-  // Staff came back to the app between rings: stop nagging as well.
-  const returned = [{ url: "https://fana.example/waiter", focused: false, visibilityState: "hidden" }];
-  const cameBack = loadWorker({
-    clients: returned,
-    onShow: (count) => {
-      if (count === 1) {
-        returned[0].focused = true;
-        returned[0].visibilityState = "visible";
-      }
-    },
-  });
-  await cameBack.fire("push", pushEvent({ ...ORDER, repeat: 2 }));
-  pass("staff opening the app stops the re-rings", cameBack.shown.length === 1);
+  // The notification itself still stays on the lock screen until it is tapped:
+  // it just must not make noise again.
+  pass("the unanswered alert still waits on the lock screen", w.shown[0].options.requireInteraction === true);
 }
 
 /* ── 5. Tapping the notification ──────────────────────────────────────────── */
@@ -267,8 +254,8 @@ const ORDER = {
   pass("the alert remembers which order it belongs to", first.data.ticketId === 91);
 
   const staff = loadWorker({ clients: [] });
-  await staff.fire("push", pushEvent({ ...ORDER, repeat: 1 }));
-  pass("a staff event still waits 7s between rings (never nagging)", staff.delays.includes(7000));
+  await staff.fire("push", pushEvent({ ...ORDER }));
+  pass("a staff event is ONE ring with no timed re-rings (the burst is guest-only)", staff.shown.length === 1 && staff.delays.length === 0);
 
   // Pressing CONFIRM on the notification must do the job without unlocking.
   const tap = loadWorker({ clients: [{ url: "https://fana.example/waiter", focused: false, visibilityState: "hidden" }] });
@@ -305,7 +292,7 @@ const ORDER = {
       tag: "fana-cancelled-91",
       url: "/kitchen",
       urgent: true,
-      repeat: 1,
+      repeat: 0,
     }));
     const first = w.shown[0];
     pass(
@@ -343,6 +330,7 @@ const ORDER = {
     },
   });
   pass("a broken payload still rings (falls back to plain text)", w.shown.length >= 1 && w.shown[0].options.body === "Table 2 needs you");
+  pass("a broken payload also rings ONCE (the default repeat is 0)", w.shown.length === 1 && w.delays.length === 0);
 }
 
 if (failures.length > 0) {
@@ -354,4 +342,5 @@ console.log("\n✅ Pocket-alerts RUNTIME test PASSED");
 console.log("   • the worker was executed, not just read: a pocketed phone with the tab");
 console.log("     still open now gets a loud, persistent, vibrating notification");
 console.log("   • a visible page gets a silent notification plus an in-app alarm");
-console.log("   • ignored alerts re-ring, answered ones stop, taps open the right screen");
+console.log("   • every event rings ONCE (no re-rings for unanswered alerts); the guest");
+console.log("     burst still rings its ~3 second alarm; taps open the right screen");

@@ -30,12 +30,19 @@ export interface RoleAlert {
   /** Same-tag alerts replace each other; add an event suffix to ring twice. */
   tag: string;
   /**
-   * Someone must ACT: the phone keeps the notification on the lock screen and
-   * re-rings it until it is answered. Non-urgent alerts inform ("table paid")
-   * and fade on their own.
+   * Someone must ACT: the phone keeps the notification on the lock screen
+   * until it is tapped. Non-urgent alerts inform ("table paid") and fade on
+   * their own.
    */
   urgent: boolean;
-  /** Extra rings while nobody reacts (0 for informational alerts). */
+  /**
+   * Extra rings while nobody reacts. Every event in this matrix rings EXACTLY
+   * ONCE and then stays quiet, even if nobody has answered it (repeat: 0):
+   * during a rush a phone that keeps re-ringing for old events trains staff
+   * to ignore it. The one exception lives in src/lib/push.ts:
+   * CUSTOMER_ALERT_RING keeps repeat: 3 only because its four rings ~1.1s
+   * apart ARE one continuous ~3 second alarm, not repeats.
+   */
   repeat: number;
 }
 
@@ -68,7 +75,7 @@ export function ticketStatusAlerts(status: string, t: TicketAlertInfo): RoleAler
           body: `${table}${money(t)} • tap to confirm`,
           tag: `fana-pending-${t.id}`,
           urgent: true,
-          repeat: 2,
+          repeat: 0,
         },
       ];
 
@@ -83,7 +90,7 @@ export function ticketStatusAlerts(status: string, t: TicketAlertInfo): RoleAler
           body: `${table} • accepted • start now`,
           tag: `fana-cook-${t.id}`,
           urgent: true,
-          repeat: 2,
+          repeat: 0,
         },
         {
           roles: ["cashier"],
@@ -91,7 +98,7 @@ export function ticketStatusAlerts(status: string, t: TicketAlertInfo): RoleAler
           body: `${table}${money(t)} • key it into the EFD and print`,
           tag: `fana-print-${t.id}`,
           urgent: true,
-          repeat: 2,
+          repeat: 0,
         },
         {
           roles: ["waiter"],
@@ -152,7 +159,7 @@ export function ticketStatusAlerts(status: string, t: TicketAlertInfo): RoleAler
           body: `${table} • stop preparing and do not serve`,
           tag: `fana-cancelled-${t.id}`,
           urgent: true,
-          repeat: 3,
+          repeat: 0,
         },
       ];
 
@@ -186,7 +193,7 @@ export function stationProgressAlerts(stationStatus: string, info: StationProgre
           : `${info.tableName} • ${info.itemName} x${info.quantity} is ready`,
         tag: `fana-ready-${info.id}-${info.itemName}`,
         urgent: true,
-        repeat: 2,
+        repeat: 0,
       },
     ];
   }
@@ -224,7 +231,7 @@ export function itemRemovedAlerts(info: ItemChangeInfo): RoleAlert[] {
       body: `${info.tableName} • ${info.itemName} is off the bill, tell the guest`,
       tag: `fana-item-removed-${info.id}-${info.itemName}`,
       urgent: true,
-      repeat: 1,
+      repeat: 0,
     },
   ];
   if (stationRoles.length > 0) {
@@ -234,7 +241,7 @@ export function itemRemovedAlerts(info: ItemChangeInfo): RoleAlert[] {
       body: `${info.tableName} • ${info.itemName} was removed from the order`,
       tag: `fana-item-removed-s-${info.id}-${info.itemName}`,
       urgent: true,
-      repeat: 1,
+      repeat: 0,
     });
   }
   return alerts;
@@ -261,7 +268,7 @@ export function itemQuantityAlerts(info: ItemChangeInfo): RoleAlert[] {
       body: `${info.tableName} • ${change}`,
       tag: `fana-item-qty-s-${info.id}-${info.itemName}`,
       urgent: true,
-      repeat: 1,
+      repeat: 0,
     });
   }
   return alerts;
@@ -276,7 +283,7 @@ export function billRequestAlerts(t: TicketAlertInfo): RoleAlert[] {
       body: `${t.tableName}${money(t)} • the guest asked for the bill`,
       tag: `fana-bill-${t.id}`,
       urgent: true,
-      repeat: 2,
+      repeat: 0,
     },
   ];
 }

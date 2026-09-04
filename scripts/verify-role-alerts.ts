@@ -89,7 +89,7 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   const cancelled = ticketStatusAlerts("cancelled", TICKET);
   pass("CANCELLED rings the kitchen and the barista", rolesOf(cancelled).join() === "barista,kitchen");
   pass("CANCELLED does not ring the waiter or the cashier", !hasRole(cancelled, "waiter") && !hasRole(cancelled, "cashier"));
-  pass("CANCELLED is urgent and re-rings hardest", cancelled.every((a) => a.urgent && a.repeat >= 3));
+  pass("CANCELLED is urgent and rings ONCE (no re-rings until answered)", cancelled.every((a) => a.urgent && a.repeat === 0));
   pass("CANCELLED says what to do (stop and do not serve)", cancelled.every((a) => /stop preparing/i.test(a.body)));
 
   pass("printed/preparing do NOT push stations here (the route pushes only newly released items)",
@@ -140,6 +140,27 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
     urgentFor(bill, "waiter") && urgentFor(bill, "cashier"));
 }
 
+/* ── 4b. EVERY event rings EXACTLY ONCE (no re-rings while unanswered) ────── */
+{
+  // During a rush a phone that keeps re-ringing for an unanswered event trains
+  // staff to ignore it. Every alert in the matrix must have repeat === 0: one
+  // ring, then quiet, even if nobody has reacted yet.
+  const statuses = ["pending_waiter", "confirmed", "printed", "preparing", "cancelled"];
+  const matrixAlerts: RoleAlert[] = [
+    ...statuses.flatMap((s) => ticketStatusAlerts(s, TICKET)),
+    ...stationProgressAlerts("done", { ...TICKET, station: "kitchen", itemName: "Shiro", quantity: 2, wholeOrderReady: false }),
+    ...stationProgressAlerts("done", { ...TICKET, station: "kitchen", itemName: "Shiro", quantity: 1, wholeOrderReady: true }),
+    ...stationProgressAlerts("accepted", { ...TICKET, station: "barista", itemName: "Macchiato", quantity: 1, wholeOrderReady: false }),
+    ...itemRemovedAlerts({ ...TICKET, itemName: "Tibs", station: "kitchen" }),
+    ...itemRemovedAlerts({ ...TICKET, itemName: "Macchiato", station: "barista" }),
+    ...itemQuantityAlerts({ ...TICKET, itemName: "Tibs", station: "kitchen", fromQuantity: 2, toQuantity: 4 }),
+    ...itemQuantityAlerts({ ...TICKET, itemName: "Tibs", station: "", fromQuantity: 1, toQuantity: 2 }),
+    ...billRequestAlerts(TICKET),
+  ];
+  pass(`every alert in the matrix has repeat 0 (${matrixAlerts.length} alerts checked)`,
+    matrixAlerts.length > 0 && matrixAlerts.every((a) => a.repeat === 0));
+}
+
 /* ── 5. Nobody rings their own phone ──────────────────────────────────────── */
 {
   const cancelled = ticketStatusAlerts("cancelled", TICKET);
@@ -168,7 +189,23 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   pass("station route computes whether the WHOLE order is ready", /wholeOrderReady/.test(stationRoute));
   pass("item removal pushes waiter + station", /itemRemovedAlerts\(/.test(itemsRoute));
   pass("quantity edits push waiter + station", /itemQuantityAlerts\(/.test(itemsRoute));
-  pass("bill requests ring the full guest alarm until answered", /CUSTOMER_ALERT_RING/.test(tableStatus) && /urgent: true/.test(read("src/lib/push.ts")) && /repeat: 3/.test(read("src/lib/push.ts")));
+  {
+    // The guest burst is the ONE alarm left in the system: its four quick
+    // rings ~1.1s apart are a single ~3 second alarm, not repeats. The shared
+    // constant must stay untouched, and no route may pass its own repeat
+    // above 0 apart from that constant.
+    const pushLib = read("src/lib/push.ts");
+    const billAlerts = billRequestAlerts(TICKET);
+    pass("bill requests ring the full guest burst, exactly once (constant untouched)",
+      /CUSTOMER_ALERT_RING/.test(tableStatus) &&
+      /export const CUSTOMER_ALERT_RING = \{ urgent: true as const, repeat: 3, gapMs: 1100, kind: "customer" as const \};/.test(pushLib) &&
+      billAlerts.every((a) => a.repeat === 0));
+    for (const [name, src] of [["tickets", ticketsRoute], ["station-items", stationRoute], ["tickets/items", itemsRoute], ["table-status", tableStatus]] as const) {
+      const ownRepeats = [...src.matchAll(/repeat:\s*(\d+)/g)].map((m) => Number(m[1]));
+      pass(`${name}: no push passes its own repeat above 0 (got [${ownRepeats.join(", ")}])`,
+        ownRepeats.every((r) => r === 0));
+    }
+  }
 
   // Alerts may never take an order flow down with them.
   for (const [name, src] of [["tickets", ticketsRoute], ["station-items", stationRoute], ["tickets/items", itemsRoute]] as const) {
@@ -201,5 +238,7 @@ if (failures.length > 0) {
 console.log("\n✅ Role-alert coverage test PASSED");
 console.log("   • every ticket status, every station action, every item change and every");
 console.log("     bill request now wakes the roles that must react");
-console.log("   • cancellations reach all four roles and keep ringing");
+console.log("   • every event rings EXACTLY ONCE (repeat 0); the only repeat left is");
+console.log("     the shared CUSTOMER_ALERT_RING burst, whose quick rings are one");
+console.log("     ~3 second alarm, not repeats");
 console.log("   • the person who performed the action is never rung by their own tap");

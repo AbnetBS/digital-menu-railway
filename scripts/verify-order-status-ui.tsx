@@ -1,16 +1,19 @@
 #!/usr/bin/env tsx
 /**
- * Render-level smoke test for the guest's live order status UI
- * (`src/components/rms/OrderStatus.tsx`) — the one piece of Group 8 that static
- * source inspection cannot prove: it is brand-new React that a real phone will
+ * Render-level smoke test for the guest's receipt button
+ * (`src/components/rms/OrderStatus.tsx`) — the piece of the guest flow that
+ * static source inspection cannot prove: it is real React that a phone will
  * run, so this actually mounts it in jsdom, feeds it the payload shape that
  * `/api/table-status` returns, and CLICKS through the whole flow:
  *
- *   no order → nothing rendered · order appears → pill + banner + progress bar
- *   → panel opens → dishes/notes/states/total → "bring us the bill" → POST with
- *   only the table id → confirmation + review shortcut → callback into the menu
- *   → drinks-only bill shows no progress bar → no table id never polls
- *   → a 500 from the endpoint is swallowed and the next poll recovers.
+ *   no order → nothing rendered · order appears → ONE receipt button (no pill,
+ *   no panel, no progress bar) → tap → POST /api/table-status with only the
+ *   table id → disabled with "Sending…" while in flight (a double-tap cannot
+ *   send twice) → replaced by the confirmation with the time → the button
+ *   never comes back (more polls, refreshKey bumps) → paid/cancelled bills
+ *   show nothing → a drinks-only bill still gets the button → no table id
+ *   never polls → a 500 from the endpoint is swallowed and the next poll
+ *   recovers.
  *
  * Requires the `jsdom` devDependency (no browser, no database, no server).
  * Run with: npx tsx scripts/verify-order-status-ui.tsx   (wired into `npm test`)
@@ -41,6 +44,10 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 const calls: Array<{ url: string; init?: RequestInit }> = [];
 
 /** Exactly the shape `GET/POST /api/table-status` answers with. */
+
+/** Once set, the bill carries the stamp — like the server after a real POST. */
+let billRequestedAt: string | null = null;
+
 function payload(over: Record<string, unknown> = {}) {
   const now = Date.now();
   return {
@@ -54,10 +61,8 @@ function payload(over: Record<string, unknown> = {}) {
       createdAt: new Date(now - 12 * 60_000).toISOString(),
       updatedAt: new Date(now - 60_000).toISOString(),
       closedAt: null,
-      receiptRequestedAt: null,
+      receiptRequestedAt: billRequestedAt,
       phase: "preparing",
-      kitchen: { lines: 2, units: 3, pending: 1, accepted: 1, done: 1, state: "preparing" },
-      barista: { lines: 1, units: 2, pending: 2, accepted: 0, done: 0, state: "queued" },
       lines: [
         { name: "Beyaynet", quantity: 2, notes: "", station: "kitchen", stationStatus: "done" },
         { name: "Soup", quantity: 1, notes: "No pepper", station: "kitchen", stationStatus: "pending" },
@@ -68,44 +73,39 @@ function payload(over: Record<string, unknown> = {}) {
   };
 }
 
-type Mode = "ok" | "served" | "drinks" | "empty" | "fail";
+type Mode = "ok" | "drinks" | "empty" | "fail" | "hold-post";
 let mode: Mode = "ok";
+/** Resolves the POST that the "hold-post" mode is keeping in flight. */
+let releasePost: ((r: { ok: boolean; status: number; json: () => Promise<unknown> }) => void) | null = null;
 
-/** Kitchen finished every food unit → the guest has been served. */
-const SERVED = {
-  phase: "ready",
-  kitchen: { lines: 2, units: 3, pending: 0, accepted: 0, done: 3, state: "ready" },
-};
+const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
 
 const fakeFetch = async (url: string, init?: RequestInit) => {
   calls.push({ url: String(url), init });
   if (mode === "fail") return { ok: false, status: 500, json: async () => ({}) };
-  if (mode === "empty") return { ok: true, status: 200, json: async () => ({ tableId: 5, ticket: null }) };
+  if (mode === "empty") return ok({ tableId: 5, ticket: null });
   if (mode === "drinks") {
-    return {
-      ok: true,
-      status: 200,
-      json: async () =>
-        payload({
-          phase: "drinks_only",
-          kitchen: { lines: 0, units: 0, pending: 0, accepted: 0, done: 0, state: "idle" },
-          lines: [{ name: "Macchiato", quantity: 2, notes: "", station: "barista", stationStatus: "pending" }],
-        }),
-    };
+    return ok(
+      payload({
+        phase: "drinks_only",
+        lines: [{ name: "Macchiato", quantity: 2, notes: "", station: "barista", stationStatus: "pending" }],
+      })
+    );
   }
-  if (mode === "served") {
-    return {
-      ok: true,
-      status: 200,
-      json: async () =>
-        payload(init?.method === "POST" ? { ...SERVED, receiptRequestedAt: new Date().toISOString() } : SERVED),
-    };
+  if (mode === "hold-post" && init?.method === "POST") {
+    // The guest tapped and the network is slow: hold the response so the test
+    // can look at the button WHILE the request is in flight.
+    return new Promise((resolve) => {
+      releasePost = resolve;
+    });
   }
-  // A POST is the guest asking for the bill → answer with the stamp applied.
+  // A POST is the guest asking for the bill → the stamp is applied and every
+  // later poll answers with it (idempotent, like the server).
   if (init?.method === "POST") {
-    return { ok: true, status: 200, json: async () => payload({ receiptRequestedAt: new Date().toISOString() }) };
+    billRequestedAt = new Date().toISOString();
+    return ok(payload());
   }
-  return { ok: true, status: 200, json: async () => payload() };
+  return ok(payload());
 };
 
 (dom.window as unknown as { fetch: unknown }).fetch = fakeFetch;
@@ -115,7 +115,7 @@ async function main() {
   const React = (await import("react")).default;
   const { createRoot } = await import("react-dom/client");
   const { act } = await import("react");
-  const { OrderStatusProvider, OrderStatusFab, OrderStatusBanner } = await import(
+  const { OrderStatusProvider, RequestReceiptButton } = await import(
     "../src/components/rms/OrderStatus"
   );
   type Root = ReturnType<typeof createRoot>;
@@ -127,9 +127,9 @@ async function main() {
   };
 
   const host = dom.window.document.getElementById("root")!;
-  const text = () => `${host.textContent || ""} ${host.innerHTML || ""}`;
-  const byText = (needle: string) =>
-    [...host.querySelectorAll("button")].find((b) => (b.textContent || "").includes(needle)) ?? null;
+  const text = () => `${host.textContent || ""}`;
+  const byText = (needle: string, scope: HTMLElement = host) =>
+    [...scope.querySelectorAll("button")].find((b) => (b.textContent || "").includes(needle)) ?? null;
 
   const flush = async (ms = 20) => {
     await act(async () => {
@@ -143,22 +143,14 @@ async function main() {
     });
   };
 
-  let reviewOpens = 0;
-  /** (Re)mount the pill + banner for one table. */
+  /** (Re)mount the receipt button for one table. */
   const mount = (root: Root, tableId: number, refreshKey: number) =>
     act(async () => {
       root.render(
         React.createElement(
           OrderStatusProvider,
-          {
-            tableId,
-            refreshKey,
-            onOpenReview: () => {
-              reviewOpens++;
-            },
-          },
-          React.createElement(OrderStatusFab),
-          React.createElement(OrderStatusBanner)
+          { tableId, refreshKey },
+          React.createElement(RequestReceiptButton)
         )
       );
     });
@@ -169,101 +161,123 @@ async function main() {
   mode = "empty";
   await mount(root, 5, 0);
   await flush();
-  pass("no order → no pill and no banner", host.querySelectorAll("button").length === 0);
+  pass("no order → nothing is rendered (no button, no card)", host.querySelectorAll("button").length === 0);
   pass("GET was scoped to the table", calls.some((c) => c.url === "/api/table-status?table=5"));
 
-  // ── 2. a real bill appears ───────────────────────────────────────────────
+  // ── 2. a real bill appears → exactly ONE receipt button ──────────────────
   mode = "ok";
   calls.length = 0;
   await mount(root, 5, 1);
   await flush();
   pass("a refreshKey bump refetches immediately (no 12s wait after ordering)", calls.length >= 1);
-  pass("the pill appears once the table has an order", /Order Status/.test(text()));
-  pass("the banner states the phase in one sentence", /Your food is being prepared/.test(text()));
-  pass("the banner shows the order number and arrival time", /#A-12/.test(text()) && /Arrived \d{2}:\d{2}/.test(text()));
-  pass("the status bar carries the bill button, not just words", byText("Request the bill") !== null);
+  pass("the receipt button appears once the table has an order", byText("Request the bill") !== null);
+  pass("it carries the receipt icon, not a status chip", host.querySelector("button svg") !== null);
+  pass("no status pill", !/Order Status/.test(text()));
+  pass("no progress bar or timeline anywhere", host.querySelectorAll('[role="dialog"], div[style*="width"]').length === 0);
+  pass("no dish list", !/Beyaynet/.test(text()));
+  pass("no phase words", !/being prepared|Your food is/.test(text()));
 
-  // ── 3. open the panel ────────────────────────────────────────────────────
-  await click(byText("Order Status"));
-  await flush();
-  const bar = host.querySelector('[role="dialog"] div[style*="width"]') as HTMLElement | null;
-  pass("the kitchen bar reads 50% (1 done + 1 of 2 cooking, of 3 units)", bar?.style.width === "50%");
-  pass("the panel opens as a dialog", host.querySelector('[role="dialog"]') !== null);
-  pass("every dish is listed with its quantity", /Beyaynet/.test(text()) && /×2/.test(text()) && /Soup/.test(text()));
-  pass("item notes are shown", /No pepper/.test(text()));
-  pass("per-line state is labelled", /Ready/.test(text()) && /Queued/.test(text()));
-  pass("drinks are listed with a note but get NO progress bar", /2 drinks\/cake/.test(text()));
-  pass("the total is shown", /240 ETB/.test(text()));
-  pass("arrival time and waiting minutes are shown", /12 min/.test(text()));
-  pass("the guest can call for the bill even while the food cooks (busy hours)", byText("Request the bill") !== null);
-  pass("  …and is still told when the food is expected", /as soon as your food has arrived/.test(text()));
-
-  // ── 3b. the kitchen finishes → the button appears ────────────────────────
-  mode = "served";
-  await mount(root, 5, 6);
-  await flush();
-  pass("the phase follows the kitchen to 'ready'", /Your food is ready/.test(text()));
-  pass("the bill button is still there once the food is served", byText("Request the bill") !== null);
-  pass("the 'wait for your food' note is gone", !/as soon as your food has arrived/.test(text()));
-
-  // ── 4. ask for the bill ──────────────────────────────────────────────────
+  // ── 3. tap it → POST with only the table id, disabled while sending ──────
+  mode = "hold-post";
   calls.length = 0;
   await click(byText("Request the bill"));
-  await flush();
+  await flush(0);
   pass("a POST went to /api/table-status", calls.some((c) => c.url === "/api/table-status" && c.init?.method === "POST"));
   pass("the POST body carries only the table id", calls.find((c) => c.init?.method === "POST")?.init?.body === JSON.stringify({ table: 5 }));
-  pass("the button is replaced by a confirmation", byText("Request the bill") === null && /Bill requested/.test(text()));
+  const sending = byText("Sending");
+  pass("while sending, the button is disabled and says so", sending !== null && (sending as HTMLButtonElement).disabled === true);
+  await click(sending);
+  await flush(0);
+  pass("a double-tap cannot send the request twice", calls.filter((c) => c.init?.method === "POST").length === 1);
+
+  // ── 4. the answer → confirmation replaces the button ─────────────────────
+  await act(async () => {
+    billRequestedAt = new Date().toISOString();
+    releasePost?.(ok(payload()));
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  await flush();
+  pass("the button is replaced by the confirmation", byText("Request the bill") === null && byText("Sending") === null && /Bill requested/.test(text()));
   pass("the request time is shown", /Requested at \d{2}:\d{2}/.test(text()));
-  pass("the review shortcut appears once the bill was requested", byText("Rate your visit") !== null);
 
-  // ── 5. review shortcut ───────────────────────────────────────────────────
-  await click(byText("Rate your visit"));
+  // ── 5. it never appears twice ────────────────────────────────────────────
+  calls.length = 0;
+  await mount(root, 5, 7); // a later poll / refreshKey bump with the same bill
   await flush();
-  pass("the review shortcut calls back into the menu", reviewOpens === 1);
-  pass("the panel closes again", host.querySelector('[role="dialog"]') === null);
+  pass("later polls keep the confirmation — the button never comes back", calls.length >= 1 && byText("Request the bill") === null && /Bill requested/.test(text()));
 
-  // ── 6. drinks-only bill: pill yes, progress bar no ───────────────────────
-  mode = "drinks";
-  await mount(root, 5, 2);
-  await flush();
-  pass("a drinks-only bill still shows the pill", /Order Status/.test(text()));
-  await click(byText("Order Status"));
-  await flush();
-  pass("  …and offers the bill straight away (there is nothing to cook)", byText("Request the bill") !== null);
-  pass("  …with no kitchen progress bar in the panel", host.querySelectorAll('[role="dialog"] span[style*="width"]').length === 0);
-  // the panel's close button is icon-only (aria-label, no text)
-  await click(host.querySelector('button[aria-label="Close"]'));
-  await flush();
-  pass("the panel closes from its own close button", host.querySelector('[role="dialog"]') === null);
-  pass("  …a drinks-only table still gets the bill button, with no progress bar", byText("Request the bill") !== null && host.querySelectorAll('span[style*="width"]').length === 0);
-
-  // ── 7. no table / failing endpoint must never break the menu ─────────────
+  // ── 6. paid or cancelled → nothing at all ────────────────────────────────
   await act(async () => root.unmount());
+  const paidModeFetch = async (url: string, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    if (init?.method === "POST") return ok(payload({ receiptRequestedAt: new Date().toISOString() }));
+    return ok(payload({ phase: "paid", status: "paid", paymentStatus: "paid_cash", receiptRequestedAt: null }));
+  };
+  (dom.window as unknown as { fetch: unknown }).fetch = paidModeFetch;
+  g.fetch = paidModeFetch;
+  const hostPaid = dom.window.document.createElement("div");
+  dom.window.document.body.appendChild(hostPaid);
+  const rootPaid = createRoot(hostPaid);
+  const paidText = () => `${hostPaid.textContent || ""}`;
+  await mount(rootPaid, 5, 0);
+  await flush();
+  pass("a PAID bill shows no receipt button and no confirmation ask", hostPaid.querySelectorAll("button").length === 0 && !/Request the bill/.test(paidText()));
+
+  await act(async () => rootPaid.unmount());
+  const cancelledFetch = async (url: string, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return ok(payload({ phase: "cancelled", status: "cancelled", receiptRequestedAt: null }));
+  };
+  (dom.window as unknown as { fetch: unknown }).fetch = cancelledFetch;
+  g.fetch = cancelledFetch;
+  const hostCancelled = dom.window.document.createElement("div");
+  dom.window.document.body.appendChild(hostCancelled);
+  const rootCancelled = createRoot(hostCancelled);
+  await mount(rootCancelled, 5, 0);
+  await flush();
+  pass("a CANCELLED order shows no receipt button either", rootCancelled && hostCancelled.querySelectorAll("button").length === 0);
+  await act(async () => rootCancelled.unmount());
+
+  // restore the normal fetch for the remaining cases
+  billRequestedAt = null;
+  (dom.window as unknown as { fetch: unknown }).fetch = fakeFetch;
+  g.fetch = fakeFetch;
+
+  // ── 7. drinks-only bill: the button is there (nothing to cook first) ─────
+  mode = "drinks";
+  const host3 = dom.window.document.createElement("div");
+  dom.window.document.body.appendChild(host3);
+  const root3 = createRoot(host3);
+  await mount(root3, 5, 12);
+  await flush();
+  pass("a drinks-only table also gets the receipt button", byText("Request the bill", host3) !== null);
+
+  // ── 8. no table / failing endpoint must never break the menu ─────────────
+  await act(async () => root3.unmount());
   mode = "fail";
   calls.length = 0;
   const host2 = dom.window.document.createElement("div");
   dom.window.document.body.appendChild(host2);
   const root2 = createRoot(host2);
-  const mount2 = (tableId: number, refreshKey: number) => mount(root2, tableId, refreshKey);
 
-  await mount2(0, 3);
+  await mount(root2, 0, 3);
   await flush();
   pass("a QR with no table never polls", calls.length === 0 && host2.querySelectorAll("button").length === 0);
 
-  await mount2(5, 4);
+  await mount(root2, 5, 4);
   await flush();
-  pass("a 500 from the endpoint is swallowed (no pill, no crash)", calls.length >= 1 && host2.querySelectorAll("button").length === 0);
+  pass("a 500 from the endpoint is swallowed (no button, no crash)", calls.length >= 1 && host2.querySelectorAll("button").length === 0);
 
   mode = "ok";
-  await mount2(5, 5);
+  await mount(root2, 5, 5);
   await flush();
-  pass("the next successful poll brings the pill back", /Order Status/.test(host2.textContent || ""));
+  pass("the next successful poll brings the receipt button back", byText("Request the bill", host2) !== null);
 
   await act(async () => root2.unmount());
 
   console.log(
     failures === 0
-      ? "\n✅ Guest order-status UI smoke test PASSED"
+      ? "\n✅ Guest receipt-button UI smoke test PASSED"
       : `\n❌ ${failures} UI smoke assertions FAILED`
   );
   process.exit(failures === 0 ? 0 : 1);

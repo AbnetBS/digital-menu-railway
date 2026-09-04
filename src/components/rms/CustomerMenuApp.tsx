@@ -21,7 +21,7 @@ import {
   FIRST_SCREEN_PHOTOS,
 } from "@/lib/image-utils";
 import { ImageBatchProvider, RevealImage, useIdleImagePrefetch } from "@/components/ImageReveal";
-import { OrderStatusProvider, OrderStatusFab, OrderStatusBanner } from "@/components/rms/OrderStatus";
+import { OrderStatusProvider, RequestReceiptButton } from "@/components/rms/OrderStatus";
 import { FACEBOOK_URL, GOOGLE_MAPS_DIRECTIONS_URL, INSTAGRAM_URL, TIKTOK_URL } from "@/lib/business-links";
 
 /**
@@ -93,29 +93,10 @@ export default function CustomerMenuApp() {
   const menuGridRef = useRef<HTMLDivElement | null>(null);
   const stickyBarRef = useRef<HTMLDivElement | null>(null);
 
-  // ── LIVE ORDER STATUS (Group 8): bumping this refetches /api/table-status the
-  //    moment a submission lands, so the guest never waits a poll cycle to see
-  //    their own order appear.
+  // ── RECEIPT BUTTON (the live order-status UI is gone): bumping this
+  //    refetches /api/table-status the moment a submission lands, so the
+  //    receipt button appears without waiting for the next 12s poll.
   const [statusRefreshKey, setStatusRefreshKey] = useState(0);
-  // Brief gold ring so the "Rate your visit" shortcut visibly lands on the review card.
-  const [reviewPulse, setReviewPulse] = useState(false);
-  const reviewPulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (reviewPulseTimer.current) clearTimeout(reviewPulseTimer.current);
-    },
-    []
-  );
-
-  /** Scroll to the review card at the end of the flow and highlight it. */
-  const openReview = useCallback(() => {
-    const node = document.getElementById("guest-review");
-    if (node) node.scrollIntoView({ behavior: "smooth", block: "center" });
-    setReviewPulse(true);
-    if (reviewPulseTimer.current) clearTimeout(reviewPulseTimer.current);
-    reviewPulseTimer.current = setTimeout(() => setReviewPulse(false), 2400);
-  }, []);
 
   useEffect(() => {
     const sig = JSON.stringify(cart);
@@ -458,7 +439,7 @@ export default function CustomerMenuApp() {
         setSubmitted(true);
         setCart([]);
         setReviewMode(false);
-        // Pull the fresh kitchen status straight away so the new pill/banner show
+        // Pull the fresh table status straight away so the receipt button shows
         // this order without waiting for the next 12s poll.
         setStatusRefreshKey((k) => k + 1);
       } else {
@@ -640,12 +621,9 @@ export default function CustomerMenuApp() {
 
   /* ── MAIN MENU ── */
   return (
-    <OrderStatusProvider tableId={tableId ?? 0} refreshKey={statusRefreshKey} onOpenReview={openReview}>
+    <OrderStatusProvider tableId={tableId ?? 0} refreshKey={statusRefreshKey}>
     <div className="min-h-screen bg-[#FAF6F0] pb-28">
       <LanguageToggle />
-      {/* "Order status" pill — stacked above the አማርኛ toggle, appears once this
-          table has an order (whoever sent it). */}
-      <OrderStatusFab />
       {/* Header with logo */}
       <header className="bg-[#2C1B17] text-white sticky top-0 z-40 shadow-xl">
         <div className="px-4 py-2.5 flex items-center justify-between max-w-lg mx-auto">
@@ -667,10 +645,13 @@ export default function CustomerMenuApp() {
         {t("intro")}
       </div>
 
-      {/* live status line under the header — one sentence the guest understands.
-          `empty:hidden` keeps the gap away while this table has no order yet. */}
+      {/* the one guest action after ordering: call for the bill/receipt. The
+          live order-status UI (pill, panel, progress bar) is gone for now —
+          once this table has an order the guest sees only this button, and
+          after tapping it, the confirmation. `empty:hidden` keeps the gap
+          away while there is nothing to show. */}
       <div className="max-w-lg mx-auto px-4 pt-3 empty:hidden">
-        <OrderStatusBanner />
+        <RequestReceiptButton />
       </div>
 
       {/* ── 📢 DAILY BOARD — rotating announcements (auto-slide every few seconds when 2+) ── */}
@@ -1175,14 +1156,11 @@ export default function CustomerMenuApp() {
           </a>
         </section>
 
-        {/* 7. REVIEWS — the LAST step of the guest flow (feature 5): the order
-            status panel's "Rate your visit" button scrolls here. */}
-        <section
-          id="guest-review"
-          className={`space-y-3 scroll-mt-24 rounded-3xl transition-all duration-500 ${
-            reviewPulse ? "ring-4 ring-[#C9A227] bg-[#C9A227]/10 p-2" : ""
-          }`}
-        >
+        {/* 7. REVIEWS — the LAST step of the guest flow (feature 5). The order
+            status panel that used to link here is gone, so the review stays
+            reachable the plain way: it is a section of the page itself,
+            guests scroll to it (stable "guest-review" anchor). */}
+        <section id="guest-review" className="space-y-3 scroll-mt-24 rounded-3xl">
           <h3 className="font-serif font-bold text-lg text-[#2C1B17] flex items-center gap-2">
             <Star className="w-5 h-5 text-[#C9A227] fill-[#C9A227]" /> {t("what_guests_say")}
           </h3>

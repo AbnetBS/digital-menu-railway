@@ -57,14 +57,30 @@ Apple only allows this for apps installed to the Home Screen:
 **Share -> Add to Home Screen**, then always open Fana from that icon.
 The app shows this instruction automatically on iPhones.
 
+### Screen off is NOT the same as phone off
+
+This is the question staff always ask, so in plain words:
+
+| What she does | Does it ring? |
+|---|---|
+| Presses the power button once - the **screen goes dark**, phone in pocket | **Yes.** It rings, vibrates and shows the alert on the lock screen. She taps the alert and lands on the right screen. This is the normal way to work, and it is also the way to save battery. |
+| Uses another app, or the browser is in the background | **Yes.** Same alert on top of whatever she is doing. |
+| Closes the browser completely | **Yes** on Android; on iPhone the app must have been added to the Home Screen. |
+| Holds the button and chooses **Power off** - the phone is really OFF | **No.** A phone that is off cannot receive anything. When she switches it on, alerts from the last ~15 minutes still arrive. |
+| Phone on **silent / Do Not Disturb** | It **vibrates**, but no web app can make a muted phone play a sound. |
+
+So: switching the screen off with the power button is exactly what we designed
+for. Nobody has to keep the screen lit, and the battery is not drained by this.
+
 ### Volume, silent mode, battery
 
 - The system notification uses the **ringer/notification volume**.
 - The in-app bell uses the **media volume**.
-- Keep the phone off silent mode and out of Do Not Disturb. If the OS is muted,
-  the phone still vibrates, but no web app can override a muted device.
-- Do not put the browser into "restricted battery usage" on Android, and leave
-  the staff tab open when possible.
+- Keep the phone off silent mode and out of Do Not Disturb.
+- On Android, leave Chrome on "unrestricted" battery usage (Settings -> Apps ->
+  Chrome -> Battery). "Restricted" lets the system delay alerts.
+- Alerts are sent with high urgency, which is what lets them wake a dozing
+  phone instead of waiting for the next time it is unlocked.
 
 ---
 

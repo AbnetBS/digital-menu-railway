@@ -105,6 +105,11 @@ export default function PocketAlertsChip({
             Keep the phone off silent mode. Notification sound uses the ringer volume, the in-app bell uses the media
             volume.
           </p>
+          <p className="text-[10px] text-emerald-300/90 leading-relaxed">
+            Pressing the power button to switch the SCREEN off is fine, and it saves battery: the phone still rings,
+            vibrates and shows the alert on the lock screen. Only a phone that is fully powered OFF (held the button and
+            chose Power off) receives nothing until it is switched on again.
+          </p>
         </div>
       )}
     </div>

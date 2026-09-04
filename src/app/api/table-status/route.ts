@@ -5,7 +5,7 @@ import { ensureTablesExist } from "@/db/migrate";
 import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import { checkRateLimit, checkSharedIpRateLimit, getClientIp, VENUE_POLICIES } from "@/lib/rate-limit";
 import { publish, CHANNELS } from "@/lib/realtime";
-import { sendPushToRoles } from "@/lib/push";
+import { sendPushToRoles, CUSTOMER_ALERT_RING } from "@/lib/push";
 import {
   customerOrderPhase,
   groupOrderLines,
@@ -245,6 +245,11 @@ export async function POST(request: Request) {
         title: "🧾 Bill requested",
         body: `${open[0].tableName} • the guest asked for the bill`,
         tag: `fana-bill-${open[0].id}`,
+        // A guest sitting and waiting is an ACT NOW event: keep it on the lock
+        // screen and ring the full 3 second guest alarm so it is heard over a
+        // busy room, from a pocket, with the phone locked.
+        ...CUSTOMER_ALERT_RING,
+        ticketId: open[0].id,
       }).catch(() => {});
     }
 

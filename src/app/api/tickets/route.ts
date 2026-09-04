@@ -6,12 +6,13 @@ import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
 import { eq, asc, desc, and, notInArray, inArray, sql, gt, gte, isNotNull } from "drizzle-orm";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
-import { requireStaffOrAdmin, requireAdmin } from "@/lib/session";
+import { requireStaffOrAdmin, requireAdmin, readStaffSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
-import { sendPushToRoles } from "@/lib/push";
+import { sendPushToRoles, CUSTOMER_ALERT_RING } from "@/lib/push";
+import { ticketStatusAlerts, withoutActor } from "@/lib/alerts";
 
 /**
  * Customer order limits are TWO-TIER (per table + per venue) because every guest
@@ -622,10 +623,9 @@ export async function POST(request: Request) {
     // ── GROUP 10 (pocket mode): ring every relevant phone — including browsers
     // that are CLOSED. Fire-and-forget by design: a push outage must never
     // delay or fail an order.
-    // GROUP 11 (release gate): the crew is deliberately NOT notified here —
-    // a waiter's order goes to the CASHIER only. Kitchen/barista are woken by
-    // the PUT below when she taps ✓ PRINTED ("printed") or, in full mode,
-    // "Accept → Kitchen" ("preparing"). Nothing gets cooked without a bill.
+    // RELEASE RULE: the crew is never woken from here. A brand-new order
+    // reaches them when staff ACCEPT it; food added to a bill that is already
+    // accepted reaches them when the cashier prints it (print-and-send).
     //
     // WAITER TOP-UP ALARMS: a guest ordering from their phone hears nothing
     // from staff, so EVERY customer submission must ring the waiter — not just
@@ -652,8 +652,17 @@ export async function POST(request: Request) {
           title: merged ? "🍽 Guest added items" : "🍽 New QR order",
           body: `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`,
           tag: merged ? additionTag : `fana-qr-${pushed.id}`,
+          // A GUEST just acted: 3 second alarm burst, hard vibration, and a
+          // Confirm button right on the lock screen.
+          ...CUSTOMER_ALERT_RING,
+          ticketId: pushed.id,
+          action: "confirm",
         }).catch(() => {});
       } else {
+        // ADDED FOOD KEEPS THE OLD PRINT-AND-SEND FLOW: the crew is NOT woken
+        // here. The addition goes to the cashier (her card shows only the new
+        // items); when she taps ✓ PRINTED & SEND those items are appended to
+        // that table's order for the kitchen/barista, and only THEY are rung.
         if (pushed.status === "printed") {
           // Additions landed on a bill the cashier already keyed into the EFD —
           // she prints the second receipt for the NEW items only (her queue
@@ -662,6 +671,8 @@ export async function POST(request: Request) {
             title: "⚠ Items ADDED",
             body: `${pushed.tableName} • new items on the bill, print receipt #2`,
             tag: `fana-add-${pushed.id}`,
+            ...(isCustomer ? CUSTOMER_ALERT_RING : {}),
+            ticketId: pushed.id,
           }).catch(() => {});
         } else {
           void sendPushToRoles(["cashier"], {
@@ -681,6 +692,10 @@ export async function POST(request: Request) {
                 ? `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`
                 : `${pushed.tableName} • guest added items • ${transactionResult.total} ETB`,
             tag: additionTag,
+            // Same guest-grade alarm: she cannot predict a top-up either.
+            ...CUSTOMER_ALERT_RING,
+            ticketId: pushed.id,
+            action: pushed.status === "pending_waiter" ? "confirm" : null,
           }).catch(() => {});
         }
       }
@@ -739,6 +754,9 @@ export async function PUT(request: Request) {
   const __auth = await requireStaffOrAdmin();
   if (!__auth.ok) return __auth.response;
   await ensureTablesExist();
+  // WHO is doing this? Used only to skip alerting the actor's own role: the
+  // cashier tapping PRINTED must not make her own tablet ring.
+  const actor = await readStaffSession();
   try {
     const body = await request.json();
     if (!body.id) return NextResponse.json({ error: "Ticket ID required" }, { status: 400 });
@@ -788,6 +806,9 @@ export async function PUT(request: Request) {
     // the original createdBy or the later verifiedBy.
     if (body.status === "confirmed") {
       updates.confirmedBy = body.confirmedBy ? String(body.confirmedBy).slice(0, 100) : cur.confirmedBy || "(staff)";
+      // The crew's release stamp: everything on the bill right now goes to the
+      // kitchen and barista. Items added after this moment wait for the print.
+      updates.confirmedAt = new Date();
     }
     // GROUP 9 (print-queue): the cashier keyed the bill into the EFD/POS and
     // printed the order paper. Re-printing after additions simply refreshes the
@@ -842,21 +863,23 @@ export async function PUT(request: Request) {
       await deleteOrphanedCdnImages([cur.receiptImage]);
     }
 
-    // ── GROUP 11 (release gate): THIS is the moment the crew receives the
-    // order. The cashier tapped ✓ PRINTED — the bill now exists in the EFD/POS
-    // world, so kitchen/barista may finally start cooking. (Full-payment
-    // deployments release at "Accept → Kitchen" → "preparing" instead.) Only
-    // stations with NEWLY released items are woken: items added after the
-    // previous print (created_at > old printedAt) wait for the re-print, and a
-    // re-print that releases nothing (e.g. clearing the ADDED flag) must not
-    // re-ring a station for food it already has.
+    // ── THE PRINT RELEASES THE ADDITIONS ──
+    // The original order already reached the crew when it was ACCEPTED (see
+    // ticketStatusAlerts("confirmed")). Food added afterwards keeps the old
+    // print-and-send flow: it reaches the kitchen/barista when the cashier
+    // taps ✓ PRINTED & SEND, and only the stations that received NEWLY
+    // released items are rung — never a crew already cooking. The cutoff is
+    // the previous release stamp: the later of accepted-at and printed-at.
     if (body.status === "printed" || (body.status === "preparing" && body.status !== cur.status)) {
       try {
         const stationRows = await db
           .select({ stationName: ticketItems.stationName, createdAt: ticketItems.createdAt })
           .from(ticketItems)
           .where(and(eq(ticketItems.ticketId, Number(body.id)), eq(ticketItems.removed, false)));
-        const prevStamp = cur.printedAt ? new Date(cur.printedAt).getTime() : null;
+        const stamps = [cur.printedAt, cur.confirmedAt]
+          .filter(Boolean)
+          .map((d) => new Date(d as Date).getTime());
+        const prevStamp = stamps.length > 0 ? Math.max(...stamps) : null;
         const fresh = stationRows.filter(
           (r) => prevStamp === null || !r.createdAt || new Date(r.createdAt).getTime() > prevStamp
         );
@@ -864,12 +887,45 @@ export async function PUT(request: Request) {
         if (stations.length > 0) {
           void sendPushToRoles(stations, {
             title: "👨‍🍳 New items",
-            body: `${updated[0].tableName} • check your station list`,
-            tag: `fana-station-${updated[0].id}`,
+            body: `${updated[0].tableName} • added to the order • check your station list`,
+            tag: `fana-station-${updated[0].id}-${Date.now()}`,
+            urgent: true,
+            repeat: 2,
           }).catch(() => {});
         }
       } catch {
         // A push hiccup must never fail the cashier's print confirmation.
+      }
+    }
+
+    // ── EVERY STATUS CHANGE RINGS THE ROLES THAT MUST REACT ──
+    // Before, only the print/preparing moment pushed anyone, so a waiter with
+    // her phone in a pocket never learned that a bill was confirmed, that the
+    // guest was ready to pay, or that an order had been CANCELLED while the
+    // kitchen was still cooking it. The matrix in @/lib/alerts covers the whole
+    // workflow; the actor's own role is skipped so nobody rings themselves.
+    if (body.status && body.status !== cur.status) {
+      try {
+        const alerts = withoutActor(
+          ticketStatusAlerts(String(body.status), {
+            id: updated[0].id,
+            tableName: updated[0].tableName,
+            totalAmount: updated[0].totalAmount,
+            orderNumber: updated[0].orderNumber,
+          }),
+          actor?.role
+        );
+        for (const alert of alerts) {
+          void sendPushToRoles(alert.roles, {
+            title: alert.title,
+            body: alert.body,
+            tag: alert.tag,
+            urgent: alert.urgent,
+            repeat: alert.repeat,
+          }).catch(() => {});
+        }
+      } catch {
+        // An alert hiccup must never fail a status change.
       }
     }
 

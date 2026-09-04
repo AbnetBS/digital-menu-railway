@@ -40,6 +40,7 @@ const stationsApi = read("src/app/api/station-items/route.ts");
 const tableStatusApi = read("src/app/api/table-status/route.ts");
 const cashier = read("src/components/rms/CashierDashboard.tsx");
 const waiter = read("src/components/rms/WaiterApp.tsx");
+const alerts = read("src/lib/alerts.ts");
 const admin = read("src/components/AdminPanel.tsx");
 const initialData = read("src/lib/initial-data.ts");
 const orderLines = read("src/lib/order-lines.ts");
@@ -139,21 +140,29 @@ function pass(name, cond) {
   pass("admin Settings tab can switch the workflow", /Cashier Print-Queue Mode/.test(admin) && /cashier_mode: settingsForm\.cashier_mode === "print-queue" \? "full" : "print-queue"/.test(admin));
 }
 
-/* ── 7. GROUP 11 — the printed-receipt release gate ──────────────────────── */
-/* Nothing gets cooked without a bill: a waiter's order goes ONLY to the
- * cashier's queue. Kitchen/barista see the items only after her ✓ PRINTED
- * (full mode: "Accept → Kitchen" → preparing). Additions to a printed bill
- * stay invisible to the crew until she prints AGAIN. */
+/* ── 7. THE RELEASE RULE (replaces the old print gate) ───────────────────── */
+/* Owner's decision, Sept 2026: ACCEPTANCE releases the food, not the print.
+ * One tap by the waiter (or the cashier on a QR order) reaches the kitchen,
+ * the barista and the cashier in the same second. The cashier still keys the
+ * bill into the EFD and prints it, but nobody is waiting for that tap, and
+ * neither the waiter nor the cashier has an extra button to press. */
 {
-  pass("stations never see pending_waiter/confirmed orders (waiter sends → cashier only)", /notInArray\(tickets\.status, \["paid", "cancelled", "closed", "pending_waiter", "confirmed"\]\)/.test(stationsApi));
-  pass("station query selects the print stamp (printedAt)", /printedAt: tickets\.printedAt/.test(stationsApi));
-  pass("printed tickets only release items that existed at print time", /status !== "printed" \|\| !printedAt/.test(stationsApi) && /new Date\(it\.createdAt\)\.getTime\(\) <= cutoff/.test(stationsApi));
+  pass("the crew sees an order as soon as it is ACCEPTED (confirmed)", /notInArray\(tickets\.status, \["paid", "cancelled", "closed", "pending_waiter"\]\)/.test(stationsApi));
+  pass("orders nobody accepted yet stay off the crew's list", /"pending_waiter"/.test(stationsApi));
+  pass("the ORIGINAL order is released by the acceptance stamp", /confirmedAt: tickets\.confirmedAt/.test(stationsApi) && /releaseCutoff/.test(stationsApi) && /Math\.max\(c \?\? 0, p \?\? 0\)/.test(stationsApi));
+  pass("food ADDED later waits for the print, exactly like before", /new Date\(it\.createdAt\)\.getTime\(\) <= cutoff/.test(stationsApi));
   pass("legacy items without a timestamp stay visible (old DBs keep working)", /if \(!it\.createdAt\) return true/.test(stationsApi));
+  pass("the acceptance stamp is written and self-heals on old databases", /updates\.confirmedAt = new Date\(\)/.test(tickets) && /confirmedAt: timestamp\("confirmed_at"\)/.test(schema) && /confirmed_at: \{ type: "timestamp", dropNotNull: true \}/.test(migrate));
   pass("a ticket with zero released items disappears from the station list", /\.filter\(\(t\) => t\.items\.length > 0\)/.test(stationsApi));
-  pass("cashier's one click says what it does: ✓ PRINTED & SEND", /✓ PRINTED & SEND/.test(cashier));
-  pass("the order POST wakes the cashier only — not the stations", !/stationPush/.test(tickets) && !/sendPushToRoles\(stations/.test(tickets.split("export async function PUT")[0] || ""));
-  pass("✓ PRINTED (or Accept → Kitchen) wakes the crew", /body\.status === "printed" \|\| \(body\.status === "preparing"/.test(tickets) && /fana-station-/.test(tickets));
-  pass("re-print only wakes stations that got NEW items (no idle re-ring)", /prevStamp === null \|\| !r\.createdAt \|\| new Date\(r\.createdAt\)\.getTime\(\) > prevStamp/.test(tickets));
+  pass("accepting rings kitchen + barista + cashier together", /case "confirmed"/.test(alerts) && /roles: STATION_ROLES/.test(alerts) && /New order to cook/.test(alerts));
+  pass("the waiter's button says where the order goes", /Accept & Send → Kitchen, Barista & Cashier/.test(waiter));
+  pass("the cashier's button says PRINTED & SEND on an addition card", /added \? "✓ PRINTED & SEND" : "✓ PRINTED"/.test(cashier));
+  pass("her addition card still shows ONLY the new items", /isNewUnprinted/.test(cashier) && /new items only/.test(cashier));
+  pass("the print appends the new items to that table's order for the crew", /body\.status === "printed" \|\| \(body\.status === "preparing"/.test(tickets) && /fana-station-/.test(tickets));
+  pass("only the stations that got NEW items are rung (no idle re-ring)", /prevStamp === null \|\| !r\.createdAt \|\| new Date\(r\.createdAt\)\.getTime\(\) > prevStamp/.test(tickets) && /\[cur\.printedAt, cur\.confirmedAt\]/.test(tickets));
+  pass("adding food never wakes the crew directly (it goes to the cashier)", !/New items to cook/.test(tickets));
+  pass("kitchen and barista only ever see their OWN items", /eq\(ticketItems\.stationName, station\)/.test(stationsApi));
+  pass("the cashier still records the EFD print (audit + daily count)", /body\.status === "printed"/.test(tickets) && /updates\.printedAt = new Date\(\)/.test(tickets));
 }
 
 if (failures.length > 0) {
@@ -165,4 +174,7 @@ console.log("\n✅ Print-queue regression test PASSED");
 console.log("   • cashier: key into EFD → print → tap ✓ PRINTED (one click per order)");
 console.log("   • waiter: guests leave → clear table → table turns green");
 console.log("   • payments stay in the EFD/POS — full mode still available via Settings");
-console.log("   • GROUP 11: nothing gets cooked without a bill — ✓ PRINTED releases the crew");
+console.log("   • the ORIGINAL order is released by ACCEPTANCE: one waiter tap reaches");
+console.log("     kitchen, barista and cashier at once");
+console.log("   • food ADDED later keeps the print-and-send flow: cashier sees only the");
+console.log("     new items, her print sends them to that table's order for the crew");

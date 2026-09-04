@@ -16,6 +16,27 @@
  *   4. The sound was one soft 988 Hz sine at gain 0.5. Now a triple-frequency
  *      bell at the compressor ceiling, repeated (playAlarm) + vibration.
  *
+ * ROUND 2 (this file's newest section) — "it still does not ring in my
+ * pocket". Four more root causes, each locked down by a test below:
+ *
+ *   5. THE KILLER: the service worker skipped showNotification whenever any
+ *      window was "focused". A pocketed phone with the staff tab open is
+ *      exactly that, so every push was swallowed and the phone stayed silent
+ *      (and Chrome punishes swallowed pushes: userVisibleOnly was promised).
+ *      A push now ALWAYS shows a notification.
+ *   6. The worker never called skipWaiting/claim, so a phone kept running the
+ *      OLD sw.js forever and never received the fix.
+ *   7. Pocket alerts were armed ONLY inside the login branch. Staff restore a
+ *      saved session instead of logging in, so a subscription that expired
+ *      (or a regenerated VAPID keypair) was never repaired: silence with no
+ *      symptom. ensurePocketAlerts() now re-arms on mount, on visibility, on
+ *      reconnect and on a timer, and detects a stale application server key.
+ *   8. The in-page alarm was Web Audio only, which mobile browsers suspend
+ *      while the tab is hidden, and the in-page notification used
+ *      `new Notification()`, which THROWS on Android. Both are fixed: a
+ *      pre-rendered media element plays with the screen off, and page
+ *      notifications go through the service worker registration.
+ *
  * Run with: node scripts/verify-pocket-alerts.mjs  (wired into `npm test`)
  */
 import { readFileSync } from "node:fs";
@@ -43,6 +64,11 @@ const cashier = read("src/components/rms/CashierDashboard.tsx");
 const station = read("src/components/rms/StationApp.tsx");
 const hint = read("src/components/rms/PocketAlertsHint.tsx");
 const layout = read("src/app/layout.tsx");
+const hook = read("src/lib/use-pocket-alerts.ts");
+const chip = read("src/components/rms/PocketAlertsChip.tsx");
+const testRoute = read("src/app/api/push/test/route.ts");
+const overlay = read("src/components/rms/UrgentAlertOverlay.tsx");
+const alertsMatrix = read("src/lib/alerts.ts");
 
 const failures = [];
 function pass(name, cond) {
@@ -85,10 +111,16 @@ function pass(name, cond) {
   pass("gains run to the ceiling (0.9–1.0, was 0.5)", /0\.9/.test(sound) && /1\.0/.test(sound));
   pass("a limiter keeps the loud signal clean", /DynamicsCompressor/.test(sound));
   pass("phones vibrate too (pocket = felt, not heard)", /navigator\.vibrate/.test(sound));
-  pass("alarm runs 6 pairs (~3.6 s of ringing, was 4)", /pair < 6/.test(sound));
+  pass("alarm runs 6 pairs (~3.6 s of ringing, was 4)", /ALARM_PAIRS = 6/.test(sound) && /pair < ALARM_PAIRS/.test(sound));
   pass("low-octave bell layer carries on small phone speakers", /\[392,/.test(sound));
   pass("limiter tightened toward full scale (threshold -6, high ratio)", /threshold\.value = -6/.test(sound) && /ratio\.value = 20/.test(sound));
   pass("staff are told the OS media volume caps real loudness", /MEDIA volume/i.test(sound));
+  // Web Audio is suspended by mobile browsers while the tab is hidden — the
+  // pocket case — so the alarm also exists as a pre-rendered media element.
+  pass("alarm plays through a media element (works with the screen off)", /renderAlarmWav/.test(sound) && /alarmEl\.play\(\)/.test(sound));
+  pass("media element is primed inside the unlock gesture", /alarmElReady/.test(sound) && /el\.play\(\)/.test(sound));
+  pass("synth stays as the fallback when the element cannot play", /catch\(\(\) => synthAlarm\(\)\)/.test(sound));
+  pass("first tap anywhere arms the audio (no login needed)", /export function armAudioOnFirstGesture/.test(sound) && /pointerdown/.test(sound));
   pass("stations ring the full alarm on new items", /playAlarm\(\)/.test(station));
   pass("waiters ring the full alarm on new QR orders", /playAlarm\(\)/.test(waiter));
   pass("cashier distinguishes 'needs me' (alarm) from noise (ding)", /needsMe/.test(cashier) && /playAlarm\(\)/.test(cashier));
@@ -96,18 +128,33 @@ function pass(name, cond) {
 
 /* ── 3. First notification no longer vanishes ─────────────────────────────── */
 {
-  pass("permission request is followed by ACTUALLY showing", /requestPermission\(\)\.then\(\(p\) => \{/.test(notif) && /if \(p === "granted"\) show\(\)/.test(notif));
+  pass("permission request is followed by ACTUALLY showing", /requestPermission\(\)/.test(notif) && /if \(p === "granted"\) void show\(\)/.test(notif));
   pass("in-page notifications vibrate the phone", /navigator\.vibrate/.test(notif));
+  // `new Notification()` throws on Android Chrome, so every staff phone fell
+  // into the catch block. Mobile needs the service worker registration.
+  pass("in-page notifications go through the service worker (Android)", /getRegistration\("\/"\)/.test(notif) && /reg\.showNotification\(/.test(notif));
 }
 
 /* ── 4. Pocket mode: Web Push ─────────────────────────────────────────────── */
 {
   pass("service worker handles push events", /addEventListener\("push"/.test(sw));
   pass("service worker shows system notifications with renotify + vibration", /renotify: true/.test(sw) && /vibrate/.test(sw));
-  pass("no double-noise while a staff window is focused", /anyFocused/.test(sw) && /if \(anyFocused\) return/.test(sw));
+  // THE BUG: the worker used to `return` (show nothing) whenever a window was
+  // "focused" — which is exactly a pocketed phone with the tab still open.
+  pass("push is NEVER swallowed when a window is 'focused' (pocket bug)", !/if \(anyFocused\) return/.test(sw) && !/anyFocused/.test(sw));
+  pass("a visible page is detected by visibilityState, not just focus", /visibilityState === "visible"/.test(sw));
+  pass("double-noise avoided by a SILENT notification, not by silence", /silent: true/.test(sw) && /someoneIsLooking/.test(sw));
+  pass("silent variant carries no vibrate (spec: that combination throws)", !/silent: true,[\s\S]{0,200}vibrate/.test(sw));
+  pass("urgent alerts stay on the lock screen until tapped", /requireInteraction: !!data\.urgent/.test(sw));
+  pass("an unanswered alert re-rings (repeat rings)", /repeat/.test(sw) && /getNotifications\(\{ tag \}\)/.test(sw));
+  pass("worker takes over immediately (skipWaiting + clients.claim)", /skipWaiting\(\)/.test(sw) && /clients\.claim\(\)/.test(sw));
+  pass("worker relays every push to open pages (frozen SSE safety net)", /tellPages\(\{ type: "fana-push"/.test(sw));
   pass("tapping the notification opens the right staff screen", /notificationclick/.test(sw) && /openWindow/.test(sw));
   pass("rotated keys resubscribe (pushsubscriptionchange)", /pushsubscriptionchange/.test(sw));
   pass("client subscribes with the server's VAPID public key", /applicationServerKey/.test(pushClient) && /\/api\/push\/public-key/.test(pushClient));
+  pass("a stale VAPID key resubscribes instead of failing forever", /keyMatches/.test(pushClient) && /unsubscribe\(\)/.test(pushClient));
+  pass("the newest sw.js is pulled on every arm (reg.update)", /reg\.update\(\)/.test(pushClient) && /updateViaCache: "none"/.test(pushClient));
+  pass("self-healing re-arm exists and never prompts", /export async function ensurePocketAlerts/.test(pushClient) && /Notification\.permission !== "granted"\) return "denied"/.test(pushClient));
   pass("PWA manifest installed (iPhone Add-to-Home-Screen)", /manifest\.webmanifest/.test(layout));
   pass("iPhone users are told about Add to Home Screen", /Add to Home Screen/.test(hint) && /iosPocketHintNeeded/.test(pushClient));
 }
@@ -133,8 +180,8 @@ function pass(name, cond) {
   pass("QR order → waiters only (crew waits for the print)", /fana-qr-/.test(tickets) && /\["waiter"\]/.test(tickets));
   pass("waiter order → cashier to print (no station push on POST)", /fana-print-/.test(tickets) && /\["cashier"\]/.test(tickets));
   pass("additions on a printed bill → cashier prints the new receipt", /fana-add-/.test(tickets) && /new items on the bill, print receipt #2/.test(tickets));
-  pass("POST never pushes to stations (receipt must exist first)", !/stationPush/.test(tickets) && !/sendPushToRoles\(stations/.test(tickets.split("export async function PUT")[0] || ""));
-  pass("✓ PRINTED releases the crew — PUT wakes kitchen/barista", /body\.status === "printed" \|\| \(body\.status === "preparing"/.test(tickets) && /fana-station-/.test(tickets));
+  pass("accepting an order wakes kitchen + barista + cashier together", /case "confirmed"/.test(alertsMatrix) && /roles: STATION_ROLES/.test(alertsMatrix));
+  pass("✓ PRINTED & SEND wakes the crew for food ADDED later", /body\.status === "printed" \|\| \(body\.status === "preparing"/.test(tickets) && /fana-station-/.test(tickets));
   pass("only stations with newly released items are pinged", /prevStamp === null \|\| !r\.createdAt \|\| new Date\(r\.createdAt\)\.getTime\(\) > prevStamp/.test(tickets));
   pass("bill request → waiter + cashier", /fana-bill-/.test(tableStatus) && /\["waiter", "cashier"\]/.test(tableStatus));
 
@@ -176,12 +223,65 @@ function pass(name, cond) {
     });
     pass("staff-originated sends never ring the waiter (all waiter pushes need isCustomer)", waiterPushes.length >= 2 && guarded.length === waiterPushes.length);
   }
-  pass("POST still never pushes to stations (Group 11 gate holds)", !/sendPushToRoles\(stations/.test(postHalf));
+  pass("POST never wakes the crew (acceptance and the print do)", !/sendPushToRoles\(stations/.test(postHalf));
   pass("waiter diffs per-ticket ITEM UNITS, not just new ticket IDs", /itemCountRef/.test(waiter) && /Number\(i\.quantity\)/.test(waiter));
   pass("waiter's own keying never alarms her (own-send credit)", /ownAddRef/.test(waiter));
   pass("top-up alert names the table and says what to do", /guest added items/.test(waiter) && /go confirm!/.test(waiter) && /check the bill!/.test(waiter));
   pass("in-page top-up notification never replaces the previous one", /fana-waiter-add-/.test(waiter));
   pass("login (the one gesture browsers need) arms everything", /enablePocketAlerts\(\)/.test(waiter) && /enablePocketAlerts\(\)/.test(cashier) && /enablePocketAlerts\(\)/.test(station));
+}
+
+/* ── 6c. ROUND 2: the pocket bugs that survived the first fix ─────────────── */
+{
+  // Stale closures: the SSE handler is created once per login and captured the
+  // `alertsOn` state of that moment. Every alert check must read a ref.
+  for (const [name, src] of [["waiter", waiter], ["cashier", cashier], ["station", station]]) {
+    pass(`${name} alarm check reads a live ref, not a captured state`, /alertsOnRef\.current/.test(src) && !/&& alertsOn &&/.test(src));
+    pass(`${name} re-arms pocket alerts through the shared hook`, /usePocketAlerts\(/.test(src));
+    pass(`${name} rebuilds a dead SSE stream (watchdog)`, /readyState === 2/.test(src));
+    pass(`${name} shows whether the phone is really armed`, /PocketAlertsChip/.test(src));
+    pass(`${name} treats a restored session as on-shift (alerts default ON)`, /!!saved/.test(src));
+  }
+
+  // The hook is the anti-"it worked yesterday" machinery.
+  pass("pocket alerts re-arm on mount, visibility, online and a timer", /visibilitychange/.test(hook) && /"online"/.test(hook) && /setInterval\(heal/.test(hook));
+  pass("a push received while the page is open rings the in-app alarm", /onPushAlert\(/.test(hook) && /playAlarm\(\)/.test(hook));
+  pass("the first tap on any staff screen unlocks the audio", /armAudioOnFirstGesture\(\)/.test(hook));
+
+  // A REAL end-to-end test (server to push service to phone), not a local popup.
+  pass("staff can test pocket mode for real, with a delay to lock the phone", /\/api\/push\/test/.test(pushClient) && /delaySeconds/.test(testRoute));
+  pass("the test push route is staff-only and uses the session role", /requireStaff\(\)/.test(testRoute) && /staff\.role/.test(testRoute));
+  pass("the test button is reachable from the staff screens", /Test ring/.test(chip));
+  pass("alerts are delivered with high urgency (wakes a dozing phone)", /urgency: "high"/.test(pushServer) && /TTL/.test(pushServer));
+}
+
+/* ── 6d. GUEST EVENTS: 3 second alarm, hard vibration, one-tap confirm ────── */
+{
+  // The three things a guest can do that staff cannot predict.
+  pass("there is one shared 'guest event' ring setting", /export const CUSTOMER_ALERT_RING/.test(pushServer) && /gapMs: 1100/.test(pushServer) && /repeat: 3/.test(pushServer));
+  pass("a new QR order uses the guest ring", /CUSTOMER_ALERT_RING/.test(tickets) && /New QR order/.test(tickets));
+  pass("a guest adding items uses the guest ring", (tickets.match(/CUSTOMER_ALERT_RING/g) || []).length >= 3);
+  pass("a bill request uses the guest ring", /CUSTOMER_ALERT_RING/.test(tableStatus));
+  pass("the worker rings the guest burst close together, staff alerts slowly", /Number\(data\.gapMs\) \|\| 7000/.test(sw) && /await sleep\(gap\)/.test(sw));
+  pass("a guest event vibrates for about 3 seconds", /const CUSTOMER_VIBRATE = \[800, 150, 800, 150, 800, 150, 800\]/.test(sw) && /isCustomer \? CUSTOMER_VIBRATE : DEFAULT_VIBRATE/.test(sw));
+  pass("the notification itself carries a CONFIRM button", /action: "confirm", title: "✓ Confirm"/.test(sw));
+  pass("pressing CONFIRM calls the same API the app calls", /event\.action === "confirm"/.test(sw) && /"\/api\/tickets"/.test(sw) && /credentials: "same-origin"/.test(sw));
+  pass("an expired session is explained, not swallowed", /res\.status === 401/.test(sw));
+
+  // The screen that cannot be missed once the phone is picked up.
+  pass("a guest event takes over the whole screen with one big button", /export default function UrgentAlertOverlay/.test(overlay) && /fixed inset-0/.test(overlay));
+  pass("the screen keeps re-ringing until it is answered", /REPEAT_MS/.test(overlay) && /playAlarm\(\)/.test(overlay) && /MAX_REPEATS/.test(overlay));
+  pass("answering stops the buzzing", /navigator\.vibrate\(0\)/.test(overlay));
+  pass("the waiter phone shows it for orders, top-ups and bill requests", /<UrgentAlertOverlay/.test(waiter) && (waiter.match(/raiseUrgent\(\{/g) || []).length >= 3);
+  pass("the waiter's big button opens that table's bill", /openTicketById/.test(waiter));
+  pass("the cashier tablet shows it too, with a one-tap confirm", /<UrgentAlertOverlay/.test(cashier) && /✓ ACCEPT ORDER/.test(cashier) && /setStatusRef\.current\(guestEvent\.id, "confirmed"\)/.test(cashier));
+  pass("an answered guest event never pops up again", /answeredRef/.test(waiter) && /answeredRef/.test(cashier));
+
+  // The guest side: the status bar became the bill button.
+  {
+    const orderStatus = read("src/components/rms/OrderStatus.tsx");
+    pass("the guest's status bar is now a working bill button", /export function OrderStatusBanner/.test(orderStatus) && /onClick=\{requestBill\}/.test(orderStatus) && /Receipt className/.test(orderStatus));
+  }
 }
 
 /* ── 7. Staff-requested menu card behavior ────────────────────────────────── */
@@ -205,3 +305,7 @@ console.log("   • armed automatically at staff login — no separate button to
 console.log("   • every customer top-up (pending/confirmed/printed) rings the waiter on");
 console.log("     its own tag; staff keying never rings anyone extra; stations stay");
 console.log("     silent until the cashier's print (Group 11 gate)");
+console.log("   • a push is NEVER swallowed because a window looked 'focused' (the bug");
+console.log("     that kept pocketed phones silent), the worker updates itself, and the");
+console.log("     subscription self-heals on mount/visibility/reconnect/timer");
+console.log("   • staff can prove it: 'Test ring in 10s', lock the phone, hear it");

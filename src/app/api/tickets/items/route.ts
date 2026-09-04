@@ -5,6 +5,32 @@ import { ensureTablesExist } from "@/db/migrate";
 import { eq, and } from "drizzle-orm";
 import { requireStaffOrAdmin } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
+import { sendPushToRoles } from "@/lib/push";
+import { itemQuantityAlerts, itemRemovedAlerts, withoutActor, type RoleAlert } from "@/lib/alerts";
+import { readStaffSession } from "@/lib/session";
+
+/** Send a built alert list, never blocking or failing the caller. */
+function ring(alerts: RoleAlert[], actorRole?: string | null) {
+  for (const alert of withoutActor(alerts, actorRole)) {
+    void sendPushToRoles(alert.roles, {
+      title: alert.title,
+      body: alert.body,
+      tag: alert.tag,
+      urgent: alert.urgent,
+      repeat: alert.repeat,
+    }).catch(() => {});
+  }
+}
+
+/** The bill an item belongs to, for the alert text. */
+async function ticketOf(ticketId: number) {
+  const rows = await db
+    .select({ id: tickets.id, tableName: tickets.tableName, totalAmount: tickets.totalAmount })
+    .from(tickets)
+    .where(eq(tickets.id, ticketId))
+    .limit(1);
+  return rows[0] || null;
+}
 
 async function recomputeTotal(ticketId: number) {
   const items = await db
@@ -41,8 +67,36 @@ export async function PUT(request: Request) {
       updates.notes = String(body.notes).slice(0, 500);
     }
 
+    // Read the line BEFORE the edit so the alert can say "2 to 4".
+    const before = await db.select().from(ticketItems).where(eq(ticketItems.id, body.itemId)).limit(1);
+
     const updated = await db.update(ticketItems).set(updates).where(eq(ticketItems.id, body.itemId)).returning();
     if (updated[0]) await recomputeTotal(updated[0].ticketId);
+
+    // A corrected quantity changes what the crew must cook and what the guest
+    // pays, so it rings the waiter and the station that owns the line.
+    try {
+      if (updated[0] && before[0] && updates.quantity !== undefined && before[0].quantity !== updated[0].quantity) {
+        const ticket = await ticketOf(updated[0].ticketId);
+        if (ticket) {
+          ring(
+            itemQuantityAlerts({
+              id: ticket.id,
+              tableName: ticket.tableName,
+              totalAmount: ticket.totalAmount,
+              itemName: updated[0].name,
+              station: updated[0].stationName,
+              fromQuantity: before[0].quantity,
+              toQuantity: updated[0].quantity,
+            }),
+            __auth.session.kind === "staff" ? (await readStaffSession())?.role : null
+          );
+        }
+      }
+    } catch {
+      /* alerts must never fail an edit */
+    }
+
     publish(CHANNELS.orders);
     return NextResponse.json(updated[0]);
   } catch (error) {
@@ -71,6 +125,27 @@ export async function DELETE(request: Request) {
     }
 
     await recomputeTotal(rows[0].ticketId);
+
+    // Removing a dish is exactly the kind of change that used to reach nobody:
+    // the guest still expects it, and the crew may already be cooking it.
+    try {
+      const ticket = await ticketOf(rows[0].ticketId);
+      if (ticket) {
+        ring(
+          itemRemovedAlerts({
+            id: ticket.id,
+            tableName: ticket.tableName,
+            totalAmount: ticket.totalAmount,
+            itemName: rows[0].name,
+            station: rows[0].stationName,
+          }),
+          __auth.session.kind === "staff" ? (await readStaffSession())?.role : null
+        );
+      }
+    } catch {
+      /* alerts must never fail a removal */
+    }
+
     publish(CHANNELS.orders);
     return NextResponse.json({ success: true, id: Number(id) });
   } catch (error) {

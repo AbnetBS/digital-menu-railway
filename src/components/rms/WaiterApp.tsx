@@ -7,10 +7,13 @@ import {
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
+import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
+import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
-import { unlockAudio, playAlarm } from "@/lib/sound";
+import { unlockAudio, playAlarm, playDing } from "@/lib/sound";
 import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { useRef } from "react";
@@ -82,8 +85,22 @@ export default function WaiterApp() {
     { slug: "all", name: "All" },
   ]);
 
+  // ── GUEST EVENTS TAKE OVER THE SCREEN ──
+  // A guest ordering, topping up, or asking for the bill cannot be predicted,
+  // so it does not get a small toast: it gets a full screen with one big
+  // button that keeps re-ringing until the waiter presses it.
+  const [urgent, setUrgent] = useState<UrgentAlert | null>(null);
+  /** Guest events already answered on this device, so they never come back. */
+  const answeredRef = useRef<Set<string>>(new Set());
+
   // Ring bell alerts (new QR orders + guest top-ups)
   const [alertsOn, setAlertsOn] = useState(false);
+  // STALE-CLOSURE FIX: the SSE handler below is created once (deps [staffName])
+  // and captured `alertsOn` as it was at that moment. Turning alerts on later
+  // (the bell button, or the localStorage read landing in a later render) never
+  // reached the captured copy, so the alarm stayed switched off forever. Every
+  // alert check now reads the ref, which is always current.
+  const alertsOnRef = useRef(false);
   const seenPendingRef = useRef<Set<number>>(new Set());
   const alertsInitRef = useRef(false);
   // Per-ticket live item-unit baseline: a guest adding dishes to an EXISTING
@@ -96,10 +113,46 @@ export default function WaiterApp() {
   // keying items herself must NOT ring her own phone — the next refresh
   // consumes this credit once, so only units BEYOND her own send alarm her.
   const ownAddRef = useRef<{ ticketId: number; units: number } | null>(null);
+  // EVERY ROLE EVENT RINGS: besides new orders and guest top-ups, the waiter
+  // must hear food going READY, an order being cancelled or confirmed, and a
+  // guest asking for the bill. Each of these needs its own memory of the last
+  // refresh, otherwise the same event would ring forever (or never).
+  /** Ticket id -> last seen status. */
+  const statusRef = useRef<Map<number, string>>(new Map());
+  /** Item ids already announced as ready, so a done dish rings exactly once. */
+  const readyRef = useRef<Set<number>>(new Set());
+  /** Tickets whose guest already asked for the bill. */
+  const billAskedRef = useRef<Set<number>>(new Set());
+  /** Status changes THIS waiter just made, so she never alarms herself. */
+  const ownStatusRef = useRef<Set<string>>(new Set());
+  const noteOwnStatus = (ticketId: number, status: string) => {
+    ownStatusRef.current.add(`${ticketId}:${status}`);
+  };
+  // Always points at the CURRENT loadTables (the SSE handler and the service
+  // worker relay are created once and would otherwise call a stale copy).
+  const loadTablesRef = useRef<() => void>(() => {});
+  /** Latest tables, for callbacks created in older renders. */
+  const tablesRef = useRef<CafeTable[]>([]);
+
+  // Keep the refs in step with the latest render (in an effect, never during
+  // render) so every callback below reads today's values, not login-time ones.
+  useEffect(() => {
+    alertsOnRef.current = alertsOn;
+  }, [alertsOn]);
 
   useEffect(() => {
-    setAlertsOn(localStorage.getItem("fana_alerts_waiter") === "1");
+    tablesRef.current = tables;
+  }, [tables]);
+
+  useEffect(() => {
     const saved = sessionStorage.getItem("fana_waiter");
+    // A restored session is a working waiter: alerts default to ON. (Before,
+    // alerts depended purely on a localStorage flag, so a device that had it
+    // cleared showed a logged-in waiter whose phone never rang.)
+    const on = localStorage.getItem("fana_alerts_waiter") === "1" || !!saved;
+    setAlertsOn(on);
+    alertsOnRef.current = on;
+    if (on) localStorage.setItem("fana_alerts_waiter", "1");
     if (saved) {
       const s = JSON.parse(saved);
       setStaffName(s.name);
@@ -125,21 +178,54 @@ export default function WaiterApp() {
       // REALTIME (SSE): instead of polling every 8s, the server pushes a
       // "refresh" signal only when an order/table actually changes. This keeps
       // the network and database idle until something real happens.
-      const es = new EventSource("/api/realtime?channel=orders");
-      es.onmessage = () => loadTables();
-      es.onerror = () => {
-        // On a dropped connection the browser auto-reconnects; refresh once to
-        // make sure nothing was missed while disconnected.
-        loadTables();
+      //
+      // WATCHDOG: a phone in a pocket has its background tab throttled and its
+      // sockets dropped, and EventSource does not always recover on its own
+      // (a proxy timeout leaves it CLOSED). If that happened, the waiter got
+      // no refresh and no alarm until she opened the app. We now rebuild the
+      // stream whenever it is closed, and re-check on visibility/online. The
+      // service worker push is the second, independent safety net.
+      let es: EventSource | null = null;
+      let stopped = false;
+
+      const connect = () => {
+        if (stopped) return;
+        try {
+          es?.close();
+        } catch {
+          /* ignore */
+        }
+        es = new EventSource("/api/realtime?channel=orders");
+        es.onmessage = () => loadTablesRef.current();
+        es.onerror = () => {
+          // On a dropped connection the browser auto-reconnects; refresh once to
+          // make sure nothing was missed while disconnected.
+          loadTablesRef.current();
+        };
       };
+
+      connect();
+
+      const revive = () => {
+        if (stopped) return;
+        if (!es || es.readyState === 2 /* CLOSED */) connect();
+        loadTablesRef.current();
+      };
+      const watchdog = setInterval(() => {
+        if (!es || es.readyState === 2) connect();
+      }, 30000);
       // Refresh immediately when the tab becomes visible again (user action).
       const onVisible = () => {
-        if (!document.hidden) loadTables();
+        if (!document.hidden) revive();
       };
       document.addEventListener("visibilitychange", onVisible);
+      window.addEventListener("online", revive);
       return () => {
-        es.close();
+        stopped = true;
+        clearInterval(watchdog);
+        es?.close();
         document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("online", revive);
       };
     }
   }, [staffName]);
@@ -156,13 +242,61 @@ export default function WaiterApp() {
     }
     localStorage.setItem("fana_alerts_waiter", "1");
     setAlertsOn(true);
-    // GROUP 10: also (re)subscribe this phone to pocket alerts and ring a
-    // sample so the waiter KNOWS the device is armed — no guessing.
+    alertsOnRef.current = true;
+    // Also (re)subscribe this phone to pocket alerts and ring a sample so the
+    // waiter KNOWS the device is armed, then refresh the status chip.
     if (pushSupported()) {
-      void enablePocketAlerts();
+      const res = await enablePocketAlerts();
+      void pocket.refreshStatus();
+      if (res === "denied") {
+        showToast("Notifications are blocked. Allow them in your browser settings.");
+      }
     }
     playAlarm();
     showToast("🔔 Alerts ON • pocket notifications armed");
+  };
+
+  /** Plain-language line for a status somebody else moved the ticket to. */
+  const statusMoveLabel = (status: string, tableName: string): string => {
+    // The money/closing steps (ready to pay, paid, settled, table cleared) are
+    // deliberately NOT here: they never ring and never notify. Their cards
+    // still update on screen; they simply do not wake a phone in a pocket.
+    const map: Record<string, string> = {
+      confirmed: `✓ ${tableName}: order confirmed`,
+      printed: `🖨 ${tableName}: bill printed, crew is cooking`,
+      preparing: `👨‍🍳 ${tableName}: kitchen started`,
+      cancelled: `⛔ ${tableName}: ORDER CANCELLED, do not serve`,
+    };
+    return map[status] || "";
+  };
+
+  /** Jump straight to a table's bill (used by the full-screen guest alert). */
+  const openTicketById = async (ticketId: number) => {
+    const r = await fetch("/api/tickets?active=1");
+    if (!r.ok) return;
+    const all: Ticket[] = await r.json();
+    const tk = all.find((x) => x.id === ticketId);
+    if (!tk) return;
+    setSelectedTable(tablesRef.current.find((t) => t.activeTicketId === ticketId) || null);
+    setCart([]);
+    setActiveTicket(tk);
+    setView("bill");
+  };
+
+  /**
+   * Show the full-screen alert for a guest event. The newest event wins, and
+   * anything already answered on this device stays closed.
+   */
+  const raiseUrgent = (a: UrgentAlert) => {
+    if (answeredRef.current.has(a.id)) return;
+    setUrgent(a);
+  };
+
+  const closeUrgent = () => {
+    setUrgent((cur) => {
+      if (cur) answeredRef.current.add(cur.id);
+      return null;
+    });
   };
 
   const loadTables = async () => {
@@ -212,10 +346,119 @@ export default function WaiterApp() {
         if (!all.some((t) => t.id === id)) itemCountRef.current.delete(id);
       }
 
-      if (alertsInitRef.current && alertsOn && (fresh.length > 0 || added.length > 0)) {
+      // ── READY TO SERVE / STATUS MOVES / BILL REQUESTS ──
+      // These are the events that previously changed in total silence.
+      const readyItems: Array<{ ticket: Ticket; name: string; quantity: number }> = [];
+      const statusMoves: Array<{ ticket: Ticket; from: string; to: string }> = [];
+      const billAsks: Ticket[] = [];
+      for (const t of all) {
+        // Food finished by the kitchen/barista.
+        for (const i of t.items || []) {
+          if (i.removed) continue;
+          const done = i.stationStatus === "done";
+          if (done && !readyRef.current.has(i.id)) {
+            readyRef.current.add(i.id);
+            if (alertsInitRef.current) readyItems.push({ ticket: t, name: i.name, quantity: i.quantity });
+          }
+          if (!done) readyRef.current.delete(i.id); // sent back to the pan
+        }
+        // Status moves made by somebody else (cashier printed, order cancelled).
+        const prevStatus = statusRef.current.get(t.id);
+        statusRef.current.set(t.id, t.status);
+        const ownKey = `${t.id}:${t.status}`;
+        if (ownStatusRef.current.has(ownKey)) {
+          ownStatusRef.current.delete(ownKey);
+        } else if (alertsInitRef.current && prevStatus !== undefined && prevStatus !== t.status) {
+          statusMoves.push({ ticket: t, from: prevStatus, to: t.status });
+        }
+        // Guest tapped "bring the bill" on their own phone.
+        if (t.receiptRequestedAt) {
+          if (!billAskedRef.current.has(t.id)) {
+            billAskedRef.current.add(t.id);
+            if (alertsInitRef.current) billAsks.push(t);
+          }
+        } else {
+          billAskedRef.current.delete(t.id);
+        }
+      }
+      for (const id of [...statusRef.current.keys()]) {
+        if (!all.some((t) => t.id === id)) {
+          statusRef.current.delete(id);
+          billAskedRef.current.delete(id);
+        }
+      }
+
+      // Silent statuses: the money and closing steps ring nobody (see
+      // statusMoveLabel). Dropping them here keeps even the short ding away.
+      // A cancellation is shown, never sounded: only the kitchen and barista
+      // are rung for it (they may have a pan on the fire). She reads it as a
+      // quiet line on her screen.
+      const quietMoves = statusMoves.filter((m) => m.to === "cancelled");
+      const loudMoves = statusMoves.filter(
+        (m) => m.to !== "cancelled" && statusMoveLabel(m.to, m.ticket.tableName) !== ""
+      );
+      if (alertsInitRef.current && quietMoves.length > 0) {
+        showToast(statusMoveLabel(quietMoves[0].to, quietMoves[0].ticket.tableName));
+      }
+      if (alertsInitRef.current && alertsOnRef.current && (readyItems.length > 0 || billAsks.length > 0 || loudMoves.length > 0)) {
+        // Ready food and a waiting guest are ACT NOW events: full alarm.
+        // A status move somebody else made is information: a short ring.
+        if (readyItems.length > 0 || billAsks.length > 0) playAlarm();
+        else playDing();
+
+        if (readyItems.length > 0) {
+          const r = readyItems[0];
+          const more = readyItems.length > 1 ? ` (+${readyItems.length - 1} more)` : "";
+          triggerDesktopNotification({
+            title: "Fana Cafe • Ready to serve",
+            message: `🔔 ${r.ticket.tableName}: ${r.name} x${r.quantity} is ready${more} • pick it up!`,
+            tag: `fana-waiter-ready-${r.ticket.id}-${Date.now()}`,
+          });
+          showToast(`🔔 READY: ${r.ticket.tableName} • ${r.name}${more}`);
+        }
+        if (billAsks.length > 0) {
+          const b = billAsks[0];
+          raiseUrgent({
+            id: `bill-${b.id}-${b.receiptRequestedAt || ""}`,
+            kind: "bill",
+            table: b.tableName,
+            detail: `${b.totalAmount} ETB • take the receipt over`,
+            actionLabel: "OPEN BILL",
+            onAction: () => void openTicketById(b.id),
+          });
+          triggerDesktopNotification({
+            title: "Fana Cafe • Bill requested",
+            message: `🧾 ${b.tableName} asked for the bill • ${b.totalAmount} ETB`,
+            tag: `fana-waiter-bill-${b.id}`,
+          });
+          if (readyItems.length === 0) showToast(`🧾 ${b.tableName} asked for the bill`);
+        }
+        if (loudMoves.length > 0 && readyItems.length === 0 && billAsks.length === 0) {
+          const m = loudMoves[0];
+          const label = statusMoveLabel(m.to, m.ticket.tableName);
+          if (label) {
+            triggerDesktopNotification({
+              title: "Fana Cafe • Order update",
+              message: label,
+              tag: `fana-waiter-status-${m.ticket.id}-${m.to}`,
+            });
+            showToast(label);
+          }
+        }
+      }
+
+      if (alertsInitRef.current && alertsOnRef.current && (fresh.length > 0 || added.length > 0)) {
         playAlarm();
         if (fresh.length > 0) {
           const t0 = fresh[0];
+          raiseUrgent({
+            id: `order-${t0.id}`,
+            kind: "order",
+            table: t0.tableName,
+            detail: `${t0.totalAmount} ETB • new QR order`,
+            actionLabel: "OPEN & ACCEPT",
+            onAction: () => void openTicketById(t0.id),
+          });
           triggerDesktopNotification({
             title: "Fana Cafe • Waiter Alert",
             message: `🍽 New order request • ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`,
@@ -226,6 +469,14 @@ export default function WaiterApp() {
         if (added.length > 0) {
           const t0 = added[0];
           const stillPending = t0.status === "pending_waiter";
+          raiseUrgent({
+            id: `added-${t0.id}-${Date.now()}`,
+            kind: "added",
+            table: t0.tableName,
+            detail: `${t0.totalAmount} ETB • guest added items`,
+            actionLabel: stillPending ? "OPEN & ACCEPT" : "OPEN BILL",
+            onAction: () => void openTicketById(t0.id),
+          });
           triggerDesktopNotification({
             title: "Fana Cafe • Waiter Alert",
             message: stillPending
@@ -257,6 +508,18 @@ export default function WaiterApp() {
     }
   };
 
+  useEffect(() => {
+    loadTablesRef.current = loadTables;
+  });
+
+  // POCKET MODE: keeps this phone subscribed (self-healing, no login needed),
+  // and turns every push that lands while the app is open into the loud in-app
+  // alarm plus an instant refresh, even if the SSE stream was frozen.
+  const pocket = usePocketAlerts({
+    active: !!staffName,
+    onAlert: () => loadTablesRef.current(),
+  });
+
   const login = async () => {
     setLoginError("");
     const r = await fetch("/api/staff/login", {
@@ -275,7 +538,9 @@ export default function WaiterApp() {
       unlockAudio();
       localStorage.setItem("fana_alerts_waiter", "1");
       setAlertsOn(true);
+      alertsOnRef.current = true;
       void enablePocketAlerts().then((res) => {
+        void pocket.refreshStatus();
         if (res === "denied") {
           showToast("Notifications blocked. Allow them in the browser to hear pocket alerts.");
         }
@@ -396,6 +661,7 @@ export default function WaiterApp() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: activeTicket.id, status: "ready_for_payment" }),
     });
+    noteOwnStatus(activeTicket.id, "ready_for_payment");
     setView("payment");
     loadTables();
   };
@@ -416,6 +682,7 @@ export default function WaiterApp() {
         receiptImage: receiptImage || "",
       }),
     });
+    noteOwnStatus(activeTicket.id, "completed");
     setSending(false);
     setActiveTicket(null);
     setSelectedTable(null);
@@ -455,6 +722,7 @@ export default function WaiterApp() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: activeTicket.id, status: "closed", closedBy: staffName }),
     });
+    noteOwnStatus(activeTicket.id, "closed");
     showToast(`✓ ${activeTicket.tableName} is free for new guests`);
     setActiveTicket(null);
     setSelectedTable(null);
@@ -522,7 +790,8 @@ export default function WaiterApp() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: activeTicket.id, status: "confirmed", confirmedBy: staffName }),
     });
-    showToast("✓ Order confirmed • sent to cashier & kitchen");
+    noteOwnStatus(activeTicket.id, "confirmed");
+    showToast("✓ Accepted • kitchen, barista and cashier all have it");
     onGoBack();
     loadTables();
   };
@@ -598,6 +867,13 @@ export default function WaiterApp() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <PocketAlertsChip
+            status={pocket.status}
+            busy={pocket.busy}
+            onArm={pocket.arm}
+            onTest={pocket.test}
+            onToast={showToast}
+          />
           <button
             onClick={enableAlerts}
             className={`p-2 rounded-xl transition ${alertsOn ? "bg-emerald-600 text-white" : "bg-[#C9A227] text-[#2C1B17] animate-pulse"}`}
@@ -613,6 +889,9 @@ export default function WaiterApp() {
           </button>
         </div>
       </div>
+
+      {/* Full-screen guest alert (new order / added items / bill request) */}
+      <UrgentAlertOverlay alert={urgent} onClose={closeUrgent} />
 
       {/* Toast */}
       {toast && (
@@ -891,7 +1170,7 @@ export default function WaiterApp() {
               onClick={confirmOrder}
               className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
             >
-              <CheckCircle2 className="w-4 h-4" /> Confirm Order → Send to Cashier
+              <CheckCircle2 className="w-4 h-4" /> Accept & Send → Kitchen, Barista & Cashier
             </button>
           )}
 
@@ -900,8 +1179,8 @@ export default function WaiterApp() {
               {/* Group 9: no payment screens for the waiter — the EFD/POS at the
                   counter is the money system. Her only closing job is physical. */}
               {activeTicket.status === "confirmed" && (
-                <div className="w-full bg-[#2C1B17] border border-amber-500/40 rounded-xl px-4 py-3 text-center text-xs font-bold text-amber-300">
-                  🧾 Sent • waiting for the cashier to print it in the EFD
+                <div className="w-full bg-[#2C1B17] border border-emerald-500/40 rounded-xl px-4 py-3 text-center text-xs font-bold text-emerald-300">
+                  ✓ Sent • the kitchen and barista are cooking, the cashier is printing
                 </div>
               )}
               {(activeTicket.status === "printed" ||

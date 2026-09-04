@@ -4,6 +4,8 @@ import { ticketItems, tickets } from "@/db/schema";
 import { and, eq, notInArray, asc, inArray } from "drizzle-orm";
 import { requireStaffOrAdmin, readStaffSession, readAdminSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
+import { sendPushToRoles } from "@/lib/push";
+import { stationProgressAlerts } from "@/lib/alerts";
 
 type Station = "barista" | "kitchen";
 
@@ -49,11 +51,20 @@ export async function GET(request: Request) {
         // has been waiting), not just that it exists.
         createdAt: tickets.createdAt,
         updatedAt: tickets.updatedAt,
-        // Group 11: the print stamp decides which items the crew may cook.
+        // The two release stamps: acceptance releases the original order, the
+        // print releases anything added after it.
         printedAt: tickets.printedAt,
+        confirmedAt: tickets.confirmedAt,
       })
       .from(tickets)
-      .where(notInArray(tickets.status, ["paid", "cancelled", "closed", "pending_waiter", "confirmed"]));
+      // WORKFLOW (owner's decision, Sept 2026): staff ACCEPTANCE releases the
+      // food, not the print. The moment a waiter taps ✓ ACCEPT & SEND (or the
+      // cashier confirms a QR order) the ticket becomes "confirmed" and the
+      // kitchen, the barista AND the cashier all receive it in the same second.
+      // The cashier still keys it into the EFD and prints, but the crew no
+      // longer waits for that tap. Only orders nobody has accepted yet
+      // (pending_waiter) stay hidden here.
+      .where(notInArray(tickets.status, ["paid", "cancelled", "closed", "pending_waiter"]));
 
     if (open.length === 0) return NextResponse.json([], { headers: { "Cache-Control": "no-store" } });
 
@@ -78,18 +89,29 @@ export async function GET(request: Request) {
       map.get(it.ticketId)!.push(it);
     }
 
-    // GROUP 11 (release gate): in the print-queue workflow the EFD/POS receipt
-    // must EXIST before the crew starts cooking — "nothing gets cooked without
-    // a bill". A waiter sending an order only moves it to the CASHIER's queue;
-    // the kitchen/barista lists receive it when she taps ✓ PRINTED (status
-    // "printed"). Additions that land on an already-printed bill stay invisible
-    // to the crew until she prints AGAIN: only items that existed at the last
-    // print (item created_at <= printed_at) are released. (Full-payment mode
-    // uses the classic release: the cashier's "Accept → Kitchen" move to
-    // "preparing" — the status filter above already handles both.)
-    const releasedItems = (status: string, printedAt: Date | string | null, items: any[]) => {
-      if (status !== "printed" || !printedAt) return items; // preparing/…: all items released
-      const cutoff = new Date(printedAt).getTime();
+    // ── THE RELEASE RULE ──
+    // 1. The ORIGINAL order is released the moment staff ACCEPT it: kitchen,
+    //    barista and cashier all receive it in the same second (no waiting for
+    //    the print).
+    // 2. Anything ADDED after that acceptance follows the old print-and-send
+    //    flow: it stays off the crew's list until the cashier prints again, and
+    //    her card shows ONLY the new items. Her print appends them to that
+    //    table's order for the crew.
+    // So the cutoff is the LATER of the two stamps: accepted-at and printed-at.
+    const releaseCutoff = (confirmedAt: Date | string | null, printedAt: Date | string | null) => {
+      const c = confirmedAt ? new Date(confirmedAt).getTime() : null;
+      const p = printedAt ? new Date(printedAt).getTime() : null;
+      if (c === null && p === null) return null; // legacy ticket, no stamps → release all
+      return Math.max(c ?? 0, p ?? 0);
+    };
+
+    const releasedItems = (
+      confirmedAt: Date | string | null,
+      printedAt: Date | string | null,
+      items: any[]
+    ) => {
+      const cutoff = releaseCutoff(confirmedAt, printedAt);
+      if (cutoff === null) return items;
       return items.filter((it) => {
         if (!it.createdAt) return true; // legacy rows without a timestamp → released
         return new Date(it.createdAt).getTime() <= cutoff;
@@ -99,7 +121,7 @@ export async function GET(request: Request) {
     const payload = open
       .filter((t) => map.has(t.id))
       .map((t) => {
-        const items = releasedItems(t.status, t.printedAt, map.get(t.id) || []);
+        const items = releasedItems(t.confirmedAt, t.printedAt, map.get(t.id) || []);
         return {
           id: t.id,
           tableName: t.tableName,
@@ -136,7 +158,13 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: "itemId and stationStatus required" }, { status: 400 });
     }
     const existing = await db
-      .select({ id: ticketItems.id, stationName: ticketItems.stationName })
+      .select({
+        id: ticketItems.id,
+        stationName: ticketItems.stationName,
+        ticketId: ticketItems.ticketId,
+        name: ticketItems.name,
+        quantity: ticketItems.quantity,
+      })
       .from(ticketItems)
       .where(eq(ticketItems.id, Number(body.itemId)))
       .limit(1);
@@ -150,6 +178,50 @@ export async function PUT(request: Request) {
       .set({ stationStatus: String(body.stationStatus) })
       .where(eq(ticketItems.id, Number(body.itemId)))
       .returning();
+
+    // ── THE ALERT THAT WAS MISSING COMPLETELY ──
+    // The crew finishing a dish rang nobody, so food sat on the pass until a
+    // waiter happened to look at her screen. Now every station action wakes
+    // the waiter's phone, and the last finished item says "whole order ready".
+    try {
+      const item = existing[0];
+      const ticketRows = await db
+        .select({ id: tickets.id, tableName: tickets.tableName, totalAmount: tickets.totalAmount })
+        .from(tickets)
+        .where(eq(tickets.id, item.ticketId))
+        .limit(1);
+      if (ticketRows.length > 0) {
+        // Is anything on this bill still unfinished (any station)?
+        const siblings = await db
+          .select({ id: ticketItems.id, stationStatus: ticketItems.stationStatus })
+          .from(ticketItems)
+          .where(and(eq(ticketItems.ticketId, item.ticketId), eq(ticketItems.removed, false)));
+        const wholeOrderReady = siblings.every((row) =>
+          row.id === item.id ? String(body.stationStatus) === "done" : row.stationStatus === "done"
+        );
+        const alerts = stationProgressAlerts(String(body.stationStatus), {
+          id: ticketRows[0].id,
+          tableName: ticketRows[0].tableName,
+          totalAmount: ticketRows[0].totalAmount,
+          station: String(item.stationName || ""),
+          itemName: item.name,
+          quantity: item.quantity,
+          wholeOrderReady,
+        });
+        for (const alert of alerts) {
+          void sendPushToRoles(alert.roles, {
+            title: alert.title,
+            body: alert.body,
+            tag: alert.tag,
+            urgent: alert.urgent,
+            repeat: alert.repeat,
+          }).catch(() => {});
+        }
+      }
+    } catch {
+      // A push hiccup must never fail the crew's tap.
+    }
+
     publish(CHANNELS.orders);
     return NextResponse.json(updated[0]);
   } catch (error) {

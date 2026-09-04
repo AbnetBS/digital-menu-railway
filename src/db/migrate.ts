@@ -289,6 +289,7 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     order_number: { type: "text" },
     idempotency_key: { type: "text" },
     // Group 5: payment verification audit
+    confirmed_at: { type: "timestamp", dropNotNull: true },
     verified_by: { type: "text" },
     verified_at: { type: "timestamp", dropNotNull: true },
     // Group 9 (print-queue mode): cashier printed the bill in the EFD/POS,

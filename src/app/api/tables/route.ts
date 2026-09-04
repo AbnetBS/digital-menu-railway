@@ -39,7 +39,7 @@ export async function GET() {
         // Print-queue mode: once the cashier printed the bill, the crew is
         // working on it — same board color as the classic "preparing" state.
         else if (tk.status === "preparing" || tk.status === "printed") status = "preparing";
-        else status = "occupied"; // confirmed — in print-queue mode: waiting for the cashier to print
+        else status = "occupied"; // confirmed — accepted: the crew is cooking, the cashier is printing
       }
       return {
         id: t.id,

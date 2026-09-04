@@ -11,6 +11,9 @@ import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { unlockAudio, playDing, playAlarm } from "@/lib/sound";
 import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
+import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
+import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 
 interface StaffLite {
   id: number;
@@ -57,12 +60,49 @@ export default function CashierDashboard() {
 
   // ── RING BELL + DESKTOP POPUP ALERT SYSTEM ──
   const [alertsOn, setAlertsOn] = useState(false);
+  // STALE-CLOSURE FIX: the SSE handler is built once (deps [staffName]) and
+  // froze whatever `alertsOn` was at that moment, so enabling alerts later
+  // never reached it and the counter tablet stayed silent. Reads use the ref.
+  const alertsOnRef = useRef(false);
+  const [toast, setToast] = useState("");
+
+  // ── GUEST EVENTS TAKE OVER THE SCREEN ──
+  // The tablet lives behind the counter, often face down or asleep. A guest
+  // ordering, adding dishes, or asking for the bill therefore gets a full
+  // screen with one big button that keeps re-ringing until it is pressed.
+  const [urgent, setUrgent] = useState<UrgentAlert | null>(null);
+  /** Guest events already answered here, so they never pop up again. */
+  const answeredRef = useRef<Set<string>>(new Set());
+  /** Tickets already seen at all (a brand new one = a fresh guest order). */
+  const knownTicketsRef = useRef<Set<number>>(new Set());
+  /** Ticket id -> unprinted submission count, to spot guest top-ups. */
+  const addOnsRef = useRef<Map<number, number>>(new Map());
+  /** Tickets whose guest already asked for the bill. */
+  const billAskedRef = useRef<Set<number>>(new Set());
+  /**
+   * The big button on the guest alert confirms an order. `setStatus` is
+   * defined further down, so the alert reaches it through this ref (kept in
+   * step by an effect right after that definition).
+   */
+  const setStatusRef = useRef<(id: number, status: string) => void>(() => {});
+  // Always points at the CURRENT loaders for the SSE + push relays.
+  const loadAllRef = useRef<() => void>(() => {});
+  const loadHistoryRef = useRef<() => void>(() => {});
+
+  // Refs follow the latest render from an effect (never during render).
+  useEffect(() => {
+    alertsOnRef.current = alertsOn;
+  }, [alertsOn]);
   const seenEventsRef = useRef<Set<string>>(new Set());
   const initializedRef = useRef(false);
 
   useEffect(() => {
-    setAlertsOn(localStorage.getItem("fana_alerts") === "1");
     const saved = sessionStorage.getItem("fana_cashier");
+    // A restored session means the cashier is on shift: alerts default to ON.
+    const on = localStorage.getItem("fana_alerts") === "1" || !!saved;
+    setAlertsOn(on);
+    alertsOnRef.current = on;
+    if (on) localStorage.setItem("fana_alerts", "1");
     if (saved) setStaffName(JSON.parse(saved).name);
     fetch("/api/staff?public=1")
       .then((r) => r.json())
@@ -80,6 +120,11 @@ export default function CashierDashboard() {
   }, []);
 
   // One-time unlock: browsers need a user click before sound + desktop popups can play
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 4000);
+  };
+
   const enableAlerts = async () => {
     unlockAudio();
     if ("Notification" in window && Notification.permission === "default") {
@@ -87,22 +132,29 @@ export default function CashierDashboard() {
     }
     localStorage.setItem("fana_alerts", "1");
     setAlertsOn(true);
-    // GROUP 10: (re)arm pocket alerts too, then ring a sample so she KNOWS
-    // the device is armed instead of guessing.
-    if (pushSupported()) void enablePocketAlerts();
+    alertsOnRef.current = true;
+    // (Re)arm pocket alerts too, then ring a sample so she KNOWS the device is
+    // armed instead of guessing.
+    if (pushSupported()) {
+      await enablePocketAlerts();
+      void pocket.refreshStatus();
+    }
     playAlarm();
     triggerDesktopNotification({ title: "Fana Cafe • Cashier", message: "🔔 Ring bell + desktop + pocket alerts are now ON for this device!" });
   };
 
   const eventMessage = (t: Ticket): string | null => {
+    // A guest waiting for the bill outranks whatever the status says.
+    if (t.receiptRequestedAt) return `🧾 BILL REQUESTED • ${t.tableName} • ${t.totalAmount} ETB`;
+    // The money/closing steps (ready to pay, payment completed, bill settled,
+    // table cleared) are deliberately missing: they update the screen but ring
+    // nobody. Payment lives in the EFD/POS, and constant ringing for it is the
+    // fastest way to make staff ignore the alerts that DO matter.
     const m: Record<string, string> = {
       pending_waiter: `🍽 New QR order • ${t.tableName} • ${t.totalAmount} ETB • needs confirmation`,
       confirmed: `🧾 TO PRINT • ${t.tableName} • ${t.totalAmount} ETB`,
       preparing: `👨‍🍳 Preparing • ${t.tableName}`,
       printed: `🖨 Printed • ${t.tableName}`,
-      ready_for_payment: `💳 Payment requested • ${t.tableName} • ${t.totalAmount} ETB`,
-      completed: `✓ Payment completed • ${t.tableName} • verify & mark Paid`,
-      closed: `✓ Table cleared • ${t.tableName} is free`,
     };
     return m[t.status] || null;
   };
@@ -129,27 +181,84 @@ export default function CashierDashboard() {
       // ── EVENT DETECTION: any order action (QR order, confirmation, payment request, payment done)
       const newEvents: Ticket[] = [];
       for (const t of active) {
-        const key = `${t.id}:${t.status}:${t.unprintedSubmissions || 0}`;
+        // The key is the fingerprint of "something the cashier must react to".
+        // receiptRequestedAt is part of it now: a guest asking for the bill does
+        // NOT change the status, so that event used to slip past her silently.
+        // The station progress is in there too, so she sees an order go ready.
+        const cooked = (t.items || []).filter((i) => !i.removed && i.stationStatus === "done").length;
+        const key = `${t.id}:${t.status}:${t.unprintedSubmissions || 0}:${t.receiptRequestedAt ? 1 : 0}:${cooked}`;
         if (!seenEventsRef.current.has(key)) {
           seenEventsRef.current.add(key);
           newEvents.push(t);
         }
       }
 
-      if (initializedRef.current && alertsOn && newEvents.length > 0) {
+      if (initializedRef.current && alertsOnRef.current && newEvents.length > 0) {
         // A card entering HER print queue gets the full alarm; anything else
         // (status moves, cleared tables…) gets the standard ring.
-        const needsMe = newEvents.some(
-          (t) => t.status === "confirmed" || t.status === "pending_waiter" || (t.status === "printed" && (t.unprintedSubmissions || 0) > 0)
+        // Only events that need HER hands make a sound. Everything else
+        // (payment steps, cleared tables) just refreshes the list.
+        const loudEvents = newEvents.filter((t) => eventMessage(t) !== null);
+        const needsMe = loudEvents.some(
+          (t) =>
+            t.status === "confirmed" ||
+            t.status === "pending_waiter" ||
+            !!t.receiptRequestedAt ||
+            (t.status === "printed" && (t.unprintedSubmissions || 0) > 0)
         );
         if (needsMe) playAlarm();
-        else playDing();
-        const first = newEvents[0];
-        triggerDesktopNotification({
-          title: "Fana Cafe • Cashier Alert",
-          message: eventMessage(first) || `${first.tableName} updated`,
-          tag: `fana-cashier-${first.id}`,
-        });
+        else if (loudEvents.length > 0) playDing();
+
+        // Which of these came from a GUEST? Those are the unpredictable ones
+        // that deserve the full-screen alarm, not just a line in the list.
+        const guestEvent = newEvents.find(
+          (t) =>
+            (t.status === "pending_waiter" && !knownTicketsRef.current.has(t.id)) ||
+            (!!t.receiptRequestedAt && !billAskedRef.current.has(t.id)) ||
+            (addOnsRef.current.has(t.id) &&
+              (t.unprintedSubmissions || 0) > (addOnsRef.current.get(t.id) || 0))
+        );
+        if (guestEvent) {
+          const isBill = !!guestEvent.receiptRequestedAt && !billAskedRef.current.has(guestEvent.id);
+          const isNew = guestEvent.status === "pending_waiter" && !knownTicketsRef.current.has(guestEvent.id);
+          const id = `${guestEvent.id}:${isBill ? "bill" : isNew ? "order" : `add${guestEvent.unprintedSubmissions || 0}`}`;
+          if (!answeredRef.current.has(id)) {
+            setUrgent({
+              id,
+              kind: isBill ? "bill" : isNew ? "order" : "added",
+              table: guestEvent.tableName,
+              detail: isBill
+                ? `${guestEvent.totalAmount} ETB • guest wants to pay`
+                : isNew
+                  ? `${guestEvent.totalAmount} ETB • new QR order`
+                  : `${guestEvent.totalAmount} ETB • guest added items`,
+              actionLabel: isNew ? "✓ ACCEPT ORDER" : "GOT IT",
+              onAction: isNew ? () => setStatusRef.current(guestEvent.id, "confirmed") : undefined,
+            });
+          }
+        }
+        const first = loudEvents[0];
+        if (first) {
+          triggerDesktopNotification({
+            title: "Fana Cafe • Cashier Alert",
+            message: eventMessage(first) || `${first.tableName} updated`,
+            tag: `fana-cashier-${first.id}`,
+          });
+        }
+      }
+      // Remember what this refresh looked like, so the same guest event is
+      // never announced twice.
+      for (const t of active) {
+        knownTicketsRef.current.add(t.id);
+        addOnsRef.current.set(t.id, t.unprintedSubmissions || 0);
+        if (t.receiptRequestedAt) billAskedRef.current.add(t.id);
+        else billAskedRef.current.delete(t.id);
+      }
+      for (const id of [...addOnsRef.current.keys()]) {
+        if (!active.some((t) => t.id === id)) {
+          addOnsRef.current.delete(id);
+          billAskedRef.current.delete(id);
+        }
       }
       initializedRef.current = true;
 
@@ -168,7 +277,7 @@ export default function CashierDashboard() {
   // not the waiter's table-clear. ?printedToday=1 returns every bill whose
   // printedAt is today (any status: freshly printed, crew working, or later
   // cleared), newest print first, WITH items so a tap opens the full bill.
-  // A bill enters here the moment she taps ✓ PRINTED & SEND and STAYS after
+  // A bill enters here the moment she taps ✓ PRINTED and STAYS after
   // the waiter clears the table (it was printed today — she still needs it
   // for the end-of-shift receipt count). Full mode keeps "Recently Paid".
   const loadHistory = async () => {
@@ -192,27 +301,72 @@ export default function CashierDashboard() {
     });
 
   useEffect(() => {
+    loadAllRef.current = loadAll;
+    loadHistoryRef.current = loadHistory;
+  });
+
+  // POCKET MODE: keeps this device subscribed (self-healing) and rings the
+  // alarm the moment a push lands, even if the SSE stream was frozen.
+  const pocket = usePocketAlerts({
+    active: !!staffName,
+    onAlert: () => {
+      loadAllRef.current();
+      loadHistoryRef.current();
+    },
+  });
+
+  useEffect(() => {
     if (staffName) {
       loadAll();
       loadHistory();
       // REALTIME (SSE): the server pushes a "refresh" signal only when an
       // order/payment changes, instead of polling every 8s/60s.
-      const es = new EventSource("/api/realtime?channel=orders");
-      es.onmessage = () => {
-        loadAll();
-        loadHistory();
+      //
+      // WATCHDOG: the counter tablet sleeps, the socket dies, and EventSource
+      // does not always reconnect by itself. Rebuild the stream whenever it is
+      // CLOSED so her queue is never quietly frozen.
+      let es: EventSource | null = null;
+      let stopped = false;
+
+      const connect = () => {
+        if (stopped) return;
+        try {
+          es?.close();
+        } catch {
+          /* ignore */
+        }
+        es = new EventSource("/api/realtime?channel=orders");
+        es.onmessage = () => {
+          loadAllRef.current();
+          loadHistoryRef.current();
+        };
+        es.onerror = () => {
+          loadAllRef.current();
+        };
       };
-      es.onerror = () => {
-        loadAll();
+
+      connect();
+
+      const revive = () => {
+        if (stopped) return;
+        if (!es || es.readyState === 2 /* CLOSED */) connect();
+        loadAllRef.current();
       };
+      const watchdog = setInterval(() => {
+        if (!es || es.readyState === 2) connect();
+      }, 30000);
       // Refresh immediately when the tab becomes visible again (user action).
       const onVisible = () => {
-        if (!document.hidden) loadAll();
+        if (!document.hidden) revive();
       };
       document.addEventListener("visibilitychange", onVisible);
+      window.addEventListener("online", revive);
       return () => {
-        es.close();
+        stopped = true;
+        clearInterval(watchdog);
+        es?.close();
         document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("online", revive);
       };
     }
   }, [staffName]);
@@ -233,7 +387,9 @@ export default function CashierDashboard() {
       unlockAudio();
       localStorage.setItem("fana_alerts", "1");
       setAlertsOn(true);
+      alertsOnRef.current = true;
       void enablePocketAlerts().then((res) => {
+        void pocket.refreshStatus();
         if (res === "denied") {
           // notifications blocked in the browser — the in-app alarm still works
           console.warn("Pocket notifications blocked by the browser settings");
@@ -264,6 +420,10 @@ export default function CashierDashboard() {
     });
     loadAll();
   };
+
+  useEffect(() => {
+    setStatusRef.current = setStatus;
+  });
 
   const removeItem = async (itemId: number) => {
     await fetch(`/api/tickets/items?id=${itemId}`, { method: "DELETE" });
@@ -521,6 +681,13 @@ export default function CashierDashboard() {
               <span className="text-[9px] text-stone-500 mt-0.5">last updated {lastUpdated}</span>
             )}
           </div>
+          <PocketAlertsChip
+            status={pocket.status}
+            busy={pocket.busy}
+            onArm={pocket.arm}
+            onTest={pocket.test}
+            onToast={showToast}
+          />
           {/* RING BELL enable button — click once on each cashier device */}
           <button
             onClick={enableAlerts}
@@ -572,6 +739,24 @@ export default function CashierDashboard() {
           </button>
         </div>
       </div>
+
+      {/* Toast */}
+      {/* Full-screen guest alert (new order / added items / bill request) */}
+      <UrgentAlertOverlay
+        alert={urgent}
+        onClose={() =>
+          setUrgent((cur) => {
+            if (cur) answeredRef.current.add(cur.id);
+            return null;
+          })
+        }
+      />
+
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl max-w-[90vw] text-center">
+          {toast}
+        </div>
+      )}
 
       <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-8">
         {/* iPhone pocket-mode instruction (Android needs nothing) */}
@@ -805,9 +990,13 @@ export default function CashierDashboard() {
                           <button
                             onClick={() => markPrinted(t)}
                             className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black py-4 rounded-xl flex items-center justify-center gap-2"
-                            title="Confirms the EFD receipt is printed. This is what releases the items to the kitchen/barista"
+                            title={
+                              added
+                                ? "Prints receipt #2 and sends the NEW items to the kitchen/barista for this table"
+                                : "Records that the EFD receipt is printed. The crew received this order when it was accepted"
+                            }
                           >
-                            <Printer className="w-5 h-5" /> ✓ PRINTED & SEND
+                            <Printer className="w-5 h-5" /> {added ? "✓ PRINTED & SEND" : "✓ PRINTED"}
                           </button>
                           <button
                             onClick={() => toggleProblem(t.id)}
@@ -1030,7 +1219,7 @@ export default function CashierDashboard() {
           </h2>
           {history.length === 0 ? (
             <p className="text-xs font-bold text-stone-500">
-              {printQueueMode ? "Bills appear here the moment you tap ✓ PRINTED & SEND. Tap any card to check the whole bill against the EFD receipt." : "Paid bills will appear here after you mark them Paid."}
+              {printQueueMode ? "Bills appear here the moment you tap ✓ PRINTED. Tap any card to check the whole bill against the EFD receipt." : "Paid bills will appear here after you mark them Paid."}
             </p>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

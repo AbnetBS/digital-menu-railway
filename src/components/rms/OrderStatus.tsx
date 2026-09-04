@@ -254,60 +254,84 @@ export function OrderStatusFab() {
 /* ───────────────────── the slim status bar ───────────────────── */
 
 /**
- * One-line status bar shown under the search/category bar while the table has an
- * order. Tapping it opens the full panel. Hidden for drinks-only bills, exactly
- * as requested: a macchiato does not need a progress bar.
+ * May this guest call for the bill right now? Yes for any live order that has
+ * not already asked and is not settled or cancelled. It is deliberately NOT
+ * gated on the kitchen finishing: in a rush a guest often wants to pay while
+ * the last dish is still cooking, and making them wave at a waiter instead is
+ * exactly the problem this button removes.
+ */
+function canAskForBill(ticket: TableTicketStatus): boolean {
+  return !ticket.receiptRequestedAt && ticket.phase !== "paid" && ticket.phase !== "cancelled";
+}
+
+/**
+ * THE BILL BUTTON (it replaced the old read-only status bar).
+ *
+ * Once the table has an order, the guest's most useful action is not reading a
+ * progress bar — it is calling for the bill. During a rush, waving at a busy
+ * waiter takes minutes; this takes one tap: the waiter's phone buzzes hard and
+ * rings for ~3 seconds, her notification says WHICH TABLE, and she walks over
+ * with the receipt.
+ *
+ * The live status is still here, as one small line, and "View" still opens the
+ * full panel with every dish.
  */
 export function OrderStatusBanner() {
-  const { ticket, setOpen } = useOrderStatus();
+  const { ticket, setOpen, requestBill, requesting } = useOrderStatus();
   const t = useT();
   if (!ticket) return null;
-  if (ticket.phase === "drinks_only" || ticket.phase === "none") return null;
+  if (ticket.phase === "none") return null;
 
   const style = PHASE_STYLE[ticket.phase] ?? PHASE_STYLE.none;
   const Icon = style.icon;
-  const percent = kitchenPercent(ticket.kitchen);
-  const showBar = ticket.kitchen.units > 0 && percent > 0 && percent < 100;
+  const billRequested = Boolean(ticket.receiptRequestedAt);
+  const canAsk = canAskForBill(ticket);
 
   return (
-    <button
-      type="button"
-      onClick={() => setOpen(true)}
-      className={`w-full text-left rounded-2xl border px-3.5 py-2.5 shadow-sm transition active:scale-[0.99] ${
-        ticket.phase === "ready"
+    <div
+      className={`w-full rounded-2xl border px-3.5 py-3 shadow-sm space-y-2.5 ${
+        billRequested
           ? "bg-emerald-50 border-emerald-300"
-          : ticket.receiptRequestedAt
-          ? "bg-purple-50 border-purple-300"
+          : ticket.phase === "ready"
+          ? "bg-emerald-50 border-emerald-300"
           : "bg-white border-[#C9A227]/40"
       }`}
     >
-      <span className="flex items-center gap-2">
+      {/* the small live status line + the way into the full panel */}
+      <button type="button" onClick={() => setOpen(true)} className="w-full text-left flex items-center gap-2">
         <Icon
           className={`w-4 h-4 shrink-0 ${
             ticket.phase === "preparing" ? "text-orange-600 animate-pulse" : "text-[#C9A227]"
           }`}
         />
         <span className="flex-1 min-w-0">
-          <span className="block text-xs font-extrabold text-[#2C1B17] truncate">
-            {t(style.labelKey)}
-          </span>
+          <span className="block text-xs font-extrabold text-[#2C1B17] truncate">{t(style.labelKey)}</span>
           <span className="block text-[10px] text-stone-500 font-semibold truncate">
             {ticket.orderNumber ? `#${ticket.orderNumber} • ` : ""}
-            {t("os_arrived")} {formatClock(ticket.createdAt)}
-            {ticket.receiptRequestedAt ? ` • ${t("os_bill_requested_short")}` : ""}
+            {t("os_arrived")} {formatClock(ticket.createdAt)} • {ticket.totalAmount} ETB
           </span>
         </span>
-        <span className="text-[10px] font-black text-[#C9A227] shrink-0">{t("os_view")}</span>
-      </span>
-      {showBar && (
-        <span className="mt-2 block h-1.5 w-full rounded-full bg-stone-200 overflow-hidden">
-          <span
-            className={`block h-full rounded-full transition-all duration-700 ${style.bar}`}
-            style={{ width: `${percent}%` }}
-          />
-        </span>
+        <span className="text-[10px] font-black text-[#C9A227] shrink-0 underline">{t("os_view")}</span>
+      </button>
+
+      {/* THE BIG ACTION: call the waiter with the bill */}
+      {canAsk && (
+        <button
+          type="button"
+          onClick={requestBill}
+          disabled={requesting}
+          className="w-full bg-[#4E342E] text-amber-200 font-black text-sm uppercase py-3.5 rounded-xl flex items-center justify-center gap-2 disabled:opacity-60 active:scale-[0.99] transition"
+        >
+          {requesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Receipt className="w-5 h-5" />}
+          {requesting ? t("os_sending") : t("os_request_bill")}
+        </button>
       )}
-    </button>
+      {billRequested && (
+        <p className="text-[11px] font-black text-emerald-800 flex items-center gap-1.5">
+          <CheckCircle2 className="w-4 h-4 shrink-0" /> {t("os_bill_requested")}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -363,8 +387,8 @@ export function OrderStatusSheet({ onOpenReview }: { onOpenReview?: () => void }
    * a barista "done" tap would leave a guest unable to pay.
    */
   const served = Boolean(ticket) && (ticket!.kitchen.units === 0 || ticket!.kitchen.state === "ready");
-  const canRequestBill =
-    served && !billRequested && ticket!.phase !== "paid" && ticket!.phase !== "cancelled";
+  // Same rule as the button on the menu screen, so the two never disagree.
+  const canRequestBill = Boolean(ticket) && canAskForBill(ticket!);
   // The review shortcut is the last thing a guest sees: after the bill request,
   // or once the bill is settled.
   const showReview = billRequested || ticket?.phase === "paid" || ticket?.phase === "bill";

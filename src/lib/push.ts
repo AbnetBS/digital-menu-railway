@@ -65,7 +65,35 @@ export interface PushPayload {
   /** Same-tag notifications replace each other instead of piling up. */
   tag?: string;
   url?: string;
+  /**
+   * Someone must ACT on this (new order, added items, bill request). The
+   * service worker then keeps the notification on the lock screen until it is
+   * tapped instead of letting it fade away unnoticed.
+   */
+  urgent?: boolean;
+  /** Extra rings while nobody has looked at the app. Max 3. */
+  repeat?: number;
+  /**
+   * Milliseconds between those rings. Customer-triggered events (a new QR
+   * order, a guest adding items, a bill request) use a TIGHT gap so the phone
+   * produces one continuous ~3 second alarm instead of a single short ding
+   * that is lost in a busy room. Everything else uses the calm default.
+   */
+  gapMs?: number;
+  /**
+   * "customer" marks the three unpredictable guest actions. Staff screens turn
+   * these into a full-screen prompt with one big button, and the phone rings
+   * its hardest for them.
+   */
+  kind?: "customer" | "staff";
+  /** Ticket behind the alert: enables the one-tap Confirm on the notification. */
+  ticketId?: number;
+  /** Extra button on the system notification, e.g. confirm without opening. */
+  action?: "confirm" | null;
 }
+
+/** The 3 second alarm burst used for anything a GUEST just did. */
+export const CUSTOMER_ALERT_RING = { urgent: true as const, repeat: 3, gapMs: 1100, kind: "customer" as const };
 
 /**
  * Fire-and-forget push to every device subscribed under the given roles.
@@ -90,7 +118,19 @@ export async function sendPushToRoles(roles: string[], payload: PushPayload): Pr
               endpoint: sub.endpoint,
               keys: { p256dh: sub.p256dh, auth: sub.auth },
             },
-            JSON.stringify({ ...payload, url: payload.url || urlForRole(sub.role) })
+            JSON.stringify({
+              urgent: true,
+              repeat: 2,
+              ...payload,
+              url: payload.url || urlForRole(sub.role),
+            }),
+            {
+              // A restaurant alert is worthless late: ask the push service to
+              // deliver it NOW (high urgency wakes a dozing Android phone) and
+              // to drop it rather than hold it for hours if the device is off.
+              urgency: "high",
+              TTL: 900,
+            }
           );
         } catch (err) {
           const status = (err as { statusCode?: number }).statusCode;

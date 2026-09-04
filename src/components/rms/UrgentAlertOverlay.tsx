@@ -8,15 +8,15 @@
  * pocket and the tablet is behind the counter.
  *
  * So when one of those three things happens, this takes over the whole screen
- * with ONE big button, and the alarm keeps coming back roughly every 10
- * seconds until somebody presses it (capped, so a forgotten phone does not
- * ring all evening). Pressing the button is the confirmation: it does the job
- * (confirm the order / open the table) and closes the screen.
+ * with ONE big button. It rings exactly ONCE (the alarm already played where
+ * the event was detected) and then stays SILENT: during a rush a card that
+ * keeps re-ringing for an unanswered event trains staff to ignore the phone.
+ * The card itself stays on screen with its big button until it is pressed —
+ * pressing the button is the confirmation: it does the job (confirm the
+ * order / open the table) and closes the screen.
  */
 
-import { useEffect, useRef } from "react";
 import { Bell, Receipt, UtensilsCrossed, X } from "lucide-react";
-import { playAlarm } from "@/lib/sound";
 
 export interface UrgentAlert {
   /** Stable id, so the same event does not re-open the screen after it is answered. */
@@ -33,11 +33,6 @@ export interface UrgentAlert {
   onAction?: () => void;
 }
 
-/** How often the alarm comes back while nobody answers. */
-const REPEAT_MS = 10_000;
-/** Stop after this many repeats, so it never rings forever. */
-const MAX_REPEATS = 5;
-
 const LOOK = {
   order: { icon: UtensilsCrossed, title: "NEW ORDER", ring: "from-amber-500 to-orange-600" },
   added: { icon: Bell, title: "ITEMS ADDED", ring: "from-amber-500 to-rose-600" },
@@ -51,33 +46,12 @@ export default function UrgentAlertOverlay({
   alert: UrgentAlert | null;
   onClose: () => void;
 }) {
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    if (!alert) return;
-    // The first alarm already played where the event was detected, so this
-    // only handles the "still nobody answered" repeats.
-    let fired = 0;
-    timerRef.current = setInterval(() => {
-      fired += 1;
-      if (fired > MAX_REPEATS) {
-        if (timerRef.current) clearInterval(timerRef.current);
-        return;
-      }
-      playAlarm();
-    }, REPEAT_MS);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [alert]);
-
   if (!alert) return null;
 
   const look = LOOK[alert.kind];
   const Icon = look.icon;
 
   const answer = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
     try {
       // Stop the phone buzzing the moment it is answered.
       if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
@@ -101,7 +75,7 @@ export default function UrgentAlertOverlay({
       </button>
 
       <div
-        className={`w-28 h-28 rounded-full bg-gradient-to-br ${look.ring} flex items-center justify-center shadow-2xl animate-pulse`}
+        className={`w-28 h-28 rounded-full bg-gradient-to-br ${look.ring} flex items-center justify-center shadow-2xl`}
       >
         <Icon className="w-14 h-14 text-white" />
       </div>
@@ -117,7 +91,7 @@ export default function UrgentAlertOverlay({
         {alert.actionLabel}
       </button>
       <p className="mt-4 text-xs text-white/45 text-center">
-        The alarm keeps ringing until you press the button.
+        It rang once. The card stays here until you press the button.
       </p>
     </div>
   );

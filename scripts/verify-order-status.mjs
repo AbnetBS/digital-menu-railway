@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * Regression guard — the six guest-facing order features.
+ * Regression guard — the guest-facing order features that remain.
  *
- *   1. LIVE ORDER STATUS on the guest's own phone (public, table-scoped).
+ *   1. "BRING US THE BILL/RECEIPT" — guest taps, staff see it (and can clear it).
+ *      The guest's only order UI is now the receipt button: the live order-status
+ *      pill/panel (timeline, dish list, kitchen progress bar) is gone, so this
+ *      file also guards that it did not sneak back.
  *   2. ARRIVAL TIME / DATE + waiter name on the crew, waiter and cashier screens.
  *   3. DUPLICATE LINES merged ("2 Tea", never "1 Tea + 1 Tea").
- *   4. "BRING US THE BILL/RECEIPT" — guest taps, staff see it (and can clear it).
- *   5. REVIEW as the last step of the guest flow, with a thank-you state.
- *   6. (image side is covered by verify-image-reveal.mjs / verify-image-display.ts)
+ *   4. REVIEW as the last step of the guest flow, with a thank-you state.
  *
  * Static source inspection only — no database, no server, runs anywhere.
  * Run with: node scripts/verify-order-status.mjs   (wired into `npm test`)
@@ -119,35 +120,33 @@ const i18n = read("src/lib/i18n.ts");
   pass("order history shows when the order ARRIVED and who took it", /arrived \{formatDateTime\(o\.createdAt\)\}/.test(history) && /by \{o\.createdBy/.test(history));
 }
 
-/* ── 1. the guest's own status UI ─────────────────────────────────────────── */
+/* ── 1. the guest's receipt button (the only order-status UI left) ────────── */
 {
-  pass("the status module ships a provider, a pill and a banner", /export function OrderStatusProvider/.test(orderStatusUi) && /export function OrderStatusFab/.test(orderStatusUi) && /export function OrderStatusBanner/.test(orderStatusUi));
-  pass("the guest's phone polls while the menu is open", /setInterval/.test(orderStatusUi) && /POLL_MS/.test(orderStatusUi));
+  pass("the module ships a provider and the receipt button", /export function OrderStatusProvider/.test(orderStatusUi) && /export function RequestReceiptButton/.test(orderStatusUi));
+  pass("the pill and the full status panel are gone", !/OrderStatusFab/.test(orderStatusUi) && !/OrderStatusSheet/.test(orderStatusUi) && !/open: boolean/.test(orderStatusUi));
+  pass("no status words, timeline or progress bar are left in the module", !/os_phase_/.test(orderStatusUi) && !/os_view/.test(orderStatusUi) && !/kitchenPercent/.test(orderStatusUi) && !/os_line_/.test(orderStatusUi));
+  pass("the provider keeps polling /api/table-status while the menu is open", /\/api\/table-status\?table=/.test(orderStatusUi) && /setInterval/.test(orderStatusUi) && /POLL_MS/.test(orderStatusUi));
   pass("a phone left on the table stops hammering the server", /document\.hidden/.test(orderStatusUi) && /visibilitychange/.test(orderStatusUi));
   pass("a failed poll can never break the menu", /catch \{\s*\/\/ A failed poll must never disturb the menu/.test(orderStatusUi));
-  pass("barista items get NO progress bar (drinks are made in seconds)", /ticket\.kitchen\.units > 0/.test(orderStatusUi) && /drinks_only/.test(orderStatusUi));
-  pass("the pill only appears once this table has an order", /if \(!ticket\) return null/.test(orderStatusUi));
-  pass("the bill button disappears once requested or paid", /canRequestBill/.test(orderStatusUi) && /!billRequested/.test(orderStatusUi));
+  pass("the button appears once the table has an order (whoever sent it)", /if \(!ticket\) return null/.test(orderStatusUi));
+  pass("the bill button disappears once requested or paid", /canAskForBill/.test(orderStatusUi) && /!canAsk && !billRequested\) return null/.test(orderStatusUi));
   pass("any live order can call for the bill, cooking or not (busy-hour rule)", /function canAskForBill\(ticket: TableTicketStatus\)/.test(orderStatusUi) && /!ticket\.receiptRequestedAt && ticket\.phase !== "paid" && ticket\.phase !== "cancelled"/.test(orderStatusUi));
-  pass("the panel and the menu button follow the SAME bill rule", /const canRequestBill = Boolean\(ticket\) && canAskForBill\(ticket!\)/.test(orderStatusUi));
-  pass("while it is still cooking the guest is still told when food comes", /\{!served && !billRequested/.test(orderStatusUi) && /os_bill_after_food/.test(orderStatusUi));
-  pass("the status bar IS the bill button now (receipt icon + requestBill)", /export function OrderStatusBanner/.test(orderStatusUi) && /onClick=\{requestBill\}[\s\S]{0,400}Receipt className/.test(orderStatusUi.slice(orderStatusUi.indexOf("export function OrderStatusBanner"))));
+  pass("the button IS the receipt request (receipt icon + requestBill)", /export function RequestReceiptButton/.test(orderStatusUi) && /onClick=\{requestBill\}[\s\S]{0,400}Receipt className/.test(orderStatusUi.slice(orderStatusUi.indexOf("export function RequestReceiptButton"))));
   pass("the bill button on the menu says what it does, in both languages", /os_request_bill/.test(orderStatusUi) && /os_sending/.test(orderStatusUi));
-  pass("a guest who already asked sees the confirmation instead of the button", /billRequested &&[\s\S]{0,300}os_bill_requested/.test(orderStatusUi));
+  pass("a guest who already asked sees the confirmation with the time instead of the button", /billRequested &&[\s\S]{0,400}os_bill_requested/.test(orderStatusUi) && /os_bill_requested_at/.test(orderStatusUi));
   pass("the bill button is disabled while sending", /disabled=\{requesting\}/.test(orderStatusUi));
   pass("the menu page wraps itself in the provider", /<OrderStatusProvider/.test(app) && /tableId=\{tableId \?\? 0\}/.test(app));
-  pass("the pill and the banner are both rendered", /<OrderStatusFab \/>/.test(app) && /<OrderStatusBanner \/>/.test(app));
-  pass("the banner hides itself when there is no order at all", /empty:hidden/.test(app) && /if \(ticket\.phase === "none"\) return null/.test(orderStatusUi));
-  pass("a drinks-only table also gets the bill button", !/phase === "drinks_only"[\s\S]{0,40}return null/.test(orderStatusUi));
+  pass("the menu renders ONLY the receipt button (no pill, no panel)", /<RequestReceiptButton \/>/.test(app) && !/<OrderStatusFab/.test(app) && !/<OrderStatusBanner/.test(app));
+  pass("nothing is rendered when there is nothing to show", /empty:hidden/.test(app));
   pass("submitting an order refreshes the status immediately", /setStatusRefreshKey\(\(k\) => k \+ 1\)/.test(app) && /refreshKey=\{statusRefreshKey\}/.test(app));
-  pass("the pill sits above the language toggle and the cart bar", /bottom-\[88px\] right-5/.test(orderStatusUi));
 }
 
 /* ── 5. review as the last step of the flow ───────────────────────────────── */
 {
-  pass("the status panel links to the review", /onOpenReview/.test(orderStatusUi) && /os_rate_visit/.test(orderStatusUi));
-  pass("the menu scrolls to a stable review anchor", /getElementById\("guest-review"\)/.test(app) && /id="guest-review"/.test(app));
-  pass("the review card is highlighted when jumped to", /reviewPulse/.test(app) && /ring-4 ring-\[#C9A227\]/.test(app));
+  // The removed panel was the only thing that scrolled to the review card, so
+  // the review must stay reachable from the page itself: it is a plain section
+  // of the menu with its stable anchor.
+  pass("the review card keeps its stable anchor on the page itself", /id="guest-review"/.test(app) && /scroll-mt-24/.test(app));
   pass("the ask appears after the table has ordered", /\{submitted && !reviewSent && \(/.test(app) && /review_cta_title/.test(app));
   pass("a submitted review turns into a thank-you card", /setReviewSent\(true\)/.test(app) && /review_thanks_title/.test(app));
 }
@@ -190,8 +189,9 @@ if (failures.length > 0) {
   for (const f of failures) console.error("  • " + f);
   process.exit(1);
 }
-console.log("\n✅ Order status, arrival times, line merging and bill requests PASSED");
-console.log("   • guests see their own table's live status and can ask for the bill");
+console.log("\n✅ Receipt button, arrival times, line merging and bill requests PASSED");
+console.log("   • the guest's only order UI is the receipt button (no pill, no panel,");
+console.log("     no progress bar) and it can ask for the bill with one tap");
 console.log("   • the crew see when every order arrived and who took it");
 console.log("   • duplicate lines merge in the database and collapse on old bills");
 console.log("   • every new string is translated into Amharic");

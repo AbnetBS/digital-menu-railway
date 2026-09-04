@@ -26,7 +26,7 @@ Two automated tests protect all of this:
 - `node scripts/verify-pocket-alerts.mjs` - source-level rules
 - `node scripts/verify-pocket-alerts-runtime.mjs` - **executes** `public/sw.js`
   in a fake service-worker world and asserts what a phone actually does
-  (pocket, visible, browser closed, re-rings, taps)
+  (pocket, visible, browser closed, rings once, taps)
 - `tsx scripts/verify-role-alerts.ts` - walks the whole role/event matrix: every
   ticket status, every station action, every item change and every bill request
   must wake the right roles, and the actor must never wake themselves
@@ -110,9 +110,16 @@ walks the whole table so no event can be dropped by accident.
 | Table cleared | silent | silent | silent | silent |
 | **Order cancelled** | silent | silent | **ring** | **ring** |
 
-**bold** = urgent: the notification stays on the lock screen and re-rings until
-somebody answers it. Plain "ring" = informational, it fades on its own.
-"silent" = the screens update, but no phone is woken.
+**bold** = urgent: the notification stays on the lock screen until it is
+tapped. Plain "ring" = informational, it fades on its own. "silent" = the
+screens update, but no phone is woken.
+
+**Every event rings EXACTLY ONCE.** The phone makes its sound (about 3 seconds
+for the guest events, one ring for staff events) and then goes quiet, even if
+nobody has confirmed the alert yet. The notification itself stays on the lock
+screen until it is tapped - it just does not make noise again. A phone that
+kept re-ringing for unanswered events during a rush trained staff to ignore
+it, so that behaviour is gone.
 
 ### What is deliberately SILENT, and why
 
@@ -132,8 +139,9 @@ Two rules keep this from becoming noise:
 - **You never ring yourself.** The role that performed the action is removed
   from the recipients, so the cashier printing a bill does not make her own
   tablet scream, and a waiter keying items never alarms her own phone.
-- **A cancelled order is the loudest thing in the system.** It reaches all four
-  roles and re-rings three times, because food already on the fire has to stop.
+- **A cancelled order is the loudest thing in the system.** It rings the
+  kitchen and the barista with an urgent alert that stays on their lock
+  screen until tapped, because food already on the fire has to stop.
 
 ## Who receives what, and when (the release rule)
 
@@ -180,8 +188,9 @@ What happens on the waiter's phone and the cashier's tablet:
 
 - **About 3 seconds of alarm, not one ding.** The notification is re-shown
   three more times about 1.1 seconds apart, so the rings run together into one
-  continuous alarm. (Staff-to-staff alerts still wait 7 seconds between rings,
-  so they never nag.)
+  continuous alarm. That burst is the ONE alarm for the event: after it the
+  phone is silent, even if nobody has confirmed yet. (Staff-to-staff alerts
+  ring exactly once, so they never nag.)
 - **A long, hard vibration** (four ~0.8 second buzzes). This is the part that
   is felt through a pocket, and it is the only part that still works when the
   phone is on silent.
@@ -190,19 +199,22 @@ What happens on the waiter's phone and the cashier's tablet:
   tab, no hunting for the table. If her session has expired, the phone says so
   instead of failing quietly.
 - **A full-screen alert inside the app**, with the table name in big letters and
-  one big button (`OPEN & CONFIRM` / `OPEN BILL` / `GOT IT`). It re-plays the
-  alarm every 10 seconds, up to 5 times, until somebody presses the button.
-  Pressing it opens exactly that table.
+  one big button (`OPEN & CONFIRM` / `OPEN BILL` / `GOT IT`). It rings the same
+  single alarm and then stays on screen SILENTLY, with the big button, until
+  somebody presses it. Pressing it opens exactly that table.
 
 ### The guest's own bill button
 
-On the customer menu, the old read-only status bar is now the **bill button**.
-Once the table has an order, the guest sees one line of live status plus a big
-`Request the bill / receipt` button with a receipt icon. One tap and the
-waiter's phone buzzes, rings, and shows the table. The guest no longer has to
-wave at anybody. A guest may ask for the bill while food is still cooking:
-during a rush that is exactly what people want, and the waiter decides when to
-walk over.
+On the customer menu the live order-status feature (the pill, the panel with
+the dish list and the kitchen progress bar) is switched off for now. The only
+thing a guest sees after ordering is the **bill button**: a big
+`Request the bill / receipt` button with a receipt icon that appears once the
+table has an order. One tap and the waiter's phone buzzes, rings, and shows
+the table. The guest no longer has to wave at anybody. A guest may ask for the
+bill while food is still cooking: during a rush that is exactly what people
+want, and the waiter decides when to walk over. After the tap the button is
+replaced by a confirmation line with the time, and it never comes back for the
+same bill.
 
 ## Troubleshooting
 

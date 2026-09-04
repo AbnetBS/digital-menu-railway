@@ -27,7 +27,8 @@
  *
  * NEW RULE — a push ALWAYS produces a notification. No exceptions.
  *   • Nobody looking at the screen  → loud notification, OS sound, vibration,
- *     it stays in the tray until tapped, and it re-rings a couple of times.
+ *     it stays in the tray until tapped. Each event rings ONCE; the only
+ *     repeat is the guest burst, whose quick rings are ONE ~3 second alarm.
  *   • A staff page genuinely VISIBLE and focused → we still show the
  *     notification (spec requirement) but silently, and we tell the page to
  *     ring its own in-app alarm instead, so there is one alarm, not two.
@@ -91,7 +92,10 @@ self.addEventListener("push", (event) => {
     tag: "fana-orders",
     url: "/waiter",
     urgent: true,
-    repeat: 2,
+    // Each event rings EXACTLY ONCE: 0 extra rings for plain or malformed
+    // payloads. The only repeat left is the one a payload brings itself —
+    // the guest burst, whose quick rings ARE one continuous alarm.
+    repeat: 0,
     // Milliseconds between re-rings. Guest events override this with ~1.1s so
     // the rings run together into one continuous alarm.
     gapMs: 7000,
@@ -168,10 +172,11 @@ self.addEventListener("push", (event) => {
 
       await show(tag);
 
-      // REPEAT RINGS: one ding can be missed in a loud room or a thick pocket.
-      // A guest event re-rings every ~1.1s, which the ear hears as ONE ~3
-      // second alarm; staff events wait 7s so they never become nagging.
-      // Either way the rings stop the moment the alert is answered.
+      // REPEAT RINGS: kept ONLY for the ~3 second GUEST burst — a payload with
+      // repeat: 3 and gapMs ~1.1s (CUSTOMER_ALERT_RING) re-shows the
+      // notification three more times so the rings run together into ONE
+      // continuous ~3 second alarm. Every other event arrives with repeat: 0
+      // and rings exactly once; the loop below then never runs.
       const repeats = Math.max(0, Math.min(3, Number(data.repeat) || 0));
       const gap = Math.max(600, Math.min(30000, Number(data.gapMs) || 7000));
       for (let i = 0; i < repeats; i += 1) {

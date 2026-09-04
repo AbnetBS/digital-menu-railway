@@ -71,7 +71,12 @@ export interface PushPayload {
    * tapped instead of letting it fade away unnoticed.
    */
   urgent?: boolean;
-  /** Extra rings while nobody has looked at the app. Max 3. */
+  /**
+   * Extra rings while nobody has looked at the app. Every event rings once
+   * (repeat: 0); the ONLY repeat left in the system is the shared
+   * CUSTOMER_ALERT_RING burst below, whose quick rings are one ~3 second
+   * alarm, not repeats. Max 3.
+   */
   repeat?: number;
   /**
    * Milliseconds between those rings. Customer-triggered events (a new QR
@@ -120,7 +125,11 @@ export async function sendPushToRoles(roles: string[], payload: PushPayload): Pr
             },
             JSON.stringify({
               urgent: true,
-              repeat: 2,
+              // Every event rings EXACTLY ONCE: 0 extra rings. The only
+              // exception is a payload that carries its own repeat — the
+              // shared CUSTOMER_ALERT_RING burst (whose four quick rings are
+              // one ~3 second alarm, not repeats).
+              repeat: 0,
               ...payload,
               url: payload.url || urlForRole(sub.role),
             }),

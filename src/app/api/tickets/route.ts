@@ -890,7 +890,8 @@ export async function PUT(request: Request) {
             body: `${updated[0].tableName} • added to the order • check your station list`,
             tag: `fana-station-${updated[0].id}-${Date.now()}`,
             urgent: true,
-            repeat: 2,
+            // One ring per event: no route may pass a repeat above 0.
+            repeat: 0,
           }).catch(() => {});
         }
       } catch {

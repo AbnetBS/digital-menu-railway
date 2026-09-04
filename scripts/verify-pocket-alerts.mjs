@@ -146,7 +146,10 @@ function pass(name, cond) {
   pass("double-noise avoided by a SILENT notification, not by silence", /silent: true/.test(sw) && /someoneIsLooking/.test(sw));
   pass("silent variant carries no vibrate (spec: that combination throws)", !/silent: true,[\s\S]{0,200}vibrate/.test(sw));
   pass("urgent alerts stay on the lock screen until tapped", /requireInteraction: !!data\.urgent/.test(sw));
-  pass("an unanswered alert re-rings (repeat rings)", /repeat/.test(sw) && /getNotifications\(\{ tag \}\)/.test(sw));
+  // Each event rings EXACTLY ONCE: the worker's default repeat is 0, so a
+  // plain or malformed payload never rings again. The repeat machinery stays
+  // only because the guest burst (repeat: 3, ~1.1s apart) IS one alarm.
+  pass("a plain event rings ONCE (default repeat 0, burst machinery kept for guests)", /repeat: 0/.test(sw) && /getNotifications\(\{ tag \}\)/.test(sw));
   pass("worker takes over immediately (skipWaiting + clients.claim)", /skipWaiting\(\)/.test(sw) && /clients\.claim\(\)/.test(sw));
   pass("worker relays every push to open pages (frozen SSE safety net)", /tellPages\(\{ type: "fana-push"/.test(sw));
   pass("tapping the notification opens the right staff screen", /notificationclick/.test(sw) && /openWindow/.test(sw));
@@ -262,25 +265,27 @@ function pass(name, cond) {
   pass("a new QR order uses the guest ring", /CUSTOMER_ALERT_RING/.test(tickets) && /New QR order/.test(tickets));
   pass("a guest adding items uses the guest ring", (tickets.match(/CUSTOMER_ALERT_RING/g) || []).length >= 3);
   pass("a bill request uses the guest ring", /CUSTOMER_ALERT_RING/.test(tableStatus));
-  pass("the worker rings the guest burst close together, staff alerts slowly", /Number\(data\.gapMs\) \|\| 7000/.test(sw) && /await sleep\(gap\)/.test(sw));
+  pass("the guest burst rings close together (~1.1s apart) so it is ONE alarm", /Number\(data\.gapMs\) \|\| 7000/.test(sw) && /await sleep\(gap\)/.test(sw));
   pass("a guest event vibrates for about 3 seconds", /const CUSTOMER_VIBRATE = \[800, 150, 800, 150, 800, 150, 800\]/.test(sw) && /isCustomer \? CUSTOMER_VIBRATE : DEFAULT_VIBRATE/.test(sw));
   pass("the notification itself carries a CONFIRM button", /action: "confirm", title: "✓ Confirm"/.test(sw));
   pass("pressing CONFIRM calls the same API the app calls", /event\.action === "confirm"/.test(sw) && /"\/api\/tickets"/.test(sw) && /credentials: "same-origin"/.test(sw));
   pass("an expired session is explained, not swallowed", /res\.status === 401/.test(sw));
 
-  // The screen that cannot be missed once the phone is picked up.
+  // The screen that cannot be missed once the phone is picked up. It rings
+  // ONCE (where the event was detected) and then stays SILENT until answered:
+  // no re-ring timer for unanswered events.
   pass("a guest event takes over the whole screen with one big button", /export default function UrgentAlertOverlay/.test(overlay) && /fixed inset-0/.test(overlay));
-  pass("the screen keeps re-ringing until it is answered", /REPEAT_MS/.test(overlay) && /playAlarm\(\)/.test(overlay) && /MAX_REPEATS/.test(overlay));
+  pass("the full-screen card does NOT re-ring (no timer, no alarm after the first)", !/REPEAT_MS/.test(overlay) && !/MAX_REPEATS/.test(overlay) && !/setInterval/.test(overlay) && !/playAlarm/.test(overlay));
   pass("answering stops the buzzing", /navigator\.vibrate\(0\)/.test(overlay));
   pass("the waiter phone shows it for orders, top-ups and bill requests", /<UrgentAlertOverlay/.test(waiter) && (waiter.match(/raiseUrgent\(\{/g) || []).length >= 3);
   pass("the waiter's big button opens that table's bill", /openTicketById/.test(waiter));
   pass("the cashier tablet shows it too, with a one-tap confirm", /<UrgentAlertOverlay/.test(cashier) && /✓ ACCEPT ORDER/.test(cashier) && /setStatusRef\.current\(guestEvent\.id, "confirmed"\)/.test(cashier));
   pass("an answered guest event never pops up again", /answeredRef/.test(waiter) && /answeredRef/.test(cashier));
 
-  // The guest side: the status bar became the bill button.
+  // The guest side: the only thing left of the order-status UI is the receipt button.
   {
     const orderStatus = read("src/components/rms/OrderStatus.tsx");
-    pass("the guest's status bar is now a working bill button", /export function OrderStatusBanner/.test(orderStatus) && /onClick=\{requestBill\}/.test(orderStatus) && /Receipt className/.test(orderStatus));
+    pass("the guest's receipt button still calls the bill request", /export function RequestReceiptButton/.test(orderStatus) && /onClick=\{requestBill\}/.test(orderStatus) && /Receipt className/.test(orderStatus));
   }
 }
 

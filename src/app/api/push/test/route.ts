@@ -48,7 +48,9 @@ export async function POST(request: Request) {
       tag: `fana-test-${Date.now()}`,
       url: urlForRole(staff.role),
       urgent: true,
-      repeat: 1,
+      // One ring per event, even for a test: no push call may pass its own
+      // repeat above 0 apart from the shared CUSTOMER_ALERT_RING burst.
+      repeat: 0,
     };
 
     if (delaySeconds > 0) {

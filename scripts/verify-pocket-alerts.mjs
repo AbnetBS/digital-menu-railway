@@ -124,6 +124,14 @@ function pass(name, cond) {
   pass("stations ring the full alarm on new items", /playAlarm\(\)/.test(station));
   pass("waiters ring the full alarm on new QR orders", /playAlarm\(\)/.test(waiter));
   pass("cashier distinguishes 'needs me' (alarm) from noise (ding)", /needsMe/.test(cashier) && /playAlarm\(\)/.test(cashier));
+  // THE JUICE/KITCHEN SPLIT (owner's decision, Sept 2026): the two stations
+  // stand close together and the one shared counter bell made the kitchen
+  // answer the juice calls. Same 6-pair pattern, same full-scale loudness,
+  // same vibration — only the BELL itself differs, per page.
+  pass("the original kitchen bell is untouched (G6/C7/G5/G4)", /\[1568, 1\.0\]/.test(sound) && /\[2093, 0\.6\]/.test(sound) && /\[784, 0\.5\]/.test(sound) && /\[392, 0\.7\]/.test(sound));
+  pass("the juice bar has its own bell (E-family, a different colour)", /\[1318\.5, 1\.0\]/.test(sound) && /\[1975\.5, 0\.6\]/.test(sound) && /\[2637, 0\.35\]/.test(sound) && /\[659\.25, 0\.7\]/.test(sound));
+  pass("pages choose their bell with setStationBell (default = the kitchen bell)", /export function setStationBell/.test(sound) && /let activeBell: AlarmBell = "kitchen"/.test(sound));
+  pass("the juice screen sets its own bell on mount (kitchen/barista keep the original)", /setStationBell\(station === "juice" \? "juice" : "kitchen"\)/.test(station));
 }
 
 /* ── 3. First notification no longer vanishes ─────────────────────────────── */

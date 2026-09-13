@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Coffee, CookingPot, CupSoda, RefreshCw, LogOut, CheckCircle2, BellRing, Clock, History, X } from "lucide-react";
-import { unlockAudio, playAlarm, playDing } from "@/lib/sound";
+import { unlockAudio, playAlarm, playDing, setStationBell } from "@/lib/sound";
 import { formatClock, formatDayMonthYear, minutesSince, waitingLabel } from "@/lib/order-lines";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { enablePocketAlerts } from "@/lib/push-client";
@@ -131,6 +131,18 @@ export default function StationApp({ station }: { station: Station }) {
     setShowHistory(true);
     loadHistory();
   };
+
+  // THIS PAGE'S BELL (owner's decision, Sept 2026): the juice bar stands next
+  // to the kitchen and the one shared counter bell made the crews answer each
+  // other's calls. Every alarm path on this page (new items, stop-work, the
+  // pocket push relay, the test button) now rings this page's own bell: the
+  // kitchen keeps the original sound, the juice bar gets a different one with
+  // the same 6-pair pattern and the same volume. See sound.ts for the two
+  // timbres. Each screen is its own tab (its own copy of the sound module),
+  // so the two bells can never leak into each other.
+  useEffect(() => {
+    setStationBell(station === "juice" ? "juice" : "kitchen");
+  }, [station]);
 
   // Refs follow the latest render from an effect (never during render).
   useEffect(() => {

@@ -22,11 +22,31 @@
  *      browsers suspend an AudioContext when the page is hidden — which is
  *      exactly the pocket case, so it can no longer be the only engine.
  *
+ * TWO BELLS, ONE SKELETON (owner's fix, Sept 2026): the kitchen and the juice
+ * bar stand close together, and one shared counter bell made the kitchen crew
+ * answer the juice calls (and back). So the alarm PATTERN stays identical for
+ * everyone — 6 pairs of dings, the same gaps, the same loudness ceiling, the
+ * same vibration — and only the BELL differs:
+ *
+ *   kitchen (the default) → the ORIGINAL G-family counter bell: G6 lead with
+ *                           a C7 major-third sparkle and a deep G4 body.
+ *   juice                 → a NEW brighter E-family bell: E6 lead, a B6
+ *                           PERFECT-FIFTH shimmer (instead of a third), an E7
+ *                           sparkle and a body a full fifth higher (E5, not
+ *                           G4). Same pattern, same volume, different colour —
+ *                           the two can no longer be confused by ear.
+ *
+ * A page chooses its bell once with setStationBell(); every alarm path on that
+ * page — SSE new items, stop-work, the pocket push relay, the test button —
+ * then rings it. Each staff screen is its own tab, i.e. its own copy of this
+ * module, so the juice bell can never leak into the kitchen tablet. Every
+ * screen that never calls setStationBell() keeps the original kitchen bell.
+ *
  * LOUDNESS strategy: a bell is several oscillators an octave apart (the ear
  * reads the sum as much louder), gains pushed at the compressor ceiling, and
  * the pattern repeats so a waiter half-hears the first ding and fully catches
- * the later ones. High frequencies (1.5-2.1 kHz) cut through cafe noise, the
- * low-octave layer (G4/G5 body) carries the energy on small phone speakers
+ * the later ones. High frequencies (1.3-2.6 kHz) cut through cafe noise, the
+ * low-octave layer (the G4/E5 body) carries the energy on small phone speakers
  * that cannot move much air. On phones we ALSO vibrate — in a pocket,
  * vibration is felt when sound is muffled.
  *
@@ -39,17 +59,54 @@
 
 let ctx: AudioContext | null = null;
 let compressor: DynamicsCompressorNode | null = null;
-let alarmEl: HTMLAudioElement | null = null;
-let alarmElReady = false;
+const alarmEls = new Map<AlarmBell, HTMLAudioElement>();
+const alarmElReady = new Set<AlarmBell>();
+/** Which bell THIS page rings. Default = the original kitchen bell, so every
+ *  screen that never calls setStationBell() sounds exactly as before. */
+let activeBell: AlarmBell = "kitchen";
 let gestureArmed = false;
 
-/* ── Partials of one bell hit: [frequency, relative level] ────────────────── */
-const BELL_PARTIALS: Array<[number, number]> = [
+/* ── The two bells: [frequency, relative level] per hit ───────────────────── */
+
+export type AlarmBell = "kitchen" | "juice";
+
+type BellPartial = [number, number];
+
+/** The ORIGINAL kitchen counter bell — kept exactly as it was. */
+const KITCHEN_BELL: BellPartial[] = [
   [1568, 1.0], // G6 — cuts through kitchen noise
-  [2093, 0.6], // C7 — shimmer an octave up
+  [2093, 0.6], // C7 — shimmer a major third up
   [784, 0.5], // G5 — body
   [392, 0.7], // G4 — low-octave layer, energy on small phone speakers
 ];
+
+/**
+ * The JUICE BAR's bell — a different colour of the SAME alarm. Same 6-pair
+ * pattern and the same full-scale loudness (each bell is normalised to the
+ * same peak in both engines); different music: an E-family "ting" with a
+ * perfect-fifth shimmer and a body a full fifth above the kitchen's G4, so a
+ * crew half-hearing it across the room knows which side of the house it is.
+ */
+const JUICE_BELL: BellPartial[] = [
+  [1318.5, 1.0], // E6 — lead (the kitchen's lead is G6)
+  [1975.5, 0.6], // B6 — shimmer a PERFECT FIFTH up (the kitchen's is a major third)
+  [2637, 0.35], // E7 — high sparkle
+  [659.25, 0.7], // E5 — low-octave body, a full fifth above the kitchen's G4
+];
+
+const ALARM_BELLS: Record<AlarmBell, BellPartial[]> = {
+  kitchen: KITCHEN_BELL,
+  juice: JUICE_BELL,
+};
+
+/**
+ * Point THIS page at its bell — call once on mount from a staff screen.
+ * Also pre-renders that bell's WAV so the first alarm starts instantly.
+ */
+export function setStationBell(bell: AlarmBell) {
+  activeBell = bell;
+  ensureAlarmElement(bell);
+}
 
 /** Pair timing of the alarm: 6 pairs of dings, ~3.8 s of ringing. */
 const ALARM_PAIRS = 6;
@@ -58,11 +115,14 @@ const PAIR_OFFSET = 0.16;
 
 /* ── Pre-rendered WAV (engine 1) ──────────────────────────────────────────── */
 
-function renderAlarmWav(): string {
+function renderAlarmWav(partials: BellPartial[]): string {
   const rate = 22050;
   const duration = (ALARM_PAIRS - 1) * PAIR_GAP + PAIR_OFFSET + 0.6;
   const length = Math.ceil(rate * duration);
   const data = new Float32Array(length);
+  // Each bell divides by its OWN level sum before normalisation, so both
+  // bells land at the same full scale: "different sound, same loudness".
+  const levelSum = partials.reduce((sum, [, level]) => sum + level, 0);
 
   const hits: number[] = [];
   for (let pair = 0; pair < ALARM_PAIRS; pair += 1) {
@@ -80,10 +140,10 @@ function renderAlarmWav(): string {
       // Web Audio bell uses, so both engines sound identical).
       const env = t < 0.015 ? t / 0.015 : Math.exp(-(t - 0.015) * 7.5);
       let sample = 0;
-      for (const [freq, level] of BELL_PARTIALS) {
+      for (const [freq, level] of partials) {
         sample += Math.sin(2 * Math.PI * freq * t) * level;
       }
-      data[idx] += (sample / 2.8) * env;
+      data[idx] += (sample / levelSum) * env;
     }
   }
 
@@ -122,17 +182,18 @@ function renderAlarmWav(): string {
   return `data:audio/wav;base64,${window.btoa(binary)}`;
 }
 
-function ensureAlarmElement() {
-  if (alarmEl || typeof window === "undefined" || typeof Audio === "undefined") return;
+function ensureAlarmElement(bell: AlarmBell) {
+  if (alarmEls.has(bell) || typeof window === "undefined" || typeof Audio === "undefined") return;
   try {
-    alarmEl = new Audio(renderAlarmWav());
-    alarmEl.preload = "auto";
-    alarmEl.volume = 1;
+    const el = new Audio(renderAlarmWav(ALARM_BELLS[bell]));
+    el.preload = "auto";
+    el.volume = 1;
     // Some Android builds refuse background playback for a muted or very short element;
     // load() up-front so the data is decoded and ready before the rush.
-    alarmEl.load();
+    el.load();
+    alarmEls.set(bell, el);
   } catch {
-    alarmEl = null;
+    alarmEls.delete(bell);
   }
 }
 
@@ -159,12 +220,13 @@ export function unlockAudio() {
       if (ctx.state === "suspended") void ctx.resume();
     }
 
-    // Prime the media element INSIDE the gesture: playing (and immediately
-    // pausing) it here is what buys the right to play it later with the screen
+    // Prime EVERY bell INSIDE the gesture: playing (and immediately pausing)
+    // each one here is what buys the right to play it later with the screen
     // off. Without this prime, the pocket alarm is silent.
-    ensureAlarmElement();
-    if (alarmEl && !alarmElReady) {
-      const el = alarmEl;
+    for (const bellName of Object.keys(ALARM_BELLS) as AlarmBell[]) {
+      ensureAlarmElement(bellName);
+      const el = alarmEls.get(bellName);
+      if (!el || alarmElReady.has(bellName)) continue;
       const prevVolume = el.volume;
       el.volume = 0;
       const p = el.play();
@@ -173,7 +235,7 @@ export function unlockAudio() {
           el.pause();
           el.currentTime = 0;
           el.volume = prevVolume;
-          alarmElReady = true;
+          alarmElReady.add(bellName);
         } catch {
           /* ignore */
         }
@@ -201,7 +263,7 @@ export function armAudioOnFirstGesture() {
   gestureArmed = true;
   const arm = () => {
     unlockAudio();
-    if (alarmElReady) {
+    if (alarmElReady.size > 0) {
       window.removeEventListener("pointerdown", arm);
       window.removeEventListener("touchstart", arm);
       window.removeEventListener("keydown", arm);
@@ -219,7 +281,7 @@ export function armAudioOnFirstGesture() {
 
 /** True when this device can actually make noise right now. */
 export function audioArmed(): boolean {
-  return alarmElReady || (!!ctx && ctx.state === "running");
+  return alarmElReady.size > 0 || (!!ctx && ctx.state === "running");
 }
 
 function vibrate(pattern: number[]) {
@@ -233,13 +295,13 @@ function vibrate(pattern: number[]) {
 }
 
 /** One bell hit: fundamental + octaves, fast attack, half-second decay. */
-function bell(at: number, level: number) {
+function bell(at: number, level: number, partials: BellPartial[] = ALARM_BELLS[activeBell]) {
   if (!ctx || !compressor) return;
-  for (const [freq, rel] of BELL_PARTIALS) {
+  for (const [freq, rel] of partials) {
     const gainLevel = level * rel;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = freq >= 2093 ? "sine" : "triangle";
+    osc.type = freq >= 1900 ? "sine" : "triangle";
     osc.frequency.setValueAtTime(freq, at);
     gain.gain.setValueAtTime(0.0001, at);
     gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, gainLevel), at + 0.015);
@@ -259,13 +321,14 @@ function synthAlarm() {
     unlockAudio();
     if (!ctx) return;
     if (ctx.state === "suspended") void ctx.resume();
+    const partials = ALARM_BELLS[activeBell];
     const start = ctx.currentTime + 0.01;
     // 6 pairs × (ding + ding 160ms later), pair gap 380ms → ~3.6 s of ringing.
     // Long on purpose: a customer top-up must punch through a lunch-rush room.
     for (let pair = 0; pair < ALARM_PAIRS; pair += 1) {
       const base = start + pair * PAIR_GAP;
-      bell(base, 1.0);
-      bell(base + PAIR_OFFSET, 1.0);
+      bell(base, 1.0, partials);
+      bell(base + PAIR_OFFSET, 1.0, partials);
     }
   } catch {
     /* ignore */
@@ -274,7 +337,8 @@ function synthAlarm() {
 
 /**
  * Standard ring — a few bells (e.g. a status changed, nothing urgent).
- * `hits` defaults to 3.
+ * `hits` defaults to 3. Rings with the page's own bell (setStationBell), so a
+ * quantity correction on the juice screen tingts like the juice bell too.
  */
 export function playDing(hits = 3) {
   try {
@@ -284,9 +348,10 @@ export function playDing(hits = 3) {
     if (!ctx) return;
     if (ctx.state === "suspended") void ctx.resume();
 
+    const partials = ALARM_BELLS[activeBell];
     const start = ctx.currentTime + 0.01;
     for (let i = 0; i < hits; i += 1) {
-      bell(start + i * 0.3, 0.9);
+      bell(start + i * 0.3, 0.9, partials);
     }
     vibrate([250, 120, 250]);
   } catch {
@@ -295,9 +360,11 @@ export function playDing(hits = 3) {
 }
 
 /**
- * THE NEW-ORDER ALARM — long, loud and impossible to miss: paired dings
+ * THE ALARM — long, loud and impossible to miss: paired dings
  * (ding-ding … ding-ding … ding-ding) like a counter bell being hammered.
- * Used when an order ARRIVES and someone must act on it.
+ * The BELL depends on the page (setStationBell): the kitchen hears the
+ * original G-family counter bell, the juice bar hears its brighter E-family
+ * bell — same 6-pair pattern, same volume, same vibration.
  *
  * Plays through the media element first so it is still heard when the tab sits
  * in the background with the screen off; the synth is the fallback.
@@ -306,7 +373,8 @@ export function playAlarm() {
   // Vibration first: it is the one channel that works with the ringer muted.
   vibrate([400, 120, 400, 120, 400, 120, 400, 120, 400, 120, 400, 120, 400]);
   try {
-    ensureAlarmElement();
+    ensureAlarmElement(activeBell);
+    const alarmEl = alarmEls.get(activeBell);
     if (alarmEl) {
       try {
         alarmEl.pause();

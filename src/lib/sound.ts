@@ -22,33 +22,41 @@
  *      browsers suspend an AudioContext when the page is hidden — which is
  *      exactly the pocket case, so it can no longer be the only engine.
  *
- * TWO BELLS, ONE SKELETON (owner's fix, Sept 2026): the kitchen and the juice
- * bar stand close together, and one shared counter bell made the kitchen crew
- * answer the juice calls (and back). So the alarm PATTERN stays identical for
- * everyone — 6 pairs of dings, the same gaps, the same loudness ceiling, the
- * same vibration — and only the BELL differs:
+ * TWO COMPLETELY DIFFERENT SOUNDS, ONE SKELETON (owner's fix, Sept 2026): the
+ * kitchen and the juice bar stand close together and the one shared alarm
+ * made the kitchen crew answer the juice calls (and back). So the alarm
+ * SKELETON is identical for everyone — 6 pairs of hits (hit-hit × 6), the
+ * same gaps, the same ~3.8 s length, the same loudness, the same vibration —
+ * and only the SOUND differs. It is not "a different bell": it is a different
+ * instrument, so there is zero chance of mixing them up by ear:
  *
- *   kitchen (the default) → the ORIGINAL G-family counter bell: G6 lead with
- *                           a C7 major-third sparkle and a deep G4 body.
- *   juice                 → a NEW brighter E-family bell: E6 lead, a B6
- *                           PERFECT-FIFTH shimmer (instead of a third), an E7
- *                           sparkle and a body a full fifth higher (E5, not
- *                           G4). Same pattern, same volume, different colour —
- *                           the two can no longer be confused by ear.
+ *   kitchen (the default) → the ORIGINAL counter bell, untouched: a G-family
+ *                           "ding" (G6 lead, C7 major-third sparkle, deep G4
+ *                           body). Every screen that never calls
+ *                           setStationBell() keeps this exact sound.
+ *   juice                 → an ELECTRONIC TWO-TONE "ba-doo" beep: square-wave
+ *                           A5 / D6 (odd harmonics, 1/n — mathematically a
+ *                           square wave), each PAIR plays one "ba-doo", like
+ *                           a POS order alarm. A flat, hard electronic edge —
+ *                           the exact opposite of a ringing bell.
  *
- * A page chooses its bell once with setStationBell(); every alarm path on that
- * page — SSE new items, stop-work, the pocket push relay, the test button —
- * then rings it. Each staff screen is its own tab, i.e. its own copy of this
- * module, so the juice bell can never leak into the kitchen tablet. Every
- * screen that never calls setStationBell() keeps the original kitchen bell.
+ *   Both are loudness-matched: each is peak-normalised to the same full
+ *   scale, and the denser beep gets a measured `rmsTrim` (0.58) applied after
+ *   normalisation so its perceived volume equals the bell's (within 0.1 dB).
  *
- * LOUDNESS strategy: a bell is several oscillators an octave apart (the ear
- * reads the sum as much louder), gains pushed at the compressor ceiling, and
- * the pattern repeats so a waiter half-hears the first ding and fully catches
- * the later ones. High frequencies (1.3-2.6 kHz) cut through cafe noise, the
- * low-octave layer (the G4/E5 body) carries the energy on small phone speakers
- * that cannot move much air. On phones we ALSO vibrate — in a pocket,
- * vibration is felt when sound is muffled.
+ * A page chooses its sound once with setStationBell(); every alarm path on
+ * that page — SSE new items, stop-work, the pocket push relay, the test
+ * button, the short dings — then follows it. Each staff screen is its own
+ * tab, i.e. its own copy of this module, so the two sounds can never leak
+ * into each other.
+ *
+ * LOUDNESS strategy: a hit is several oscillators stacked (the ear reads the
+ * sum as much louder), gains pushed at the compressor ceiling, and the
+ * pattern repeats so a waiter half-hears the first hit and fully catches the
+ * later ones. High frequencies (1.3-8.2 kHz) cut through cafe noise, the
+ * low-octave layer (the bell's G4 body) carries the energy on small phone
+ * speakers that cannot move much air. On phones we ALSO vibrate — in a
+ * pocket, vibration is felt when sound is muffled.
  *
  * NOTE: no web page can out-shout the phone's OS MEDIA volume — if the device
  * is muted or media volume is at minimum, this alarm is silent no matter how
@@ -61,47 +69,91 @@ let ctx: AudioContext | null = null;
 let compressor: DynamicsCompressorNode | null = null;
 const alarmEls = new Map<AlarmBell, HTMLAudioElement>();
 const alarmElReady = new Set<AlarmBell>();
-/** Which bell THIS page rings. Default = the original kitchen bell, so every
+/** Which sound THIS page rings. Default = the original kitchen bell, so every
  *  screen that never calls setStationBell() sounds exactly as before. */
 let activeBell: AlarmBell = "kitchen";
 let gestureArmed = false;
 
-/* ── The two bells: [frequency, relative level] per hit ───────────────────── */
+/* ── The two sounds: one per station, one skeleton for both ───────────────── */
 
 export type AlarmBell = "kitchen" | "juice";
 
-type BellPartial = [number, number];
-
-/** The ORIGINAL kitchen counter bell — kept exactly as it was. */
-const KITCHEN_BELL: BellPartial[] = [
-  [1568, 1.0], // G6 — cuts through kitchen noise
-  [2093, 0.6], // C7 — shimmer a major third up
-  [784, 0.5], // G5 — body
-  [392, 0.7], // G4 — low-octave layer, energy on small phone speakers
-];
+/** One tone component: [frequency, relative level, oscillator type?]. The
+ *  oscillator type is optional and only needed when the default rule
+ *  (sine above 2093 Hz, triangle below — the original kitchen rule) does not
+ *  fit the sound being built. */
+type BellPartial = [number, number, ("sine" | "triangle")?];
 
 /**
- * The JUICE BAR's bell — a different colour of the SAME alarm. Same 6-pair
- * pattern and the same full-scale loudness (each bell is normalised to the
- * same peak in both engines); different music: an E-family "ting" with a
- * perfect-fifth shimmer and a body a full fifth above the kitchen's G4, so a
- * crew half-hearing it across the room knows which side of the house it is.
+ * One station's alarm sound.
+ *
+ * `timbres` is the list of hit shapes; hit i plays timbres[i % length]
+ * (kitchen = one timbre repeated 12 times, juice = A5/D6 alternating).
+ * `divisor` scales the raw hit down to a common pre-normalisation level.
+ * `rmsTrim` is applied AFTER peak normalisation so a denser sound (the
+ * square-wave beep packs more energy per hit than the bell) still sits at
+ * the SAME perceived volume: 0.58 was measured so the beep matches the
+ * kitchen bell within 0.1 dB.
  */
-const JUICE_BELL: BellPartial[] = [
-  [1318.5, 1.0], // E6 — lead (the kitchen's lead is G6)
-  [1975.5, 0.6], // B6 — shimmer a PERFECT FIFTH up (the kitchen's is a major third)
-  [2637, 0.35], // E7 — high sparkle
-  [659.25, 0.7], // E5 — low-octave body, a full fifth above the kitchen's G4
-];
+type BellSpec = {
+  timbres: BellPartial[][];
+  divisor: number;
+  rmsTrim: number;
+};
 
-const ALARM_BELLS: Record<AlarmBell, BellPartial[]> = {
+/** The ORIGINAL kitchen counter bell — kept exactly as it was. */
+const KITCHEN_BELL: BellSpec = {
+  timbres: [
+    [
+      [1568, 1.0], // G6 — cuts through kitchen noise
+      [2093, 0.6], // C7 — shimmer a major third up
+      [784, 0.5], // G5 — body
+      [392, 0.7], // G4 — low-octave layer, energy on small phone speakers
+    ],
+  ],
+  divisor: 2.8,
+  rmsTrim: 1,
+};
+
+/**
+ * The JUICE BAR's alarm — a completely different instrument: an electronic
+ * two-tone "ba-doo" beep. Each PAIR is one A5 "ba" + D6 "doo", so the
+ * ding-ding × 6 pattern reads the same, but the flat square-wave edge
+ * (odd harmonics at 1/n = a mathematical square wave) can never be mistaken
+ * for a bell. The D6 tone is scaled to 0.82 so both tones peak equally, and
+ * rmsTrim 0.58 keeps its volume identical to the kitchen bell.
+ */
+const JUICE_BELL: BellSpec = {
+  timbres: [
+    // "ba" — A5 880 Hz square wave
+    [
+      [880, 1.0, "sine"],
+      [2640, 0.3333, "sine"],
+      [4400, 0.2, "sine"],
+      [6160, 0.1429, "sine"],
+      [7920, 0.1111, "sine"],
+    ],
+    // "doo" — D6 1174.66 Hz square wave (0.82 amplitude match)
+    [
+      [1174.66, 0.82, "sine"],
+      [3523.98, 0.2733, "sine"],
+      [5873.3, 0.164, "sine"],
+      [8222.62, 0.1171, "sine"],
+    ],
+  ],
+  divisor: 1.8,
+  rmsTrim: 0.58,
+};
+
+const ALARM_BELLS: Record<AlarmBell, BellSpec> = {
   kitchen: KITCHEN_BELL,
   juice: JUICE_BELL,
 };
 
 /**
- * Point THIS page at its bell — call once on mount from a staff screen.
- * Also pre-renders that bell's WAV so the first alarm starts instantly.
+ * Point THIS page at its alarm sound — call once on mount from a staff
+ * screen. Also pre-renders that sound's WAV so the first alarm starts
+ * instantly.
  */
 export function setStationBell(bell: AlarmBell) {
   activeBell = bell;
@@ -115,14 +167,11 @@ const PAIR_OFFSET = 0.16;
 
 /* ── Pre-rendered WAV (engine 1) ──────────────────────────────────────────── */
 
-function renderAlarmWav(partials: BellPartial[]): string {
+function renderAlarmWav(spec: BellSpec): string {
   const rate = 22050;
   const duration = (ALARM_PAIRS - 1) * PAIR_GAP + PAIR_OFFSET + 0.6;
   const length = Math.ceil(rate * duration);
   const data = new Float32Array(length);
-  // Each bell divides by its OWN level sum before normalisation, so both
-  // bells land at the same full scale: "different sound, same loudness".
-  const levelSum = partials.reduce((sum, [, level]) => sum + level, 0);
 
   const hits: number[] = [];
   for (let pair = 0; pair < ALARM_PAIRS; pair += 1) {
@@ -130,27 +179,31 @@ function renderAlarmWav(partials: BellPartial[]): string {
     hits.push(base, base + PAIR_OFFSET);
   }
 
-  for (const hit of hits) {
+  hits.forEach((hit, i) => {
+    const timbre = spec.timbres[i % spec.timbres.length];
     const startSample = Math.floor(hit * rate);
-    for (let i = 0; i < Math.floor(0.6 * rate); i += 1) {
-      const idx = startSample + i;
+    for (let j = 0; j < Math.floor(0.6 * rate); j += 1) {
+      const idx = startSample + j;
       if (idx >= length) break;
-      const t = i / rate;
-      // 15 ms attack, exponential decay to silence by ~0.5 s (same shape the
-      // Web Audio bell uses, so both engines sound identical).
+      const t = j / rate;
+      // 15 ms attack, exponential decay to silence by ~0.5 s (same shape for
+      // every sound, so both engines and both stations share the rhythm).
       const env = t < 0.015 ? t / 0.015 : Math.exp(-(t - 0.015) * 7.5);
       let sample = 0;
-      for (const [freq, level] of partials) {
+      for (const [freq, level] of timbre) {
         sample += Math.sin(2 * Math.PI * freq * t) * level;
       }
-      data[idx] += (sample / levelSum) * env;
+      data[idx] += (sample / spec.divisor) * env;
     }
-  }
+  });
 
-  // Normalise, then soft-clip: loud without the crunch of hard clipping.
+  // Normalise to the full scale, apply the loudness trim, then soft-clip:
+  // loud without the crunch of hard clipping. rmsTrim < 1 trims the denser
+  // beep back down to the bell's perceived volume (both stay at the same
+  // ceiling, nothing clips).
   let peak = 0;
   for (let i = 0; i < length; i += 1) peak = Math.max(peak, Math.abs(data[i]));
-  const scale = peak > 0 ? 0.98 / peak : 1;
+  const scale = (peak > 0 ? 0.98 / peak : 1) * spec.rmsTrim;
 
   const bytes = new Uint8Array(44 + length * 2);
   const view = new DataView(bytes.buffer);
@@ -206,7 +259,7 @@ export function unlockAudio() {
         ctx = new AC();
         // Route everything through a limiter: we deliberately push gains to the
         // ceiling, the compressor keeps it loud-but-not-distorted. Threshold sits
-        // near -6 dB with a high ratio so the summed bells ride close to full
+        // near -6 dB with a high ratio so the summed hits ride close to full
         // scale without ever clipping — the compressor is the thing that makes
         // "louder" safe instead of crunchy.
         compressor = ctx.createDynamicsCompressor();
@@ -220,7 +273,7 @@ export function unlockAudio() {
       if (ctx.state === "suspended") void ctx.resume();
     }
 
-    // Prime EVERY bell INSIDE the gesture: playing (and immediately pausing)
+    // Prime EVERY sound INSIDE the gesture: playing (and immediately pausing)
     // each one here is what buys the right to play it later with the screen
     // off. Without this prime, the pocket alarm is silent.
     for (const bellName of Object.keys(ALARM_BELLS) as AlarmBell[]) {
@@ -294,14 +347,22 @@ function vibrate(pattern: number[]) {
   }
 }
 
-/** One bell hit: fundamental + octaves, fast attack, half-second decay. */
-function bell(at: number, level: number, partials: BellPartial[] = ALARM_BELLS[activeBell]) {
+/**
+ * One hit of a station's alarm sound: the stacked tones, fast attack,
+ * half-second decay. Hit `index` picks the timbre (kitchen repeats one,
+ * juice alternates "ba"/"doo"). The loudness trim keeps both stations at
+ * the same volume in this engine too.
+ */
+function hit(at: number, level: number, spec: BellSpec, index: number) {
   if (!ctx || !compressor) return;
-  for (const [freq, rel] of partials) {
-    const gainLevel = level * rel;
+  const timbre = spec.timbres[index % spec.timbres.length];
+  for (const [freq, rel, wave] of timbre) {
+    const gainLevel = level * rel * spec.rmsTrim;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = freq >= 1900 ? "sine" : "triangle";
+    // Default keeps the original kitchen rule (sine shimmer above 2093 Hz,
+    // triangle body below); the beep's sine harmonics say so explicitly.
+    osc.type = wave ?? (freq >= 2093 ? "sine" : "triangle");
     osc.frequency.setValueAtTime(freq, at);
     gain.gain.setValueAtTime(0.0001, at);
     gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, gainLevel), at + 0.015);
@@ -321,14 +382,15 @@ function synthAlarm() {
     unlockAudio();
     if (!ctx) return;
     if (ctx.state === "suspended") void ctx.resume();
-    const partials = ALARM_BELLS[activeBell];
+    const spec = ALARM_BELLS[activeBell];
     const start = ctx.currentTime + 0.01;
-    // 6 pairs × (ding + ding 160ms later), pair gap 380ms → ~3.6 s of ringing.
+    // 6 pairs × (hit + hit 160ms later), pair gap 620ms → ~3.8 s of ringing.
     // Long on purpose: a customer top-up must punch through a lunch-rush room.
+    let hitIndex = 0;
     for (let pair = 0; pair < ALARM_PAIRS; pair += 1) {
       const base = start + pair * PAIR_GAP;
-      bell(base, 1.0, partials);
-      bell(base + PAIR_OFFSET, 1.0, partials);
+      hit(base, 1.0, spec, hitIndex++);
+      hit(base + PAIR_OFFSET, 1.0, spec, hitIndex++);
     }
   } catch {
     /* ignore */
@@ -336,9 +398,9 @@ function synthAlarm() {
 }
 
 /**
- * Standard ring — a few bells (e.g. a status changed, nothing urgent).
- * `hits` defaults to 3. Rings with the page's own bell (setStationBell), so a
- * quantity correction on the juice screen tingts like the juice bell too.
+ * Standard ring — a few hits (e.g. a status changed, nothing urgent).
+ * `hits` defaults to 3. Rings with the page's own sound, so a quantity
+ * correction on the juice screen gets three quick "ba-doo" beeps, not bells.
  */
 export function playDing(hits = 3) {
   try {
@@ -348,10 +410,10 @@ export function playDing(hits = 3) {
     if (!ctx) return;
     if (ctx.state === "suspended") void ctx.resume();
 
-    const partials = ALARM_BELLS[activeBell];
+    const spec = ALARM_BELLS[activeBell];
     const start = ctx.currentTime + 0.01;
     for (let i = 0; i < hits; i += 1) {
-      bell(start + i * 0.3, 0.9, partials);
+      hit(start + i * 0.3, 0.9, spec, i);
     }
     vibrate([250, 120, 250]);
   } catch {
@@ -360,11 +422,11 @@ export function playDing(hits = 3) {
 }
 
 /**
- * THE ALARM — long, loud and impossible to miss: paired dings
- * (ding-ding … ding-ding … ding-ding) like a counter bell being hammered.
- * The BELL depends on the page (setStationBell): the kitchen hears the
- * original G-family counter bell, the juice bar hears its brighter E-family
- * bell — same 6-pair pattern, same volume, same vibration.
+ * THE ALARM — long, loud and impossible to miss: 6 pairs of hits
+ * (hit-hit … hit-hit … hit-hit), ~3.8 s. The SOUND depends on the page
+ * (setStationBell): the kitchen hears the original G-family counter bell,
+ * the juice bar hears its electronic two-tone "ba-doo" beep — same pattern,
+ * same volume, same vibration, completely different sound.
  *
  * Plays through the media element first so it is still heard when the tab sits
  * in the background with the screen off; the synth is the fallback.

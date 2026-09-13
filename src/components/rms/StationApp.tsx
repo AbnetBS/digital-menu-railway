@@ -132,14 +132,15 @@ export default function StationApp({ station }: { station: Station }) {
     loadHistory();
   };
 
-  // THIS PAGE'S BELL (owner's decision, Sept 2026): the juice bar stands next
-  // to the kitchen and the one shared counter bell made the crews answer each
-  // other's calls. Every alarm path on this page (new items, stop-work, the
-  // pocket push relay, the test button) now rings this page's own bell: the
-  // kitchen keeps the original sound, the juice bar gets a different one with
-  // the same 6-pair pattern and the same volume. See sound.ts for the two
-  // timbres. Each screen is its own tab (its own copy of the sound module),
-  // so the two bells can never leak into each other.
+  // THIS PAGE'S ALARM SOUND (owner's decision, Sept 2026): the juice bar
+  // stands next to the kitchen and the one shared alarm made the crews
+  // answer each other's calls. Every alarm path on this page (new items,
+  // stop-work, the pocket push relay, the test button) now follows this
+  // page's own sound: the kitchen keeps the original counter bell, the
+  // juice bar gets a completely different electronic two-tone "ba-doo"
+  // beep with the same 6-pair pattern and the same volume. See sound.ts.
+  // Each screen is its own tab (its own copy of the sound module), so the
+  // two sounds can never leak into each other.
   useEffect(() => {
     setStationBell(station === "juice" ? "juice" : "kitchen");
   }, [station]);

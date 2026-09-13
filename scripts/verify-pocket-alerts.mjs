@@ -124,6 +124,16 @@ function pass(name, cond) {
   pass("stations ring the full alarm on new items", /playAlarm\(\)/.test(station));
   pass("waiters ring the full alarm on new QR orders", /playAlarm\(\)/.test(waiter));
   pass("cashier distinguishes 'needs me' (alarm) from noise (ding)", /needsMe/.test(cashier) && /playAlarm\(\)/.test(cashier));
+  // THE JUICE/KITCHEN SPLIT (owner's decision, Sept 2026): the two stations
+  // stand close together and the one shared alarm made the kitchen answer
+  // the juice calls. Same 6-pair pattern, same length, same loudness, same
+  // vibration — but a COMPLETELY DIFFERENT sound: the kitchen keeps the
+  // original counter bell, the juice bar gets an electronic two-tone beep.
+  pass("the original kitchen bell is untouched (G6/C7/G5/G4)", /\[1568, 1\.0\]/.test(sound) && /\[2093, 0\.6\]/.test(sound) && /\[784, 0\.5\]/.test(sound) && /\[392, 0\.7\]/.test(sound));
+  pass("the juice bar's alarm is an electronic two-tone A5/D6 beep, not a bell", /\[880,/.test(sound) && /\[2640,/.test(sound) && /\[1174\.66,/.test(sound) && /\[3523\.98,/.test(sound));
+  pass("the beep is loudness-matched to the bell (same volume, different sound)", /rmsTrim: 0\.58/.test(sound));
+  pass("pages choose their sound with setStationBell (default = the kitchen bell)", /export function setStationBell/.test(sound) && /let activeBell: AlarmBell = "kitchen"/.test(sound));
+  pass("the juice screen sets its own sound on mount (kitchen/barista keep the original)", /setStationBell\(station === "juice" \? "juice" : "kitchen"\)/.test(station));
 }
 
 /* ── 3. First notification no longer vanishes ─────────────────────────────── */

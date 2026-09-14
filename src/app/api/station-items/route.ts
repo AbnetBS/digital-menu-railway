@@ -80,6 +80,8 @@ export async function GET(request: Request) {
           id: tickets.id,
           tableName: tickets.tableName,
           orderNumber: tickets.orderNumber,
+          orderType: tickets.orderType,
+          serviceNote: tickets.serviceNote,
           status: tickets.status,
           createdBy: tickets.createdBy,
           confirmedBy: tickets.confirmedBy,
@@ -145,6 +147,8 @@ export async function GET(request: Request) {
           id: t.id,
           tableName: t.tableName,
           orderNumber: t.orderNumber,
+          orderType: t.orderType,
+          serviceNote: t.serviceNote,
           status: t.status,
           createdBy: t.createdBy,
           confirmedBy: t.confirmedBy,
@@ -182,6 +186,8 @@ export async function GET(request: Request) {
         id: tickets.id,
         tableName: tickets.tableName,
         orderNumber: tickets.orderNumber,
+        orderType: tickets.orderType,
+        serviceNote: tickets.serviceNote,
         status: tickets.status,
         totalAmount: tickets.totalAmount,
         receiptRequestedAt: tickets.receiptRequestedAt,
@@ -240,6 +246,8 @@ export async function GET(request: Request) {
           id: t.id,
           tableName: t.tableName,
           orderNumber: t.orderNumber,
+          orderType: t.orderType,
+          serviceNote: t.serviceNote,
           status: t.status,
           totalAmount: t.totalAmount,
           createdBy: t.createdBy,
@@ -316,6 +324,7 @@ export async function PUT(request: Request) {
           id: tickets.id,
           tableName: tickets.tableName,
           totalAmount: tickets.totalAmount,
+          orderType: tickets.orderType,
           confirmedBy: tickets.confirmedBy,
           createdBy: tickets.createdBy,
         })
@@ -352,7 +361,16 @@ export async function PUT(request: Request) {
             urgent: alert.urgent,
             repeat: alert.repeat,
           };
-          if (owner && alert.roles.length === 1 && alert.roles[0] === "waiter") {
+          if (ticketRows[0].orderType === "outdoor" && alert.roles.length === 1 && alert.roles[0] === "waiter") {
+            if (wholeOrderReady) {
+              void sendPushToRoles(["cashier"], {
+                ...payload,
+                title: "🔔 OUTDOOR ORDER READY",
+                body: `${ticketRows[0].tableName} • the whole outdoor order is ready to deliver`,
+                tag: `fana-outdoor-ready-${ticketRows[0].id}`,
+              }).catch(() => {});
+            }
+          } else if (owner && alert.roles.length === 1 && alert.roles[0] === "waiter") {
             void sendPushToNamedStaff("waiter", owner, payload).catch(() => {});
           } else {
             void sendPushToRoles(alert.roles, payload).catch(() => {});

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { Search, RefreshCw, ImageIcon, X, Trash2 } from "lucide-react";
-import { Ticket, TicketItem } from "@/types";
+import { Ticket } from "@/types";
 import { formatDateTime, groupOrderLines, type OrderLine } from "@/lib/order-lines";
 
 export default function OrderHistoryTab() {
@@ -55,9 +55,23 @@ export default function OrderHistoryTab() {
   const filtered = useMemo(
     () =>
       orders.filter((o) => {
-        const searchText = `${o.tableName} ${o.createdBy} ${o.status} ${new Date(o.closedAt || o.updatedAt || "").toLocaleDateString()}`.toLowerCase();
+        const searchText = [
+          o.tableName,
+          o.serviceNote,
+          o.createdBy,
+          o.status,
+          o.historyStatus,
+          o.historyStatusLabel,
+          o.historyChangeSummary,
+          o.orderType,
+          new Date(o.closedAt || o.updatedAt || "").toLocaleDateString(),
+          ...(o.auditTrail || []).flatMap((event) => [event.label, event.detail, event.actorName]),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
         const matchQ = !q || searchText.includes(q.toLowerCase());
-        const matchS = statusFilter === "all" || o.status === statusFilter;
+        const matchS = statusFilter === "all" || historyStatusOf(o) === statusFilter;
         return matchQ && matchS;
       }),
     [orders, q, statusFilter]
@@ -75,6 +89,15 @@ export default function OrderHistoryTab() {
    */
   const displayItems = (t: Ticket) => groupOrderLines((t.items || []) as OrderLine[], { includeRemoved: true });
 
+  const historyStatusOf = (t: Ticket) => t.historyStatus || (t.status === "cancelled" ? "cancelled" : "done");
+  const historyStatusMeta = (t: Ticket) => {
+    const status = historyStatusOf(t);
+    if (status === "edited_printed") return { label: t.historyStatusLabel || "Edited & Printed", cls: "bg-sky-500/20 text-sky-300" };
+    if (status === "edited_cancelled") return { label: t.historyStatusLabel || "Edited & Cancelled", cls: "bg-rose-500/20 text-rose-200" };
+    if (status === "cancelled") return { label: t.historyStatusLabel || "Cancelled", cls: "bg-rose-500/20 text-rose-400" };
+    return { label: t.historyStatusLabel || "Done", cls: "bg-emerald-500/20 text-emerald-400" };
+  };
+
   return (
     <div className="space-y-5">
       {expired && (
@@ -85,7 +108,7 @@ export default function OrderHistoryTab() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-serif font-bold text-amber-100">Order History ({filtered.length})</h2>
-          <p className="text-xs text-stone-400">Every completed, closed & cancelled bill • search by date, table, waiter or status.</p>
+          <p className="text-xs text-stone-400">Every finished bill with audit trail • search by date, table, waiter, outdoor note or status.</p>
         </div>
         <div className="flex gap-2 self-start">
           <button
@@ -108,15 +131,15 @@ export default function OrderHistoryTab() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search table, waiter, date..."
+            placeholder="Search table, waiter, outdoor note, date..."
             className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white"
           />
         </div>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-[#2C1B17] border border-stone-700 rounded-xl p-2.5 text-xs text-white">
           <option value="all">All Statuses</option>
-          <option value="paid">Paid</option>
-          <option value="completed">Completed</option>
-          <option value="closed">Closed (table cleared)</option>
+          <option value="done">Done</option>
+          <option value="edited_printed">Edited &amp; Printed</option>
+          <option value="edited_cancelled">Edited &amp; Cancelled</option>
           <option value="cancelled">Cancelled</option>
         </select>
       </div>
@@ -128,12 +151,21 @@ export default function OrderHistoryTab() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {filtered.map((o) => (
+          {filtered.map((o) => {
+            const meta = historyStatusMeta(o);
+            return (
             <div key={o.id} className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-4 space-y-3">
               {/* header */}
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-serif font-bold text-amber-100">{o.tableName}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-serif font-bold text-amber-100">{o.tableName}</p>
+                    {o.orderType === "outdoor" && (
+                      <span className="inline-block text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                        Outdoor
+                      </span>
+                    )}
+                  </div>
                   <p className="text-[10px] text-stone-500">
                     {fmtTime(o)} • by {o.createdBy || "staff"}
                   </p>
@@ -141,15 +173,12 @@ export default function OrderHistoryTab() {
                   <p className="text-[10px] text-stone-500">
                     🕒 arrived {formatDateTime(o.createdAt)}
                   </p>
+                  {o.serviceNote && <p className="text-[11px] text-sky-300 font-bold mt-1">📍 {o.serviceNote}</p>}
                 </div>
                 <div className="text-right flex flex-col items-end gap-1.5">
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={`inline-block text-[10px] font-black px-2.5 py-1 rounded-full uppercase ${
-                        o.status === "paid" ? "bg-emerald-500/20 text-emerald-400" : o.status === "completed" ? "bg-sky-500/20 text-sky-300" : o.status === "closed" ? "bg-amber-500/20 text-amber-300" : "bg-rose-500/20 text-rose-400"
-                      }`}
-                    >
-                      {o.status === "paid" ? "✓ PAID" : o.status === "closed" ? "✓ CLOSED" : o.status}
+                  <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                    <span className={`inline-block text-[10px] font-black px-2.5 py-1 rounded-full uppercase ${meta.cls}`}>
+                      {meta.label}
                     </span>
                     <button
                       onClick={() => deleteOrder(o.id, o.tableName, o.totalAmount)}
@@ -193,8 +222,33 @@ export default function OrderHistoryTab() {
                   </div>
                 ))}
               </div>
+
+              {(o.historyChangeSummary || (o.auditTrail || []).length > 0) && (
+                <div className="bg-black/25 border border-stone-800 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-extrabold uppercase tracking-wider text-amber-200">Audit Trail</p>
+                    {o.historyChangeSummary && <p className="text-[10px] font-bold text-sky-300 text-right">{o.historyChangeSummary}</p>}
+                  </div>
+                  <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+                    {(o.auditTrail || []).map((event) => (
+                      <div key={event.id} className="rounded-lg bg-[#241714] border border-stone-800 px-2.5 py-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-black text-stone-200">{event.label}</p>
+                            {event.detail && <p className="text-[10px] text-stone-400 mt-0.5 break-words">{event.detail}</p>}
+                          </div>
+                          <span className="shrink-0 text-[10px] font-bold text-stone-500">{formatDateTime(event.createdAt)}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {(o.auditTrail || []).length === 0 && (
+                      <p className="text-[11px] text-stone-500">Older record with no detailed audit entries saved yet.</p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
-          ))}
+          );})}
         </div>
       )}
 

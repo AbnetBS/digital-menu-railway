@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { tickets, ticketItems } from "@/db/schema";
+import { recordTicketEvent } from "@/lib/ticket-audit";
 import { ensureTablesExist } from "@/db/migrate";
 import { eq, and } from "drizzle-orm";
 import { requireStaffOrAdmin } from "@/lib/session";
@@ -69,6 +70,9 @@ export async function PUT(request: Request) {
     // correction to a line the crew already STARTED can be recognised below.
     const before = await db.select().from(ticketItems).where(eq(ticketItems.id, body.itemId)).limit(1);
     if (before.length === 0) return NextResponse.json({ error: "Item not found" }, { status: 404 });
+    const actor = __auth.session.kind === "staff" ? await readStaffSession() : null;
+    const actorName = actor?.name || (__auth.session.kind === "admin" ? "admin" : null);
+    const actorRole = actor?.role || (__auth.session.kind === "admin" ? "admin" : null);
 
     const qtyChanged = updates.quantity !== undefined && Number(updates.quantity) !== before[0].quantity;
     const qtyIncreased = qtyChanged && Number(updates.quantity) > before[0].quantity;
@@ -103,6 +107,43 @@ export async function PUT(request: Request) {
           // AFTER its EFD receipt went out, and the cashier's card flags it.
           .set({ totalAmount: total, updatedAt: new Date(), itemsEditedAt: new Date() })
           .where(eq(tickets.id, rows[0].ticketId));
+        if (qtyChanged) {
+          await recordTicketEvent(tx, {
+            ticketId: rows[0].ticketId,
+            eventType: "item_quantity_changed",
+            actorName,
+            actorRole,
+            itemId: rows[0].id,
+            itemName: rows[0].name,
+            fromValue: String(before[0].quantity),
+            toValue: String(rows[0].quantity),
+            details: `${rows[0].name}: quantity ${before[0].quantity} → ${rows[0].quantity}`,
+          });
+        }
+        if (notesChanged) {
+          await recordTicketEvent(tx, {
+            ticketId: rows[0].ticketId,
+            eventType: "item_notes_changed",
+            actorName,
+            actorRole,
+            itemId: rows[0].id,
+            itemName: rows[0].name,
+            fromValue: String(before[0].notes || ""),
+            toValue: String(rows[0].notes || ""),
+            details: `${rows[0].name}: note changed`,
+          });
+        }
+        if (qtyChanged || notesChanged) {
+          await recordTicketEvent(tx, {
+            ticketId: rows[0].ticketId,
+            eventType: "item_edited",
+            actorName,
+            actorRole,
+            itemId: rows[0].id,
+            itemName: rows[0].name,
+            details: `${rows[0].name} was corrected on the bill`,
+          });
+        }
       }
       return rows;
     });
@@ -116,7 +157,6 @@ export async function PUT(request: Request) {
     try {
       const ticket = qtyChanged || notesChanged ? await ticketOf(updated[0].ticketId) : null;
       if (ticket) {
-        const actorRole = __auth.session.kind === "staff" ? (await readStaffSession())?.role : null;
         if (qtyChanged) {
           ring(
             itemQuantityAlerts({
@@ -183,6 +223,9 @@ export async function DELETE(request: Request) {
 
     const rows = await db.select().from(ticketItems).where(eq(ticketItems.id, Number(id)));
     if (rows.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const actor = __auth.session.kind === "staff" ? await readStaffSession() : null;
+    const actorName = actor?.name || (__auth.session.kind === "admin" ? "admin" : null);
+    const actorRole = actor?.role || (__auth.session.kind === "admin" ? "admin" : null);
 
     // The removal and the bill-total recompute share one transaction so two
     // staff correcting the same bill at once cannot leave a stale total.
@@ -203,6 +246,26 @@ export async function DELETE(request: Request) {
         // printed bill also changes what the EFD receipt claims.
         .set({ totalAmount: total, updatedAt: new Date(), itemsEditedAt: new Date() })
         .where(eq(tickets.id, rows[0].ticketId));
+      await recordTicketEvent(tx, {
+        ticketId: rows[0].ticketId,
+        eventType: "item_removed",
+        actorName,
+        actorRole,
+        itemId: rows[0].id,
+        itemName: rows[0].name,
+        fromValue: `${rows[0].name} ×${rows[0].quantity}`,
+        toValue: hard ? "deleted" : "removed",
+        details: `${rows[0].name} was removed from the bill`,
+      });
+      await recordTicketEvent(tx, {
+        ticketId: rows[0].ticketId,
+        eventType: "item_edited",
+        actorName,
+        actorRole,
+        itemId: rows[0].id,
+        itemName: rows[0].name,
+        details: `${rows[0].name} was removed from the bill`,
+      });
     });
 
     // Removing a dish the crew ALREADY STARTED must stop them ("do not
@@ -213,7 +276,6 @@ export async function DELETE(request: Request) {
     try {
       const ticket = await ticketOf(rows[0].ticketId);
       if (ticket) {
-        const actorRole = __auth.session.kind === "staff" ? (await readStaffSession())?.role : null;
         if (!wasPending) {
           ring(
             itemRemovedAlerts({

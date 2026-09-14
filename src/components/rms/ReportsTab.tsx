@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { TrendingUp, ShoppingBag, RefreshCw, ImageIcon, PieChart, Coffee, CookingPot, Printer, XCircle } from "lucide-react";
+import { TrendingUp, ShoppingBag, RefreshCw, ImageIcon, PieChart, Coffee, CookingPot, Printer, XCircle, Users } from "lucide-react";
 import { ReportData, Ticket } from "@/types";
 import { formatClock, formatDateTime } from "@/lib/order-lines";
 
@@ -40,6 +40,7 @@ export default function ReportsTab() {
   const [receiptModal, setReceiptModal] = useState<string | null>(null);
   // The printed-bills archive card that is expanded into the full bill.
   const [billModal, setBillModal] = useState<Ticket | null>(null);
+  const [waiterModal, setWaiterModal] = useState<string | null>(null);
   // Cafe letterhead (name, address, phone, logo) for the printed paper.
   const [brand, setBrand] = useState<Record<string, string>>({});
   const [expired, setExpired] = useState(false);
@@ -97,6 +98,8 @@ export default function ReportsTab() {
     : period === "month" ? data?.monthOrders || 0
     : data?.todayOrders || 0;
   const kpiAvg = kpiOrders > 0 ? Math.round(kpiRevenue / kpiOrders) : 0;
+  const waiterOrders = data?.waiterOrders || [];
+  const waiterDetails = waiterModal ? waiterOrders.filter((row) => row.waiterName === waiterModal) : [];
 
   return (
     <div id="fana-report" className="space-y-6">
@@ -293,6 +296,53 @@ export default function ReportsTab() {
             </div>
           </div>
 
+          <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+              <div>
+                <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider flex items-center gap-2">
+                  <Users className="w-4 h-4 text-[#C9A227]" /> Waiter Ranking ({label})
+                </h3>
+                <p className="text-[11px] text-stone-400 mt-0.5">
+                  Separate counts for accepted orders and directly created/sent orders. Tap a waiter to see the underlying order list.
+                </p>
+              </div>
+            </div>
+            {(data.waiterRanking || []).length === 0 ? (
+              <p className="text-xs text-stone-500">No waiter activity {emptySuffix}.</p>
+            ) : (
+              <div className="space-y-2">
+                {(data.waiterRanking || []).map((waiter, idx) => (
+                  <button
+                    key={waiter.name}
+                    onClick={() => setWaiterModal(waiter.name)}
+                    className="w-full text-left bg-[#241714] border border-stone-800 hover:border-[#C9A227]/50 rounded-2xl px-4 py-3 transition active:scale-[0.99]"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-black text-amber-100 flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-[#C9A227]/20 text-[#C9A227] flex items-center justify-center text-[10px]">{idx + 1}</span>
+                          <span className="truncate">{waiter.name}</span>
+                        </p>
+                        <p className="text-[10px] font-bold text-stone-500 mt-1">Tap to view this waiter&apos;s orders</p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 justify-end">
+                        <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-sky-500/20 text-sky-300">
+                          Accepted {waiter.acceptedOrders}
+                        </span>
+                        <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300">
+                          Direct {waiter.directOrders}
+                        </span>
+                        <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-[#C9A227]/20 text-[#C9A227]">
+                          Total {waiter.totalActions}
+                        </span>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Peak selling hours */}
             <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5">
@@ -416,12 +466,20 @@ export default function ReportsTab() {
                       title="Tap to see the full bill"
                     >
                       <div className="min-w-0 space-y-0.5">
-                        <p className="text-sm font-black text-amber-100">{t.tableName}</p>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <p className="text-sm font-black text-amber-100">{t.tableName}</p>
+                          {t.orderType === "outdoor" && (
+                            <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                              Outdoor
+                            </span>
+                          )}
+                        </div>
                         <p className="text-[11px] font-bold text-stone-300 truncate flex items-center gap-1">
                           <Printer className="w-3 h-3 text-[#C9A227] shrink-0" /> printed {formatClock(t.printedAt)} • {t.printedBy || "cashier"}
                         </p>
                         <p className="text-[11px] font-bold text-stone-300 truncate">🕒 {formatDateTime(t.printedAt || t.createdAt)}</p>
                         <p className="text-[11px] font-bold text-[#D8B93E] truncate">👤 {t.confirmedBy || t.createdBy || "staff"}</p>
+                        {t.serviceNote && <p className="text-[10px] font-bold text-sky-300 truncate">📍 {t.serviceNote}</p>}
                         {cleared && (
                           <p className="text-[10px] font-black text-stone-400 uppercase">✓ cleared {t.closedAt ? formatClock(t.closedAt) : ""}</p>
                         )}
@@ -504,6 +562,57 @@ export default function ReportsTab() {
         </>
       )}
 
+      {waiterModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print" onClick={() => setWaiterModal(null)}>
+          <div className="bg-[#2C1B17] border-2 border-[#C9A227]/50 rounded-2xl w-full max-w-3xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="sticky top-0 bg-[#2C1B17] border-b border-stone-800 px-5 py-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="font-serif font-black text-xl text-amber-100">{waiterModal}</h3>
+                <p className="text-xs font-bold text-stone-300 mt-0.5">Orders and sends in {label}</p>
+              </div>
+              <button onClick={() => setWaiterModal(null)} className="p-2 rounded-lg bg-white/10 text-stone-300 hover:bg-white/20 shrink-0" title="Close">
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              {waiterDetails.length === 0 ? (
+                <p className="text-xs text-stone-500">No orders for this waiter in {label.toLowerCase()}.</p>
+              ) : (
+                waiterDetails.map((row, idx) => (
+                  <div key={`${row.kind}-${row.ticketId}-${row.happenedAt || idx}`} className="bg-[#3D2314] rounded-xl border border-stone-800 p-3 space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-black text-amber-100">{row.tableName}</p>
+                          {row.orderType === "outdoor" && (
+                            <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                              Outdoor
+                            </span>
+                          )}
+                          <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${row.kind === "accepted" ? "bg-sky-500/20 text-sky-300" : "bg-emerald-500/20 text-emerald-300"}`}>
+                            {row.kind === "accepted" ? "Accepted" : "Direct send"}
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-bold text-stone-300 mt-0.5">
+                          {row.orderNumber ? `#${row.orderNumber} • ` : ""}
+                          {row.happenedAt ? formatDateTime(row.happenedAt) : "n/a"}
+                        </p>
+                        {row.serviceNote && <p className="text-[11px] font-bold text-sky-300">📍 {row.serviceNote}</p>}
+                        {row.detail && <p className="text-[11px] text-stone-400">{row.detail}</p>}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-black text-[#C9A227]">{fmt(row.totalAmount)}</p>
+                        <p className="text-[10px] font-bold text-stone-400 uppercase">{row.status.replace(/_/g, " ")}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* BILL DETAIL MODAL — the printed-bills archive card expanded: every
           item with name, qty, unit price, line total and the bill total. */}
       {billModal && (
@@ -517,16 +626,26 @@ export default function ReportsTab() {
           >
             <div className="sticky top-0 bg-[#2C1B17] border-b border-stone-800 px-5 py-4 flex items-start justify-between gap-3">
               <div>
-                <h3 className="font-serif font-black text-xl text-amber-100">{billModal.tableName}</h3>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-serif font-black text-xl text-amber-100">{billModal.tableName}</h3>
+                  {billModal.orderType === "outdoor" && (
+                    <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                      Outdoor
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs font-bold text-stone-300 mt-0.5">
                   {billModal.orderNumber ? `#${billModal.orderNumber} • ` : ""}
-                  printed {billModal.printedAt ? formatDateTime(billModal.printedAt) : "?"} • by {billModal.printedBy || "cashier"}
+                  {billModal.printedAt
+                    ? `printed ${formatDateTime(billModal.printedAt)} • by ${billModal.printedBy || "cashier"}`
+                    : `arrived ${formatDateTime(billModal.createdAt)} • by ${billModal.confirmedBy || billModal.createdBy || "staff"}`}
                 </p>
                 <p className="text-xs font-bold text-stone-300">
                   {billModal.status === "closed"
                     ? `✓ cleared ${billModal.closedAt ? formatDateTime(billModal.closedAt) : ""}`
                     : "● open bill"}
                 </p>
+                {billModal.serviceNote && <p className="text-xs font-bold text-sky-300">📍 {billModal.serviceNote}</p>}
               </div>
               <button onClick={() => setBillModal(null)} className="p-2 rounded-lg bg-white/10 text-stone-300 hover:bg-white/20 shrink-0" title="Close">
                 <XCircle className="w-5 h-5" />

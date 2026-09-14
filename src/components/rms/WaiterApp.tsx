@@ -14,7 +14,7 @@ import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
 import { ticketOwner } from "@/lib/alerts";
-import { unlockAudio, playAlarm, playDing } from "@/lib/sound";
+import { unlockAudio, playAlarm, playDing, speakTableReady } from "@/lib/sound";
 import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { useRef } from "react";
@@ -482,10 +482,18 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
         showToast(quietLabel);
       }
       if (alertsInitRef.current && alertsOnRef.current && (readyItems.length > 0 || billAsks.length > 0 || loudMoves.length > 0)) {
-        // Ready food and a waiting guest are ACT NOW events: full alarm.
+        // Ready food is ACT NOW, but the SOUND is spoken English instead of
+        // the generic bell: "Table 5 is ready" so the waiter who sent it
+        // hears which table to walk to. A bill request still uses the bell.
         // A status move somebody else made is information: a short ring.
-        if (readyItems.length > 0 || billAsks.length > 0) playAlarm();
-        else playDing();
+        if (readyItems.length > 0) {
+          const tables = [...new Set(readyItems.map((r) => r.ticket.tableName))];
+          speakTableReady(tables);
+        } else if (billAsks.length > 0) {
+          playAlarm();
+        } else {
+          playDing();
+        }
 
         if (readyItems.length > 0) {
           const r = readyItems[0];

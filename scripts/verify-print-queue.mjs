@@ -130,6 +130,9 @@ function pass(name, cond) {
   pass("queue header keeps her one-click workflow instruction", /key into EFD → print → tap ✓/.test(cashier));
   pass("unverified QR orders are NOT printable (waiter strip + accept-hold fallback)", /Waiting for waiter confirmation/.test(cashier) && /✓ Accept \(holds it\)/.test(cashier));
   pass("problem path exists (remove item / cancel order)", /toggleProblem/.test(cashier) && /Cancel whole order/.test(cashier));
+  const outdoorBlock = cashier.split("Outdoor Orders")[1]?.split("Tables Overview")[0] || "";
+  pass("outdoor cards can edit items like a normal waiter-sent order", /setEditTarget/.test(outdoorBlock) && /✎ Edit/.test(outdoorBlock));
+  pass("outdoor cards have Problem (remove a wrong item or cancel the order)", /toggleProblem/.test(outdoorBlock) && /Cancel whole order/.test(outdoorBlock) && /removeItem/.test(outdoorBlock));
   pass("full-payment screens (Mark PAID) only render in full mode", /printQueueMode \?/.test(cashier) && /\{!printQueueMode && \(/.test(cashier) && /Mark PAID & Release Table/.test(cashier));
   pass("history uses the print endpoints in print-queue mode (today + yesterday), paid endpoint in full mode", /\/api\/tickets\?printedToday=1/.test(cashier) && /\/api\/tickets\?printedDate=/.test(cashier) && /\/api\/tickets\?paid=1&limit=12/.test(cashier));
 }

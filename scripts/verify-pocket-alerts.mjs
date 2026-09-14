@@ -263,6 +263,14 @@ function pass(name, cond) {
   // The hook is the anti-"it worked yesterday" machinery.
   pass("pocket alerts re-arm on mount, visibility, online and a timer", /visibilitychange/.test(hook) && /"online"/.test(hook) && /setInterval\(heal/.test(hook));
   pass("a push received while the page is open rings the in-app alarm", /onPushAlert\(/.test(hook) && /playAlarm\(\)/.test(hook));
+  pass("food-ready pushes skip the in-app bell so the waiter can speak instead",
+    /fana-ready-/.test(hook) && /foodReady/.test(hook) && /if \(!foodReady\)/.test(hook));
+  const readyPhraseSrc = read("src/lib/ready-phrase.ts");
+  pass("the waiter speaks 'Table X is ready' (loud, twice) instead of the bell",
+    /export function speakTableReady/.test(sound) && /export function readyPhrase/.test(readyPhraseSrc) &&
+    /u\.volume = 1/.test(sound) && /makeReadyUtterance\(phrase\)/.test(sound));
+  pass("speech is primed inside the unlock gesture so Android will actually talk later",
+    /primeSpeech\(\)/.test(sound) && /SpeechSynthesisUtterance/.test(sound));
   pass("the first tap on any staff screen unlocks the audio", /armAudioOnFirstGesture\(\)/.test(hook));
 
   // A REAL end-to-end test (server to push service to phone), not a local popup.

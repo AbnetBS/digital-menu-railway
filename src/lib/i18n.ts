@@ -114,10 +114,12 @@ const STRINGS = {
     next_photo: "Next photo",
 
     /* customer menu — confirmation */
-    order_sent_title: "Order Request Sent!",
+    order_sent_title: "Your order is sent successfully",
     waiting_confirmation: "Waiting for Waiter Confirmation",
     waiter_walking:
       "Your waiter is walking to {table} to confirm your order. Once confirmed, preparation starts immediately.",
+    order_sent_hint: "Click below to see if your order is accepted and to check your order status.",
+    check_order_status: "Check your order status",
     add_more_note: "Want to add more? You can order again anytime, it joins your table's bill automatically.",
     back_to_menu: "← Back to Menu",
 
@@ -152,6 +154,10 @@ const STRINGS = {
     os_line_done: "Ready",
     os_line_cooking: "Cooking",
     os_line_queued: "Queued",
+    os_step_sent: "Sent",
+    os_step_preparing: "Preparing",
+    os_step_done: "Done",
+    os_status_heading: "Your order status",
     os_sending: "Sending…",
     os_request_bill: "Request the bill / receipt",
     os_bill_after_food: "You can ask for the bill here as soon as your food has arrived.",
@@ -307,9 +313,11 @@ const STRINGS = {
     next_photo: "ቀጣዩ ፎቶ",
 
     /* customer menu — confirmation */
-    order_sent_title: "ትዕዛዝ ተልኳል!",
+    order_sent_title: "ትዕዛዝዎ በተሳካ ሁኔታ ተልኳል",
     waiting_confirmation: "የሰራተኛ ማረጋገጫ በመጠበቅ ላይ",
     waiter_walking: "ሰራተኛው ትዕዛዝዎን ለማረጋገጥ ወደ {table} እየመጣ ነው። ከተረጋገጠ በኋላ ወዲያውኑ ይዘጋጃል።",
+    order_sent_hint: "ትዕዛዝዎ መቀበሉን እና የትዕዛዝ ሁኔታዎን ለማየት ከታች ይጫኑ።",
+    check_order_status: "የትዕዛዝ ሁኔታዎን ይመልከቱ",
     add_more_note: "ተጨማሪ መጨመር ይፈልጋሉ? በማንኛውም ጊዜ እንደገና ማዘዝ ይችላሉ፣ በራስ-ሰር ከጠረጴዛዎ ሂሳብ ጋር ይጣመራል።",
     back_to_menu: "← ወደ ምናሌ ተመለስ",
 
@@ -343,6 +351,10 @@ const STRINGS = {
     os_line_done: "ዝግጁ",
     os_line_cooking: "በመዘጋጀት ላይ",
     os_line_queued: "በወረፋ",
+    os_step_sent: "ተልኳል",
+    os_step_preparing: "በዝግጅት ላይ",
+    os_step_done: "ተጠናቋል",
+    os_status_heading: "የትዕዛዝ ሁኔታዎ",
     os_sending: "በመላክ ላይ…",
     os_request_bill: "ሂሳብ / ደረሰኝ ይላኩልን",
     os_bill_after_food: "ምግብዎ እንደደረሰ ሂሳቡን እዚህ መጠየቅ ይችላሉ።",

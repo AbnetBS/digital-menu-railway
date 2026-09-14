@@ -154,7 +154,9 @@ const i18n = read("src/lib/i18n.ts");
   pass("the bill button is disabled while sending", /disabled=\{requesting\}/.test(orderStatusUi));
   pass("the menu page wraps itself in the provider", /<OrderStatusProvider/.test(app) && /tableId=\{tableId \?\? 0\}/.test(app));
   pass("the menu renders the status dock plus the receipt button", /<OrderStatusDock \/>/.test(app) && /<RequestReceiptButton \/>/.test(app));
-  pass("the sent-confirmation screen has the dock too (what did I just order?)", /if \(submitted\)[\s\S]{0,800}<OrderStatusDock \/>/.test(app));
+  pass("the sent-confirmation screen has a Check your order status button", /if \(submitted\)[\s\S]{0,2500}check_order_status/.test(app) && /OrderStatusPage/.test(app));
+  pass("each dish has a Sent → Preparing → Done timeline", /os_step_sent/.test(orderStatusUi) && /os_step_preparing/.test(orderStatusUi) && /os_step_done/.test(orderStatusUi) && /function LineTimeline/.test(orderStatusUi));
+  pass("the status pill is orange Fana-themed so guests can see it", /from-orange-500 to-\[\#C9A227\]/.test(orderStatusUi));
   pass("nothing is rendered when there is nothing to show", /empty:hidden/.test(app));
   pass("submitting an order refreshes the status immediately", /setStatusRefreshKey\(\(k\) => k \+ 1\)/.test(app) && /refreshKey=\{statusRefreshKey\}/.test(app));
 }

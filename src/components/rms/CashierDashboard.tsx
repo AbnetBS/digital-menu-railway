@@ -1088,7 +1088,9 @@ export default function CashierDashboard() {
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {outdoorTickets.map((t) => {
                 const meta = statusPill(t);
-                const visible = (t.items || []).filter((item) => !item.removed);
+                const items = t.items || [];
+                const visible = items.filter((item) => !item.removed);
+                const problem = problemOpen.has(t.id);
                 return (
                   <div key={t.id} className="bg-[#241714] border border-violet-500/30 rounded-2xl p-4 space-y-3">
                     <div className="flex items-start justify-between gap-3">
@@ -1112,17 +1114,57 @@ export default function CashierDashboard() {
                         <p className="font-serif font-black text-xl text-[#C9A227] mt-2">{t.totalAmount} ETB</p>
                       </div>
                     </div>
+                    <div className="bg-[#3D2314] rounded-xl divide-y divide-stone-800">
+                      {items.map((i) => (
+                        <div key={i.id} className={`p-2.5 text-xs flex items-center justify-between gap-2 ${i.removed ? "opacity-40 line-through" : ""}`}>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-bold text-amber-100 truncate">
+                              {i.name} <span className="text-stone-300 font-bold">({i.price} ETB)</span>
+                            </p>
+                            {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {i.notes}</p>}
+                            <p className="text-[10px] font-bold text-stone-400 mt-0.5">
+                              × {i.quantity}
+                              {i.stationStatus === "done"
+                                ? " • done"
+                                : i.stationStatus === "accepted"
+                                ? " • preparing"
+                                : " • pending"}
+                            </p>
+                          </div>
+                          {!i.removed && (
+                            <button
+                              onClick={() => setEditTarget({ item: i })}
+                              className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
+                              title="Fix this item's note or quantity, or remove it."
+                            >
+                              ✎ Edit
+                            </button>
+                          )}
+                          {problem && !i.removed ? (
+                            <button
+                              onClick={() => removeItem(i.id)}
+                              className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
+                              title="Remove (wrong item)"
+                            >
+                              Remove
+                            </button>
+                          ) : null}
+                          {i.removed && <span className="text-[10px] font-bold text-rose-400">REMOVED</span>}
+                        </div>
+                      ))}
+                      {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">All items removed. Cancel the order if it was sent by mistake.</p>}
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       <button
                         onClick={() => setBillModal(t)}
-                        className="flex-1 min-w-[120px] bg-white/10 hover:bg-white/20 text-stone-100 text-xs font-black py-2.5 rounded-xl"
+                        className="flex-1 min-w-[110px] bg-white/10 hover:bg-white/20 text-stone-100 text-xs font-black py-2.5 rounded-xl"
                       >
                         View Bill
                       </button>
                       {t.status === "confirmed" && (
                         <button
                           onClick={() => markPrinted(t)}
-                          className="flex-1 min-w-[120px] bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black py-2.5 rounded-xl"
+                          className="flex-1 min-w-[110px] bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black py-2.5 rounded-xl"
                         >
                           ✓ Printed
                         </button>
@@ -1130,12 +1172,31 @@ export default function CashierDashboard() {
                       {t.status === "printed" && outdoorReady(t) && (
                         <button
                           onClick={() => closeOutdoorOrder(t)}
-                          className="flex-1 min-w-[140px] bg-amber-500 hover:bg-amber-400 text-[#2C1B17] text-xs font-black py-2.5 rounded-xl"
+                          className="flex-1 min-w-[130px] bg-amber-500 hover:bg-amber-400 text-[#2C1B17] text-xs font-black py-2.5 rounded-xl"
                         >
                           Mark Delivered
                         </button>
                       )}
+                      <button
+                        onClick={() => toggleProblem(t.id)}
+                        className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
+                          problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
+                        }`}
+                      >
+                        <AlertTriangle className="w-4 h-4" /> Problem
+                      </button>
                     </div>
+                    {problem && (
+                      <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
+                        <p>Wrong item? Use <strong>Remove</strong> on a line above, or cancel the whole outdoor order:</p>
+                        <button
+                          onClick={() => cancelTicket(t.id)}
+                          className="bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-black px-3 py-2 rounded-xl"
+                        >
+                          ✗ Cancel whole order
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}

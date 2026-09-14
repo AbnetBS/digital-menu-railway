@@ -122,11 +122,19 @@ export function usePocketAlerts(options: {
       if (msg.type === "fana-push") {
         // The OS just rang for this event: let the page skip its own duplicate
         // notification, but still play the loud in-app alarm.
+        // Food-ready is the exception: the waiter's screen speaks
+        // "Table X is ready" instead of the generic bell (WaiterApp
+        // speakTableReady after the refresh). Playing the bell here would
+        // talk over that announcement.
         markPushHandled();
-        try {
-          playAlarm();
-        } catch {
-          /* ignore */
+        const tag = typeof msg.tag === "string" ? msg.tag : "";
+        const foodReady = tag.startsWith("fana-ready-") || tag.startsWith("fana-outdoor-ready-");
+        if (!foodReady) {
+          try {
+            playAlarm();
+          } catch {
+            /* ignore */
+          }
         }
       }
       onAlertRef.current?.(msg);

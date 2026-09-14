@@ -294,6 +294,7 @@ function pass(name, cond) {
   pass("the waiter phone shows it for orders, top-ups and bill requests", /<UrgentAlertOverlay/.test(waiter) && (waiter.match(/raiseUrgent\(\{/g) || []).length >= 3);
   pass("the waiter's big button opens that table's bill", /openTicketById/.test(waiter));
   pass("the cashier tablet shows it too, with a one-tap confirm", /<UrgentAlertOverlay/.test(cashier) && /✓ ACCEPT ORDER/.test(cashier) && /setStatusRef\.current\(guestEvent\.id, "confirmed"\)/.test(cashier));
+  pass("cashier full-screen top-up alert is guest-only (waiter additions stay a quiet NEW-on-bill update)", /unprintedCustomerSubmissions/.test(cashier) && /customerAddOnsRef/.test(cashier) && /guest added items/.test(cashier) && /WAITER ADDED ITEMS/.test(cashier));
   pass("an answered guest event never pops up again", /answeredRef/.test(waiter) && /answeredRef/.test(cashier));
 
   // The guest side: the only thing left of the order-status UI is the receipt button.

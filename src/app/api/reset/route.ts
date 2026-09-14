@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { tickets, ticketItems, menuItems, announcements, galleryItems, cafeTables, siteSettings, orderSubmissions } from "@/db/schema";
+import { tickets, ticketItems, menuItems, announcements, galleryItems, cafeTables, siteSettings, orderSubmissions, ticketEvents } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { DEFAULT_TABLES } from "@/lib/initial-data";
 import { eq } from "drizzle-orm";
@@ -38,6 +38,7 @@ export async function POST(request: Request) {
         const receiptRefs = await db.select({ receiptImage: tickets.receiptImage }).from(tickets);
         await db.delete(ticketItems);
         await db.delete(orderSubmissions);
+        await db.delete(ticketEvents);
         await db.delete(tickets);
         await deleteOrphanedCdnImages(receiptRefs.map((t) => t.receiptImage));
         publish(CHANNELS.orders);
@@ -76,6 +77,8 @@ export async function POST(request: Request) {
         // Fresh 1-10 tables (also removes any dangling bills they carry)
         const receiptRefs = await db.select({ receiptImage: tickets.receiptImage }).from(tickets);
         await db.delete(ticketItems);
+        await db.delete(orderSubmissions);
+        await db.delete(ticketEvents);
         await db.delete(tickets);
         await db.delete(cafeTables);
         await db.insert(cafeTables).values(DEFAULT_TABLES);

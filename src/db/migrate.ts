@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-09-09-1";
+const SCHEMA_VERSION = "2026-09-13-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -239,6 +239,25 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    // Persistent bill audit for admin history/reporting: status changes,
+    // cashier/waiter edits, prints and submission summaries.
+    "ticket_events",
+    `CREATE TABLE IF NOT EXISTS ticket_events (
+      id serial PRIMARY KEY,
+      ticket_id integer NOT NULL,
+      event_type text NOT NULL,
+      actor_name text,
+      actor_role text,
+      source text,
+      item_id integer,
+      item_name text,
+      from_value text,
+      to_value text,
+      details text,
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
     // Group 10 (pocket-mode alerts): one row per staff device subscribed to
     // Web Push. Unique endpoint = one row per device, re-subscribing refreshes it.
     "push_subscriptions",
@@ -281,6 +300,8 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
   tickets: {
     table_id: { type: "integer", def: "0", castText: true },
     table_name: { type: "text", def: "'Table'" },
+    order_type: { type: "text", def: "'dine_in'" },
+    service_note: { type: "text" },
     status: { type: "text", def: "'new'" },
     payment_method: { type: "text" },
     payment_status: { type: "text", def: "'unpaid'" },
@@ -318,6 +339,19 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     waiter_name: { type: "text" },
     lines: { type: "integer", def: "0", castText: true },
     merged_lines: { type: "integer", def: "0", castText: true },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+  },
+  ticket_events: {
+    ticket_id: { type: "integer", def: "0", castText: true },
+    event_type: { type: "text" },
+    actor_name: { type: "text" },
+    actor_role: { type: "text" },
+    source: { type: "text" },
+    item_id: { type: "integer", castText: true },
+    item_name: { type: "text" },
+    from_value: { type: "text" },
+    to_value: { type: "text" },
+    details: { type: "text" },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
   },
   ticket_items: {
@@ -525,6 +559,7 @@ async function runFullMigrate(force: boolean) {
     "ticket_items",
     "announcements",
     "order_submissions",
+    "ticket_events",
     "push_subscriptions",
   ];
   for (const t of serialTables) {
@@ -626,6 +661,10 @@ async function runFullMigrate(force: boolean) {
   //    9. order_submissions(ticket_id): "what did this table send, and when"
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS order_submissions_idempotency_key_key ON order_submissions (idempotency_key) WHERE idempotency_key IS NOT NULL`);
   await run(`CREATE INDEX IF NOT EXISTS order_submissions_ticket_id_idx ON order_submissions (ticket_id)`);
+  //   10. ticket_events(ticket_id, created_at): admin order history/audit trail
+  //       and waiter ranking click-through read one bill's timeline in order.
+  await run(`CREATE INDEX IF NOT EXISTS ticket_events_ticket_id_created_at_idx ON ticket_events (ticket_id, created_at)`);
+  await run(`CREATE INDEX IF NOT EXISTS ticket_events_event_type_idx ON ticket_events (event_type)`);
 
   // Group 10 (pocket-mode alerts): one row per device — re-subscribing the same
   // device replaces its row instead of duplicating it.
@@ -671,6 +710,82 @@ async function runFullMigrate(force: boolean) {
   //    ON until they personally switch them off, so stamp true once. Re-run
   //    safe: nobody who DID switch off has NULL (they have false).
   await run(`UPDATE staff_users SET notifications_enabled = true WHERE notifications_enabled IS NULL`);
+
+  //  • OUTDOOR ORDER FLOW (Sept 2026). Existing bills are ordinary dine-in rows
+  //    unless explicitly marked otherwise; the new order_type column lands NULL
+  //    on old rows, so stamp the safe default once.
+  await run(`UPDATE tickets SET order_type = 'dine_in' WHERE order_type IS NULL OR trim(order_type) = ''`);
+
+  //  • ORDER HISTORY / AUDIT TRAIL backfill (Sept 2026). New rows are written
+  //    live by the routes below; old tickets get a minimal timeline so the
+  //    admin history can still classify done vs cancelled and show the major
+  //    moments even when exact field-by-field edit details did not exist yet.
+  await run(`
+    INSERT INTO ticket_events (ticket_id, event_type, actor_name, details, created_at)
+    SELECT t.id, 'ticket_created', NULLIF(t.created_by, ''), 'Legacy bill existed before audit logging', COALESCE(t.created_at, now())
+    FROM tickets t
+    WHERE NOT EXISTS (
+      SELECT 1 FROM ticket_events e WHERE e.ticket_id = t.id AND e.event_type = 'ticket_created'
+    )
+  `);
+  await run(`
+    INSERT INTO ticket_events (ticket_id, event_type, actor_name, actor_role, from_value, to_value, details, created_at)
+    SELECT t.id, 'status_changed', NULLIF(t.confirmed_by, ''), NULL, 'pending_waiter', 'confirmed', 'Legacy confirmation backfill', COALESCE(t.confirmed_at, t.updated_at, t.created_at, now())
+    FROM tickets t
+    WHERE t.confirmed_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM ticket_events e
+        WHERE e.ticket_id = t.id AND e.event_type = 'status_changed' AND e.to_value = 'confirmed'
+      )
+  `);
+  await run(`
+    INSERT INTO ticket_events (ticket_id, event_type, actor_name, actor_role, from_value, to_value, details, created_at)
+    SELECT t.id, 'ticket_printed', NULLIF(t.printed_by, ''), 'cashier', NULL, 'printed', 'Legacy print backfill', COALESCE(t.printed_at, t.updated_at, t.created_at, now())
+    FROM tickets t
+    WHERE t.printed_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM ticket_events e WHERE e.ticket_id = t.id AND e.event_type = 'ticket_printed'
+      )
+  `);
+  await run(`
+    INSERT INTO ticket_events (ticket_id, event_type, actor_name, actor_role, from_value, to_value, details, created_at)
+    SELECT t.id, 'item_edited', NULL, NULL, NULL, NULL, 'Legacy bill edit happened before detailed audit logging', COALESCE(t.items_edited_at, t.updated_at, t.created_at, now())
+    FROM tickets t
+    WHERE t.items_edited_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM ticket_events e WHERE e.ticket_id = t.id AND e.event_type = 'item_edited'
+      )
+  `);
+  await run(`
+    INSERT INTO ticket_events (ticket_id, event_type, actor_name, actor_role, from_value, to_value, details, created_at)
+    SELECT t.id, 'status_changed', NULLIF(t.closed_by, ''), NULL, 'printed', 'closed', 'Legacy table-cleared backfill', COALESCE(t.closed_at, t.updated_at, t.created_at, now())
+    FROM tickets t
+    WHERE t.status = 'closed' AND t.closed_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM ticket_events e
+        WHERE e.ticket_id = t.id AND e.event_type = 'status_changed' AND e.to_value = 'closed'
+      )
+  `);
+  await run(`
+    INSERT INTO ticket_events (ticket_id, event_type, actor_name, actor_role, from_value, to_value, details, created_at)
+    SELECT t.id, 'status_changed', NULLIF(t.verified_by, ''), 'cashier', COALESCE(t.status, 'completed'), 'paid', 'Legacy payment backfill', COALESCE(t.verified_at, t.closed_at, t.updated_at, t.created_at, now())
+    FROM tickets t
+    WHERE t.status = 'paid'
+      AND NOT EXISTS (
+        SELECT 1 FROM ticket_events e
+        WHERE e.ticket_id = t.id AND e.event_type = 'status_changed' AND e.to_value = 'paid'
+      )
+  `);
+  await run(`
+    INSERT INTO ticket_events (ticket_id, event_type, actor_name, actor_role, from_value, to_value, details, created_at)
+    SELECT t.id, 'status_changed', NULL, NULL, NULL, 'cancelled', 'Legacy cancellation backfill', COALESCE(t.closed_at, t.updated_at, t.created_at, now())
+    FROM tickets t
+    WHERE t.status = 'cancelled'
+      AND NOT EXISTS (
+        SELECT 1 FROM ticket_events e
+        WHERE e.ticket_id = t.id AND e.event_type = 'status_changed' AND e.to_value = 'cancelled'
+      )
+  `);
 
   //  • OWNER REQUEST — remove the default categories they marked unnecessary
   //    (Ethiopian Traditional … Pastry & Cakes). This is a ONE-TIME prune:

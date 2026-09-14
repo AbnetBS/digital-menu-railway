@@ -5,13 +5,14 @@ import {
   Coffee, RefreshCw, LogOut, BellRing, CheckCircle2, XCircle,
   Users, Clock, Image as ImageIcon, Monitor, Printer, AlertTriangle,
 } from "lucide-react";
-import { Ticket, TicketItem, CafeTable, StaffUser } from "@/types";
+import { Ticket, TicketItem, CafeTable } from "@/types";
 import { triggerDesktopNotification } from "@/lib/notifications";
-import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
+import { formatClock, formatDateTime, groupOrderLines, type OrderLine, waitingLabel } from "@/lib/order-lines";
 import { unlockAudio, playDing, playAlarm } from "@/lib/sound";
 import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 
@@ -19,6 +20,21 @@ interface StaffLite {
   id: number;
   name: string;
   role: string;
+}
+
+interface QueueAdditionLine {
+  item: TicketItem;
+  addedQuantity: number;
+  wholeLineIsNew: boolean;
+}
+
+interface PrePrintDisplayLine {
+  ids: number[];
+  name: string;
+  quantity: number;
+  price: number;
+  notes?: string | null;
+  sourceItem: TicketItem | null;
 }
 
 export default function CashierDashboard() {
@@ -44,7 +60,12 @@ export default function CashierDashboard() {
   const [fullBillOpen, setFullBillOpen] = useState<Set<number>>(new Set());
   // The queue line being fixed in the item editor (note / qty / remove).
   const [editTarget, setEditTarget] = useState<{ item: TicketItem } | null>(null);
-  const prevCountRef = useRef(0);
+  const [outdoorComposerOpen, setOutdoorComposerOpen] = useState(false);
+  // Per printed bill, which lines are NEW right now — including a waiter or
+  // customer adding MORE quantity to an already-existing row. This keeps
+  // "Tea x4" readable as "Tea • NEW +2 on the existing line" until she prints.
+  const additionLinesRef = useRef<Map<number, Map<number, number>>>(new Map());
+  const ticketSnapshotRef = useRef<Map<number, Map<number, number>>>(new Map());
 
   // ── GROUP 9: PRINT-QUEUE MODE ──
   // Fana's real workflow: the cashier's ONLY system job is one click per order —
@@ -81,8 +102,10 @@ export default function CashierDashboard() {
   const answeredRef = useRef<Set<string>>(new Set());
   /** Tickets already seen at all (a brand new one = a fresh guest order). */
   const knownTicketsRef = useRef<Set<number>>(new Set());
-  /** Ticket id -> unprinted submission count, to spot guest top-ups. */
-  const addOnsRef = useRef<Map<number, number>>(new Map());
+  /** Ticket id -> guest-added submission count since the last print. */
+  const customerAddOnsRef = useRef<Map<number, number>>(new Map());
+  /** Ticket id -> staff-added submission count since the last print. */
+  const staffAddOnsRef = useRef<Map<number, number>>(new Map());
   /** Tickets whose guest already asked for the bill. */
   const billAskedRef = useRef<Set<number>>(new Set());
   /**
@@ -149,9 +172,27 @@ export default function CashierDashboard() {
     triggerDesktopNotification({ title: "Fana Cafe • Cashier", message: "🔔 Ring bell + desktop + pocket alerts are now ON for this device!" });
   };
 
+  const customerAddsOf = (t: Ticket) => t.unprintedCustomerSubmissions || 0;
+  const staffAddsOf = (t: Ticket) => t.unprintedStaffSubmissions || 0;
+  const totalAddsOf = (t: Ticket) => t.unprintedSubmissions || 0;
+  const isGuestTopUp = (t: Ticket) =>
+    customerAddOnsRef.current.has(t.id) && customerAddsOf(t) > (customerAddOnsRef.current.get(t.id) || 0);
+
   const eventMessage = (t: Ticket): string | null => {
     // A guest waiting for the bill outranks whatever the status says.
     if (t.receiptRequestedAt) return `🧾 BILL REQUESTED • ${t.tableName} • ${t.totalAmount} ETB`;
+    // Additions to an already-printed bill are their own event. A guest top-up
+    // keeps the guest-grade wording; a waiter top-up is quieter and reads as a
+    // correction to an existing bill, not a brand-new guest event.
+    if (t.status === "printed" && totalAddsOf(t) > 0) {
+      if (customerAddsOf(t) > 0) {
+        return `🍽 GUEST ADDED ITEMS • ${t.tableName} • print receipt #2`;
+      }
+      if (staffAddsOf(t) > 0) {
+        return `✎ WAITER ADDED ITEMS • ${t.tableName} • mark the existing bill NEW`;
+      }
+      return `⚠ ITEMS ADDED • ${t.tableName} • print receipt #2`;
+    }
     // The money/closing steps (ready to pay, payment completed, bill settled,
     // table cleared) are deliberately missing: they update the screen but ring
     // nobody. Payment lives in the EFD/POS, and constant ringing for it is the
@@ -207,15 +248,46 @@ export default function CashierDashboard() {
       // so we never re-download hundreds of old bills just to find new orders.
       const active: Ticket[] = await tkRes.json();
 
+      // Printed-bill additions are not always a brand-new row. If a waiter adds
+      // more of the SAME pending line, the DB folds it into that existing row
+      // and only the quantity grows. Keep a per-ticket diff in memory so the
+      // queue can still say "NEW +2" on the existing line until she prints.
+      const previousTicketSnapshot = ticketSnapshotRef.current;
+      const carriedAdditionLines = additionLinesRef.current;
+      const nextAdditionLines = new Map<number, Map<number, number>>();
+      const nextTicketSnapshot = new Map<number, Map<number, number>>();
+      for (const t of active) {
+        const perTicketSnapshot = new Map<number, number>();
+        const visibleItems = (t.items || []).filter((i) => !i.removed);
+        const previousItems = previousTicketSnapshot.get(t.id) || new Map<number, number>();
+        const carried = carriedAdditionLines.get(t.id) || new Map<number, number>();
+        const nextForTicket = new Map<number, number>();
+        for (const i of visibleItems) {
+          const qty = Number(i.quantity) || 0;
+          perTicketSnapshot.set(i.id, qty);
+          if (t.status !== "printed" || totalAddsOf(t) <= 0) continue;
+          const prevQty = previousItems.get(i.id);
+          const wholeLineIsNew = !!i.createdAt && !!t.printedAt && new Date(i.createdAt).getTime() > new Date(t.printedAt).getTime();
+          let addedQuantity = 0;
+          if (prevQty !== undefined && qty > prevQty) addedQuantity += qty - prevQty;
+          if (prevQty === undefined && wholeLineIsNew) addedQuantity += qty;
+          if (addedQuantity === 0) addedQuantity = carried.get(i.id) || 0;
+          if (addedQuantity > 0) nextForTicket.set(i.id, addedQuantity);
+        }
+        nextTicketSnapshot.set(t.id, perTicketSnapshot);
+        if (nextForTicket.size > 0) nextAdditionLines.set(t.id, nextForTicket);
+      }
+
       // ── EVENT DETECTION: any order action (QR order, confirmation, payment request, payment done)
       const newEvents: Ticket[] = [];
       for (const t of active) {
         // The key is the fingerprint of "something the cashier must react to".
         // receiptRequestedAt is part of it now: a guest asking for the bill does
         // NOT change the status, so that event used to slip past her silently.
-        // The station progress is in there too, so she sees an order go ready.
+        // Customer-vs-waiter additions are split too, because only the guest's
+        // own top-up should take over the whole screen.
         const cooked = (t.items || []).filter((i) => !i.removed && i.stationStatus === "done").length;
-        const key = `${t.id}:${t.status}:${t.unprintedSubmissions || 0}:${t.receiptRequestedAt ? 1 : 0}:${cooked}`;
+        const key = `${t.id}:${t.status}:${t.unprintedSubmissions || 0}:${t.unprintedCustomerSubmissions || 0}:${t.unprintedStaffSubmissions || 0}:${t.receiptRequestedAt ? 1 : 0}:${cooked}`;
         if (!seenEventsRef.current.has(key)) {
           seenEventsRef.current.add(key);
           newEvents.push(t);
@@ -225,15 +297,16 @@ export default function CashierDashboard() {
       if (initializedRef.current && alertsOnRef.current && newEvents.length > 0) {
         // A card entering HER print queue gets the full alarm; anything else
         // (status moves, cleared tables…) gets the standard ring.
-        // Only events that need HER hands make a sound. Everything else
-        // (payment steps, cleared tables) just refreshes the list.
+        // Only guest-originated events take over the whole screen. A waiter
+        // adding to an existing bill is still visible immediately, but as a
+        // quieter "NEW on this bill" update instead of a guest emergency.
         const loudEvents = newEvents.filter((t) => eventMessage(t) !== null);
         const needsMe = loudEvents.some(
           (t) =>
             (t.status === "confirmed" && !!t.confirmedAt) ||
             t.status === "pending_waiter" ||
             !!t.receiptRequestedAt ||
-            (t.status === "printed" && (t.unprintedSubmissions || 0) > 0)
+            isGuestTopUp(t)
         );
         if (needsMe) playAlarm();
         else if (loudEvents.length > 0) playDing();
@@ -244,13 +317,12 @@ export default function CashierDashboard() {
           (t) =>
             (t.status === "pending_waiter" && !knownTicketsRef.current.has(t.id)) ||
             (!!t.receiptRequestedAt && !billAskedRef.current.has(t.id)) ||
-            (addOnsRef.current.has(t.id) &&
-              (t.unprintedSubmissions || 0) > (addOnsRef.current.get(t.id) || 0))
+            isGuestTopUp(t)
         );
         if (guestEvent) {
           const isBill = !!guestEvent.receiptRequestedAt && !billAskedRef.current.has(guestEvent.id);
           const isNew = guestEvent.status === "pending_waiter" && !knownTicketsRef.current.has(guestEvent.id);
-          const id = `${guestEvent.id}:${isBill ? "bill" : isNew ? "order" : `add${guestEvent.unprintedSubmissions || 0}`}`;
+          const id = `${guestEvent.id}:${isBill ? "bill" : isNew ? "order" : `add${guestEvent.unprintedCustomerSubmissions || 0}`}`;
           if (!answeredRef.current.has(id)) {
             setUrgent({
               id,
@@ -281,15 +353,19 @@ export default function CashierDashboard() {
       }
       // Remember what this refresh looked like, so the same guest event is
       // never announced twice.
+      additionLinesRef.current = nextAdditionLines;
+      ticketSnapshotRef.current = nextTicketSnapshot;
       for (const t of active) {
         knownTicketsRef.current.add(t.id);
-        addOnsRef.current.set(t.id, t.unprintedSubmissions || 0);
+        customerAddOnsRef.current.set(t.id, customerAddsOf(t));
+        staffAddOnsRef.current.set(t.id, staffAddsOf(t));
         if (t.receiptRequestedAt) billAskedRef.current.add(t.id);
         else billAskedRef.current.delete(t.id);
       }
-      for (const id of [...addOnsRef.current.keys()]) {
+      for (const id of [...customerAddOnsRef.current.keys()]) {
         if (!active.some((t) => t.id === id)) {
-          addOnsRef.current.delete(id);
+          customerAddOnsRef.current.delete(id);
+          staffAddOnsRef.current.delete(id);
           billAskedRef.current.delete(id);
         }
       }
@@ -306,7 +382,7 @@ export default function CashierDashboard() {
         if (!t) return null; // the bill left the active list (cleared/paid/cancelled)
         if (cur.kind === "order") return t.status === "pending_waiter" ? cur : null;
         if (cur.kind === "bill") return t.receiptRequestedAt ? cur : null;
-        return (t.unprintedSubmissions || 0) > 0 ? cur : null; // "added"
+        return customerAddsOf(t) > 0 ? cur : null; // "added" is guest-only now
       });
 
       setTickets(active);
@@ -355,8 +431,8 @@ export default function CashierDashboard() {
   // newest print first.
   const sortedPrintedToday = (rows: Ticket[]): Ticket[] =>
     [...rows].sort((a, b) => {
-      const aw = (a.unprintedSubmissions || 0) > 0 ? 1 : 0;
-      const bw = (b.unprintedSubmissions || 0) > 0 ? 1 : 0;
+      const aw = totalAddsOf(a) > 0 ? 1 : 0;
+      const bw = totalAddsOf(b) > 0 ? 1 : 0;
       if (aw !== bw) return bw - aw;
       return new Date(b.printedAt || b.updatedAt || 0).getTime() - new Date(a.printedAt || a.updatedAt || 0).getTime();
     });
@@ -560,6 +636,22 @@ export default function CashierDashboard() {
     if (confirm("Cancel this whole order/bill?")) await setStatus(id, "cancelled");
   };
 
+  const closeOutdoorOrder = async (t: Ticket) => {
+    if (!confirm(`Mark ${t.tableName} delivered and close it?`)) return;
+    const r = await fetch("/api/tickets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: t.id, status: "closed", closedBy: staffName || "(cashier)" }),
+    });
+    if (r.status === 401) return expireSession();
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      showToast(d?.error || "Could not close this outdoor order. Try again.");
+    }
+    loadAll();
+    loadHistory();
+  };
+
   // ── GROUP 9 (print-queue): the cashier's ONE click per order. She keys the
   // bill into the government EFD/POS, the order paper prints on her desktop,
   // and this tap moves the card out of her queue. Payment is not recorded here
@@ -613,16 +705,61 @@ export default function CashierDashboard() {
   // item.createdAt <= ticket.printedAt was on the printed receipt; everything
   // newer is NOT printed yet. Her TO PRINT card shows ONLY those new items
   // (she keys just the new items into the EFD and prints the second receipt),
-  // never the whole bill again. The crews ALREADY have these items on their
-  // lists (instant release) — this cutoff only decides what SHE keys in.
+  // never the whole bill again. When a waiter adds MORE quantity to an already
+  // existing pending row, there is no new row to inspect — the quantity just
+  // grows. `additionLinesRef` carries that diff so the queue can still mark the
+  // existing row as NEW until the cashier prints it.
   const isNewUnprinted = (item: TicketItem, t: Ticket): boolean => {
     if (item.removed) return false;
     if (!item.createdAt || !t.printedAt) return false;
     return new Date(item.createdAt).getTime() > new Date(t.printedAt).getTime();
   };
-  const newItemsOf = (t: Ticket): TicketItem[] => (t.items || []).filter((i) => isNewUnprinted(i, t));
+  const addedQuantityFor = (ticketId: number, itemId: number) => additionLinesRef.current.get(ticketId)?.get(itemId) || 0;
+  const newItemsOf = (t: Ticket): QueueAdditionLine[] =>
+    (t.items || [])
+      .filter((i) => !i.removed)
+      .flatMap((item) => {
+        const wholeLineIsNew = isNewUnprinted(item, t);
+        const addedQuantity = wholeLineIsNew ? item.quantity : addedQuantityFor(t.id, item.id);
+        if (addedQuantity <= 0) return [];
+        return [{ item, addedQuantity, wholeLineIsNew }];
+      });
   const isAdditionCard = (t: Ticket): boolean =>
-    t.status === "printed" && (t.unprintedSubmissions || 0) > 0;
+    t.status === "printed" && totalAddsOf(t) > 0;
+  const additionSourceLabel = (t: Ticket): string =>
+    customerAddsOf(t) > 0 && staffAddsOf(t) > 0
+      ? "guest + waiter"
+      : customerAddsOf(t) > 0
+      ? "guest"
+      : staffAddsOf(t) > 0
+      ? "waiter"
+      : "order";
+  const groupedPrePrintItems = (items: TicketItem[]): PrePrintDisplayLine[] => {
+    const visible = items.filter((i) => !i.removed);
+    const grouped = groupOrderLines(visible as OrderLine[]);
+    return grouped.map((line) => ({
+      ids: line.ids,
+      name: line.name,
+      quantity: line.quantity,
+      price: Number(line.price ?? 0),
+      notes: line.notes,
+      sourceItem: line.ids.length === 1 ? visible.find((i) => i.id === line.ids[0]) || null : null,
+    }));
+  };
+  const isOutdoor = (t: Ticket) => t.orderType === "outdoor";
+  const outdoorReady = (t: Ticket) => {
+    const live = (t.items || []).filter((item) => !item.removed);
+    const tracked = live.filter((item) => item.stationName !== "buna");
+    return tracked.length > 0 && tracked.every((item) => item.stationStatus === "done");
+  };
+  const statusPill = (t: Ticket) =>
+    outdoorReady(t)
+      ? { label: "READY TO DELIVER", cls: "bg-emerald-600 text-white" }
+      : t.status === "printed"
+      ? { label: "PRINTED • IN PROGRESS", cls: "bg-amber-500 text-black" }
+      : t.status === "confirmed"
+      ? { label: "TO PRINT", cls: "bg-sky-600 text-white" }
+      : { label: t.status.replace(/_/g, " ").toUpperCase(), cls: "bg-stone-700 text-stone-100" };
 
   // Expanded queue card: the full bill for context, with the NEW items marked.
   const toggleFullBill = (id: number) => {
@@ -698,8 +835,9 @@ export default function CashierDashboard() {
   const waitingConfirm = tickets.filter((t) => t.status === "pending_waiter");
   const heldCards = tickets.filter((t) => t.status === "confirmed" && !t.confirmedAt && !t.printedAt);
   const toPrint = tickets.filter((t) => t.status === "confirmed" && (!!t.confirmedAt || !!t.printedAt));
-  const addedCards = tickets.filter((t) => t.status === "printed" && (t.unprintedSubmissions || 0) > 0);
+  const addedCards = tickets.filter((t) => t.status === "printed" && totalAddsOf(t) > 0);
   const printQueue = [...addedCards, ...toPrint];
+  const outdoorTickets = tickets.filter((t) => isOutdoor(t));
 
   // Which archive list renders below the tables: today's prints or yesterday's.
   const history = historyDay === "today" ? historyToday : historyYesterday;
@@ -870,6 +1008,84 @@ export default function CashierDashboard() {
         {/* iPhone pocket-mode instruction (Android needs nothing) */}
         <PocketAlertsHint />
 
+        <section className="bg-[#2C1B17] border border-violet-500/30 rounded-3xl p-4 md:p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xs font-bold uppercase tracking-widest text-violet-300/90">Outdoor Orders</h2>
+              <p className="text-xs text-stone-400 mt-1">
+                Cashier-only flow for delivery / outside orders. Send them through the normal stations and watch for the ready badge here.
+              </p>
+            </div>
+            <button
+              onClick={() => setOutdoorComposerOpen(true)}
+              className="bg-violet-600 hover:bg-violet-500 text-white text-xs font-black px-4 py-3 rounded-2xl"
+            >
+              + New Outdoor Order
+            </button>
+          </div>
+          {outdoorTickets.length === 0 ? (
+            <div className="bg-[#241714] border border-stone-800 rounded-2xl p-4 text-xs text-stone-500">
+              No active outdoor orders right now.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {outdoorTickets.map((t) => {
+                const meta = statusPill(t);
+                const visible = (t.items || []).filter((item) => !item.removed);
+                return (
+                  <div key={t.id} className="bg-[#241714] border border-violet-500/30 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-serif font-black text-lg text-amber-100">{t.tableName}</p>
+                          <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                            Outdoor
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-bold text-stone-300 mt-1">
+                          {t.orderNumber ? `#${t.orderNumber} • ` : ""}
+                          {visible.reduce((sum, item) => sum + item.quantity, 0)} item(s)
+                        </p>
+                        {t.serviceNote && <p className="text-[11px] font-bold text-sky-300 mt-1">📍 {t.serviceNote}</p>}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className={`inline-block text-[10px] font-black px-2.5 py-1 rounded-full uppercase ${meta.cls}`}>
+                          {meta.label}
+                        </span>
+                        <p className="font-serif font-black text-xl text-[#C9A227] mt-2">{t.totalAmount} ETB</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => setBillModal(t)}
+                        className="flex-1 min-w-[120px] bg-white/10 hover:bg-white/20 text-stone-100 text-xs font-black py-2.5 rounded-xl"
+                      >
+                        View Bill
+                      </button>
+                      {t.status === "confirmed" && (
+                        <button
+                          onClick={() => markPrinted(t)}
+                          className="flex-1 min-w-[120px] bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black py-2.5 rounded-xl"
+                        >
+                          ✓ Printed
+                        </button>
+                      )}
+                      {t.status === "printed" && outdoorReady(t) && (
+                        <button
+                          onClick={() => closeOutdoorOrder(t)}
+                          className="flex-1 min-w-[140px] bg-amber-500 hover:bg-amber-400 text-[#2C1B17] text-xs font-black py-2.5 rounded-xl"
+                        >
+                          Mark Delivered
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
         {/* TABLE OVERVIEW */}
         <section>
           <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200/80 mb-3 flex items-center gap-2">
@@ -971,6 +1187,7 @@ export default function CashierDashboard() {
                   {heldCards.map((t) => {
                     const items = t.items || [];
                     const visible = items.filter((i) => !i.removed);
+                    const groupedVisible = groupedPrePrintItems(items);
                     const problem = problemOpen.has(t.id);
                     return (
                       <div key={t.id} className="bg-[#241714] border-2 border-sky-500/70 rounded-2xl p-4 space-y-3">
@@ -1001,27 +1218,37 @@ export default function CashierDashboard() {
                         </p>
 
                         <div className="bg-[#3D2314] rounded-xl divide-y divide-stone-800">
-                          {visible.map((i) => (
-                            <div key={i.id} className="p-2.5 text-xs flex items-center justify-between gap-2">
+                          {groupedVisible.map((line) => {
+                            const sourceItem = line.sourceItem;
+                            return (
+                            <div key={line.ids.join("-")} className="p-2.5 text-xs flex items-center justify-between gap-2">
                               <div className="flex-1 min-w-0">
                                 <p className="font-bold text-amber-100 truncate">
-                                  {i.name} <span className="text-stone-300 font-bold">({i.price} ETB)</span>
+                                  {line.name} <span className="text-stone-300 font-bold">({line.price} ETB)</span>
                                 </p>
-                                {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {i.notes}</p>}
+                                {line.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {line.notes}</p>}
+                                {line.ids.length > 1 && (
+                                  <p className="text-[10px] font-black text-sky-300 mt-0.5">
+                                    Combined on cashier side • same item added again
+                                  </p>
+                                )}
                               </div>
-                              <span className="font-extrabold text-amber-100 shrink-0">× {i.quantity}</span>
-                              {!i.removed && (
+                              <div className="text-right shrink-0">
+                                <p className="font-extrabold text-amber-100">× {line.quantity}</p>
+                                <p className="text-[10px] font-black text-[#C9A227]">{line.price * line.quantity} ETB</p>
+                              </div>
+                              {sourceItem ? (
                                 <button
-                                  onClick={() => setEditTarget({ item: i })}
+                                  onClick={() => setEditTarget({ item: sourceItem })}
                                   className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
                                   title="Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue."
                                 >
                                   ✎ Edit
                                 </button>
-                              )}
-                              {problem && !i.removed ? (
+                              ) : null}
+                              {problem && sourceItem ? (
                                 <button
-                                  onClick={() => removeItem(i.id)}
+                                  onClick={() => removeItem(sourceItem.id)}
                                   className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
                                   title="Remove (unavailable)"
                                 >
@@ -1029,7 +1256,7 @@ export default function CashierDashboard() {
                                 </button>
                               ) : null}
                             </div>
-                          ))}
+                            );})}
                           {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">All items removed.</p>}
                         </div>
 
@@ -1083,40 +1310,48 @@ export default function CashierDashboard() {
                     const added = isAdditionCard(t);
                     const items = t.items || [];
                     const visible = items.filter((i) => !i.removed);
+                    const groupedVisible = groupedPrePrintItems(items);
                     // GROUP 12: additions card — by default she keys ONLY the
                     // new, not-yet-printed items into the EFD (receipt #2).
                     // The full bill is one tap away for context (new items
                     // highlighted); the default view and print action are
-                    // about the NEW items only.
-                    const newItems = added ? newItemsOf(t) : visible;
+                    // about the NEW items only. A merged top-up stays on the
+                    // existing line as NEW +N until she prints.
+                    const newItems = added ? newItemsOf(t) : visible.map((item) => ({ item, addedQuantity: item.quantity, wholeLineIsNew: true }));
                     const showFullBill = fullBillOpen.has(t.id);
-                    const newTotal = newItems.reduce((s, i) => s + i.price * i.quantity, 0);
-                    const newCount = newItems.reduce((s, i) => s + i.quantity, 0);
+                    const newTotal = newItems.reduce((s, line) => s + line.item.price * line.addedQuantity, 0);
+                    const newCount = newItems.reduce((s, line) => s + line.addedQuantity, 0);
                     const problem = problemOpen.has(t.id);
                     return (
                       <div key={t.id} className={`bg-[#2C1B17] rounded-2xl border-2 p-4 space-y-3 ${added ? "border-amber-400" : "border-[#C9A227]/70"}`}>
                         {/* header */}
                         <div className="flex items-start justify-between gap-2">
                           <div className="space-y-0.5">
-                            <p className="font-serif font-bold text-xl text-amber-100">
-                              {t.tableName}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-serif font-bold text-xl text-amber-100">{t.tableName}</p>
                               {t.orderNumber && (
-                                <span className="ml-2 align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
+                                <span className="align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
                                   #{t.orderNumber}
                                 </span>
                               )}
-                            </p>
+                              {isOutdoor(t) && (
+                                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                                  Outdoor
+                                </span>
+                              )}
+                            </div>
                             <p className="text-xs font-bold text-stone-300 flex items-center gap-1">
                               <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {t.confirmedBy ? `by ${t.confirmedBy}` : `by ${t.createdBy || "waiter"}`}
                             </p>
                             <p className="text-xs font-bold text-stone-300">
                               🕒 arrived {formatClock(t.createdAt)} • waiting {waitingLabel(t.createdAt)}
                             </p>
+                            {t.serviceNote && <p className="text-[11px] font-bold text-sky-300">📍 {t.serviceNote}</p>}
                           </div>
                           <div className="text-right shrink-0">
                             {added ? (
                               <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-full bg-amber-400 text-black animate-pulse">
-                                ⚠ {newCount} NEW item{newCount === 1 ? "" : "s"} on existing bill
+                                ⚠ {newCount} NEW item{newCount === 1 ? "" : "s"} on existing bill • {additionSourceLabel(t)}
                               </span>
                             ) : (
                               <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-full bg-amber-500 text-black">🔔 NEW ORDER</span>
@@ -1137,7 +1372,7 @@ export default function CashierDashboard() {
 
                         {added && (
                           <p className="text-xs font-bold text-amber-300 bg-amber-950/40 border border-amber-700/40 rounded-xl px-3 py-2">
-                            This bill was already printed. Key ONLY the new item{newCount === 1 ? "" : "s"} below into the EFD and print receipt #2. The crews already have them • your ✓ only records the print.
+                            This bill was already printed. Key ONLY the new item{newCount === 1 ? "" : "s"} below into the EFD and print receipt #2. If the waiter added more to an existing line, it stays on that same line as NEW. The crews already have them • your ✓ only records the print.
                           </p>
                         )}
 
@@ -1163,35 +1398,92 @@ export default function CashierDashboard() {
                             bill expands on demand with the new items highlighted.
                             Corrections only appear when ✗ Problem is open. */}
                         <div className="bg-[#3D2314] rounded-xl divide-y divide-stone-800">
-                          {(showFullBill ? visible : newItems).map((i) => {
-                            const isNew = added && isNewUnprinted(i, t);
-                            return (
-                              <div
-                                key={i.id}
-                                className={`p-2.5 text-xs flex items-center justify-between gap-2 ${
-                                  i.removed ? "opacity-40 line-through" : isNew ? "bg-amber-400/15" : ""
-                                }`}
-                              >
+                          {added ? (
+                            (showFullBill
+                              ? visible.map((item) => ({
+                                  item,
+                                  addedQuantity: addedQuantityFor(t.id, item.id),
+                                  wholeLineIsNew: added && isNewUnprinted(item, t),
+                                }))
+                              : newItems
+                            ).map((line) => {
+                              const i = line.item;
+                              const isNew = line.wholeLineIsNew || line.addedQuantity > 0;
+                              return (
+                                <div
+                                  key={i.id}
+                                  className={`p-2.5 text-xs flex items-center justify-between gap-2 ${
+                                    i.removed ? "opacity-40 line-through" : isNew ? "bg-amber-400/15" : ""
+                                  }`}
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <p className="font-bold text-amber-100 truncate">
+                                      {showFullBill && isNew ? <span className="text-amber-300 font-black">NEW • </span> : null}
+                                      {i.name} <span className="text-stone-300 font-bold">({i.price} ETB)</span>
+                                    </p>
+                                    {line.addedQuantity > 0 && (
+                                      <p className="text-[11px] font-black text-amber-300 mt-0.5">
+                                        {line.wholeLineIsNew ? "NEW line" : `NEW on existing line • +${line.addedQuantity}`}
+                                      </p>
+                                    )}
+                                    {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {i.notes}</p>}
+                                  </div>
+                                  <span className="font-extrabold text-amber-100 shrink-0">
+                                    × {showFullBill ? i.quantity : line.addedQuantity}
+                                  </span>
+                                  {!i.removed && (
+                                    <button
+                                      onClick={() => setEditTarget({ item: i })}
+                                      className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
+                                      title="Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue."
+                                    >
+                                      ✎ Edit
+                                    </button>
+                                  )}
+                                  {problem && !i.removed ? (
+                                    <button
+                                      onClick={() => removeItem(i.id)}
+                                      className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
+                                      title="Remove (unavailable)"
+                                    >
+                                      Remove
+                                    </button>
+                                  ) : null}
+                                </div>
+                              );
+                            })
+                          ) : (
+                            groupedVisible.map((line) => {
+                              const sourceItem = line.sourceItem;
+                              return (
+                              <div key={line.ids.join("-")} className="p-2.5 text-xs flex items-center justify-between gap-2">
                                 <div className="flex-1 min-w-0">
                                   <p className="font-bold text-amber-100 truncate">
-                                    {added && showFullBill && isNew ? <span className="text-amber-300 font-black">NEW • </span> : null}
-                                    {i.name} <span className="text-stone-300 font-bold">({i.price} ETB)</span>
+                                    {line.name} <span className="text-stone-300 font-bold">({line.price} ETB)</span>
                                   </p>
-                                  {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {i.notes}</p>}
+                                  {line.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {line.notes}</p>}
+                                  {line.ids.length > 1 && (
+                                    <p className="text-[10px] font-black text-sky-300 mt-0.5">
+                                      Combined on cashier side • same item added again
+                                    </p>
+                                  )}
                                 </div>
-                                <span className="font-extrabold text-amber-100 shrink-0">× {i.quantity}</span>
-                                {!i.removed && (
+                                <div className="text-right shrink-0">
+                                  <p className="font-extrabold text-amber-100">× {line.quantity}</p>
+                                  <p className="text-[10px] font-black text-[#C9A227]">{line.price * line.quantity} ETB</p>
+                                </div>
+                                {sourceItem ? (
                                   <button
-                                    onClick={() => setEditTarget({ item: i })}
+                                    onClick={() => setEditTarget({ item: sourceItem })}
                                     className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
                                     title="Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue."
                                   >
                                     ✎ Edit
                                   </button>
-                                )}
-                                {problem && !i.removed ? (
+                                ) : null}
+                                {problem && sourceItem ? (
                                   <button
-                                    onClick={() => removeItem(i.id)}
+                                    onClick={() => removeItem(sourceItem.id)}
                                     className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
                                     title="Remove (unavailable)"
                                   >
@@ -1199,8 +1491,8 @@ export default function CashierDashboard() {
                                   </button>
                                 ) : null}
                               </div>
-                            );
-                          })}
+                              );})
+                          )}
                           {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">All items removed.</p>}
                         </div>
 
@@ -1285,14 +1577,19 @@ export default function CashierDashboard() {
                     {/* header */}
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="font-serif font-bold text-lg text-amber-100">
-                          {t.tableName}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-serif font-bold text-lg text-amber-100">{t.tableName}</p>
                           {t.orderNumber && (
-                            <span className="ml-2 align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
+                            <span className="align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
                               #{t.orderNumber}
                             </span>
                           )}
-                        </p>
+                          {isOutdoor(t) && (
+                            <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                              Outdoor
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs font-bold text-stone-300 flex items-center gap-1">
                           <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {t.confirmedBy ? `by ${t.confirmedBy}` : `by ${t.createdBy || "waiter"}`}
                         </p>
@@ -1301,6 +1598,7 @@ export default function CashierDashboard() {
                         <p className="text-xs font-bold text-stone-300">
                           🕒 arrived {formatClock(t.createdAt)} • waiting {waitingLabel(t.createdAt)}
                         </p>
+                        {t.serviceNote && <p className="text-[11px] font-bold text-sky-300">📍 {t.serviceNote}</p>}
                       </div>
                       <div className="text-right">
                         <span className={`inline-block text-[10px] font-black px-2.5 py-1 rounded-full ${meta.cls}`}>{meta.label}</span>
@@ -1499,7 +1797,14 @@ export default function CashierDashboard() {
                     title="Tap to see the full bill"
                   >
                     <div className="min-w-0 space-y-0.5">
-                      <p className="text-sm font-black text-amber-100">{t.tableName}</p>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <p className="text-sm font-black text-amber-100">{t.tableName}</p>
+                        {isOutdoor(t) && (
+                          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                            Outdoor
+                          </span>
+                        )}
+                      </div>
                       {printQueueMode ? (
                         <p className="text-[11px] font-bold text-stone-300 truncate flex items-center gap-1">
                           <Printer className="w-3 h-3 text-[#C9A227] shrink-0" /> printed {formatClock(t.printedAt)} • {t.printedBy || "cashier"}
@@ -1510,6 +1815,7 @@ export default function CashierDashboard() {
                       {/* Group 8: table, date, time and waiter on every history card. */}
                       <p className="text-[11px] font-bold text-stone-300 truncate">🕒 {formatDateTime(printQueueMode ? (t.printedAt || t.createdAt) : (t.closedAt || t.updatedAt || t.createdAt))}</p>
                       <p className="text-[11px] font-bold text-[#D8B93E] truncate">👤 {t.confirmedBy || t.createdBy || "staff"}</p>
+                      {t.serviceNote && <p className="text-[10px] font-bold text-sky-300 truncate">📍 {t.serviceNote}</p>}
                       {printQueueMode && (
                         cleared ? (
                           <p className="text-[10px] font-black text-stone-400 uppercase">✓ cleared {t.closedAt ? formatClock(t.closedAt) : ""}</p>
@@ -1549,10 +1855,19 @@ export default function CashierDashboard() {
           >
             <div className="sticky top-0 bg-[#2C1B17] border-b border-stone-800 px-5 py-4 flex items-start justify-between gap-3">
               <div>
-                <h3 className="font-serif font-black text-xl text-amber-100">{billModal.tableName}</h3>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-serif font-black text-xl text-amber-100">{billModal.tableName}</h3>
+                  {billModal.orderType === "outdoor" && (
+                    <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                      Outdoor
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs font-bold text-stone-300 mt-0.5">
                   {billModal.orderNumber ? `#${billModal.orderNumber} • ` : ""}
-                  printed {billModal.printedAt ? formatDateTime(billModal.printedAt) : "?"} • by {billModal.printedBy || "cashier"}
+                  {billModal.printedAt
+                    ? `printed ${formatDateTime(billModal.printedAt)} • by ${billModal.printedBy || "cashier"}`
+                    : `arrived ${formatDateTime(billModal.createdAt)} • by ${billModal.confirmedBy || billModal.createdBy || "staff"}`}
                 </p>
                 <p className="text-xs font-bold text-stone-300">
                   {billModal.status === "closed"
@@ -1561,6 +1876,7 @@ export default function CashierDashboard() {
                     ? "⚠ new items waiting for your next print"
                     : "● open bill"}
                 </p>
+                {billModal.serviceNote && <p className="text-xs font-bold text-sky-300">📍 {billModal.serviceNote}</p>}
               </div>
               <button onClick={() => setBillModal(null)} className="p-2 rounded-lg bg-white/10 text-stone-300 hover:bg-white/20 shrink-0" title="Close">
                 <XCircle className="w-5 h-5" />
@@ -1614,6 +1930,17 @@ export default function CashierDashboard() {
           }}
         />
       )}
+
+      <OutdoorOrderComposer
+        open={outdoorComposerOpen}
+        cashierName={staffName}
+        onClose={() => setOutdoorComposerOpen(false)}
+        onSent={(message) => {
+          showToast(message);
+          loadAll();
+          loadHistory();
+        }}
+      />
 
       {/* receipt image modal */}
       {receiptModal && (

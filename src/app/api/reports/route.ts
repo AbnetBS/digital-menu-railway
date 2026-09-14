@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { tickets, ticketItems, categories } from "@/db/schema";
+import { tickets, ticketItems, categories, orderSubmissions, ticketEvents, staffUsers } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { inArray, or, gt } from "drizzle-orm";
 import { requireAdmin } from "@/lib/session";
@@ -51,6 +51,217 @@ function isSold(t: { status: string; printedAt: Date | string | null }): boolean
 const PERIOD_LABELS = { today: "Today", yesterday: "Yesterday", week: "Last 7 Days", month: "Last 30 Days" } as const;
 type Period = keyof typeof PERIOD_LABELS;
 
+function toIso(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function quoted(value: string | null | undefined): string {
+  const text = String(value || "").trim();
+  return text ? `“${text}”` : "empty";
+}
+
+function historyStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    done: "Done",
+    edited_printed: "Edited & Printed",
+    edited_cancelled: "Edited & Cancelled",
+    cancelled: "Cancelled",
+  };
+  return labels[status] || status;
+}
+
+function humanTicketStatus(status: string | null | undefined): string {
+  const value = String(status || "");
+  const labels: Record<string, string> = {
+    pending_waiter: "pending waiter",
+    ready_for_payment: "ready for payment",
+  };
+  return labels[value] || value.replace(/_/g, " ");
+}
+
+function buildAuditEvent(event: typeof ticketEvents.$inferSelect) {
+  const actor = event.actorName ? ` • ${event.actorName}` : "";
+  switch (event.eventType) {
+    case "ticket_created":
+      return {
+        id: event.id,
+        eventType: event.eventType,
+        actorName: event.actorName,
+        actorRole: event.actorRole,
+        source: event.source,
+        itemId: event.itemId,
+        itemName: event.itemName,
+        fromValue: event.fromValue,
+        toValue: event.toValue,
+        details: event.details,
+        createdAt: toIso(event.createdAt),
+        label: "Order created",
+        detail: event.details || null,
+      };
+    case "submission_added":
+      return {
+        id: event.id,
+        eventType: event.eventType,
+        actorName: event.actorName,
+        actorRole: event.actorRole,
+        source: event.source,
+        itemId: event.itemId,
+        itemName: event.itemName,
+        fromValue: event.fromValue,
+        toValue: event.toValue,
+        details: event.details,
+        createdAt: toIso(event.createdAt),
+        label: `${event.source === "customer" ? "Guest" : event.actorRole === "cashier" ? "Cashier" : "Waiter"} added items${actor}`,
+        detail: event.details || null,
+      };
+    case "item_quantity_changed":
+      return {
+        id: event.id,
+        eventType: event.eventType,
+        actorName: event.actorName,
+        actorRole: event.actorRole,
+        source: event.source,
+        itemId: event.itemId,
+        itemName: event.itemName,
+        fromValue: event.fromValue,
+        toValue: event.toValue,
+        details: event.details,
+        createdAt: toIso(event.createdAt),
+        label: `Quantity changed • ${event.itemName || "item"}${actor}`,
+        detail: `${event.fromValue || "?"} → ${event.toValue || "?"}`,
+      };
+    case "item_notes_changed":
+      return {
+        id: event.id,
+        eventType: event.eventType,
+        actorName: event.actorName,
+        actorRole: event.actorRole,
+        source: event.source,
+        itemId: event.itemId,
+        itemName: event.itemName,
+        fromValue: event.fromValue,
+        toValue: event.toValue,
+        details: event.details,
+        createdAt: toIso(event.createdAt),
+        label: `Note changed • ${event.itemName || "item"}${actor}`,
+        detail: `${quoted(event.fromValue)} → ${quoted(event.toValue)}`,
+      };
+    case "item_removed":
+      return {
+        id: event.id,
+        eventType: event.eventType,
+        actorName: event.actorName,
+        actorRole: event.actorRole,
+        source: event.source,
+        itemId: event.itemId,
+        itemName: event.itemName,
+        fromValue: event.fromValue,
+        toValue: event.toValue,
+        details: event.details,
+        createdAt: toIso(event.createdAt),
+        label: `Item removed • ${event.itemName || "item"}${actor}`,
+        detail: event.fromValue || event.details || null,
+      };
+    case "ticket_sent":
+      return {
+        id: event.id,
+        eventType: event.eventType,
+        actorName: event.actorName,
+        actorRole: event.actorRole,
+        source: event.source,
+        itemId: event.itemId,
+        itemName: event.itemName,
+        fromValue: event.fromValue,
+        toValue: event.toValue,
+        details: event.details,
+        createdAt: toIso(event.createdAt),
+        label: `Sent to stations${actor}`,
+        detail: event.details || null,
+      };
+    case "ticket_printed":
+      return {
+        id: event.id,
+        eventType: event.eventType,
+        actorName: event.actorName,
+        actorRole: event.actorRole,
+        source: event.source,
+        itemId: event.itemId,
+        itemName: event.itemName,
+        fromValue: event.fromValue,
+        toValue: event.toValue,
+        details: event.details,
+        createdAt: toIso(event.createdAt),
+        label: `Printed${actor}`,
+        detail: event.details || null,
+      };
+    case "status_changed":
+      return {
+        id: event.id,
+        eventType: event.eventType,
+        actorName: event.actorName,
+        actorRole: event.actorRole,
+        source: event.source,
+        itemId: event.itemId,
+        itemName: event.itemName,
+        fromValue: event.fromValue,
+        toValue: event.toValue,
+        details: event.details,
+        createdAt: toIso(event.createdAt),
+        label: `Status${actor}`,
+        detail: `${humanTicketStatus(event.fromValue)} → ${humanTicketStatus(event.toValue)}`,
+      };
+    default:
+      return {
+        id: event.id,
+        eventType: event.eventType,
+        actorName: event.actorName,
+        actorRole: event.actorRole,
+        source: event.source,
+        itemId: event.itemId,
+        itemName: event.itemName,
+        fromValue: event.fromValue,
+        toValue: event.toValue,
+        details: event.details,
+        createdAt: toIso(event.createdAt),
+        label: event.eventType.replace(/_/g, " "),
+        detail: event.details || null,
+      };
+  }
+}
+
+function deriveHistory(ticket: typeof tickets.$inferSelect, events: Array<typeof ticketEvents.$inferSelect>) {
+  const sortedEvents = [...events].sort(
+    (a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+  );
+  const auditTrail = sortedEvents.map(buildAuditEvent);
+  const editEvents = auditTrail.filter((event) =>
+    ["item_quantity_changed", "item_notes_changed", "item_removed", "item_edited"].includes(event.eventType)
+  );
+  const hasEdits = editEvents.length > 0 || !!ticket.itemsEditedAt;
+  const status =
+    ticket.status === "cancelled"
+      ? hasEdits
+        ? "edited_cancelled"
+        : "cancelled"
+      : hasEdits && !!ticket.printedAt
+      ? "edited_printed"
+      : "done";
+  const changeSummary = editEvents
+    .slice(-3)
+    .map((event) => event.detail || event.label)
+    .filter(Boolean)
+    .join(" • ");
+
+  return {
+    historyStatus: status,
+    historyStatusLabel: historyStatusLabel(status),
+    historyChangeSummary: changeSummary || null,
+    auditTrail,
+  };
+}
+
 export async function GET(request: Request) {
   const __auth = await requireAdmin();
   if (!__auth.ok) return __auth.response;
@@ -76,7 +287,11 @@ export async function GET(request: Request) {
         )
       );
 
-    const cats = await db.select().from(categories);
+    const [cats, waiters, recentStaffSubmissions] = await Promise.all([
+      db.select().from(categories),
+      db.select().from(staffUsers),
+      db.select().from(orderSubmissions).where(gt(orderSubmissions.createdAt, cutoff)),
+    ]);
 
     // A bill counts as sold when it was PRINTED into the EFD (print-queue
     // workflow: printed / closed) or marked paid/completed (full mode).
@@ -143,19 +358,29 @@ export async function GET(request: Request) {
 
     const itemTicketIds = [...new Set([...scopeTicketIds, ...printedTodayIds, ...paidTodayIds, ...historyTicketIds])];
     type ItemRow = typeof ticketItems.$inferSelect;
+    type EventRow = typeof ticketEvents.$inferSelect;
     const emptyItems: ItemRow[] = [];
-    const [scopedItems, historyItems] = await Promise.all([
+    const emptyEvents: EventRow[] = [];
+    const [scopedItems, historyItems, historyEvents] = await Promise.all([
       itemTicketIds.length > 0
         ? db.select().from(ticketItems).where(inArray(ticketItems.ticketId, itemTicketIds))
         : Promise.resolve(emptyItems),
       historyTicketIds.length > 0
         ? db.select().from(ticketItems).where(inArray(ticketItems.ticketId, historyTicketIds))
         : Promise.resolve(emptyItems),
+      historyTicketIds.length > 0
+        ? db.select().from(ticketEvents).where(inArray(ticketEvents.ticketId, historyTicketIds))
+        : Promise.resolve(emptyEvents),
     ]);
     const itemsByTicket = new Map<number, ItemRow[]>();
     for (const it of scopedItems) {
       if (!itemsByTicket.has(it.ticketId)) itemsByTicket.set(it.ticketId, []);
       itemsByTicket.get(it.ticketId)!.push(it);
+    }
+    const historyEventsByTicket = new Map<number, EventRow[]>();
+    for (const event of historyEvents) {
+      if (!historyEventsByTicket.has(event.ticketId)) historyEventsByTicket.set(event.ticketId, []);
+      historyEventsByTicket.get(event.ticketId)!.push(event);
     }
 
     // Peak selling hours — the period's orders grouped by hour of the day.
@@ -257,6 +482,92 @@ export async function GET(request: Request) {
       revenue: v.revenue,
     }));
 
+    // Waiter ranking (selected interval): separate counts for accepted orders
+    // and directly created/sent submissions, plus a click-through list of the
+    // underlying orders so the owner can audit each name.
+    const ticketById = new Map(allTickets.map((ticket) => [ticket.id, ticket]));
+    const waiterNames = new Set<string>();
+    const cashierNames = new Set(
+      waiters.filter((staff) => staff.role === "cashier").map((staff) => String(staff.name || "").trim()).filter(Boolean)
+    );
+    for (const staff of waiters) {
+      if (staff.role === "waiter" && String(staff.name || "").trim()) waiterNames.add(String(staff.name || "").trim());
+    }
+    for (const submission of recentStaffSubmissions) {
+      if (submission.source === "staff" && submission.waiterName && String(submission.waiterName).trim()) {
+        const ticket = ticketById.get(submission.ticketId);
+        if (ticket?.orderType !== "outdoor") waiterNames.add(String(submission.waiterName).trim());
+      }
+    }
+    for (const ticket of allTickets) {
+      const confirmer = String(ticket.confirmedBy || "").trim();
+      if (!confirmer || /^customer/i.test(confirmer) || /^waiter$/i.test(confirmer) || cashierNames.has(confirmer)) continue;
+      waiterNames.add(confirmer);
+    }
+
+    const acceptedOrders = allTickets
+      .filter((ticket) => {
+        const confirmer = String(ticket.confirmedBy || "").trim();
+        return Boolean(confirmer) && waiterNames.has(confirmer) && inScopeDay(ticket.confirmedAt);
+      })
+      .map((ticket) => ({
+        waiterName: String(ticket.confirmedBy || "").trim(),
+        kind: "accepted" as const,
+        ticketId: ticket.id,
+        tableName: ticket.tableName,
+        orderNumber: ticket.orderNumber,
+        orderType: ticket.orderType,
+        serviceNote: ticket.serviceNote,
+        status: ticket.status,
+        totalAmount: ticket.totalAmount || 0,
+        happenedAt: toIso(ticket.confirmedAt),
+        createdAt: toIso(ticket.createdAt),
+        confirmedAt: toIso(ticket.confirmedAt),
+        printedAt: toIso(ticket.printedAt),
+        detail: ticket.orderType === "outdoor" ? "Accepted outdoor order" : "Accepted order",
+      }));
+
+    const directOrders = recentStaffSubmissions
+      .filter((submission) => submission.source === "staff" && submission.waiterName && inScopeDay(submission.createdAt))
+      .flatMap((submission) => {
+        const ticket = ticketById.get(submission.ticketId);
+        const waiterName = String(submission.waiterName || "").trim();
+        if (!ticket || !waiterName || ticket.orderType === "outdoor") return [];
+        return [{
+          waiterName,
+          kind: "direct" as const,
+          ticketId: ticket.id,
+          tableName: ticket.tableName,
+          orderNumber: ticket.orderNumber,
+          orderType: ticket.orderType,
+          serviceNote: ticket.serviceNote,
+          status: ticket.status,
+          totalAmount: ticket.totalAmount || 0,
+          happenedAt: toIso(submission.createdAt),
+          createdAt: toIso(ticket.createdAt),
+          confirmedAt: toIso(ticket.confirmedAt),
+          printedAt: toIso(ticket.printedAt),
+          detail: `${submission.lines || 0} line(s) sent${submission.mergedLines ? ` • ${submission.mergedLines} merged` : ""}`,
+        }];
+      });
+
+    const waiterOrders = [...acceptedOrders, ...directOrders].sort(
+      (a, b) => new Date(b.happenedAt || 0).getTime() - new Date(a.happenedAt || 0).getTime()
+    );
+    const waiterRanking = [...waiterNames]
+      .map((name) => {
+        const acceptedCount = acceptedOrders.filter((order) => order.waiterName === name).length;
+        const directCount = directOrders.filter((order) => order.waiterName === name).length;
+        return {
+          name,
+          acceptedOrders: acceptedCount,
+          directOrders: directCount,
+          totalActions: acceptedCount + directCount,
+        };
+      })
+      .filter((row) => row.acceptedOrders > 0 || row.directOrders > 0)
+      .sort((a, b) => b.totalActions - a.totalActions || b.acceptedOrders - a.acceptedOrders || b.directOrders - a.directOrders || a.name.localeCompare(b.name));
+
     // Receipt METADATA list only — photos load on demand via /api/tickets/receipt?id=
     const receipts = scopeTickets
       .filter((t) => t.receiptImage)
@@ -289,6 +600,7 @@ export async function GET(request: Request) {
     const orderHistory = orderHistoryTickets.map((t) => ({
       ...t,
       items: historyItems.filter((i) => i.ticketId === t.id),
+      ...deriveHistory(t, historyEventsByTicket.get(t.id) || []),
     }));
 
     return NextResponse.json({
@@ -306,6 +618,8 @@ export async function GET(request: Request) {
       paymentStats,
       receipts,
       orderHistory,
+      waiterRanking,
+      waiterOrders,
       hourlySales,
       peakHour,
       // Cross-check by station (selected period): the four station piles.

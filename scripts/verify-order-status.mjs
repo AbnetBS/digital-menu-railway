@@ -95,10 +95,10 @@ const i18n = read("src/lib/i18n.ts");
   pass("the migration adds the new ticket column", /receipt_requested_at/.test(migrate));
   pass("the submission key is UNIQUE at the database level", /CREATE UNIQUE INDEX IF NOT EXISTS order_submissions_idempotency_key_key/.test(migrate));
   pass("submissions are indexed per ticket", /CREATE INDEX IF NOT EXISTS order_submissions_ticket_id_idx/.test(migrate));
-  // Bumped to 2026-09-09-1 when the crew-action audit (station_status_by/at)
-  // + the bill-edit audit (items_edited_at) were added: an existing
-  // production database only runs the migration when this constant moves.
-  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-09-1"/.test(migrate));
+  // Bumped again on 2026-09-13-1 when outdoor orders + persistent ticket audit
+  // logging landed: an existing production database only runs the migration
+  // when this constant moves.
+  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-13-1"/.test(migrate));
 }
 
 /* ── 3. duplicate lines merge in the DATABASE, not just on screen ─────────── */
@@ -109,7 +109,10 @@ const i18n = read("src/lib/i18n.ts");
   pass("every accepted submission is recorded for idempotency", /insert\(orderSubmissions\)/.test(tickets));
   pass("a replayed submission key returns the recorded bill", /racedKey/.test(tickets) && /23505/.test(tickets));
   pass("read-only screens collapse what older bills still contain", /groupOrderLines/.test(history));
-  pass("editable staff lists still render raw rows (their ± buttons write one row id)", !/groupOrderLines/.test(cashier) && !/groupOrderLines/.test(waiterApp) && !/groupOrderLines/.test(stationApp));
+  pass(
+    "cashier pre-print lists may group duplicates, while live editable rows stay targeted",
+    /groupedPrePrintItems/.test(cashier) && !/groupOrderLines/.test(waiterApp) && !/groupOrderLines/.test(stationApp)
+  );
 }
 
 /* ── 2. arrival time / date + waiter name ─────────────────────────────────── */

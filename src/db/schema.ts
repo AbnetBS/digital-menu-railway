@@ -111,6 +111,10 @@ export const tickets = pgTable("tickets", {
   id: serial("id").primaryKey(),
   tableId: integer("table_id").notNull(),
   tableName: varchar("table_name", { length: 50 }).notNull(),
+  // Indoor table bill (default) or cashier-entered outdoor / delivery-style order.
+  orderType: varchar("order_type", { length: 20 }).notNull().default("dine_in"),
+  // Cashier-entered outdoor info: guest phone, car color, delivery note, etc.
+  serviceNote: text("service_note"),
   status: varchar("status", { length: 30 }).notNull().default("new"), // new | preparing | ready_for_payment | completed | paid | cancelled
   paymentMethod: varchar("payment_method", { length: 20 }), // cash | card | online | telebirr | cbe
   // Payment status is SEPARATE from order status (food done ≠ paid).
@@ -188,6 +192,22 @@ export const orderSubmissions = pgTable("order_submissions", {
   waiterName: varchar("waiter_name", { length: 100 }),
   lines: integer("lines").default(0),
   mergedLines: integer("merged_lines").default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Persistent audit trail of ticket changes for admin history/reporting.
+export const ticketEvents = pgTable("ticket_events", {
+  id: serial("id").primaryKey(),
+  ticketId: integer("ticket_id").notNull(),
+  eventType: varchar("event_type", { length: 50 }).notNull(),
+  actorName: varchar("actor_name", { length: 100 }),
+  actorRole: varchar("actor_role", { length: 20 }),
+  source: varchar("source", { length: 20 }),
+  itemId: integer("item_id"),
+  itemName: varchar("item_name", { length: 200 }),
+  fromValue: text("from_value"),
+  toValue: text("to_value"),
+  details: text("details"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

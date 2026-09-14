@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { tickets, ticketItems, cafeTables, menuItems, announcements, orderSubmissions, siteSettings } from "@/db/schema";
+import { tickets, ticketItems, cafeTables, menuItems, announcements, orderSubmissions, siteSettings, ticketEvents } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
@@ -11,6 +11,7 @@ import { publish, CHANNELS } from "@/lib/realtime";
 import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
+import { recordTicketEvent, summarizeSubmissionLines } from "@/lib/ticket-audit";
 import { sendPushToRoles, CUSTOMER_ALERT_RING } from "@/lib/push";
 import { ticketStatusAlerts, withoutActor } from "@/lib/alerts";
 import { stationForOrder, stationOf, type StationName } from "@/lib/stations";
@@ -52,6 +53,32 @@ async function canRecordSubmissions(): Promise<boolean> {
     submissionsProbedAt = Date.now();
   }
   return submissionsTableUsable;
+}
+
+function normalizeOrderType(value: unknown): "dine_in" | "outdoor" {
+  return String(value || "dine_in").toLowerCase() === "outdoor" ? "outdoor" : "dine_in";
+}
+
+function normalizeServiceNote(value: unknown): string | null {
+  const note = String(value || "").trim().slice(0, 500);
+  return note ? note : null;
+}
+
+function normalizeOutdoorTableName(label: unknown): string {
+  const trimmed = String(label || "").trim().replace(/\s+/g, " ");
+  if (!trimmed) return "OUTDOOR";
+  const prefixed = /^outdoor\b/i.test(trimmed) ? trimmed : `OUTDOOR • ${trimmed}`;
+  return prefixed.slice(0, 50);
+}
+
+function outdoorTableId(): number {
+  return -Math.floor(Date.now() * 1000 + Math.random() * 1000);
+}
+
+function actorRoleOf(source: string, orderType: "dine_in" | "outdoor"): string {
+  if (source === "customer") return "customer";
+  if (orderType === "outdoor") return "cashier";
+  return "waiter";
 }
 
 // The transaction client and the root Drizzle client share the query methods used here.
@@ -193,6 +220,8 @@ export async function GET(request: Request) {
     // Submissions are used (not items) because a folded line updates an existing
     // item row without inserting anything, while every submission records a row.
     const unprintedByTicket = new Map<number, number>();
+    const unprintedCustomerByTicket = new Map<number, number>();
+    const unprintedStaffByTicket = new Map<number, number>();
     if (needItems) {
       const printedIds = slim
         .filter((t) => (t as { printedAt?: string | Date | null }).printedAt)
@@ -200,7 +229,11 @@ export async function GET(request: Request) {
       if (printedIds.length > 0) {
         try {
           const counted = await db
-            .select({ ticketId: orderSubmissions.ticketId, n: sql<number>`count(*)::int` })
+            .select({
+              ticketId: orderSubmissions.ticketId,
+              source: orderSubmissions.source,
+              n: sql<number>`count(*)::int`,
+            })
             .from(orderSubmissions)
             .innerJoin(tickets, eq(tickets.id, orderSubmissions.ticketId))
             .where(
@@ -210,8 +243,16 @@ export async function GET(request: Request) {
                 gt(orderSubmissions.createdAt, tickets.printedAt)
               )
             )
-            .groupBy(orderSubmissions.ticketId);
-          for (const row of counted) unprintedByTicket.set(row.ticketId, Number(row.n));
+            .groupBy(orderSubmissions.ticketId, orderSubmissions.source);
+          for (const row of counted) {
+            const count = Number(row.n) || 0;
+            unprintedByTicket.set(row.ticketId, (unprintedByTicket.get(row.ticketId) || 0) + count);
+            if (row.source === "customer") {
+              unprintedCustomerByTicket.set(row.ticketId, (unprintedCustomerByTicket.get(row.ticketId) || 0) + count);
+            } else {
+              unprintedStaffByTicket.set(row.ticketId, (unprintedStaffByTicket.get(row.ticketId) || 0) + count);
+            }
+          }
         } catch {
           // order_submissions missing on a very old DB → additions flag simply
           // stays 0; the queue itself keeps working (same graceful mode as POST).
@@ -223,6 +264,8 @@ export async function GET(request: Request) {
       ...t,
       receiptImage: null, // keep field defined so clients know it needs fetching on demand
       unprintedSubmissions: unprintedByTicket.get((t as { id: number }).id) || 0,
+      unprintedCustomerSubmissions: unprintedCustomerByTicket.get((t as { id: number }).id) || 0,
+      unprintedStaffSubmissions: unprintedStaffByTicket.get((t as { id: number }).id) || 0,
       items: itemsByTicket.get((t as { id: number }).id) || [],
     }));
 
@@ -242,6 +285,9 @@ export async function POST(request: Request) {
     const body = await request.json();
     racedKey = body?.idempotencyKey ? String(body.idempotencyKey).slice(0, 64) : "";
     const { tableId, items, waiterName, source } = body;
+    const orderType = normalizeOrderType(body?.orderType);
+    const serviceNote = normalizeServiceNote(body?.serviceNote);
+    const outdoorLabel = normalizeOutdoorTableName(body?.outdoorLabel || body?.tableName);
 
     // Public customers may submit orders (source === "customer") → these become
     // `pending_waiter` and must be confirmed by staff. Any other source (waiter
@@ -261,6 +307,9 @@ export async function POST(request: Request) {
       const __auth = await requireStaffOrAdmin();
       if (!__auth.ok) return __auth.response;
     }
+    if (isCustomer && orderType === "outdoor") {
+      return NextResponse.json({ error: "Outdoor orders are entered by staff only" }, { status: 403 });
+    }
 
     await ensureTablesExist();
     // Idempotency key: unique per submission, generated client-side. Same key =
@@ -272,13 +321,13 @@ export async function POST(request: Request) {
     // key (<key>#0) is the canonical "has this submission been recorded?" probe.
     const idemProbe = idemKey ? `${idemKey}#0` : "";
 
-    if (!tableId || !items || items.length === 0) {
-      return NextResponse.json({ error: "Table and items required" }, { status: 400 });
+    if (!items || items.length === 0) {
+      return NextResponse.json({ error: "Items required" }, { status: 400 });
     }
-    // A table id that is not a real table number is rejected here, not deep
-    // inside the transaction (where it would fail as a cryptic 500).
-    const tableIdNum = Number(tableId);
-    if (!Number.isInteger(tableIdNum) || tableIdNum <= 0) {
+    // Outdoor orders live outside the real table grid, so they get their own
+    // synthetic ticket/table id. Dine-in orders still require a real table.
+    const tableIdNum = orderType === "outdoor" ? outdoorTableId() : Number(tableId);
+    if (orderType !== "outdoor" && (!Number.isInteger(tableIdNum) || tableIdNum <= 0)) {
       return NextResponse.json({ error: "Valid table required" }, { status: 400 });
     }
 
@@ -331,22 +380,29 @@ export async function POST(request: Request) {
       }
     }
 
-    const tableRows = await tx.select().from(cafeTables).where(eq(cafeTables.id, Number(tableId)));
+    const tableRows = orderType === "outdoor"
+      ? []
+      : await tx.select().from(cafeTables).where(eq(cafeTables.id, Number(tableId)));
     // The table must really exist: a QR code for a deleted table (or a forged
     // id) must never create a phantom bill that no board shows while the
     // kitchen still cooks it.
-    if (tableRows.length === 0) {
+    if (orderType !== "outdoor" && tableRows.length === 0) {
       return NextResponse.json({ error: "This table is no longer available. Please call your waiter." }, { status: 400 });
     }
-    const tableName = tableRows[0].name;
+    const tableName = orderType === "outdoor" ? outdoorLabel : tableRows[0].name;
 
-    // One active bill per table — merge items into it
-    const activeTickets = await tx
-      .select()
-      .from(tickets)
-      .where(and(eq(tickets.tableId, Number(tableId)), notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])));
+    // One active bill per real table — outdoor orders are always their own
+    // ticket, so they never merge into another outdoor run.
+    const activeTickets = orderType === "outdoor"
+      ? []
+      : await tx
+          .select()
+          .from(tickets)
+          .where(and(eq(tickets.tableId, tableIdNum), notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])));
 
     let ticketId: number;
+    const actorName = waiterName || (isCustomer ? "Customer (QR)" : "Waiter");
+    const actorRole = actorRoleOf(String(source || ""), orderType);
 
     if (activeTickets.length > 0) {
       ticketId = activeTickets[0].id;
@@ -361,8 +417,10 @@ export async function POST(request: Request) {
         const created = await tx
           .insert(tickets)
           .values({
-            tableId: Number(tableId),
+            tableId: tableIdNum,
             tableName,
+            orderType,
+            serviceNote,
             status: initialStatus,
             totalAmount: 0,
             createdBy: waiterName || (isCustomer ? "Customer (QR)" : "Waiter"),
@@ -385,7 +443,7 @@ export async function POST(request: Request) {
           const existing = await tx
             .select()
             .from(tickets)
-            .where(and(eq(tickets.tableId, Number(tableId)), notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])))
+            .where(and(eq(tickets.tableId, tableIdNum), notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])))
             .limit(1);
           if (existing.length > 0) {
             ticketId = existing[0].id;
@@ -651,6 +709,31 @@ export async function POST(request: Request) {
           mergedLines: mergedLineCount,
         });
       }
+      if (activeTickets.length === 0) {
+        await recordTicketEvent(tx, {
+          ticketId,
+          eventType: "ticket_created",
+          actorName,
+          actorRole,
+          source: isCustomer ? "customer" : "staff",
+          details:
+            orderType === "outdoor"
+              ? `Outdoor order created${serviceNote ? ` • ${serviceNote}` : ""}`
+              : isCustomer
+              ? "New QR order created"
+              : "New staff order created",
+        });
+      }
+      await recordTicketEvent(tx, {
+        ticketId,
+        eventType: "submission_added",
+        actorName,
+        actorRole,
+        source: isCustomer ? "customer" : "staff",
+        fromValue: mergedLineCount > 0 ? String(mergedLineCount) : null,
+        toValue: String(ticketRows.length),
+        details: summarizeSubmissionLines(ticketRows.map((line) => ({ name: line.name, quantity: line.quantity }))),
+      });
     } catch (err) {
       throw err;
     }
@@ -665,6 +748,19 @@ export async function POST(request: Request) {
     // only holds it until her CONFIRM & SEND.)
     if (!isCustomer && activeTickets.length === 0) {
       await tx.update(tickets).set({ confirmedAt: new Date() }).where(eq(tickets.id, ticketId));
+      await recordTicketEvent(tx, {
+        ticketId,
+        eventType: "ticket_sent",
+        actorName,
+        actorRole,
+        source: "staff",
+        fromValue: "draft",
+        toValue: orderType === "outdoor" ? "outdoor_sent" : "confirmed",
+        details:
+          orderType === "outdoor"
+            ? "Cashier sent a new outdoor order to the stations"
+            : "Waiter sent a new order to the stations",
+      });
     }
 
     const finalTicket = await tx.select().from(tickets).where(eq(tickets.id, ticketId));
@@ -878,6 +974,9 @@ export async function PUT(request: Request) {
     const rows = await db.select().from(tickets).where(eq(tickets.id, Number(body.id)));
     if (rows.length === 0) return NextResponse.json({ error: "Ticket not found" }, { status: 404 });
     const cur = rows[0];
+    const actorName = actor?.name || (__auth.session.kind === "admin" ? "admin" : null);
+    const actorRole = actor?.role || (__auth.session.kind === "admin" ? "admin" : null);
+    const statusChanged = Boolean(body.status && body.status !== cur.status);
 
     // ── STATUS TRANSITION GUARD (Group 1) ──
     // Only allow the real workflow: pending_waiter → confirmed → preparing →
@@ -895,6 +994,7 @@ export async function PUT(request: Request) {
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (body.status) updates.status = body.status;
+    if (body.serviceNote !== undefined) updates.serviceNote = normalizeServiceNote(body.serviceNote);
     // Payment method is validated (GROUP 5) — only the methods this cafe actually
     // records may be stored; an invalid value is rejected instead of silently saved.
     if (body.paymentMethod !== undefined) {
@@ -1013,6 +1113,53 @@ export async function PUT(request: Request) {
       await deleteOrphanedCdnImages([cur.receiptImage]);
     }
 
+    try {
+      if (sendRequested && !cur.confirmedAt && !cur.printedAt) {
+        await recordTicketEvent(db, {
+          ticketId: updated[0].id,
+          eventType: "ticket_sent",
+          actorName,
+          actorRole,
+          source: updated[0].orderType === "outdoor" ? "outdoor" : "staff",
+          fromValue: cur.status,
+          toValue: updated[0].status,
+          details:
+            updated[0].orderType === "outdoor"
+              ? `Outdoor order released to the stations${updated[0].serviceNote ? ` • ${updated[0].serviceNote}` : ""}`
+              : "Held bill released to the stations",
+        });
+      }
+      if (statusChanged) {
+        await recordTicketEvent(db, {
+          ticketId: updated[0].id,
+          eventType: "status_changed",
+          actorName,
+          actorRole,
+          fromValue: cur.status,
+          toValue: String(body.status),
+          details: `Status changed from ${cur.status} to ${body.status}`,
+        });
+      }
+      if (body.status === "printed") {
+        await recordTicketEvent(db, {
+          ticketId: updated[0].id,
+          eventType: "ticket_printed",
+          actorName,
+          actorRole,
+          fromValue: cur.printedAt ? "reprint" : "first_print",
+          toValue: "printed",
+          details:
+            updated[0].orderType === "outdoor"
+              ? "Cashier printed the outdoor order receipt"
+              : cur.printedAt
+              ? "Cashier re-printed the bill"
+              : "Cashier printed the bill",
+        });
+      }
+    } catch {
+      // The bill itself is already updated — never fail the workflow over audit logging.
+    }
+
     // ── THE PRINT IS EFD AUDIT ONLY (instant release, owner's decision) ──
     // The crews already received every line the moment it was ordered (see the
     // POST instant-release push): a print must never re-ring them for food
@@ -1030,7 +1177,6 @@ export async function PUT(request: Request) {
     // ring (the crews with lines on the bill, the cashier, the waiter). A HELD
     // accept rings NOBODY — there is nothing for anyone to do yet; every screen
     // updates and the guest alarm stops because the pending event is answered.
-    const statusChanged = Boolean(body.status && body.status !== cur.status);
     const releasedBySend = sendRequested && !cur.confirmedAt && !cur.printedAt;
     const alertStatus = statusChanged ? String(body.status) : releasedBySend ? "confirmed" : null;
     if (alertStatus && !(alertStatus === "confirmed" && holdAfterConfirm)) {
@@ -1101,6 +1247,7 @@ export async function DELETE(request: Request) {
     }
     await db.delete(ticketItems).where(eq(ticketItems.ticketId, Number(id)));
     await db.delete(orderSubmissions).where(eq(orderSubmissions.ticketId, Number(id)));
+    await db.delete(ticketEvents).where(eq(ticketEvents.ticketId, Number(id)));
     await db.delete(tickets).where(eq(tickets.id, Number(id)));
     await deleteOrphanedCdnImages([existing[0].receiptImage]);
     publish(CHANNELS.orders);

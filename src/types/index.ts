@@ -144,6 +144,9 @@ export type TicketStatus =
   | "paid"
   | "cancelled";
 
+export type TicketOrderType = "dine_in" | "outdoor";
+export type OrderHistoryStatus = "done" | "edited_printed" | "edited_cancelled" | "cancelled";
+
 export interface CafeTable {
   id: number;
   name: string;
@@ -164,7 +167,7 @@ export type PaymentMethod = "cash" | "card" | "online" | "telebirr" | "cbe";
  * Payment status is tracked SEPARATELY from order status (food ready ≠ paid).
  * Values match the cafe's real payment options; "online" is kept for legacy rows.
  */
-export type PaymentStatus = "unpaid" | "paid_cash" | "paid_telebirr" | "paid_cbe" | "paid_card";
+export type PaymentStatus = "unpaid" | "paid" | "paid_cash" | "paid_telebirr" | "paid_cbe" | "paid_card";
 
 export interface TicketItem {
   id: number;
@@ -188,10 +191,28 @@ export interface TicketItem {
   idempotencyKey?: string | null;
 }
 
+export interface TicketAuditEvent {
+  id: number;
+  eventType: string;
+  actorName?: string | null;
+  actorRole?: string | null;
+  source?: string | null;
+  itemId?: number | null;
+  itemName?: string | null;
+  fromValue?: string | null;
+  toValue?: string | null;
+  details?: string | null;
+  createdAt?: string | null;
+  label?: string | null;
+  detail?: string | null;
+}
+
 export interface Ticket {
   id: number;
   tableId: number;
   tableName: string;
+  orderType?: TicketOrderType | null;
+  serviceNote?: string | null;
   status: TicketStatus;
   paymentMethod?: PaymentMethod | null;
   paymentStatus?: PaymentStatus | null;
@@ -223,11 +244,44 @@ export interface Ticket {
    * (the "TABLE 5 — ADDED" card). Computed server-side in GET /api/tickets.
    */
   unprintedSubmissions?: number;
+  /** Of those waiting submissions, how many came from the guest's own phone. */
+  unprintedCustomerSubmissions?: number;
+  /** Of those waiting submissions, how many were keyed by staff. */
+  unprintedStaffSubmissions?: number;
   /** Guest asked for the bill/receipt (Group 8). Null until they tap it. */
   receiptRequestedAt?: string | null;
   /** WHEN a line on this bill was last corrected (bill-edit audit). */
   itemsEditedAt?: string | null;
+  /** Admin-only derived history status from the persistent audit trail. */
+  historyStatus?: OrderHistoryStatus;
+  historyStatusLabel?: string;
+  historyChangeSummary?: string | null;
+  auditTrail?: TicketAuditEvent[];
   items?: TicketItem[];
+}
+
+export interface WaiterRankingRow {
+  name: string;
+  acceptedOrders: number;
+  directOrders: number;
+  totalActions: number;
+}
+
+export interface WaiterOrderRecord {
+  waiterName: string;
+  kind: "accepted" | "direct";
+  ticketId: number;
+  tableName: string;
+  orderNumber?: string | null;
+  orderType?: TicketOrderType | null;
+  serviceNote?: string | null;
+  status: string;
+  totalAmount: number;
+  happenedAt?: string | null;
+  createdAt?: string | null;
+  confirmedAt?: string | null;
+  printedAt?: string | null;
+  detail?: string | null;
 }
 
 export interface ReportData {
@@ -266,6 +320,10 @@ export interface ReportData {
   periodLabel?: string;
   /** Total item units sold in the selected period (non-removed lines). */
   totalItems?: number;
+  /** Waiter ranking for the selected interval. */
+  waiterRanking?: WaiterRankingRow[];
+  /** Click-through order list backing the waiter ranking section. */
+  waiterOrders?: WaiterOrderRecord[];
   /** True when the printed-bills archive was capped (long periods only). */
   archiveCapped?: boolean;
   /** How many printed bills the selected period has in total (before any cap). */

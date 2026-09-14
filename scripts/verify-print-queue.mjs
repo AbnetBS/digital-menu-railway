@@ -40,6 +40,7 @@ const stationsApi = read("src/app/api/station-items/route.ts");
 const tableStatusApi = read("src/app/api/table-status/route.ts");
 const cashier = read("src/components/rms/CashierDashboard.tsx");
 const waiter = read("src/components/rms/WaiterApp.tsx");
+const station = read("src/components/rms/StationApp.tsx");
 const alerts = read("src/lib/alerts.ts");
 const admin = read("src/components/AdminPanel.tsx");
 const initialData = read("src/lib/initial-data.ts");
@@ -107,10 +108,12 @@ function pass(name, cond) {
  * (one-active-per-table + closed terminal). */
 {
   pass("additions counted from order_submissions AFTER the last print", /unprintedSubmissions/.test(tickets) && /gt\(orderSubmissions\.createdAt, tickets\.printedAt\)/.test(tickets));
+  pass("ticket payload splits unprinted additions by source (guest vs waiter)", /unprintedCustomerSubmissions/.test(tickets) && /unprintedStaffSubmissions/.test(tickets) && /groupBy\(orderSubmissions\.ticketId, orderSubmissions\.source\)/.test(tickets));
   pass("submissions-count failure degrades gracefully (old DBs keep working)", /unprintedByTicket\.get\(\(t as \{ id: number \}\)\.id\) \|\| 0/.test(tickets));
-  pass("cashier derives the new items with her EFD-only cutoff (createdAt > printedAt)", /isNewUnprinted/.test(cashier) && /new Date\(item\.createdAt\)\.getTime\(\) > new Date\(item\.printedAt|new Date\(i\.createdAt\)\.getTime\(\) > new Date\(/.test(cashier));
+  pass("cashier derives new printed-bill work from row time AND same-line quantity growth", /isNewUnprinted/.test(cashier) && /additionLinesRef/.test(cashier) && /NEW on existing line/.test(cashier));
   pass("additions queue card labels the new items count ('NEW item(s) on existing bill')", /NEW item/.test(cashier) && /on existing bill/.test(cashier));
   pass("additions card defaults to ONLY the new items, with a total of just those", /newItemsOf/.test(cashier) && /newTotal/.test(cashier) && /new items only/.test(cashier));
+  pass("station cards mark a grown pending line as NEW on the existing item", /newPendingBadges/.test(station) && /NEW \+/.test(station));
   pass("additions card can expand to the full bill for context (new items highlighted)", /toggleFullBill/.test(cashier) && /View full bill for context/.test(cashier));
   pass("the print action is still the one idempotent same-status printed PUT", /markPrinted/.test(cashier) && /status: "printed", printedBy: staffName/.test(cashier));
   pass("merge into the existing bill: a closed bill cannot receive additions (one-active-per-table)", /notInArray\(tickets\.status, \[\.\.\.INACTIVE_TICKET_STATUSES\]\)/.test(tickets));
@@ -121,8 +124,9 @@ function pass(name, cond) {
 {
   pass("mode comes from the owner setting (default: print-queue)", /cashier_mode/.test(cashier) && /printQueueMode/.test(cashier));
   pass("✓ PRINTED sends the printed transition with the cashier's name", /markPrinted/.test(cashier) && /status: "printed", printedBy: staffName/.test(cashier));
-  pass("the queue = confirmed orders + printed bills with additions", /t\.status === "confirmed"/.test(cashier) && /isAdditionCard/.test(cashier) && /t\.status === "printed" && \(t\.unprintedSubmissions \|\| 0\) > 0/.test(cashier));
+  pass("the queue = confirmed orders + printed bills with additions", /t\.status === "confirmed"/.test(cashier) && /isAdditionCard/.test(cashier) && /t\.status === "printed" && totalAddsOf\(t\) > 0/.test(cashier));
   pass("additions are flagged clearly (no 'key everything again' wording)", /NEW item.*on existing bill/.test(cashier) && !/ADDED — PRINT AGAIN/.test(cashier));
+  pass("staff top-ups are named as waiter work on an EXISTING bill, not a guest emergency", /WAITER ADDED ITEMS/.test(cashier) && /additionSourceLabel/.test(cashier));
   pass("queue header keeps her one-click workflow instruction", /key into EFD → print → tap ✓/.test(cashier));
   pass("unverified QR orders are NOT printable (waiter strip + accept-hold fallback)", /Waiting for waiter confirmation/.test(cashier) && /✓ Accept \(holds it\)/.test(cashier));
   pass("problem path exists (remove item / cancel order)", /toggleProblem/.test(cashier) && /Cancel whole order/.test(cashier));

@@ -39,6 +39,8 @@ interface StationTicket {
   id: number;
   tableName: string;
   orderNumber?: string | null;
+  orderType?: string | null;
+  serviceNote?: string | null;
   status: string;
   createdBy?: string | null;
   confirmedBy?: string | null;
@@ -59,6 +61,8 @@ interface HistoryTicket {
   id: number;
   tableName: string;
   orderNumber?: string | null;
+  orderType?: string | null;
+  serviceNote?: string | null;
   status: string;
   createdBy?: string | null;
   confirmedBy?: string | null;
@@ -164,6 +168,12 @@ export default function StationApp({ station }: { station: Station }) {
   >(new Map());
   /** Ticket id -> table name, so a vanished order can still be named. */
   const ticketNameRef = useRef<Map<number, string>>(new Map());
+  // NEW marker on a row that already existed: when a waiter adds more of the
+  // same pending line, the DB folds it into that line and only the quantity
+  // grows. Keep the +N here until the crew accepts it, so they can see "this
+  // existing row got new work" instead of mistaking it for an old quantity.
+  const newPendingBadgesRef = useRef<Record<number, number>>({});
+  const [newPendingBadges, setNewPendingBadges] = useState<Record<number, number>>({});
   const initRef = useRef(false);
 
   useEffect(() => {
@@ -259,6 +269,7 @@ export default function StationApp({ station }: { station: Station }) {
     const changed: Array<{ tableName: string; name: string; from: number; to: number }> = [];
     const removed: Array<{ tableName: string; name: string }> = [];
     const gone: string[] = [];
+    const nextNewPendingBadges: Record<number, number> = { ...newPendingBadgesRef.current };
     // TABLE CLEARED / BILL PAID IS NOT AN ALARM (owner's decision, Sept 2026).
     // A ticket leaves this list the moment a waiter clears the table or marks
     // it paid, and the crew used to get a full "stop preparing" alarm for it
@@ -288,6 +299,15 @@ export default function StationApp({ station }: { station: Station }) {
           tableName: t.tableName,
           stationStatus: i.stationStatus,
         });
+        if (i.stationStatus !== "pending") {
+          delete nextNewPendingBadges[i.id];
+        } else if (initRef.current) {
+          if (prev === undefined) {
+            nextNewPendingBadges[i.id] = Math.max(nextNewPendingBadges[i.id] || 0, Number(i.quantity) || 0);
+          } else if (i.quantity > prev.quantity) {
+            nextNewPendingBadges[i.id] = (nextNewPendingBadges[i.id] || 0) + (i.quantity - prev.quantity);
+          }
+        }
         if (initRef.current && prev !== undefined && prev.quantity !== i.quantity) {
           changed.push({ tableName: t.tableName, name: i.name, from: prev.quantity, to: i.quantity });
         }
@@ -297,6 +317,7 @@ export default function StationApp({ station }: { station: Station }) {
     for (const [id, seen] of [...itemSigRef.current.entries()]) {
       if (liveIds.has(id)) continue;
       itemSigRef.current.delete(id);
+      delete nextNewPendingBadges[id];
       // The line disappeared while its bill is still open => it was removed.
       // (A bill that left the list entirely is reported once, below.)
       if (initRef.current && nowTicketIds.has(seen.ticketId)) {
@@ -357,6 +378,8 @@ export default function StationApp({ station }: { station: Station }) {
         }
       }
     }
+    newPendingBadgesRef.current = nextNewPendingBadges;
+    setNewPendingBadges(nextNewPendingBadges);
     initRef.current = true;
 
     setTickets(data);
@@ -582,14 +605,19 @@ export default function StationApp({ station }: { station: Station }) {
             <div key={t.id} className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-serif font-bold text-lg text-amber-100">
-                    {t.tableName}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-serif font-bold text-lg text-amber-100">{t.tableName}</p>
                     {t.orderNumber && (
-                      <span className="ml-2 align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
+                      <span className="align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
                         Order #{t.orderNumber}
                       </span>
                     )}
-                  </p>
+                    {t.orderType === "outdoor" && (
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                        Outdoor
+                      </span>
+                    )}
+                  </div>
                   <p className="text-[11px] text-stone-300 flex items-center gap-1.5 uppercase font-black">
                     <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {t.status.replace(/_/g, " ")}
                   </p>
@@ -613,6 +641,7 @@ export default function StationApp({ station }: { station: Station }) {
                     👤 Ordered by {t.createdBy || "staff"}
                     {t.confirmedBy ? ` • Confirmed by ${t.confirmedBy}` : ""}
                   </p>
+                  {t.serviceNote && <p className="text-[11px] font-bold text-sky-300 mt-0.5">📍 {t.serviceNote}</p>}
                   {t.receiptRequestedAt && (
                     <p className="mt-1 inline-block text-[11px] font-black text-emerald-300 bg-emerald-950/60 border border-emerald-700 rounded-lg px-2 py-1">
                       🧾 Table asked for the bill at {formatClock(t.receiptRequestedAt)}
@@ -633,8 +662,15 @@ export default function StationApp({ station }: { station: Station }) {
                     }`}
                   >
                     <div className="flex-1 min-w-0">
-                      <p className={`font-bold ${i.stationStatus === "done" ? "text-stone-500 line-through" : "text-amber-100"}`}>
-                        {i.name} <span className="text-[#C9A227]">x{i.quantity}</span>
+                      <p className={`font-bold flex flex-wrap items-center gap-2 ${i.stationStatus === "done" ? "text-stone-500 line-through" : "text-amber-100"}`}>
+                        <span>
+                          {i.name} <span className="text-[#C9A227]">x{i.quantity}</span>
+                        </span>
+                        {i.stationStatus === "pending" && (newPendingBadges[i.id] || 0) > 0 && (
+                          <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-400 text-black border border-amber-200">
+                            {(newPendingBadges[i.id] || 0) > 1 ? `NEW +${newPendingBadges[i.id]}` : "NEW"}
+                          </span>
+                        )}
                       </p>
                       {i.createdAt && (
                         <p className="text-[11px] font-bold text-stone-300 mt-0.5">
@@ -750,20 +786,26 @@ export default function StationApp({ station }: { station: Station }) {
                     <div key={t.id} className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 space-y-2">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
-                          <p className="font-serif font-bold text-lg text-amber-100">
-                            {t.tableName}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-serif font-bold text-lg text-amber-100">{t.tableName}</p>
                             {t.orderNumber && (
-                              <span className="ml-2 align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
+                              <span className="align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
                                 Order #{t.orderNumber}
                               </span>
                             )}
-                          </p>
+                            {t.orderType === "outdoor" && (
+                              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
+                                Outdoor
+                              </span>
+                            )}
+                          </div>
                           <p className="text-[11px] font-bold text-stone-300 mt-0.5">
                             🕒 received {formatClock(stamp)} • {formatDayMonthYear(stamp)}
                           </p>
                           <p className="text-xs text-[#D8B93E] font-black truncate">
                             👤 {t.confirmedBy || t.createdBy || "staff"}
                           </p>
+                          {t.serviceNote && <p className="text-[11px] font-bold text-sky-300 truncate">📍 {t.serviceNote}</p>}
                         </div>
                         <div className="text-right shrink-0 space-y-1">
                           <span

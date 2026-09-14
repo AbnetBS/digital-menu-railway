@@ -7,22 +7,26 @@
  * staff cannot predict. A toast in a corner is not enough: the phone is in a
  * pocket and the tablet is behind the counter.
  *
- * So when one of those three things happens, this takes over the whole screen
+ * So when one of those things happens, this takes over the whole screen
  * with ONE big button. It rings exactly ONCE (the alarm already played where
  * the event was detected) and then stays SILENT: during a rush a card that
  * keeps re-ringing for an unanswered event trains staff to ignore the phone.
  * The card itself stays on screen with its big button until it is pressed —
  * pressing the button is the confirmation: it does the job (confirm the
  * order / open the table) and closes the screen.
+ *
+ * The fourth kind, "ready", is the cashier's outdoor-runner moment: every
+ * station finished an outdoor order, so she must send someone to pick it up
+ * and deliver it — same takeover, same one-ring rule.
  */
 
-import { Bell, Receipt, UtensilsCrossed, X } from "lucide-react";
+import { Bell, CheckCircle2, Receipt, UtensilsCrossed, X } from "lucide-react";
 
 export interface UrgentAlert {
   /** Stable id, so the same event does not re-open the screen after it is answered. */
   id: string;
-  /** "order" = new order, "added" = extra dishes, "bill" = asked for the bill. */
-  kind: "order" | "added" | "bill";
+  /** "order" = new order, "added" = extra dishes, "bill" = asked for the bill, "ready" = outdoor order fully done. */
+  kind: "order" | "added" | "bill" | "ready";
   /**
    * The ticket this alert is about. When ANOTHER device answers the event
    * (the order gets accepted, the additions printed, the bill request cleared),
@@ -44,6 +48,7 @@ const LOOK = {
   order: { icon: UtensilsCrossed, title: "NEW ORDER", ring: "from-amber-500 to-orange-600" },
   added: { icon: Bell, title: "ITEMS ADDED", ring: "from-amber-500 to-rose-600" },
   bill: { icon: Receipt, title: "BILL REQUESTED", ring: "from-emerald-500 to-teal-600" },
+  ready: { icon: CheckCircle2, title: "READY TO DELIVER", ring: "from-lime-500 to-emerald-600" },
 } as const;
 
 export default function UrgentAlertOverlay({

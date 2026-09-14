@@ -106,6 +106,12 @@ export default function CashierDashboard() {
   const customerAddOnsRef = useRef<Map<number, number>>(new Map());
   /** Ticket id -> staff-added submission count since the last print. */
   const staffAddOnsRef = useRef<Map<number, number>>(new Map());
+  /**
+   * Outdoor tickets already announced as READY, so each one rings exactly
+   * once. Cleared when the ticket stops being ready (new items landed) or
+   * leaves the active list, so the next ready moment rings again.
+   */
+  const outdoorReadyAnnouncedRef = useRef<Set<number>>(new Set());
   /** Tickets whose guest already asked for the bill. */
   const billAskedRef = useRef<Set<number>>(new Set());
   /**
@@ -175,6 +181,17 @@ export default function CashierDashboard() {
   const customerAddsOf = (t: Ticket) => t.unprintedCustomerSubmissions || 0;
   const staffAddsOf = (t: Ticket) => t.unprintedStaffSubmissions || 0;
   const totalAddsOf = (t: Ticket) => t.unprintedSubmissions || 0;
+  const isOutdoor = (t: Ticket) => t.orderType === "outdoor";
+  /**
+   * An outdoor order is ready when EVERY live line on it is done — kitchen,
+   * barista, juice AND buna. Buna lines reach done through the buna makers'
+   * own lane exactly like the other stations, so they count too: the runner
+   * must collect the whole order, not most of it.
+   */
+  const outdoorReady = (t: Ticket) => {
+    const live = (t.items || []).filter((item) => !item.removed);
+    return live.length > 0 && live.every((item) => item.stationStatus === "done");
+  };
   const isGuestTopUp = (t: Ticket) =>
     customerAddOnsRef.current.has(t.id) && customerAddsOf(t) > (customerAddOnsRef.current.get(t.id) || 0);
 
@@ -280,6 +297,9 @@ export default function CashierDashboard() {
 
       // ── EVENT DETECTION: any order action (QR order, confirmation, payment request, payment done)
       const newEvents: Ticket[] = [];
+      // Outdoor orders that JUST became ready (every station tapped Done) and
+      // have not been announced yet — the runner moment (see below).
+      const freshReady: Ticket[] = [];
       for (const t of active) {
         // The key is the fingerprint of "something the cashier must react to".
         // receiptRequestedAt is part of it now: a guest asking for the bill does
@@ -291,6 +311,9 @@ export default function CashierDashboard() {
         if (!seenEventsRef.current.has(key)) {
           seenEventsRef.current.add(key);
           newEvents.push(t);
+        }
+        if (isOutdoor(t) && outdoorReady(t) && !outdoorReadyAnnouncedRef.current.has(t.id)) {
+          freshReady.push(t);
         }
       }
 
@@ -351,6 +374,34 @@ export default function CashierDashboard() {
           });
         }
       }
+
+      // ── OUTDOOR READY: the runner moment ──
+      // Every station with work on an outdoor order tapped Done. The cashier
+      // is often mid-print on something else, so — exactly like a guest
+      // order, a guest top-up or a bill request — this takes over the whole
+      // screen with one big button until she answers it, and rings exactly
+      // once. Dine-in tables are deliberately excluded: food ready there is
+      // the owning waiter's walk, not the cashier's.
+      if (initializedRef.current && alertsOnRef.current && freshReady.length > 0) {
+        playAlarm();
+        const firstReady = freshReady[0];
+        const readyId = `ready-${firstReady.id}`;
+        if (!answeredRef.current.has(readyId)) {
+          setUrgent({
+            id: readyId,
+            kind: "ready",
+            ticketId: firstReady.id,
+            table: firstReady.tableName,
+            detail: `${firstReady.totalAmount} ETB • everything is done • send someone to pick it up`,
+            actionLabel: "GOT IT",
+          });
+        }
+        triggerDesktopNotification({
+          title: "Fana Cafe • Outdoor ready",
+          message: `🔔 READY TO DELIVER • ${firstReady.tableName} • send someone to pick it up`,
+          tag: `fana-cashier-ready-${firstReady.id}`,
+        });
+      }
       // Remember what this refresh looked like, so the same guest event is
       // never announced twice.
       additionLinesRef.current = nextAdditionLines;
@@ -361,12 +412,21 @@ export default function CashierDashboard() {
         staffAddOnsRef.current.set(t.id, staffAddsOf(t));
         if (t.receiptRequestedAt) billAskedRef.current.add(t.id);
         else billAskedRef.current.delete(t.id);
+        if (isOutdoor(t) && outdoorReady(t)) outdoorReadyAnnouncedRef.current.add(t.id);
+        else {
+          // Not ready (or not outdoor): a NEW ready moment later must ring
+          // again, so forget both the announcement and the old answer.
+          outdoorReadyAnnouncedRef.current.delete(t.id);
+          answeredRef.current.delete(`ready-${t.id}`);
+        }
       }
       for (const id of [...customerAddOnsRef.current.keys()]) {
         if (!active.some((t) => t.id === id)) {
           customerAddOnsRef.current.delete(id);
           staffAddOnsRef.current.delete(id);
           billAskedRef.current.delete(id);
+          outdoorReadyAnnouncedRef.current.delete(id);
+          answeredRef.current.delete(`ready-${id}`);
         }
       }
       initializedRef.current = true;
@@ -382,6 +442,9 @@ export default function CashierDashboard() {
         if (!t) return null; // the bill left the active list (cleared/paid/cancelled)
         if (cur.kind === "order") return t.status === "pending_waiter" ? cur : null;
         if (cur.kind === "bill") return t.receiptRequestedAt ? cur : null;
+        // "ready" closes itself once the order is not ready anymore (new items
+        // landed) — otherwise it stays until she presses GOT IT.
+        if (cur.kind === "ready") return isOutdoor(t) && outdoorReady(t) ? cur : null;
         return customerAddsOf(t) > 0 ? cur : null; // "added" is guest-only now
       });
 
@@ -746,12 +809,6 @@ export default function CashierDashboard() {
       sourceItem: line.ids.length === 1 ? visible.find((i) => i.id === line.ids[0]) || null : null,
     }));
   };
-  const isOutdoor = (t: Ticket) => t.orderType === "outdoor";
-  const outdoorReady = (t: Ticket) => {
-    const live = (t.items || []).filter((item) => !item.removed);
-    const tracked = live.filter((item) => item.stationName !== "buna");
-    return tracked.length > 0 && tracked.every((item) => item.stationStatus === "done");
-  };
   const statusPill = (t: Ticket) =>
     outdoorReady(t)
       ? { label: "READY TO DELIVER", cls: "bg-emerald-600 text-white" }
@@ -1013,7 +1070,7 @@ export default function CashierDashboard() {
             <div>
               <h2 className="text-xs font-bold uppercase tracking-widest text-violet-300/90">Outdoor Orders</h2>
               <p className="text-xs text-stone-400 mt-1">
-                Cashier-only flow for delivery / outside orders. Send them through the normal stations and watch for the ready badge here.
+                Cashier-only flow for delivery / outside orders. Send them through the normal stations. The moment every station taps Done, this screen takes over with an alarm so you can send someone to pick it up.
               </p>
             </div>
             <button

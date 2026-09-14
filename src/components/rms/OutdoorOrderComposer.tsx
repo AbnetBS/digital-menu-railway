@@ -147,7 +147,11 @@ export default function OutdoorOrderComposer({
     setSending(false);
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      alert(data?.error || "Could not send outdoor order");
+      alert(
+        response.status === 401
+          ? "Your cashier session ended. Log in again, then resend the order."
+          : data?.error || "Could not send outdoor order"
+      );
       return;
     }
     const data = await response.json();

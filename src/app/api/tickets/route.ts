@@ -72,7 +72,14 @@ function normalizeOutdoorTableName(label: unknown): string {
 }
 
 function outdoorTableId(): number {
-  return -Math.floor(Date.now() * 1000 + Math.random() * 1000);
+  // Synthetic table id for outdoor tickets. MUST stay inside the Postgres
+  // `integer` (int32) range of tickets.table_id: a timestamp-based id
+  // (~1.8e15) overflowed the column and failed EVERY outdoor insert with
+  // "integer out of range" — the cashier only ever saw "Could not submit
+  // order. Please call your waiter." Negative ids can never collide with real
+  // cafe_tables rows (serials start at 1); a freak collision between two
+  // ACTIVE outdoor tickets is retried with a fresh id (see POST below).
+  return -(1_000_000 + Math.floor(Math.random() * 2_140_000_000));
 }
 
 function actorRoleOf(source: string, orderType: "dine_in" | "outdoor"): string {
@@ -326,7 +333,8 @@ export async function POST(request: Request) {
     }
     // Outdoor orders live outside the real table grid, so they get their own
     // synthetic ticket/table id. Dine-in orders still require a real table.
-    const tableIdNum = orderType === "outdoor" ? outdoorTableId() : Number(tableId);
+    // `let` because an outdoor unique-violation retry draws a fresh id.
+    let tableIdNum = orderType === "outdoor" ? outdoorTableId() : Number(tableId);
     if (orderType !== "outdoor" && (!Number.isInteger(tableIdNum) || tableIdNum <= 0)) {
       return NextResponse.json({ error: "Valid table required" }, { status: 400 });
     }
@@ -334,7 +342,8 @@ export async function POST(request: Request) {
     const initialStatus = isCustomer ? "pending_waiter" : "confirmed";
     const recordSubmissions = idemKey ? await canRecordSubmissions() : false;
 
-    const transactionResult = await db.transaction(async (tx) => {
+    const runSubmission = () =>
+      db.transaction(async (tx) => {
     // ── IDEMPOTENCY CHECK (Group 1, extended by Group 8) ──
     // A retry/double-tap of the SAME submission must never duplicate the order.
     // Two records are checked, either of which proves the submission was applied:
@@ -434,6 +443,11 @@ export async function POST(request: Request) {
           .set({ orderNumber: `FANA-${ticketId}` })
           .where(eq(tickets.id, ticketId));
       } catch (err) {
+        // Outdoor tickets each get their OWN bill and must never merge into
+        // another ticket: a unique violation here can only be a freak
+        // synthetic-id collision, which the whole-transaction retry below
+        // resolves with a fresh id — so rethrow without the dine-in fallback.
+        if (orderType === "outdoor") throw err;
         // GROUP 5 — one-active-bill-per-table is enforced by a partial UNIQUE
         // index. If a CONCURRENT first order for this table won the race, our
         // insert is rejected (23505) → fall back to merging into that bill
@@ -765,7 +779,30 @@ export async function POST(request: Request) {
 
     const finalTicket = await tx.select().from(tickets).where(eq(tickets.id, ticketId));
     return { ticket: finalTicket[0], total, merged: activeTickets.length > 0, submissionStations: [...submissionStations] as StationName[] };
-    });
+      });
+
+    // Outdoor retry: two outdoor tickets drawing the same synthetic table id
+    // (or a concurrent duplicate submission racing this one) fails the whole
+    // transaction with a unique violation — and a rolled-back transaction
+    // leaves nothing behind, so just run it again with a fresh id. The
+    // idempotency probe at the top of the transaction keeps a retry from ever
+    // duplicating the bill (a raced duplicate returns as `duplicate: true`).
+    let transactionResult!: Awaited<ReturnType<typeof runSubmission>>;
+    for (let attempt = 0; ; attempt++) {
+      if (orderType === "outdoor" && attempt > 0) tableIdNum = outdoorTableId();
+      try {
+        transactionResult = await runSubmission();
+        break;
+      } catch (err) {
+        const pgErr = (err as { code?: string; cause?: { code?: string } }) ?? {};
+        const uniqueViolation =
+          pgErr.code === "23505" ||
+          pgErr.cause?.code === "23505" ||
+          /duplicate key/i.test(String(err));
+        if (orderType === "outdoor" && uniqueViolation && attempt + 1 < 5) continue;
+        throw err;
+      }
+    }
 
     if (transactionResult instanceof NextResponse) return transactionResult;
     if (transactionResult.duplicate) {

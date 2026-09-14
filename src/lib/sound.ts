@@ -1,5 +1,9 @@
 "use client";
 
+import { readyPhrase } from "./ready-phrase";
+
+export { readyPhrase } from "./ready-phrase";
+
 /**
  * Ring-bell sound engine for the staff screens ("must be heard in a loud
  * restaurant, from a pocket").
@@ -273,6 +277,11 @@ export function unlockAudio() {
       if (ctx.state === "suspended") void ctx.resume();
     }
 
+    // Prime speech too: Android Chrome often refuses SpeechSynthesis later
+    // unless a (silent) utterance ran inside a real gesture. Food-ready
+    // announcements ("Table 5 is ready") depend on this.
+    primeSpeech();
+
     // Prime EVERY sound INSIDE the gesture: playing (and immediately pausing)
     // each one here is what buys the right to play it later with the screen
     // off. Without this prime, the pocket alarm is silent.
@@ -455,4 +464,145 @@ export function playAlarm() {
     /* fall through to the synth */
   }
   synthAlarm();
+}
+
+/* ── Spoken "table is ready" (waiter food-ready, instead of the bell) ───── */
+
+/** Keep utterances reachable so Chrome does not GC them mid-sentence. */
+const heldUtterances: SpeechSynthesisUtterance[] = [];
+let speechPrimed = false;
+let voicesHooked = false;
+
+function primeSpeech() {
+  if (speechPrimed || typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  try {
+    const warm = new SpeechSynthesisUtterance(" ");
+    warm.volume = 0;
+    warm.rate = 1;
+    window.speechSynthesis.speak(warm);
+    window.speechSynthesis.cancel();
+    speechPrimed = true;
+    hookVoices();
+  } catch {
+    /* speech unsupported */
+  }
+}
+
+function hookVoices() {
+  if (voicesHooked || typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  voicesHooked = true;
+  try {
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", () => {
+      try {
+        window.speechSynthesis.getVoices();
+      } catch {
+        /* ignore */
+      }
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+function pickEnglishVoice(): SpeechSynthesisVoice | null {
+  if (typeof window === "undefined" || !window.speechSynthesis) return null;
+  const voices = window.speechSynthesis.getVoices();
+  return (
+    voices.find((v) => /^en/i.test(v.lang) && /google|samsung|enhanced|neural|microsoft/i.test(v.name)) ||
+    voices.find((v) => /^en[-_]/i.test(v.lang) && v.localService) ||
+    voices.find((v) => /^en/i.test(v.lang)) ||
+    null
+  );
+}
+
+function makeReadyUtterance(text: string): SpeechSynthesisUtterance {
+  const u = new SpeechSynthesisUtterance(text);
+  u.volume = 1;
+  u.rate = 0.88;
+  u.pitch = 1;
+  u.lang = "en-US";
+  const voice = pickEnglishVoice();
+  if (voice) u.voice = voice;
+  return u;
+}
+
+/**
+ * THE FOOD-READY CALL: the owning waiter's phone speaks the table name
+ * instead of the generic bell, so she hears "Table 5 is ready" and walks
+ * to the pass. Loud (volume 1, spoken twice) plus the same hard vibration
+ * as the alarm. Falls back to the bell if this browser cannot speak.
+ */
+export function speakTableReady(tableName: string | string[]) {
+  const names = (Array.isArray(tableName) ? tableName : [tableName])
+    .map((n) => String(n || "").trim())
+    .filter((n, i, all) => n.length > 0 && all.indexOf(n) === i);
+  const phrase = (names.length > 0 ? names : ["the table"]).map(readyPhrase).join(". ");
+
+  // Same pocket-felt buzz as the bell: speech is the SOUND, vibration is
+  // what gets through a pocket when media volume is down.
+  vibrate([400, 120, 400, 120, 400, 120, 400, 120, 400, 120, 400, 120, 400]);
+
+  const speakTwice = () => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      playAlarm();
+      return;
+    }
+    try {
+      hookVoices();
+      window.speechSynthesis.cancel();
+      heldUtterances.length = 0;
+      const first = makeReadyUtterance(phrase);
+      const second = makeReadyUtterance(phrase);
+      heldUtterances.push(first, second);
+      let fellBack = false;
+      const fallback = (ev: Event) => {
+        if (fellBack) return;
+        const err = (ev as { error?: string }).error;
+        if (err === "canceled" || err === "interrupted") return;
+        fellBack = true;
+        playAlarm();
+      };
+      first.onerror = fallback;
+      second.onerror = fallback;
+      first.onend = () => {
+        try {
+          window.speechSynthesis.speak(second);
+        } catch {
+          if (!fellBack) playAlarm();
+        }
+      };
+      // Chrome drops speak() if it follows cancel() in the same tick.
+      window.setTimeout(() => {
+        try {
+          window.speechSynthesis.speak(first);
+        } catch {
+          if (!fellBack) playAlarm();
+        }
+      }, 40);
+    } catch {
+      playAlarm();
+    }
+  };
+
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    playAlarm();
+    return;
+  }
+  if (window.speechSynthesis.getVoices().length > 0) {
+    speakTwice();
+    return;
+  }
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    speakTwice();
+  };
+  try {
+    window.speechSynthesis.addEventListener("voiceschanged", start, { once: true });
+  } catch {
+    /* ignore */
+  }
+  window.setTimeout(start, 280);
 }

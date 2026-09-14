@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import {
-  Coffee, Plus, Minus, Search, Send, CheckCircle2, Clock, X, Phone, Utensils, Loader2, QrCode,
+  Coffee, Plus, Minus, Search, Send, CheckCircle2, X, Phone, Utensils, Loader2, QrCode,
   ChevronLeft, ChevronRight, MapPin, Star, MessageSquare, Camera, Music2,
 } from "lucide-react";
 import { MenuItem, Category, CafeTable, SiteSettings, Announcement, GalleryItem, Review } from "@/types";
@@ -21,7 +21,7 @@ import {
   FIRST_SCREEN_PHOTOS,
 } from "@/lib/image-utils";
 import { ImageBatchProvider, RevealImage, useIdleImagePrefetch } from "@/components/ImageReveal";
-import { OrderStatusDock, OrderStatusProvider, RequestReceiptButton } from "@/components/rms/OrderStatus";
+import { OrderStatusDock, OrderStatusPage, OrderStatusProvider, RequestReceiptButton } from "@/components/rms/OrderStatus";
 import { FACEBOOK_URL, GOOGLE_MAPS_DIRECTIONS_URL, INSTAGRAM_URL, TIKTOK_URL } from "@/lib/business-links";
 
 /**
@@ -78,6 +78,7 @@ export default function CustomerMenuApp() {
   const [detailItem, setDetailItem] = useState<MenuItem | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [viewingStatus, setViewingStatus] = useState(false);
   const [error, setError] = useState("");
   const [lastOrderNumber, setLastOrderNumber] = useState("");
 
@@ -479,28 +480,35 @@ export default function CustomerMenuApp() {
   if (submitted) {
     return (
       <OrderStatusProvider tableId={tableId ?? 0} refreshKey={statusRefreshKey}>
+      {viewingStatus ? (
+        <OrderStatusPage
+          onBack={() => setViewingStatus(false)}
+          onBackToMenu={() => {
+            setViewingStatus(false);
+            setSubmitted(false);
+          }}
+        />
+      ) : (
       <div className="min-h-screen bg-[#FAF6F0] flex items-center justify-center p-6">
-        {/* The guest just ordered and wants to see WHAT they ordered: the same
-            floating status pill as on the menu, above the language button. */}
-        <OrderStatusDock />
-        <div className="bg-white rounded-3xl border-2 border-[#C9A227] p-8 max-w-sm w-full text-center space-y-4 shadow-2xl">
+        <LanguageToggle />
+        <div className="bg-white rounded-3xl border-2 border-[#C9A227] p-8 max-w-sm w-full text-center space-y-5 shadow-2xl">
           <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto">
             <CheckCircle2 className="w-9 h-9 text-emerald-600" />
           </div>
-          <h1 className="font-serif text-2xl font-bold text-[#2C1B17]">{t("order_sent_title")}</h1>
+          <h1 className="font-serif text-3xl font-black text-[#2C1B17] leading-tight">{t("order_sent_title")}</h1>
           {lastOrderNumber && (
             <p className="inline-block bg-[#2C1B17] text-[#C9A227] font-black text-sm px-4 py-1.5 rounded-full">
               Order #{lastOrderNumber}
             </p>
           )}
-          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-1">
-            <p className="text-sm font-bold text-[#2C1B17] flex items-center justify-center gap-1.5">
-              <Clock className="w-4 h-4 text-[#C9A227]" /> {t("waiting_confirmation")}
-            </p>
-            <p className="text-xs text-stone-600">
-              {t("waiter_walking", { table: menuText(tableName) })}
-            </p>
-          </div>
+          <p className="text-sm font-semibold text-stone-600 leading-relaxed">{t("order_sent_hint")}</p>
+          <button
+            type="button"
+            onClick={() => setViewingStatus(true)}
+            className="w-full bg-gradient-to-r from-orange-500 to-[#C9A227] text-[#2C1B17] font-black text-sm uppercase tracking-wide py-4 rounded-2xl shadow-lg border-2 border-[#C9A227] active:scale-[0.99] transition"
+          >
+            {t("check_order_status")}
+          </button>
           <p className="text-xs text-stone-500">{t("add_more_note")}</p>
           <button
             onClick={() => setSubmitted(false)}
@@ -510,6 +518,7 @@ export default function CustomerMenuApp() {
           </button>
         </div>
       </div>
+      )}
       </OrderStatusProvider>
     );
   }

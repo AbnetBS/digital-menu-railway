@@ -36,6 +36,7 @@ import {
   withoutActor,
   type RoleAlert,
 } from "../src/lib/alerts";
+import { readyPhrase } from "../src/lib/ready-phrase";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
@@ -117,6 +118,10 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
 
   const allReady = stationProgressAlerts("done", { ...base, wholeOrderReady: true });
   pass("the LAST finished dish says the whole order is ready", allReady.some((a) => /ORDER READY/i.test(a.title)));
+  pass("spoken ready call is 'Table 7 is ready'", readyPhrase("Table 7") === "Table 7 is ready");
+  pass("spoken ready call prefixes a bare table number", readyPhrase("5") === "Table 5 is ready");
+  pass("spoken ready call reads outdoor names without a second Table",
+    readyPhrase("OUTDOOR • White car") === "Outdoor, White car is ready");
 
   const started = stationProgressAlerts("accepted", { ...base, wholeOrderReady: false });
   pass("the crew starting work rings NOBODY (owner: noise — only DONE rings)", started.length === 0);
@@ -267,6 +272,10 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   const cashier = read("src/components/rms/CashierDashboard.tsx");
 
   pass("waiter screen alarms when food is READY", /readyRef/.test(waiter) && /ready to serve/i.test(waiter));
+  pass("waiter phone SPEAKS the table name when food is ready (not the generic bell)",
+    /speakTableReady\(tables\)/.test(waiter) && /readyItems\.length > 0/.test(waiter));
+  pass("food-ready no longer shares playAlarm with bill requests",
+    !/readyItems\.length > 0 \|\| billAsks\.length > 0\) playAlarm/.test(waiter));
   pass("waiter screen alarms when the guest asks for the bill", /billAskedRef/.test(waiter));
   pass("waiter screen announces status moves made by others", /statusMoveLabel/.test(waiter) && /ORDER CANCELLED/.test(waiter));
   pass("waiter screen stays silent for printed/preparing moves", !/printed: `/.test(waiter) && !/preparing: `/.test(waiter));

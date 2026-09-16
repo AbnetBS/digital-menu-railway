@@ -232,6 +232,41 @@ export const ticketItems = pgTable("ticket_items", {
   idempotencyKey: varchar("idempotency_key", { length: 64 }),
 });
 
+// ─── COFFEE NOTE (owner's decision, Sept 2026) ──────────────────────────────
+// The buna makers also sell traditional coffee OUTDOOR (gate, parking, the
+// offices next door) and they do not watch their phones, so those sales must
+// never enter the station queues — an outdoor buna order would sit "pending"
+// forever. Instead the cashier holds each call here as a numbered note:
+//
+//   call comes in → Add New (item defaults to Buna, +/− amount, place note)
+//   → HOLD → the note waits in the Coffee Note page (invisible to the normal
+//   outdoor orders list and to every station screen)
+//   → the buna maker settles up → the cashier taps PAID → only THEN is a real
+//   outdoor ticket created, straight into order history with the Outdoor
+//   corner badge. It is born paid/done, so no station ever sees it.
+export const bunaNotes = pgTable("buna_notes", {
+  id: serial("id").primaryKey(),
+  /** Daily note number shown in the list (1, 2, 3… restarts each day). */
+  seq: integer("seq").notNull().default(1),
+  /** The menu item this note is for (server-side price authority). */
+  menuItemId: integer("menu_item_id"),
+  /** Item name snapshot at hold time (default "Buna"). */
+  itemName: varchar("item_name", { length: 200 }).notNull(),
+  /** Menu price snapshot at hold time. */
+  unitPrice: integer("unit_price").notNull().default(0),
+  quantity: integer("quantity").notNull().default(1),
+  /** "Place" — where it went: gate, office, white car, Ahmed… */
+  placeNote: varchar("place_note", { length: 200 }),
+  /** Cashier who took the call and held the note. */
+  heldBy: varchar("held_by", { length: 100 }),
+  heldAt: timestamp("held_at").defaultNow(),
+  /** Null = still on hold. Set the moment the cashier taps PAID. */
+  paidAt: timestamp("paid_at"),
+  paidBy: varchar("paid_by", { length: 100 }),
+  /** The outdoor ticket created at payment (the order-history link). */
+  ticketId: integer("ticket_id"),
+});
+
 // ─── AMHARIC AUTO-TRANSLATION CACHE ─────────────────────────────────────────
 // Google Translate results for owner-managed content (menu items the owner
 // adds, categories, announcements, settings texts) are cached here so each

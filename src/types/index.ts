@@ -147,6 +147,30 @@ export type TicketStatus =
 export type TicketOrderType = "dine_in" | "outdoor";
 export type OrderHistoryStatus = "done" | "edited_printed" | "edited_cancelled" | "cancelled";
 
+/**
+ * One row of the cashier's Coffee Note (owner's decision, Sept 2026): a held
+ * outdoor buna sale. While `paidAt` is null the note is only visible in the
+ * Coffee Note page — never in the outdoor orders list and never on a station
+ * screen. Tapping PAID creates the real outdoor ticket (born paid) and links
+ * it back through `ticketId`.
+ */
+export interface BunaNote {
+  id: number;
+  /** Daily note number shown in the list (1, 2, 3… restarts each day). */
+  seq: number;
+  menuItemId?: number | null;
+  itemName: string;
+  unitPrice: number;
+  quantity: number;
+  placeNote?: string | null;
+  heldBy?: string | null;
+  heldAt?: string | null;
+  paidAt?: string | null;
+  paidBy?: string | null;
+  /** The outdoor ticket created at payment (order-history link). */
+  ticketId?: number | null;
+}
+
 export interface CafeTable {
   id: number;
   name: string;

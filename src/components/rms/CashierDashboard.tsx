@@ -13,6 +13,7 @@ import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
 import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
+import CoffeeNotePanel from "@/components/rms/CoffeeNotePanel";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 
@@ -61,6 +62,12 @@ export default function CashierDashboard() {
   // The queue line being fixed in the item editor (note / qty / remove).
   const [editTarget, setEditTarget] = useState<{ item: TicketItem } | null>(null);
   const [outdoorComposerOpen, setOutdoorComposerOpen] = useState(false);
+  // ── COFFEE NOTE (owner's decision, Sept 2026) ──
+  // The held outdoor-buna tab. `coffeeHeld` feeds the badge on the Coffee Note
+  // button (refreshed with the history cadence); the panel itself loads its
+  // own rows when opened.
+  const [coffeeNoteOpen, setCoffeeNoteOpen] = useState(false);
+  const [coffeeHeld, setCoffeeHeld] = useState(0);
   // Per printed bill, which lines are NEW right now — including a waiter or
   // customer adding MORE quantity to an already-existing row. This keeps
   // "Tea x4" readable as "Tea • NEW +2 on the existing line" until she prints.
@@ -471,6 +478,14 @@ export default function CashierDashboard() {
   // for the end-of-shift receipt count). Full mode keeps "Recently Paid".
   const loadHistory = async () => {
     if (typeof document !== "undefined" && document.hidden) return;
+    // Coffee Note badge: how many outdoor buna notes are on hold right now.
+    // Fire-and-forget — a hiccup must never disturb the history load.
+    fetch("/api/buna-notes")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { held?: unknown[] } | null) => {
+        if (d && Array.isArray(d.held)) setCoffeeHeld(d.held.length);
+      })
+      .catch(() => {});
     if (modeRef.current) {
       const y = new Date();
       y.setDate(y.getDate() - 1);
@@ -1073,12 +1088,26 @@ export default function CashierDashboard() {
                 Cashier-only flow for delivery / outside orders. Send them through the normal stations. The moment every station taps Done, this screen takes over with an alarm so you can send someone to pick it up.
               </p>
             </div>
-            <button
-              onClick={() => setOutdoorComposerOpen(true)}
-              className="bg-violet-600 hover:bg-violet-500 text-white text-xs font-black px-4 py-3 rounded-2xl"
-            >
-              + New Outdoor Order
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setCoffeeNoteOpen(true)}
+                className="bg-gradient-to-r from-[#C9A227] to-amber-500 hover:from-amber-400 hover:to-amber-300 text-[#2C1B17] text-xs font-black px-4 py-3 rounded-2xl flex items-center gap-2 border border-[#C9A227]"
+                title="The held tab for outdoor buna sales: hold a call, mark it paid when the buna maker settles."
+              >
+                <Coffee className="w-4 h-4" /> Coffee Note
+                {coffeeHeld > 0 && (
+                  <span className="min-w-[20px] h-5 px-1 rounded-full bg-[#2C1B17] text-amber-200 text-[10px] font-black flex items-center justify-center">
+                    {coffeeHeld}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => setOutdoorComposerOpen(true)}
+                className="bg-violet-600 hover:bg-violet-500 text-white text-xs font-black px-4 py-3 rounded-2xl"
+              >
+                + New Outdoor Order
+              </button>
+            </div>
           </div>
           {outdoorTickets.length === 0 ? (
             <div className="bg-[#241714] border border-stone-800 rounded-2xl p-4 text-xs text-stone-500">
@@ -2057,6 +2086,23 @@ export default function CashierDashboard() {
           showToast(message);
           loadAll();
           loadHistory();
+        }}
+      />
+
+      {/* COFFEE NOTE: the held outdoor-buna tab. A paid note creates an
+          outdoor ticket straight into history, so "paid" also refreshes the
+          history lists (Printed Today / Recently Paid) and the held badge. */}
+      <CoffeeNotePanel
+        open={coffeeNoteOpen}
+        cashierName={staffName}
+        onClose={() => setCoffeeNoteOpen(false)}
+        onChanged={(kind) => {
+          if (kind === "paid") {
+            loadAll();
+            loadHistory();
+          } else {
+            loadHistory();
+          }
         }}
       />
 

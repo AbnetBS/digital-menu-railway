@@ -96,9 +96,10 @@ const i18n = read("src/lib/i18n.ts");
   pass("the submission key is UNIQUE at the database level", /CREATE UNIQUE INDEX IF NOT EXISTS order_submissions_idempotency_key_key/.test(migrate));
   pass("submissions are indexed per ticket", /CREATE INDEX IF NOT EXISTS order_submissions_ticket_id_idx/.test(migrate));
   // Bumped again on 2026-09-13-1 when outdoor orders + persistent ticket audit
-  // logging landed: an existing production database only runs the migration
-  // when this constant moves.
-  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-13-1"/.test(migrate));
+  // logging landed, and on 2026-09-16-1 when the Coffee Note table (buna_notes)
+  // arrived: an existing production database only runs the migration when this
+  // constant moves.
+  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-16-1"/.test(migrate));
 }
 
 /* ── 3. duplicate lines merge in the DATABASE, not just on screen ─────────── */

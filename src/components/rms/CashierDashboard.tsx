@@ -190,13 +190,6 @@ export default function CashierDashboard() {
   const totalAddsOf = (t: Ticket) => t.unprintedSubmissions || 0;
   const isOutdoor = (t: Ticket) => t.orderType === "outdoor";
   /**
-   * MATCH DAY (owner's decision, Sept 2026): orders the waiters took for
-   * groups clustered on chairs around the screen carry a "MATCH • <spot>"
-   * label. They ride the outdoor flow but the badge must tell the truth.
-   */
-  const isMatch = (t: Ticket) => isOutdoor(t) && /^MATCH\b/i.test(String(t.tableName || ""));
-  const outdoorBadge = (t: Ticket) => (isMatch(t) ? "⚽ Match" : "Outdoor");
-  /**
    * An outdoor order is ready when EVERY live line on it is done — kitchen,
    * barista, juice AND buna. Buna lines reach done through the buna makers'
    * own lane exactly like the other stations, so they count too: the runner
@@ -1092,7 +1085,7 @@ export default function CashierDashboard() {
             <div>
               <h2 className="text-xs font-bold uppercase tracking-widest text-violet-300/90">Outdoor Orders</h2>
               <p className="text-xs text-stone-400 mt-1">
-                Cashier-only flow for delivery / outside orders, plus the ⚽ match-day orders waiters take when the chairs move to the screen. The moment every station taps Done, this screen takes over with an alarm so you can send someone to pick it up.
+                Cashier-only flow for delivery / outside orders. Send them through the normal stations. The moment every station taps Done, this screen takes over with an alarm so you can send someone to pick it up.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1134,7 +1127,7 @@ export default function CashierDashboard() {
                         <div className="flex flex-wrap items-center gap-2">
                           <p className="font-serif font-black text-lg text-amber-100">{t.tableName}</p>
                           <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                            {outdoorBadge(t)}
+                            Outdoor
                           </span>
                         </div>
                         <p className="text-[11px] font-bold text-stone-300 mt-1">
@@ -1490,7 +1483,7 @@ export default function CashierDashboard() {
                               )}
                               {isOutdoor(t) && (
                                 <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                                  {outdoorBadge(t)}
+                                  Outdoor
                                 </span>
                               )}
                             </div>
@@ -1740,7 +1733,7 @@ export default function CashierDashboard() {
                           )}
                           {isOutdoor(t) && (
                             <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                              {outdoorBadge(t)}
+                              Outdoor
                             </span>
                           )}
                         </div>
@@ -1955,7 +1948,7 @@ export default function CashierDashboard() {
                         <p className="text-sm font-black text-amber-100">{t.tableName}</p>
                         {isOutdoor(t) && (
                           <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                            {outdoorBadge(t)}
+                            Outdoor
                           </span>
                         )}
                       </div>
@@ -2013,7 +2006,7 @@ export default function CashierDashboard() {
                   <h3 className="font-serif font-black text-xl text-amber-100">{billModal.tableName}</h3>
                   {billModal.orderType === "outdoor" && (
                     <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                      {outdoorBadge(billModal)}
+                      Outdoor
                     </span>
                   )}
                 </div>

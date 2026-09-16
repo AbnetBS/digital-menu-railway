@@ -9,7 +9,6 @@ import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
-import MatchDayComposer from "@/components/rms/MatchDayComposer";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
@@ -84,9 +83,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   // UI
   const [view, setView] = useState<View>("login");
   const [selectedTable, setSelectedTable] = useState<CafeTable | null>(null);
-  // ⚽ MATCH DAY (owner's decision, Sept 2026): the composer for groups
-  // clustered on chairs around the screen — spot label instead of a table.
-  const [matchComposerOpen, setMatchComposerOpen] = useState(false);
   const [cart, setCart] = useState<CartEntry[]>([]);
   const [category, setCategory] = useState("all");
   const [search, setSearch] = useState("");
@@ -1136,17 +1132,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       {/* Full-screen guest alert (new order / added items / bill request) */}
       <UrgentAlertOverlay alert={urgent} onClose={closeUrgent} />
 
-      {/* ⚽ MATCH DAY composer — spot label instead of a table number. */}
-      <MatchDayComposer
-        open={matchComposerOpen}
-        waiterName={staffName}
-        onClose={() => setMatchComposerOpen(false)}
-        onSent={(message) => {
-          showToast(message);
-          loadTables();
-        }}
-      />
-
       {/* Toast */}
       {toast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl">
@@ -1255,25 +1240,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
               <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />{printQueueMode ? "Bill" : "Pay"}</span>
             </div>
           </div>
-
-          {/* ⚽ MATCH DAY: on football nights the chairs move to the screen and
-              table numbers stop describing reality. One tap opens the composer
-              that takes the order with a spot label ("Screen front", "Ahmed's
-              group") — normal station + cashier flow, its own bill per group. */}
-          <button
-            onClick={() => setMatchComposerOpen(true)}
-            className="w-full bg-gradient-to-r from-emerald-800 to-emerald-600 border-2 border-emerald-400/60 rounded-2xl p-4 flex items-center justify-between gap-3 text-left active:scale-[0.99] transition"
-          >
-            <div className="min-w-0">
-              <p className="font-serif font-black text-amber-100 text-sm">⚽ Match Day Order</p>
-              <p className="text-[11px] font-bold text-emerald-100/80 leading-snug mt-0.5">
-                Guests on chairs around the screen? Take the order with a spot label instead of a table number.
-              </p>
-            </div>
-            <span className="shrink-0 text-[10px] font-black uppercase bg-emerald-400 text-emerald-950 px-3 py-2 rounded-xl">
-              Open
-            </span>
-          </button>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {tables.map((t) => (

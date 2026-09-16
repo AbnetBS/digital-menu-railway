@@ -67,10 +67,7 @@ function normalizeServiceNote(value: unknown): string | null {
 function normalizeOutdoorTableName(label: unknown): string {
   const trimmed = String(label || "").trim().replace(/\s+/g, " ");
   if (!trimmed) return "OUTDOOR";
-  // MATCH DAY (owner's decision, Sept 2026): labels that already announce
-  // themselves ("MATCH • Screen front") keep their prefix — every screen then
-  // shows where the group is sitting, not a wrong "OUTDOOR" story.
-  const prefixed = /^(outdoor|match)\b/i.test(trimmed) ? trimmed : `OUTDOOR • ${trimmed}`;
+  const prefixed = /^outdoor\b/i.test(trimmed) ? trimmed : `OUTDOOR • ${trimmed}`;
   return prefixed.slice(0, 50);
 }
 
@@ -320,11 +317,6 @@ export async function POST(request: Request) {
     if (isCustomer && orderType === "outdoor") {
       return NextResponse.json({ error: "Outdoor orders are entered by staff only" }, { status: 403 });
     }
-    // WHO is really sending? For staff submissions the SESSION decides the
-    // audit role — a WAITER sending a match-day order must be recorded as the
-    // waiter (the old guess said "cashier" for every outdoor order, which was
-    // only true for the cashier's own outdoor composer).
-    const senderSession = !isCustomer ? await readStaffSession() : null;
 
     await ensureTablesExist();
     // Idempotency key: unique per submission, generated client-side. Same key =
@@ -409,26 +401,9 @@ export async function POST(request: Request) {
     const tableName = orderType === "outdoor" ? outdoorLabel : tableRows[0].name;
 
     // One active bill per real table — outdoor orders are always their own
-    // ticket, so they never merge into another outdoor run. ONE exception
-    // (match day, Sept 2026): a staff submission may aim at ONE open outdoor
-    // bill (`targetTicketId`), so the waiter can add "another round" to the
-    // same screen-side bill instead of printing a new one per round. The
-    // target must itself be outdoor and still active; anything else simply
-    // falls through to a fresh ticket.
-    const targetTicketId = Number(body?.targetTicketId) || 0;
+    // ticket, so they never merge into another outdoor run.
     const activeTickets = orderType === "outdoor"
-      ? targetTicketId > 0
-        ? await tx
-            .select()
-            .from(tickets)
-            .where(
-              and(
-                eq(tickets.id, targetTicketId),
-                eq(tickets.orderType, "outdoor"),
-                notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])
-              )
-            )
-        : []
+      ? []
       : await tx
           .select()
           .from(tickets)
@@ -436,7 +411,7 @@ export async function POST(request: Request) {
 
     let ticketId: number;
     const actorName = waiterName || (isCustomer ? "Customer (QR)" : "Waiter");
-    const actorRole = senderSession?.role || actorRoleOf(String(source || ""), orderType);
+    const actorRole = actorRoleOf(String(source || ""), orderType);
 
     if (activeTickets.length > 0) {
       ticketId = activeTickets[0].id;
@@ -797,7 +772,7 @@ export async function POST(request: Request) {
         toValue: orderType === "outdoor" ? "outdoor_sent" : "confirmed",
         details:
           orderType === "outdoor"
-            ? `${senderSession?.role === "waiter" ? "Waiter" : "Cashier"} sent a new outdoor order to the stations`
+            ? "Cashier sent a new outdoor order to the stations"
             : "Waiter sent a new order to the stations",
       });
     }

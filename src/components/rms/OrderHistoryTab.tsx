@@ -162,7 +162,7 @@ export default function OrderHistoryTab() {
                     <p className="font-serif font-bold text-amber-100">{o.tableName}</p>
                     {o.orderType === "outdoor" && (
                       <span className="inline-block text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                        Outdoor
+                        {/^GROUP \d+$/i.test(String(o.tableName || "")) ? "👥 Group" : "Outdoor"}
                       </span>
                     )}
                   </div>

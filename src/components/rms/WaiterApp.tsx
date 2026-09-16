@@ -9,6 +9,7 @@ import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
+import GroupComposer from "@/components/rms/GroupComposer";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
@@ -82,6 +83,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   // UI
   const [view, setView] = useState<View>("login");
+  // GROUP ORDERS (owner's decision, Sept 2026): guests cluster on chairs away
+  // from their tables, so each group of people gets its own auto-numbered
+  // bill. Always available, from the top corner of the tables view.
+  const [groupComposerOpen, setGroupComposerOpen] = useState(false);
   const [selectedTable, setSelectedTable] = useState<CafeTable | null>(null);
   const [cart, setCart] = useState<CartEntry[]>([]);
   const [category, setCategory] = useState("all");
@@ -1132,6 +1137,17 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       {/* Full-screen guest alert (new order / added items / bill request) */}
       <UrgentAlertOverlay alert={urgent} onClose={closeUrgent} />
 
+      {/* GROUP ORDERS composer — auto-numbered bills for guest groups. */}
+      <GroupComposer
+        open={groupComposerOpen}
+        waiterName={staffName}
+        onClose={() => setGroupComposerOpen(false)}
+        onSent={(message) => {
+          showToast(message);
+          loadTables();
+        }}
+      />
+
       {/* Toast */}
       {toast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl">
@@ -1231,9 +1247,20 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
               )}
             </div>
           )}
-          <div className="flex items-center justify-between">
-            <h1 className="font-serif text-xl font-bold text-amber-100">Select Table</h1>
-            <div className="flex gap-3 text-[10px]">
+          <div>
+            <div className="flex items-center justify-between gap-2">
+              <h1 className="font-serif text-xl font-bold text-amber-100">Select Table</h1>
+              {/* GROUP ORDERS: always available, top corner of the tables
+                  view. One tap opens the auto-numbered group composer. */}
+              <button
+                onClick={() => setGroupComposerOpen(true)}
+                className="shrink-0 flex items-center gap-1.5 bg-emerald-800/80 border-2 border-emerald-400/60 hover:bg-emerald-700 rounded-xl px-3 py-2 text-[11px] font-black text-emerald-100 active:scale-95 transition"
+              >
+                <Users className="w-4 h-4" />
+                Groups
+              </button>
+            </div>
+            <div className="flex gap-3 text-[10px] mt-1.5">
               <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />Free</span>
               <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-violet-500 inline-block" />Waiting</span>
             <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />{printQueueMode ? "Sent" : "Busy"}</span>

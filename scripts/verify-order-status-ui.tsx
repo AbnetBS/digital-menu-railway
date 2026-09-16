@@ -15,7 +15,11 @@
  *   endpoint is swallowed and the next poll recovers → the floating status
  *   pill appears above the language button, expands to the dish list with
  *   Accepted / Preparing / Ready chips (buna always reads Accepted), and the
- *   refresh button re-polls.
+ *   refresh button re-polls → the live SENT → ACCEPTED badge on the
+ *   confirmation screen: amber SENT + spinner + dots while nobody accepted,
+ *   green ACCEPTED the moment the waiter/cashier confirms, PAID / CANCELLED
+ *   endings, SENT as the honest default before the first poll answers, and a
+ *   tap opens the detailed status.
  *
  * Requires the `jsdom` devDependency (no browser, no database, no server).
  * Run with: npx tsx scripts/verify-order-status-ui.tsx   (wired into `npm test`)
@@ -117,7 +121,7 @@ async function main() {
   const React = (await import("react")).default;
   const { createRoot } = await import("react-dom/client");
   const { act } = await import("react");
-  const { OrderStatusProvider, OrderStatusDock, RequestReceiptButton } = await import(
+  const { OrderStatusProvider, OrderStatusDock, OrderSentBadge, RequestReceiptButton } = await import(
     "../src/components/rms/OrderStatus"
   );
   type Root = ReturnType<typeof createRoot>;
@@ -351,6 +355,99 @@ async function main() {
   await flush();
   pass("no order → no pill, no panel", hostDockEmpty.querySelectorAll("button").length === 0);
   await act(async () => rootDockEmpty.unmount());
+
+  // ── 10. the live SENT → ACCEPTED badge on the confirmation screen ────────
+  //    (owner's decision: it replaces the order-number pill and answers ONE
+  //    question for as long as the guest stays on that page — did anybody
+  //    accept my order yet?)
+  const badgeFetchFor = (over: Record<string, unknown>) => {
+    const fn = async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return ok(payload(over));
+    };
+    return fn;
+  };
+  const mountBadge = (root: Root, refreshKey: number, onOpen: () => void) =>
+    act(async () => {
+      root.render(
+        React.createElement(
+          OrderStatusProvider,
+          { tableId: 5, refreshKey },
+          React.createElement(OrderSentBadge, { onOpen })
+        )
+      );
+    });
+
+  const hostBadge = dom.window.document.createElement("div");
+  dom.window.document.body.appendChild(hostBadge);
+  const rootBadge = createRoot(hostBadge);
+  const badgeText = () => `${hostBadge.textContent || ""}`;
+  const badgeButton = () => hostBadge.querySelector("button") as HTMLElement | null;
+  let badgeOpened = 0;
+  const openSpy = () => {
+    badgeOpened++;
+  };
+
+  // 10a. nobody accepted yet → amber SENT + spinner + dots
+  const badge_sentFetch = badgeFetchFor({ phase: "waiting", status: "pending_waiter" });
+  (dom.window as unknown as { fetch: unknown }).fetch = badge_sentFetch;
+  g.fetch = badge_sentFetch;
+  await mountBadge(rootBadge, 0, openSpy);
+  await flush();
+  pass("a just-sent order nobody accepted → the badge says SENT", /SENT/.test(badgeText()) && !/ACCEPTED/.test(badgeText()));
+  pass("SENT is the amber in-progress pill, not green", badgeButton()?.className.includes("amber") === true && !badgeButton()?.className.includes("emerald"));
+  pass("SENT carries the spinning progress icon", hostBadge.querySelector(".animate-spin") !== null);
+  pass("SENT carries the three bouncing dots", hostBadge.querySelectorAll(".animate-bounce").length === 3);
+  pass("the waiting sentence rides under the badge", /Waiting for your waiter to confirm/.test(badgeText()));
+  pass("the pop animation is armed (replays at the flip)", hostBadge.querySelector(".animate-badge-pop") !== null);
+  await click(badgeButton());
+  pass("tapping the badge opens the detailed status page", badgeOpened === 1);
+
+  // 10b. the waiter/cashier tapped Accept → green ACCEPTED with a check
+  const badge_acceptedFetch = badgeFetchFor({ phase: "confirmed", status: "confirmed" });
+  (dom.window as unknown as { fetch: unknown }).fetch = badge_acceptedFetch;
+  g.fetch = badge_acceptedFetch;
+  await mountBadge(rootBadge, 1, openSpy);
+  await flush();
+  pass("the moment staff accept → the badge says ACCEPTED", /ACCEPTED/.test(badgeText()) && !/SENT/.test(badgeText()));
+  pass("ACCEPTED is the green pill", badgeButton()?.className.includes("emerald") === true);
+  pass("no spinner and no dots once accepted", hostBadge.querySelector(".animate-spin") === null && hostBadge.querySelectorAll(".animate-bounce").length === 0);
+  pass("the accepted sentence rides under the badge", /heading to the kitchen/.test(badgeText()));
+
+  // 10c. later phases keep the green ACCEPTED, the sentence carries the detail
+  const badge_preparingFetch = badgeFetchFor({ phase: "preparing" });
+  (dom.window as unknown as { fetch: unknown }).fetch = badge_preparingFetch;
+  g.fetch = badge_preparingFetch;
+  await mountBadge(rootBadge, 2, openSpy);
+  await flush();
+  pass("preparing stays green ACCEPTED (sentence says the rest)", /ACCEPTED/.test(badgeText()) && /being prepared/.test(badgeText()));
+
+  // 10d. the endings
+  const badge_paidFetch = badgeFetchFor({ phase: "paid", status: "paid", paymentStatus: "paid_cash" });
+  (dom.window as unknown as { fetch: unknown }).fetch = badge_paidFetch;
+  g.fetch = badge_paidFetch;
+  await mountBadge(rootBadge, 3, openSpy);
+  await flush();
+  pass("a paid bill reads PAID in green", /PAID/.test(badgeText()) && badgeButton()?.className.includes("emerald") === true);
+
+  const badge_cancelledFetch = badgeFetchFor({ phase: "cancelled", status: "cancelled" });
+  (dom.window as unknown as { fetch: unknown }).fetch = badge_cancelledFetch;
+  g.fetch = badge_cancelledFetch;
+  await mountBadge(rootBadge, 4, openSpy);
+  await flush();
+  pass("a cancelled order reads CANCELLED in rose", /CANCELLED/.test(badgeText()) && badgeButton()?.className.includes("rose") === true);
+
+  // 10e. before the first poll answers, SENT is the honest default
+  const badgeEmptyFetch = async (url: string, init?: RequestInit) => {
+    calls.push({ url: String(url), init });
+    return ok({ tableId: 5, ticket: null });
+  };
+  (dom.window as unknown as { fetch: unknown }).fetch = badgeEmptyFetch;
+  g.fetch = badgeEmptyFetch;
+  await mountBadge(rootBadge, 5, openSpy);
+  await flush();
+  pass("no answer yet → the badge still says SENT (never a blank)", /SENT/.test(badgeText()) && hostBadge.querySelector(".animate-spin") !== null);
+  await act(async () => rootBadge.unmount());
 
   console.log(
     failures === 0

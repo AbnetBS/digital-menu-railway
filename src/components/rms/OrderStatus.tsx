@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ArrowLeft, CheckCircle2, ChevronDown, Loader2, Receipt, RefreshCw } from "lucide-react";
+import { ArrowLeft, CheckCircle2, ChevronDown, Loader2, Receipt, RefreshCw, XCircle } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { formatClock, type CustomerOrderPhase } from "@/lib/order-lines";
 import LanguageToggle from "@/components/LanguageToggle";
@@ -30,6 +30,11 @@ import LanguageToggle from "@/components/LanguageToggle";
  *                                what is on it, and whether the receipt was
  *                                already asked for (plus `requestBill` and a
  *                                manual `refresh` for the panel).
+ *   • <OrderSentBadge/>        — the live label under the "sent successfully"
+ *                                title: amber "SENT" with a spinning icon and
+ *                                bouncing dots until the waiter or cashier
+ *                                taps Accept, then it pops to a green
+ *                                "ACCEPTED" (owner's decision, Sept 2026).
  *   • <OrderStatusDock/>       — the floating pill + expandable panel. Renders
  *                                nothing until the table has a live order.
  *   • <RequestReceiptButton/>  — one big button with a receipt icon. One tap
@@ -46,6 +51,17 @@ import LanguageToggle from "@/components/LanguageToggle";
 
 /** How often the guest's phone asks for an update while the menu is open. */
 const POLL_MS = 12_000;
+
+/**
+ * Faster cadence while the order is still SENT-and-unaccepted (owner's
+ * decision): the guest is staring at the SENT badge on the confirmation
+ * screen, so the flip to green ACCEPTED should land within a few seconds of
+ * the waiter or cashier tapping Accept. A table is usually 2-4 phones, so
+ * 4 phones × one read / 5s ≈ 480 reads per 10-minute window — still inside
+ * the per-table limit (600) and a rounding error against the venue cap
+ * (20,000). Once accepted (or any other phase) it settles back to POLL_MS.
+ */
+const WAITING_POLL_MS = 5_000;
 
 export interface TableTicketLine {
   name: string;
@@ -108,6 +124,10 @@ export function OrderStatusProvider({
   const [status, setStatus] = useState<TableStatus | null>(null);
   const [requesting, setRequesting] = useState(false);
 
+  // The live badge on the "sent successfully" screen waits for the waiter or
+  // cashier to accept: while that flip is still pending, poll faster.
+  const waiting = status?.ticket?.phase === "waiting";
+
   const refresh = useCallback(async () => {
     if (!tableId) return;
     try {
@@ -124,10 +144,12 @@ export function OrderStatusProvider({
     // the effect body itself never updates state synchronously.
     const kickoff = setTimeout(refresh, 0);
     // Poll only while the tab is actually visible: a phone left open on the table
-    // must not keep hammering the server all evening.
+    // must not keep hammering the server all evening. While the order is still
+    // waiting to be accepted, ask a little more often (see WAITING_POLL_MS) so
+    // the SENT → ACCEPTED flip on the confirmation screen lands fast.
     const timer = setInterval(() => {
       if (typeof document === "undefined" || !document.hidden) refresh();
-    }, POLL_MS);
+    }, waiting ? WAITING_POLL_MS : POLL_MS);
     const onVisible = () => {
       if (!document.hidden) refresh();
     };
@@ -137,7 +159,7 @@ export function OrderStatusProvider({
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [tableId, refresh, refreshKey]);
+  }, [tableId, refresh, refreshKey, waiting]);
 
   const requestBill = useCallback(async () => {
     if (!tableId || requesting) return;
@@ -266,6 +288,136 @@ const CHIP_STYLE: Record<LineChip, string> = {
   preparing: "bg-amber-100 text-amber-900",
   ready: "bg-emerald-100 text-emerald-900",
 };
+
+/* ───────────────────── the live SENT → ACCEPTED badge ───────────────────── */
+
+/** What the live badge under the "sent successfully" title says. */
+type SentBadgeState = "sent" | "accepted" | "paid" | "cancelled";
+
+/**
+ * waiting / none → still SENT: nobody has touched the order yet.
+ * Everything from confirmed on means the waiter or cashier tapped Accept, so
+ * the badge reads ACCEPTED and stays green while the crews work (the sentence
+ * under it carries the detail: heading to the kitchen, preparing, ready…).
+ */
+function sentBadgeStateOf(phase: CustomerOrderPhase): SentBadgeState {
+  if (phase === "cancelled") return "cancelled";
+  if (phase === "paid") return "paid";
+  if (phase === "waiting" || phase === "none") return "sent";
+  return "accepted";
+}
+
+/**
+ * Badge look per state. SENT is amber — the "in progress" color of this app's
+ * whole order flow (amber waiting dot, amber Preparing chip) — with a spinner
+ * because the send itself succeeded and the order is moving. ACCEPTED is the
+ * green the guest already associates with "good news" (check circle, Ready
+ * chip, bill-requested note). PAID keeps the green; CANCELLED goes rose.
+ */
+const SENT_BADGE_STYLE: Record<SentBadgeState, { shell: string; word: string; icon: string; note: string }> = {
+  sent: {
+    shell: "border-amber-400 bg-gradient-to-r from-amber-50 to-orange-50",
+    word: "text-amber-800",
+    icon: "text-amber-600",
+    note: "text-amber-700",
+  },
+  accepted: {
+    shell: "border-emerald-400 bg-gradient-to-r from-emerald-50 to-green-50",
+    word: "text-emerald-700",
+    icon: "text-emerald-600",
+    note: "text-emerald-700",
+  },
+  paid: {
+    shell: "border-emerald-400 bg-gradient-to-r from-emerald-50 to-green-50",
+    word: "text-emerald-700",
+    icon: "text-emerald-600",
+    note: "text-emerald-700",
+  },
+  cancelled: {
+    shell: "border-rose-300 bg-rose-50",
+    word: "text-rose-700",
+    icon: "text-rose-600",
+    note: "text-rose-700",
+  },
+};
+
+/** The three bouncing dots after "SENT" — the "still working on it" feel. */
+function AnimatedDots() {
+  return (
+    <span className="inline-flex items-center gap-[3px] pl-0.5" aria-hidden="true">
+      {[0, 160, 320].map((delay) => (
+        <span
+          key={delay}
+          className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-bounce"
+          style={{ animationDelay: `${delay}ms` }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/**
+ * THE OWNER'S LIVE LABEL (Sept 2026), sitting where the order number used to
+ * be on the "sent successfully" screen. It answers ONE question for as long
+ * as the guest stays on that page: did anybody accept my order yet?
+ *
+ *   • nobody accepted yet → an amber "SENT" with a spinning progress icon and
+ *     three bouncing dots, plus the "waiting for your waiter" line below.
+ *   • the moment the waiter or cashier taps Accept → it pops to a green
+ *     "ACCEPTED" label with a check icon. Later phases keep the green and the
+ *     sentence underneath moves on (preparing, ready, bill).
+ *   • paid → green "PAID" · cancelled → rose "CANCELLED".
+ *
+ * It stays live on its own: the provider keeps polling the table (faster
+ * while still waiting — see WAITING_POLL_MS), so the flip happens without the
+ * guest tapping anything. Tapping the badge opens the full per-dish status
+ * page, same as the "Check your order status" button below it.
+ */
+export function OrderSentBadge({ onOpen }: { onOpen?: () => void }) {
+  const { ticket } = useOrderStatus();
+  const t = useT();
+
+  // The guest JUST submitted, so until the first poll answers "SENT, waiting"
+  // is the honest state — never a blank or a flash of the wrong color.
+  const phase: CustomerOrderPhase = ticket?.phase ?? "waiting";
+  const state = sentBadgeStateOf(phase);
+  const style = SENT_BADGE_STYLE[state];
+  const label =
+    state === "accepted"
+      ? t("os_badge_accepted")
+      : state === "paid"
+      ? t("os_badge_paid")
+      : state === "cancelled"
+      ? t("os_badge_cancelled")
+      : t("os_badge_sent");
+  const sentence = t(PHASE_SENTENCE[phase] ?? PHASE_SENTENCE.waiting);
+
+  return (
+    <div className="w-full space-y-1.5" aria-live="polite">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`${label} • ${sentence}`}
+        className={`w-full flex items-center justify-center rounded-2xl border-2 px-4 py-3.5 shadow-sm transition active:scale-[0.99] ${style.shell}`}
+      >
+        {/* key={state} remounts the row when the state flips, so the pop
+            animation replays exactly at the SENT → ACCEPTED moment. */}
+        <span key={state} className="flex items-center justify-center gap-2.5 animate-badge-pop">
+          {state === "sent" ? (
+            <Loader2 className={`w-5 h-5 animate-spin shrink-0 ${style.icon}`} />
+          ) : state === "cancelled" ? (
+            <XCircle className={`w-5 h-5 shrink-0 ${style.icon}`} />
+          ) : (
+            <CheckCircle2 className={`w-5 h-5 shrink-0 ${style.icon}`} />
+          )}
+          <span className={`font-black text-sm uppercase tracking-[0.25em] ${style.word}`}>{label}</span>
+          {state === "sent" && <AnimatedDots />}
+        </span>
+      </button>
+      <p className={`text-center text-[11px] font-bold leading-snug ${style.note}`}>{sentence}</p>
+    </div>
+  );
+}
 
 /**
  * The chip one dish row shows. The crew's `pending → accepted → done` maps to

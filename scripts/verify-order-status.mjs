@@ -96,9 +96,10 @@ const i18n = read("src/lib/i18n.ts");
   pass("the submission key is UNIQUE at the database level", /CREATE UNIQUE INDEX IF NOT EXISTS order_submissions_idempotency_key_key/.test(migrate));
   pass("submissions are indexed per ticket", /CREATE INDEX IF NOT EXISTS order_submissions_ticket_id_idx/.test(migrate));
   // Bumped again on 2026-09-13-1 when outdoor orders + persistent ticket audit
-  // logging landed: an existing production database only runs the migration
-  // when this constant moves.
-  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-13-1"/.test(migrate));
+  // logging landed, and on 2026-09-16-1 when the Coffee Note table (buna_notes)
+  // arrived: an existing production database only runs the migration when this
+  // constant moves.
+  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-16-1"/.test(migrate));
 }
 
 /* ── 3. duplicate lines merge in the DATABASE, not just on screen ─────────── */
@@ -155,6 +156,26 @@ const i18n = read("src/lib/i18n.ts");
   pass("the menu page wraps itself in the provider", /<OrderStatusProvider/.test(app) && /tableId=\{tableId \?\? 0\}/.test(app));
   pass("the menu renders the status dock plus the receipt button", /<OrderStatusDock \/>/.test(app) && /<RequestReceiptButton \/>/.test(app));
   pass("the sent-confirmation screen has a Check your order status button", /if \(submitted\)[\s\S]{0,2500}check_order_status/.test(app) && /OrderStatusPage/.test(app));
+  pass(
+    "the confirmation screen shows the live SENT → ACCEPTED badge instead of the order number",
+    /<OrderSentBadge/.test(app) && /export function OrderSentBadge/.test(orderStatusUi) && !/lastOrderNumber/.test(app)
+  );
+  pass(
+    "the badge is amber SENT with a spinner and dots until staff accept, then green ACCEPTED",
+    /os_badge_sent/.test(orderStatusUi) &&
+      /os_badge_accepted/.test(orderStatusUi) &&
+      /animate-spin/.test(orderStatusUi) &&
+      /animate-bounce/.test(orderStatusUi) &&
+      /animate-badge-pop/.test(read("src/app/globals.css"))
+  );
+  pass(
+    "the badge ends honestly: PAID green, CANCELLED rose, ticket-less default SENT",
+    /os_badge_paid/.test(orderStatusUi) && /os_badge_cancelled/.test(orderStatusUi) && /ticket\?\.phase \?\? "waiting"/.test(orderStatusUi)
+  );
+  pass(
+    "the provider polls faster while the order is still waiting to be accepted",
+    /WAITING_POLL_MS/.test(orderStatusUi) && /waiting \? WAITING_POLL_MS : POLL_MS/.test(orderStatusUi)
+  );
   pass("each dish has a Sent → Preparing → Done timeline", /os_step_sent/.test(orderStatusUi) && /os_step_preparing/.test(orderStatusUi) && /os_step_done/.test(orderStatusUi) && /function LineTimeline/.test(orderStatusUi));
   pass("the status pill is orange Fana-themed so guests can see it", /from-orange-500 to-\[\#C9A227\]/.test(orderStatusUi));
   pass("nothing is rendered when there is nothing to show", /empty:hidden/.test(app));

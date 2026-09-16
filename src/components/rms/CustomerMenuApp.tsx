@@ -21,7 +21,7 @@ import {
   FIRST_SCREEN_PHOTOS,
 } from "@/lib/image-utils";
 import { ImageBatchProvider, RevealImage, useIdleImagePrefetch } from "@/components/ImageReveal";
-import { OrderStatusDock, OrderStatusPage, OrderStatusProvider, RequestReceiptButton } from "@/components/rms/OrderStatus";
+import { OrderSentBadge, OrderStatusDock, OrderStatusPage, OrderStatusProvider, RequestReceiptButton } from "@/components/rms/OrderStatus";
 import { FACEBOOK_URL, GOOGLE_MAPS_DIRECTIONS_URL, INSTAGRAM_URL, TIKTOK_URL } from "@/lib/business-links";
 
 /**
@@ -80,7 +80,6 @@ export default function CustomerMenuApp() {
   const [submitted, setSubmitted] = useState(false);
   const [viewingStatus, setViewingStatus] = useState(false);
   const [error, setError] = useState("");
-  const [lastOrderNumber, setLastOrderNumber] = useState("");
 
   // ── IDEMPOTENCY (Group 1): one key per submission attempt, reused on retries so
   //    a double-tap or WiFi retry can NEVER create a duplicate order. If the cart
@@ -434,8 +433,6 @@ export default function CustomerMenuApp() {
         }),
       });
       if (r.ok) {
-        const d = await r.json();
-        setLastOrderNumber(d.orderNumber || "");
         pendingKeyRef.current = ""; // submission recorded — next cart is a new order
         setSubmitted(true);
         setCart([]);
@@ -496,11 +493,11 @@ export default function CustomerMenuApp() {
             <CheckCircle2 className="w-9 h-9 text-emerald-600" />
           </div>
           <h1 className="font-serif text-3xl font-black text-[#2C1B17] leading-tight">{t("order_sent_title")}</h1>
-          {lastOrderNumber && (
-            <p className="inline-block bg-[#2C1B17] text-[#C9A227] font-black text-sm px-4 py-1.5 rounded-full">
-              Order #{lastOrderNumber}
-            </p>
-          )}
+          {/* The owner's live label, in place of the old order-number pill:
+              amber SENT with a spinning icon and dots until the waiter or
+              cashier taps Accept, then it pops to a green ACCEPTED — for as
+              long as the guest stays on this page. Tap it for the dish list. */}
+          <OrderSentBadge onOpen={() => setViewingStatus(true)} />
           <p className="text-sm font-semibold text-stone-600 leading-relaxed">{t("order_sent_hint")}</p>
           <button
             type="button"

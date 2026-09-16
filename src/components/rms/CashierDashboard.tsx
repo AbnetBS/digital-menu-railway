@@ -13,6 +13,7 @@ import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
 import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
+import CoffeeNotePanel from "@/components/rms/CoffeeNotePanel";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 
@@ -61,6 +62,12 @@ export default function CashierDashboard() {
   // The queue line being fixed in the item editor (note / qty / remove).
   const [editTarget, setEditTarget] = useState<{ item: TicketItem } | null>(null);
   const [outdoorComposerOpen, setOutdoorComposerOpen] = useState(false);
+  // ── COFFEE NOTE (owner's decision, Sept 2026) ──
+  // The held outdoor-buna tab. `coffeeHeld` feeds the badge on the Coffee Note
+  // button (refreshed with the history cadence); the panel itself loads its
+  // own rows when opened.
+  const [coffeeNoteOpen, setCoffeeNoteOpen] = useState(false);
+  const [coffeeHeld, setCoffeeHeld] = useState(0);
   // Per printed bill, which lines are NEW right now — including a waiter or
   // customer adding MORE quantity to an already-existing row. This keeps
   // "Tea x4" readable as "Tea • NEW +2 on the existing line" until she prints.
@@ -182,6 +189,14 @@ export default function CashierDashboard() {
   const staffAddsOf = (t: Ticket) => t.unprintedStaffSubmissions || 0;
   const totalAddsOf = (t: Ticket) => t.unprintedSubmissions || 0;
   const isOutdoor = (t: Ticket) => t.orderType === "outdoor";
+  /**
+   * GROUP ORDERS (owner's decision, Sept 2026): when the seating does not
+   * match the table grid (chairs dragged around, shared tables, no table at
+   * all), the waiter bills each group of people on its own auto-numbered
+   * GROUP bill. They ride the outdoor flow but the badge must tell the truth.
+   */
+  const isGroup = (t: Ticket) => isOutdoor(t) && /^GROUP \d+$/i.test(String(t.tableName || ""));
+  const outdoorBadge = (t: Ticket) => (isGroup(t) ? "👥 Group" : "Outdoor");
   /**
    * An outdoor order is ready when EVERY live line on it is done — kitchen,
    * barista, juice AND buna. Buna lines reach done through the buna makers'
@@ -471,6 +486,14 @@ export default function CashierDashboard() {
   // for the end-of-shift receipt count). Full mode keeps "Recently Paid".
   const loadHistory = async () => {
     if (typeof document !== "undefined" && document.hidden) return;
+    // Coffee Note badge: how many outdoor buna notes are on hold right now.
+    // Fire-and-forget — a hiccup must never disturb the history load.
+    fetch("/api/buna-notes")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { held?: unknown[] } | null) => {
+        if (d && Array.isArray(d.held)) setCoffeeHeld(d.held.length);
+      })
+      .catch(() => {});
     if (modeRef.current) {
       const y = new Date();
       y.setDate(y.getDate() - 1);
@@ -1070,15 +1093,29 @@ export default function CashierDashboard() {
             <div>
               <h2 className="text-xs font-bold uppercase tracking-widest text-violet-300/90">Outdoor Orders</h2>
               <p className="text-xs text-stone-400 mt-1">
-                Cashier-only flow for delivery / outside orders. Send them through the normal stations. The moment every station taps Done, this screen takes over with an alarm so you can send someone to pick it up.
+                Cashier-only flow for delivery / outside orders, plus the 👥 group orders waiters take when the seating does not match the tables. The moment every station taps Done, this screen takes over with an alarm so you can send someone to pick it up.
               </p>
             </div>
-            <button
-              onClick={() => setOutdoorComposerOpen(true)}
-              className="bg-violet-600 hover:bg-violet-500 text-white text-xs font-black px-4 py-3 rounded-2xl"
-            >
-              + New Outdoor Order
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setCoffeeNoteOpen(true)}
+                className="bg-gradient-to-r from-[#C9A227] to-amber-500 hover:from-amber-400 hover:to-amber-300 text-[#2C1B17] text-xs font-black px-4 py-3 rounded-2xl flex items-center gap-2 border border-[#C9A227]"
+                title="The held tab for outdoor buna sales: hold a call, mark it paid when the buna maker settles."
+              >
+                <Coffee className="w-4 h-4" /> Coffee Note
+                {coffeeHeld > 0 && (
+                  <span className="min-w-[20px] h-5 px-1 rounded-full bg-[#2C1B17] text-amber-200 text-[10px] font-black flex items-center justify-center">
+                    {coffeeHeld}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => setOutdoorComposerOpen(true)}
+                className="bg-violet-600 hover:bg-violet-500 text-white text-xs font-black px-4 py-3 rounded-2xl"
+              >
+                + New Outdoor Order
+              </button>
+            </div>
           </div>
           {outdoorTickets.length === 0 ? (
             <div className="bg-[#241714] border border-stone-800 rounded-2xl p-4 text-xs text-stone-500">
@@ -1098,7 +1135,7 @@ export default function CashierDashboard() {
                         <div className="flex flex-wrap items-center gap-2">
                           <p className="font-serif font-black text-lg text-amber-100">{t.tableName}</p>
                           <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                            Outdoor
+                            {outdoorBadge(t)}
                           </span>
                         </div>
                         <p className="text-[11px] font-bold text-stone-300 mt-1">
@@ -1454,7 +1491,7 @@ export default function CashierDashboard() {
                               )}
                               {isOutdoor(t) && (
                                 <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                                  Outdoor
+                                  {outdoorBadge(t)}
                                 </span>
                               )}
                             </div>
@@ -1704,7 +1741,7 @@ export default function CashierDashboard() {
                           )}
                           {isOutdoor(t) && (
                             <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                              Outdoor
+                              {outdoorBadge(t)}
                             </span>
                           )}
                         </div>
@@ -1919,7 +1956,7 @@ export default function CashierDashboard() {
                         <p className="text-sm font-black text-amber-100">{t.tableName}</p>
                         {isOutdoor(t) && (
                           <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                            Outdoor
+                            {outdoorBadge(t)}
                           </span>
                         )}
                       </div>
@@ -1977,7 +2014,7 @@ export default function CashierDashboard() {
                   <h3 className="font-serif font-black text-xl text-amber-100">{billModal.tableName}</h3>
                   {billModal.orderType === "outdoor" && (
                     <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                      Outdoor
+                      {outdoorBadge(billModal)}
                     </span>
                   )}
                 </div>
@@ -2057,6 +2094,23 @@ export default function CashierDashboard() {
           showToast(message);
           loadAll();
           loadHistory();
+        }}
+      />
+
+      {/* COFFEE NOTE: the held outdoor-buna tab. A paid note creates an
+          outdoor ticket straight into history, so "paid" also refreshes the
+          history lists (Printed Today / Recently Paid) and the held badge. */}
+      <CoffeeNotePanel
+        open={coffeeNoteOpen}
+        cashierName={staffName}
+        onClose={() => setCoffeeNoteOpen(false)}
+        onChanged={(kind) => {
+          if (kind === "paid") {
+            loadAll();
+            loadHistory();
+          } else {
+            loadHistory();
+          }
         }}
       />
 

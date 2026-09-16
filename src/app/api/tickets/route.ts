@@ -16,6 +16,7 @@ import { sendPushToRoles, CUSTOMER_ALERT_RING } from "@/lib/push";
 import { ticketStatusAlerts, withoutActor } from "@/lib/alerts";
 import { stationForOrder, stationOf, type StationName } from "@/lib/stations";
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
+import { nextGroupNumberToday, nextGroupNumberInTx, groupLabel } from "@/lib/group-orders";
 
 /**
  * Customer order limits are TWO-TIER (per table + per venue) because every guest
@@ -67,7 +68,9 @@ function normalizeServiceNote(value: unknown): string | null {
 function normalizeOutdoorTableName(label: unknown): string {
   const trimmed = String(label || "").trim().replace(/\s+/g, " ");
   if (!trimmed) return "OUTDOOR";
-  const prefixed = /^outdoor\b/i.test(trimmed) ? trimmed : `OUTDOOR • ${trimmed}`;
+  // GROUP bills are numbered by the SERVER (see @/lib/group-orders), so a
+  // label that already says GROUP is passed through untouched.
+  const prefixed = /^(outdoor|group)\b/i.test(trimmed) ? trimmed : `OUTDOOR • ${trimmed}`;
   return prefixed.slice(0, 50);
 }
 
@@ -165,6 +168,14 @@ export async function GET(request: Request) {
     // "Printed Yesterday" (or any past day): same window, different date.
     const printedDateParam = searchParams.get("printedDate");
     const limit = Math.min(200, Math.max(1, Number(searchParams.get("limit") || 100)));
+
+    // GROUP ORDERS: the waiter's composer asks "what will the next group
+    // number be?" so it can show "This will be Group 8" before sending. The
+    // number the SERVER assigns at send time is the truth; this is a display
+    // prediction only.
+    if (searchParams.get("nextGroup") === "1") {
+      return NextResponse.json({ nextGroup: await nextGroupNumberToday() });
+    }
 
     let list;
     if (activeOnly) {
@@ -317,6 +328,17 @@ export async function POST(request: Request) {
     if (isCustomer && orderType === "outdoor") {
       return NextResponse.json({ error: "Outdoor orders are entered by staff only" }, { status: 403 });
     }
+    // WHO is really sending? For staff submissions the SESSION decides the
+    // audit role — a WAITER sending a group order must be recorded as the
+    // waiter (the old guess said "cashier" for every outdoor order, which was
+    // only true for the cashier's own outdoor composer).
+    const senderSession = !isCustomer ? await readStaffSession() : null;
+    // GROUP ORDERS (owner's decision, Sept 2026): chairs get dragged around,
+    // different peoples share one table, some sit with no table at all. The
+    // billing unit is the GROUP OF PEOPLE: the waiter's composer sends
+    // groupOrder: true and the SERVER stamps the bill "GROUP <n>" (numbered
+    // daily, never reused) — the client can never pick or forge a number.
+    const isGroupOrder = orderType === "outdoor" && body?.groupOrder === true;
 
     await ensureTablesExist();
     // Idempotency key: unique per submission, generated client-side. Same key =
@@ -398,12 +420,29 @@ export async function POST(request: Request) {
     if (orderType !== "outdoor" && tableRows.length === 0) {
       return NextResponse.json({ error: "This table is no longer available. Please call your waiter." }, { status: 400 });
     }
-    const tableName = orderType === "outdoor" ? outdoorLabel : tableRows[0].name;
+    let tableName = orderType === "outdoor" ? outdoorLabel : tableRows[0].name;
 
     // One active bill per real table — outdoor orders are always their own
-    // ticket, so they never merge into another outdoor run.
+    // ticket, so they never merge into another outdoor run. ONE exception
+    // (group orders, Sept 2026): a staff submission may aim at ONE open
+    // outdoor bill (`targetTicketId`), so the waiter can add another round to
+    // the same group's bill instead of printing a new one per round. The
+    // target must itself be outdoor and still active; anything else simply
+    // falls through to a fresh ticket.
+    const targetTicketId = Number(body?.targetTicketId) || 0;
     const activeTickets = orderType === "outdoor"
-      ? []
+      ? targetTicketId > 0
+        ? await tx
+            .select()
+            .from(tickets)
+            .where(
+              and(
+                eq(tickets.id, targetTicketId),
+                eq(tickets.orderType, "outdoor"),
+                notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])
+              )
+            )
+        : []
       : await tx
           .select()
           .from(tickets)
@@ -411,10 +450,13 @@ export async function POST(request: Request) {
 
     let ticketId: number;
     const actorName = waiterName || (isCustomer ? "Customer (QR)" : "Waiter");
-    const actorRole = actorRoleOf(String(source || ""), orderType);
+    const actorRole = senderSession?.role || actorRoleOf(String(source || ""), orderType);
 
     if (activeTickets.length > 0) {
       ticketId = activeTickets[0].id;
+      // Another round on a group bill: the SERVER-side label of the target
+      // wins, whatever the client may have sent.
+      if (isGroupOrder) tableName = activeTickets[0].tableName;
       // customer adding more items before waiter confirmation → keep pending_waiter
       // waiter adding more items to confirmed bill → stays confirmed; if at payment stage → move back to confirmed
       const cur = activeTickets[0];
@@ -422,6 +464,10 @@ export async function POST(request: Request) {
         await tx.update(tickets).set({ status: "confirmed" }).where(eq(tickets.id, ticketId));
       }
     } else {
+      // A NEW group bill takes its number under the advisory lock, so two
+      // waiters creating groups in the same instant still get consecutive
+      // numbers (never the same one twice).
+      if (isGroupOrder) tableName = groupLabel(await nextGroupNumberInTx(tx));
       try {
         const created = await tx
           .insert(tickets)
@@ -772,7 +818,7 @@ export async function POST(request: Request) {
         toValue: orderType === "outdoor" ? "outdoor_sent" : "confirmed",
         details:
           orderType === "outdoor"
-            ? "Cashier sent a new outdoor order to the stations"
+            ? `${senderSession?.role === "waiter" ? "Waiter" : "Cashier"} sent a new outdoor order to the stations`
             : "Waiter sent a new order to the stations",
       });
     }

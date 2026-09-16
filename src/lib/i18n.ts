@@ -123,6 +123,12 @@ const STRINGS = {
     add_more_note: "Want to add more? You can order again anytime, it joins your table's bill automatically.",
     back_to_menu: "← Back to Menu",
 
+    /* the live SENT → ACCEPTED badge under the confirmation title */
+    os_badge_sent: "SENT",
+    os_badge_accepted: "ACCEPTED",
+    os_badge_paid: "PAID",
+    os_badge_cancelled: "CANCELLED",
+
     /* customer menu — live order status (feature 1) */
     order_status: "Order Status",
     os_view: "View",
@@ -320,6 +326,12 @@ const STRINGS = {
     check_order_status: "የትዕዛዝ ሁኔታዎን ይመልከቱ",
     add_more_note: "ተጨማሪ መጨመር ይፈልጋሉ? በማንኛውም ጊዜ እንደገና ማዘዝ ይችላሉ፣ በራስ-ሰር ከጠረጴዛዎ ሂሳብ ጋር ይጣመራል።",
     back_to_menu: "← ወደ ምናሌ ተመለስ",
+
+    /* the live SENT → ACCEPTED badge under the confirmation title */
+    os_badge_sent: "ተልኳል",
+    os_badge_accepted: "ተቀብሏል",
+    os_badge_paid: "ተከፍሏል",
+    os_badge_cancelled: "ተሰርዟል",
 
     /* customer menu — live order status (feature 1) */
     order_status: "የትዕዛዝ ሁኔታ",

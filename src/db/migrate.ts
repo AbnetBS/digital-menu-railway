@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-09-13-1";
+const SCHEMA_VERSION = "2026-09-16-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -278,6 +278,27 @@ const RMS_CREATES: Array<[string, string]> = [
       mime_type text DEFAULT 'image/jpeg',
       data text,
       created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    // Coffee Note (owner's decision, Sept 2026): the cashier's held tab for
+    // OUTDOOR buna sales. Rows live here while on hold (never in tickets, so
+    // no station screen or outdoor card can see them); paying one creates the
+    // real outdoor ticket straight into order history.
+    "buna_notes",
+    `CREATE TABLE IF NOT EXISTS buna_notes (
+      id serial PRIMARY KEY,
+      seq integer NOT NULL DEFAULT 1,
+      menu_item_id integer,
+      item_name varchar(200) NOT NULL,
+      unit_price integer NOT NULL DEFAULT 0,
+      quantity integer NOT NULL DEFAULT 1,
+      place_note varchar(200),
+      held_by varchar(100),
+      held_at timestamp DEFAULT now(),
+      paid_at timestamp,
+      paid_by varchar(100),
+      ticket_id integer
     )`,
   ],
 ];
@@ -665,6 +686,9 @@ async function runFullMigrate(force: boolean) {
   //       and waiter ranking click-through read one bill's timeline in order.
   await run(`CREATE INDEX IF NOT EXISTS ticket_events_ticket_id_created_at_idx ON ticket_events (ticket_id, created_at)`);
   await run(`CREATE INDEX IF NOT EXISTS ticket_events_event_type_idx ON ticket_events (event_type)`);
+  //   11. buna_notes(paid_at, held_at): the Coffee Note page reads the held
+  //       rows (paid_at IS NULL) and today's paid rows in one query each.
+  await run(`CREATE INDEX IF NOT EXISTS buna_notes_paid_at_held_at_idx ON buna_notes (paid_at, held_at)`);
 
   // Group 10 (pocket-mode alerts): one row per device — re-subscribing the same
   // device replaces its row instead of duplicating it.

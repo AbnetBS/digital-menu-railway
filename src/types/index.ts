@@ -147,6 +147,30 @@ export type TicketStatus =
 export type TicketOrderType = "dine_in" | "outdoor";
 export type OrderHistoryStatus = "done" | "edited_printed" | "edited_cancelled" | "cancelled";
 
+/**
+ * One row of the cashier's Coffee Note (owner's decision, Sept 2026): a held
+ * outdoor buna sale. While `paidAt` is null the note is only visible in the
+ * Coffee Note page — never in the outdoor orders list and never on a station
+ * screen. Tapping PAID creates the real outdoor ticket (born paid) and links
+ * it back through `ticketId`.
+ */
+export interface BunaNote {
+  id: number;
+  /** Daily note number shown in the list (1, 2, 3… restarts each day). */
+  seq: number;
+  menuItemId?: number | null;
+  itemName: string;
+  unitPrice: number;
+  quantity: number;
+  placeNote?: string | null;
+  heldBy?: string | null;
+  heldAt?: string | null;
+  paidAt?: string | null;
+  paidBy?: string | null;
+  /** The outdoor ticket created at payment (order-history link). */
+  ticketId?: number | null;
+}
+
 export interface CafeTable {
   id: number;
   name: string;
@@ -157,6 +181,12 @@ export interface CafeTable {
   activeTicketBy?: string | null; // who is handling the open bill (createdBy / confirmedBy)
   /** When the open bill started (Group 8). */
   activeTicketAt?: string | null;
+  /**
+   * GROUP ORDERS (Sept 2026): true for the pseudo-table card of an open
+   * GROUP bill — it behaves like a table everywhere (grid card, bill, add
+   * items, payment) but has no row in cafe_tables.
+   */
+  isGroup?: boolean;
   /** Guest tapped "bring us the bill" from their phone (Group 8). */
   activeTicketReceiptRequestedAt?: string | null;
 }

@@ -94,6 +94,27 @@
   animation: ambientPulse 6s infinite ease-in-out;
 }
 
+/* Live SENT → ACCEPTED badge (guest confirmation screen).
+   One soft pop the moment the badge flips from the amber SENT to the green
+   ACCEPTED state, so a guest glancing away is pulled back to the change. The
+   component remounts the badge row (key={state}) so the animation replays
+   exactly at that flip. */
+@keyframes badgePop {
+  0% {
+    transform: scale(0.9);
+  }
+  55% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-badge-pop {
+  animation: badgePop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
 /* Food-photo placeholder.
    While a dish photo downloads, its card shows this soft shimmer instead of an
    empty grey box or a half-drawn image. ImageBatchProvider releases the whole

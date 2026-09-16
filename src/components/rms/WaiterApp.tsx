@@ -5,7 +5,7 @@ import {
   Coffee, Plus, Minus, Send, ArrowLeft, RefreshCw, CreditCard,
   Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing,
 } from "lucide-react";
-import { MenuItem, Ticket, TicketItem, CafeTable } from "@/types";
+import { MenuItem, Ticket, TicketItem, CafeTable, TableStatus } from "@/types";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
@@ -87,6 +87,13 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   // from their tables, so each group of people gets its own auto-numbered
   // bill. Always available, from the top corner of the tables view.
   const [groupComposerOpen, setGroupComposerOpen] = useState(false);
+  /**
+   * Open GROUP bills, managed EXACTLY like tables: they render as cards in
+   * the grid below, and tapping one opens the same bill / add-items /
+   * payment flow a real table gets. Derived from the active tickets the
+   * table view already loads — no extra endpoint.
+   */
+  const [groupTickets, setGroupTickets] = useState<Ticket[]>([]);
   const [selectedTable, setSelectedTable] = useState<CafeTable | null>(null);
   const [cart, setCart] = useState<CartEntry[]>([]);
   const [category, setCategory] = useState("all");
@@ -393,6 +400,8 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     if (tkRes.status === 401) return expireSession();
     if (tkRes.ok) {
       const all: Ticket[] = await tkRes.json();
+      // GROUP ORDERS: open groups become table-like cards in the grid.
+      setGroupTickets(all.filter((t) => t.orderType === "outdoor" && /^GROUP \d+$/i.test(String(t.tableName || ""))));
       const pending = all.filter((t) => t.status === "pending_waiter");
       const fresh = pending.filter((t) => !seenPendingRef.current.has(t.id));
       fresh.forEach((t) => seenPendingRef.current.add(t.id));
@@ -726,6 +735,52 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     setView("order");
   };
 
+  /**
+   * GROUP ORDERS: a group bill opens EXACTLY like a table's bill — same
+   * views, same buttons (add items, request payment, settle). The card is a
+   * pseudo-table: the synthetic table id for display, the ticket id for the
+   * round merge, and the isGroup flag so the send path uses the group flow.
+   */
+  const openGroup = (t: Ticket) => {
+    setSelectedTable({
+      id: t.tableId,
+      name: t.tableName,
+      status: groupTableStatus(t),
+      activeTicketId: t.id,
+      activeTicketTotal: t.totalAmount,
+      activeTicketBy: t.createdBy,
+      activeTicketAt: t.createdAt,
+      isGroup: true,
+    });
+    setCart([]);
+    setActiveTicket(t);
+    setView("bill");
+  };
+
+  /** Maps a group ticket's status onto the table-grid colors the staff know. */
+  const groupTableStatus = (t: Ticket): TableStatus =>
+    t.status === "ready_for_payment" ? "ready-for-payment" : t.status === "pending_waiter" ? "waiting" : "preparing";
+
+  /** The grid chip label for a table status, shared by tables and groups. */
+  const tableStatusLabel = (status: TableStatus | undefined) =>
+    printQueueMode
+      ? status === "available"
+        ? "Available"
+        : status === "waiting"
+        ? "Confirm Order"
+        : status === "preparing"
+        ? "👨‍🍳 In Progress"
+        : status === "ready-for-payment"
+        ? "Bill Requested"
+        : "Sent to Cashier"
+      : status === "available"
+      ? "Available"
+      : status === "ready-for-payment"
+      ? "Pay Requested"
+      : status === "preparing"
+      ? "Preparing"
+      : "Occupied";
+
   const addToCart = (item: MenuItem) => {
     if (!item.isAvailable) return;
     setCart((prev) => {
@@ -744,11 +799,17 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     if (!pendingKeyRef.current) pendingKeyRef.current = newSubmissionKey();
     lastCartSigRef.current = JSON.stringify(cart);
     setSending(true);
+    // GROUP ORDERS: adding items from a GROUP card rides the group round
+    // flow — the same bill (targetTicketId), the label stays the
+    // server-stamped "GROUP n", and the stations are released at once.
+    const groupRound = selectedTable.isGroup === true && !!selectedTable.activeTicketId;
     const r = await fetch("/api/tickets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        tableId: selectedTable.id,
+        ...(groupRound
+          ? { source: "staff", orderType: "outdoor", groupOrder: true, targetTicketId: selectedTable.activeTicketId }
+          : { tableId: selectedTable.id }),
         waiterName: staffName,
         idempotencyKey: pendingKeyRef.current,
         items: cart.map((c) => ({
@@ -778,7 +839,15 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
         };
       }
       setCart([]);
-      showToast(d.duplicate ? "✓ Already sent • not sent twice" : d.merged ? "✓ Items added to the table bill" : "✓ Order sent to cashier");
+      showToast(
+        d.duplicate
+          ? "✓ Already sent • not sent twice"
+          : groupRound && d.merged
+          ? `✓ Items added to ${String(d.tableName || "the group bill")}`
+          : d.merged
+          ? "✓ Items added to the table bill"
+          : "✓ Order sent to cashier"
+      );
       await loadTables();
       onGoBack();
     } else if (r.status === 401) {
@@ -954,7 +1023,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       return;
     }
     noteOwnStatus(activeTicket.id, "closed");
-    showToast(`✓ ${activeTicket.tableName} is free for new guests`);
+    showToast(`✓ ${activeTicket.tableName} ${selectedTable?.isGroup ? "settled" : "is free for new guests"}`);
     setActiveTicket(null);
     setSelectedTable(null);
     setView("tables");
@@ -1317,6 +1386,30 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 ) : null}
               </button>
             ))}
+
+            {/* ── GROUP ORDERS: open groups sit in the grid like tables.
+                Tap → the same bill view a table gets: add items, request
+                payment, settle. The 👥 GROUP card is the only difference. ── */}
+            {groupTickets.map((g) => (
+              <button
+                key={`group-${g.id}`}
+                onClick={() => openGroup(g)}
+                className="rounded-2xl p-5 text-left border-2 border-emerald-400/70 bg-emerald-950/40 transition active:scale-95"
+              >
+                <p className="font-serif font-bold text-lg text-emerald-200 flex items-center gap-1.5">
+                  <Users className="w-4 h-4 shrink-0" /> {g.tableName}
+                </p>
+                <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(groupTableStatus(g))}`}>
+                  {tableStatusLabel(groupTableStatus(g))}
+                </span>
+                <p className="text-xs font-bold text-stone-200 mt-1">{g.totalAmount} ETB open</p>
+                {g.createdAt ? (
+                  <p className="text-[11px] text-stone-300 mt-0.5 font-bold">
+                    🕒 since {formatClock(g.createdAt)} • {waitingLabel(g.createdAt)}
+                  </p>
+                ) : null}
+              </button>
+            ))}
           </div>
 
           <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-4">
@@ -1326,11 +1419,15 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   Tap a <span className="text-emerald-400 font-bold">green table</span> to take a new order.
                   When the guests leave and you have cleared the table, open its bill and tap{" "}
                   <span className="text-emerald-400 font-bold">Table Cleared</span> • it turns green for the next guests.
+                  <br />
+                  👥 <span className="text-emerald-300 font-bold">GROUP cards</span> are guest groups away from their table: open one to add items or settle it exactly like a table.
                 </>
               ) : (
                 <>
                   Tap a <span className="text-emerald-400 font-bold">green table</span> to start a new order.
                   Tap an <span className="text-rose-400 font-bold">occupied table</span> to view its bill, add more items, or request payment.
+                  <br />
+                  👥 <span className="text-emerald-300 font-bold">GROUP cards</span> are guest groups away from their table: open one to add items or settle it exactly like a table.
                 </>
               )}
             </p>
@@ -1605,7 +1702,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     onClick={clearTable}
                     className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
                   >
-                    <CheckCircle2 className="w-4 h-4" /> Table Cleared • Free Table
+                    <CheckCircle2 className="w-4 h-4" /> {selectedTable?.isGroup ? "Group Settled • Close Bill" : "Table Cleared • Free Table"}
                   </button>
                 )}
             </>

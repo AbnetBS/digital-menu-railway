@@ -44,6 +44,7 @@ const composer = read("src/components/rms/GroupComposer.tsx");
 const waiter = read("src/components/rms/WaiterApp.tsx");
 const cashier = read("src/components/rms/CashierDashboard.tsx");
 const history = read("src/components/rms/OrderHistoryTab.tsx");
+const types = read("src/types/index.ts");
 
 const failures = [];
 let count = 0;
@@ -195,6 +196,51 @@ const pass = (name, ok) => {
   pass(
     "order history shows the 👥 Group badge on paid group bills",
     /\{\/\^GROUP \\d\+\$\/i\.test\(String\(o\.tableName \|\| ""\)\) \? "👥 Group" : "Outdoor"\}/.test(history),
+  );
+}
+
+/* ── 6. like a table: the group bill lives in the waiter's grid ──────────── */
+{
+  pass(
+    "the CafeTable type carries the group flag (pseudo-table cards)",
+    /isGroup\?: boolean;/.test(types),
+  );
+  pass(
+    "loadTables derives the open group cards from the active tickets it already loads",
+    /setGroupTickets\(all\.filter\(\(t\) => t\.orderType === "outdoor" && \/\^GROUP \\d\+\$\/i\.test\(String\(t\.tableName \|\| ""\)\)\)\);/.test(waiter),
+  );
+  pass(
+    "group cards render in the grid, tapping one opens it like a table",
+    /groupTickets\.map\(\(g\) => \([\s\S]{0,400}onClick=\{\(\) => openGroup\(g\)\}/.test(waiter),
+  );
+  pass(
+    "openGroup builds a pseudo-table (synthetic id, ticket id, group flag) and opens the BILL view",
+    /const openGroup = \(t: Ticket\) => \{[\s\S]{0,700}activeTicketId: t\.id,[\s\S]{0,300}isGroup: true,[\s\S]{0,200}setView\("bill"\);/.test(waiter),
+  );
+  pass(
+    "the group card shows the status chip and total like a table card",
+    /statusChip\(groupTableStatus\(g\)\)/.test(waiter) && /\{g\.totalAmount\} ETB open/.test(waiter),
+  );
+  pass(
+    "Add Items on a group bill rides the group round flow (same bill, server label)",
+    /const groupRound = selectedTable\.isGroup === true && !!selectedTable\.activeTicketId;/.test(waiter) &&
+      /groupRound[\s\S]{0,200}\? \{ source: "staff", orderType: "outdoor", groupOrder: true, targetTicketId: selectedTable\.activeTicketId \}/.test(waiter),
+  );
+  pass(
+    "a table order is still sent the table way (no group flag leaks into normal tables)",
+    /: \{ tableId: selectedTable\.id \}/.test(waiter),
+  );
+  pass(
+    "the round toast names the group bill",
+    /✓ Items added to \$\{String\(d\.tableName \|\| "the group bill"\)\}/.test(waiter),
+  );
+  pass(
+    "settling says Group Settled on a group bill, Table Cleared on a table",
+    /selectedTable\?\.isGroup \? "Group Settled • Close Bill" : "Table Cleared • Free Table"/.test(waiter),
+  );
+  pass(
+    "the grid hint explains the GROUP cards",
+    /GROUP cards<\/span> are guest groups away from their table: open one to add items or settle it exactly like a table\./.test(waiter),
   );
 }
 

@@ -181,6 +181,12 @@ export interface CafeTable {
   activeTicketBy?: string | null; // who is handling the open bill (createdBy / confirmedBy)
   /** When the open bill started (Group 8). */
   activeTicketAt?: string | null;
+  /**
+   * GROUP ORDERS (Sept 2026): true for the pseudo-table card of an open
+   * GROUP bill — it behaves like a table everywhere (grid card, bill, add
+   * items, payment) but has no row in cafe_tables.
+   */
+  isGroup?: boolean;
   /** Guest tapped "bring us the bill" from their phone (Group 8). */
   activeTicketReceiptRequestedAt?: string | null;
 }

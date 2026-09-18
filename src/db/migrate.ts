@@ -345,8 +345,9 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     printed_at: { type: "timestamp", dropNotNull: true },
     printed_by: { type: "text" },
     closed_by: { type: "text" },
-    // Group 8: guest "bring us the bill/receipt" request
+    // Group 8: guest/waiter "bring us the bill/receipt" request
     receipt_requested_at: { type: "timestamp", dropNotNull: true },
+    receipt_requested_by: { type: "text" },
     // Bill-edit audit: WHEN a line on this bill was last corrected (qty, note
     // or removal). Compared with printed_at so a bill changed AFTER the EFD
     // receipt went out can be flagged for re-keying instead of silently

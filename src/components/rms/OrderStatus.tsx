@@ -618,6 +618,9 @@ export function OrderStatusDock() {
   const t = useT();
   const [open, setOpen] = useState(false);
   if (!ticket) return null;
+  if (ticket.status === "printed" || ticket.status === "closed" || ticket.status === "paid" || ticket.phase === "paid" || Boolean((ticket as any).printedAt)) {
+    return null;
+  }
 
   const lines = Array.isArray(ticket.lines) ? ticket.lines : [];
   const units = lines.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);

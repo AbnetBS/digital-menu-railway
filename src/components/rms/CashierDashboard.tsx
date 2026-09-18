@@ -15,6 +15,7 @@ import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
 import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
 import CoffeeNotePanel from "@/components/rms/CoffeeNotePanel";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
+import BillNotificationCard, { BillNotification } from "@/components/rms/BillNotificationCard";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 
 interface StaffLite {
@@ -105,6 +106,8 @@ export default function CashierDashboard() {
   // ordering, adding dishes, or asking for the bill therefore gets a full
   // screen with one big button that keeps re-ringing until it is pressed.
   const [urgent, setUrgent] = useState<UrgentAlert | null>(null);
+  // Top right corner bill request notifications (3:4 aspect ratio dark card)
+  const [dismissedBillNotifs, setDismissedBillNotifs] = useState<Set<string>>(new Set());
   /** Guest events already answered here, so they never pop up again. */
   const answeredRef = useRef<Set<string>>(new Set());
   /** Tickets already seen at all (a brand new one = a fresh guest order). */
@@ -362,22 +365,21 @@ export default function CashierDashboard() {
           const isNew = guestEvent.status === "pending_waiter" && !knownTicketsRef.current.has(guestEvent.id);
           const id = `${guestEvent.id}:${isBill ? "bill" : isNew ? "order" : `add${guestEvent.unprintedCustomerSubmissions || 0}`}`;
           if (!answeredRef.current.has(id)) {
-            setUrgent({
-              id,
-              kind: isBill ? "bill" : isNew ? "order" : "added",
-              ticketId: guestEvent.id,
-              table: guestEvent.tableName,
-              detail: isBill
-                ? `${guestEvent.totalAmount} ETB • guest wants to pay`
-                : isNew
+            // Bill requests are presented as the modern 3:4 notification card in the top right corner.
+            // Full-screen overlay is for new QR orders and guest additions.
+            if (!isBill) {
+              setUrgent({
+                id,
+                kind: isNew ? "order" : "added",
+                ticketId: guestEvent.id,
+                table: guestEvent.tableName,
+                detail: isNew
                   ? `${guestEvent.totalAmount} ETB • new QR order`
                   : `${guestEvent.totalAmount} ETB • guest added items`,
-              // QR HOLD FLOW: accepting a QR order only stops the alarms — the
-              // bill is HELD until her CONFIRM & SEND, so the guest can keep
-              // adding from their phone.
-              actionLabel: isNew ? "✓ ACCEPT ORDER" : "GOT IT",
-              onAction: isNew ? () => setStatusRef.current(guestEvent.id, "confirmed") : undefined,
-            });
+                actionLabel: isNew ? "✓ ACCEPT ORDER" : "GOT IT",
+                onAction: isNew ? () => setStatusRef.current(guestEvent.id, "confirmed") : undefined,
+              });
+            }
           }
         }
         const first = loudEvents[0];
@@ -904,6 +906,18 @@ export default function CashierDashboard() {
   const newCount = tickets.filter((t) => t.status === "confirmed").length;
   const payCount = tickets.filter((t) => t.status === "ready_for_payment" || t.status === "completed").length;
 
+  const billNotifications: BillNotification[] = tickets
+    .filter((t) => Boolean(t.receiptRequestedAt))
+    .map((t) => ({
+      id: `${t.id}:${t.receiptRequestedAt}`,
+      ticketId: t.id,
+      tableName: t.tableName,
+      waiterName: t.receiptRequestedBy || t.confirmedBy || t.createdBy || "Waiter",
+      receiptRequestedAt: t.receiptRequestedAt,
+      totalAmount: t.totalAmount,
+    }))
+    .filter((notif) => !dismissedBillNotifs.has(notif.id));
+
   // ── GROUP 9 (print-queue): what the cashier's queue is made of ──
   // Orders that were SENT to the crews but nobody keyed into the EFD yet,
   // plus already-printed bills that received ADDITIONS since the last print
@@ -1078,6 +1092,26 @@ export default function CashierDashboard() {
         }
       />
 
+      {/* Top Right Corner Modern Notification Card for Bill Requests (3:4 aspect ratio dark card) */}
+      {billNotifications.length > 0 && (
+        <div className="fixed top-4 right-4 z-50 flex flex-col items-end gap-3 pointer-events-auto max-w-[calc(100vw-2rem)]">
+          {billNotifications.slice(0, 2).map((notif) => (
+            <BillNotificationCard
+              key={notif.id}
+              notification={notif}
+              onDismiss={(id) => {
+                setDismissedBillNotifs((prev) => new Set(prev).add(id));
+              }}
+            />
+          ))}
+          {billNotifications.length > 2 && (
+            <div className="bg-[#2C1B17] border border-[#C9A227]/40 px-3 py-1 rounded-full text-xs font-bold text-amber-200">
+              +{billNotifications.length - 2} more bill requests
+            </div>
+          )}
+        </div>
+      )}
+
       {toast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl max-w-[90vw] text-center">
           {toast}
@@ -1097,18 +1131,6 @@ export default function CashierDashboard() {
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => setCoffeeNoteOpen(true)}
-                className="bg-gradient-to-r from-[#C9A227] to-amber-500 hover:from-amber-400 hover:to-amber-300 text-[#2C1B17] text-xs font-black px-4 py-3 rounded-2xl flex items-center gap-2 border border-[#C9A227]"
-                title="The held tab for outdoor buna sales: hold a call, mark it paid when the buna maker settles."
-              >
-                <Coffee className="w-4 h-4" /> Coffee Note
-                {coffeeHeld > 0 && (
-                  <span className="min-w-[20px] h-5 px-1 rounded-full bg-[#2C1B17] text-amber-200 text-[10px] font-black flex items-center justify-center">
-                    {coffeeHeld}
-                  </span>
-                )}
-              </button>
               <button
                 onClick={() => setOutdoorComposerOpen(true)}
                 className="bg-violet-600 hover:bg-violet-500 text-white text-xs font-black px-4 py-3 rounded-2xl"

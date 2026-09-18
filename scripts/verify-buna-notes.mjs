@@ -146,8 +146,9 @@ const pass = (name, cond) => {
 
 /* ── 5. the dashboard wiring ──────────────────────────────────────────────── */
 {
-  pass("the Coffee Note button opens the panel", /Coffee Note/.test(cashier) && /setCoffeeNoteOpen\(true\)/.test(cashier) && /<CoffeeNotePanel/.test(cashier));
-  pass("the button carries the held-count badge", /coffeeHeld > 0/.test(cashier) && /\{coffeeHeld\}/.test(cashier));
+  // Coffee Note button on the cashier dashboard was retired at owner request (Sept 2026).
+  // The panel component and history refresh wiring remain intact.
+  pass("the panel remains mounted on the dashboard", /<CoffeeNotePanel/.test(cashier));
   pass("the badge refreshes with the history cadence", /fetch\("\/api\/buna-notes"\)[\s\S]{0,200}setCoffeeHeld/.test(cashier));
   pass("a paid note refreshes the history lists (it joined order history)", /onChanged=\{\(kind\)/.test(cashier) && /kind === "paid"/.test(cashier));
 }

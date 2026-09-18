@@ -1156,11 +1156,16 @@ export async function PUT(request: Request) {
     if (body.status === "closed") {
       updates.closedBy = body.closedBy ? String(body.closedBy).slice(0, 100) : cur.closedBy || "(waiter)";
     }
-    // GROUP 8 — the guest asked for the bill from their own phone; staff clear the
-    // flag once the receipt has actually reached the table. This is the ONLY thing
-    // a guest request can influence, and clearing it never moves the order status.
+    // GROUP 8 — guest or waiter asked for the bill; staff clear the
+    // flag once the receipt has actually reached the table.
     if (body.receiptRequested === false || body.receiptRequested === null) {
       updates.receiptRequestedAt = null;
+      updates.receiptRequestedBy = null;
+    } else if (body.receiptRequested === true) {
+      updates.receiptRequestedAt = new Date();
+      updates.receiptRequestedBy = body.receiptRequestedBy
+        ? String(body.receiptRequestedBy).slice(0, 100)
+        : actorName || "staff";
     }
 
     // GROUP 5 — payment verification audit: record WHO marked the bill paid and
@@ -1237,6 +1242,16 @@ export async function PUT(request: Request) {
               : cur.printedAt
               ? "Cashier re-printed the bill"
               : "Cashier printed the bill",
+        });
+      }
+      if (body.receiptRequested === true) {
+        await recordTicketEvent(db, {
+          ticketId: updated[0].id,
+          eventType: "bill_requested",
+          actorName: String(updates.receiptRequestedBy || actorName || "waiter"),
+          actorRole: actorRole ? String(actorRole) : "waiter",
+          source: "staff",
+          details: `Bill requested for ${updated[0].tableName} by ${String(updates.receiptRequestedBy || actorName || "waiter")}`,
         });
       }
     } catch {

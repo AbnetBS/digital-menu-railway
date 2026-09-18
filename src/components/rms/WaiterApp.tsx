@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import {
   Coffee, Plus, Minus, Send, ArrowLeft, RefreshCw, CreditCard,
-  Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing,
+  Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing, Receipt,
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable, TableStatus } from "@/types";
 import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
@@ -718,6 +718,58 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     setPin("");
   };
 
+  const requestBillForTable = async (t: CafeTable) => {
+    if (!t.activeTicketId) {
+      showToast("No active order for this table");
+      return;
+    }
+    const waiterName = staffName || selectedName || "Waiter";
+    try {
+      const r = await fetch("/api/tickets", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: t.activeTicketId,
+          receiptRequested: true,
+          receiptRequestedBy: waiterName,
+        }),
+      });
+      if (r.status === 401) return expireSession();
+      if (!r.ok) {
+        showToast("Could not request bill. Try again.");
+        return;
+      }
+      showToast(`🧾 Bill requested for ${t.name}`);
+      loadTables();
+    } catch {
+      showToast("Network error. Try again.");
+    }
+  };
+
+  const requestBillForGroup = async (g: Ticket) => {
+    const waiterName = staffName || selectedName || "Waiter";
+    try {
+      const r = await fetch("/api/tickets", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: g.id,
+          receiptRequested: true,
+          receiptRequestedBy: waiterName,
+        }),
+      });
+      if (r.status === 401) return expireSession();
+      if (!r.ok) {
+        showToast("Could not request bill. Try again.");
+        return;
+      }
+      showToast(`🧾 Bill requested for ${g.tableName}`);
+      loadTables();
+    } catch {
+      showToast("Network error. Try again.");
+    }
+  };
+
   const openTable = async (t: CafeTable) => {
     setSelectedTable(t);
     setCart([]);
@@ -1339,10 +1391,18 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {tables.map((t) => (
-              <button
+              <div
                 key={t.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => openTable(t)}
-                className={`rounded-2xl p-5 text-left border-2 transition active:scale-95 ${
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    openTable(t);
+                  }
+                }}
+                className={`rounded-2xl p-5 text-left border-2 transition active:scale-95 relative cursor-pointer ${
                   t.status === "available"
                     ? "border-emerald-500/60 bg-emerald-950/40"
                     : t.status === "ready-for-payment"
@@ -1350,7 +1410,27 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     : "border-rose-500/60 bg-rose-950/30"
                 }`}
               >
-                <p className="font-serif font-bold text-lg text-amber-100">{t.name}</p>
+                {/* BILL BUTTON: visible on non-green and non-purple tables */}
+                {t.status !== "available" && t.status !== "waiting" && t.activeTicketId ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestBillForTable(t);
+                    }}
+                    className={`absolute top-3 right-3 z-10 px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 shadow-md border transition active:scale-95 ${
+                      t.activeTicketReceiptRequestedAt
+                        ? "bg-amber-400 text-[#1E110D] border-amber-300 ring-2 ring-amber-300/60 shadow-amber-500/20"
+                        : "bg-gradient-to-r from-[#C9A227] to-amber-500 hover:from-amber-400 hover:to-amber-300 text-[#1E110D] border-[#C9A227] shadow-black/40"
+                    }`}
+                    title={t.activeTicketReceiptRequestedAt ? "Bill already requested • Tap to notify again" : "Request bill • Notify cashier"}
+                  >
+                    <Receipt className="w-3.5 h-3.5" />
+                    <span>{t.activeTicketReceiptRequestedAt ? "Bill Sent" : "Bill"}</span>
+                  </button>
+                ) : null}
+
+                <p className="font-serif font-bold text-lg text-amber-100 pr-20">{t.name}</p>
                 <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(t.status)}`}>
                   {printQueueMode
                     ? t.status === "available"
@@ -1384,19 +1464,46 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 {t.activeTicketReceiptRequestedAt ? (
                   <p className="text-[11px] text-emerald-300 mt-1 font-black">🧾 bill requested</p>
                 ) : null}
-              </button>
+              </div>
             ))}
 
             {/* ── GROUP ORDERS: open groups sit in the grid like tables.
                 Tap → the same bill view a table gets: add items, request
                 payment, settle. The 👥 GROUP card is the only difference. ── */}
             {groupTickets.map((g) => (
-              <button
+              <div
                 key={`group-${g.id}`}
+                role="button"
+                tabIndex={0}
                 onClick={() => openGroup(g)}
-                className="rounded-2xl p-5 text-left border-2 border-emerald-400/70 bg-emerald-950/40 transition active:scale-95"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    openGroup(g);
+                  }
+                }}
+                className="rounded-2xl p-5 text-left border-2 border-emerald-400/70 bg-emerald-950/40 transition active:scale-95 relative cursor-pointer"
               >
-                <p className="font-serif font-bold text-lg text-emerald-200 flex items-center gap-1.5">
+                {g.status !== "pending_waiter" && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestBillForGroup(g);
+                    }}
+                    className={`absolute top-3 right-3 z-10 px-3 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 shadow-md border transition active:scale-95 ${
+                      g.receiptRequestedAt
+                        ? "bg-amber-400 text-[#1E110D] border-amber-300 ring-2 ring-amber-300/60 shadow-amber-500/20"
+                        : "bg-gradient-to-r from-[#C9A227] to-amber-500 hover:from-amber-400 hover:to-amber-300 text-[#1E110D] border-[#C9A227] shadow-black/40"
+                    }`}
+                    title={g.receiptRequestedAt ? "Bill already requested • Tap to notify again" : "Request bill • Notify cashier"}
+                  >
+                    <Receipt className="w-3.5 h-3.5" />
+                    <span>{g.receiptRequestedAt ? "Bill Sent" : "Bill"}</span>
+                  </button>
+                )}
+
+                <p className="font-serif font-bold text-lg text-emerald-200 flex items-center gap-1.5 pr-20">
                   <Users className="w-4 h-4 shrink-0" /> {g.tableName}
                 </p>
                 <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(groupTableStatus(g))}`}>
@@ -1408,7 +1515,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     🕒 since {formatClock(g.createdAt)} • {waitingLabel(g.createdAt)}
                   </p>
                 ) : null}
-              </button>
+              </div>
             ))}
           </div>
 

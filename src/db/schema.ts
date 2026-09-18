@@ -159,11 +159,11 @@ export const tickets = pgTable("tickets", {
   // bill. This is a PHYSICAL event (table bussed), deliberately decoupled from
   // payment — the EFD/POS remains the financial system of record.
   closedBy: varchar("closed_by", { length: 100 }),
-  // Guest "we are done — please bring the bill/receipt" request (Group 8).
-  // Stamped from the guest's own phone via the public table-status endpoint
-  // once the food is served; cleared by staff after the receipt is delivered.
+  // Guest or waiter "we are done — please bring the bill/receipt" request (Group 8).
+  // Stamped from the guest's phone or waiter dashboard; cleared by staff.
   // It never changes the order or payment status by itself.
   receiptRequestedAt: timestamp("receipt_requested_at"),
+  receiptRequestedBy: varchar("receipt_requested_by", { length: 100 }),
   // Bill-edit audit: WHEN a line on this bill was last corrected (qty, note or
   // removal). A printed bill with items_edited_at AFTER printed_at changed
   // after the EFD receipt went out and must be re-keyed into the EFD.

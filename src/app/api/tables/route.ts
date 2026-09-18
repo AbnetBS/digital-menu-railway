@@ -57,6 +57,7 @@ export async function GET() {
         activeTicketReceiptRequestedAt: tk?.receiptRequestedAt
           ? new Date(tk.receiptRequestedAt).toISOString()
           : null,
+        activeTicketReceiptRequestedBy: tk?.receiptRequestedBy || null,
       };
     });
 

@@ -189,6 +189,8 @@ export interface CafeTable {
   isGroup?: boolean;
   /** Guest tapped "bring us the bill" from their phone (Group 8). */
   activeTicketReceiptRequestedAt?: string | null;
+  /** Waiter or guest who requested the bill. */
+  activeTicketReceiptRequestedBy?: string | null;
 }
 
 export type PaymentMethod = "cash" | "card" | "online" | "telebirr" | "cbe";
@@ -280,6 +282,8 @@ export interface Ticket {
   unprintedStaffSubmissions?: number;
   /** Guest asked for the bill/receipt (Group 8). Null until they tap it. */
   receiptRequestedAt?: string | null;
+  /** Waiter or guest who requested the bill. */
+  receiptRequestedBy?: string | null;
   /** WHEN a line on this bill was last corrected (bill-edit audit). */
   itemsEditedAt?: string | null;
   /** Admin-only derived history status from the persistent audit trail. */

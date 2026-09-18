@@ -5,6 +5,16 @@ import { Search, RefreshCw, ImageIcon, X, Trash2 } from "lucide-react";
 import { Ticket } from "@/types";
 import { formatDateTime, groupOrderLines, type OrderLine } from "@/lib/order-lines";
 
+const historyStatusOf = (t: Ticket) => t.historyStatus || (t.status === "cancelled" ? "cancelled" : "done");
+
+const historyStatusMeta = (t: Ticket) => {
+  const status = historyStatusOf(t);
+  if (status === "edited_printed") return { label: t.historyStatusLabel || "Edited & Printed", cls: "bg-sky-500/20 text-sky-300" };
+  if (status === "edited_cancelled") return { label: t.historyStatusLabel || "Edited & Cancelled", cls: "bg-rose-500/20 text-rose-200" };
+  if (status === "cancelled") return { label: t.historyStatusLabel || "Cancelled", cls: "bg-rose-500/20 text-rose-400" };
+  return { label: t.historyStatusLabel || "Done", cls: "bg-emerald-500/20 text-emerald-400" };
+};
+
 export default function OrderHistoryTab() {
   const [orders, setOrders] = useState<Ticket[]>([]);
   const [q, setQ] = useState("");
@@ -64,7 +74,7 @@ export default function OrderHistoryTab() {
           o.historyStatusLabel,
           o.historyChangeSummary,
           o.orderType,
-          new Date(o.closedAt || o.updatedAt || "").toLocaleDateString(),
+          (o.closedAt || o.updatedAt ? new Date(o.closedAt || o.updatedAt!).toLocaleDateString() : ""),
           ...(o.auditTrail || []).flatMap((event) => [event.label, event.detail, event.actorName]),
         ]
           .filter(Boolean)
@@ -88,15 +98,6 @@ export default function OrderHistoryTab() {
    * left on bills created before that, so history reads "2 Tea" not "1 Tea, 1 Tea".
    */
   const displayItems = (t: Ticket) => groupOrderLines((t.items || []) as OrderLine[], { includeRemoved: true });
-
-  const historyStatusOf = (t: Ticket) => t.historyStatus || (t.status === "cancelled" ? "cancelled" : "done");
-  const historyStatusMeta = (t: Ticket) => {
-    const status = historyStatusOf(t);
-    if (status === "edited_printed") return { label: t.historyStatusLabel || "Edited & Printed", cls: "bg-sky-500/20 text-sky-300" };
-    if (status === "edited_cancelled") return { label: t.historyStatusLabel || "Edited & Cancelled", cls: "bg-rose-500/20 text-rose-200" };
-    if (status === "cancelled") return { label: t.historyStatusLabel || "Cancelled", cls: "bg-rose-500/20 text-rose-400" };
-    return { label: t.historyStatusLabel || "Done", cls: "bg-emerald-500/20 text-emerald-400" };
-  };
 
   return (
     <div className="space-y-5">

@@ -42,7 +42,10 @@ export async function persistImageRef(ref: string | null | undefined, client: an
   // security boundary. Validate magic bytes so a text/HTML/SVG data URL cannot
   // be stored and later served with an executable content type.
   const bytes = Buffer.from(payload, "base64");
-  if (bytes.length > 10 * 1024 * 1024) throw new Error("Image upload exceeds the 10MB limit");
+  // Keep database-backed uploads deliberately small. Menu/gallery images are already
+  // resized in the browser; accepting multi-megabyte originals is an easy way to
+  // fill a small Railway Postgres volume. This is a hard server-side guard.
+  if (bytes.length > 2 * 1024 * 1024) throw new Error("Image upload exceeds the 2MB limit");
   const isJpeg = mime === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
   const isPng = mime === "image/png" && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   const isGif = mime === "image/gif" && (bytes.subarray(0, 6).toString() === "GIF87a" || bytes.subarray(0, 6).toString() === "GIF89a");

@@ -78,11 +78,11 @@ export default function BillNotificationCard({
 
         {/* Table number bigger and bold size (central and 2nd line) */}
         <div className="w-full py-1">
-          <h3 className="font-serif font-black text-3xl sm:text-4xl text-white tracking-wide drop-shadow-md">
+          <h3 className="font-serif font-black text-4xl sm:text-5xl text-amber-200 tracking-wider text-center drop-shadow-xl">
             {formattedTable}
           </h3>
           {notification.totalAmount ? (
-            <p className="text-xs font-bold text-[#C9A227] mt-1">
+            <p className="text-xs font-bold text-[#C9A227] mt-1.5">
               {notification.totalAmount} ETB
             </p>
           ) : null}

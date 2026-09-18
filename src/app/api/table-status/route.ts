@@ -70,6 +70,7 @@ interface TableStatusPayload {
     id: number;
     orderNumber: string | null;
     status: string;
+    printedAt?: string | null;
     paymentStatus: string;
     totalAmount: number;
     createdAt: string | null;
@@ -101,10 +102,16 @@ async function findVisibleTicket(tableId: number) {
     .where(and(eq(tickets.tableId, tableId), notInArray(tickets.status, ["paid", "cancelled", "closed"])))
     .orderBy(desc(tickets.updatedAt))
     .limit(1);
-  if (open.length > 0) return open[0];
+  if (open.length > 0) {
+    const tk = open[0];
+    // Owner's rule: as soon as the cashier printed that table order (printedAt is set or status is printed),
+    // the order on the customer QR menu is removed so the next customer won't see it.
+    if (tk.printedAt || tk.status === "printed") return null;
+    return tk;
+  }
 
-  // Group 9: in print-queue mode bills finish as "closed" (table cleared) — the
-  // guest deserves the same thank-you screen paid bills get.
+  // When the waiter cleared the table or bill was paid/closed, it vanishes immediately
+  // so the next customer sitting at the table never sees the previous customer's orders.
   const closed = await db
     .select()
     .from(tickets)
@@ -113,8 +120,8 @@ async function findVisibleTicket(tableId: number) {
     .limit(1);
   const row = closed[0];
   if (!row) return null;
-  const closedAt = row.closedAt ? new Date(row.closedAt).getTime() : 0;
-  return Date.now() - closedAt <= RECENTLY_CLOSED_GRACE_MS ? row : null;
+  // Vanished immediately when cleared or printed per owner's rule (RECENTLY_CLOSED_GRACE_MS = 30 * 60 * 1000 bypass)
+  return null;
 }
 
 async function buildPayload(tableId: number): Promise<TableStatusPayload> {
@@ -140,6 +147,7 @@ async function buildPayload(tableId: number): Promise<TableStatusPayload> {
       id: ticket.id,
       orderNumber: ticket.orderNumber ?? null,
       status: ticket.status,
+      printedAt: iso(ticket.printedAt),
       paymentStatus: ticket.paymentStatus ?? "unpaid",
       totalAmount: Number(ticket.totalAmount) || 0,
       createdAt: iso(ticket.createdAt),

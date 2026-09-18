@@ -39,8 +39,11 @@ export async function GET() {
       (SELECT COALESCE(sum(length(data)), 0) FROM cdn_images) AS cdn_image_chars
   `);
 
-  const rows = (tables as unknown as { rows?: unknown[] }).rows ?? tables;
-  const countRows = (counts as unknown as { rows?: unknown[] }).rows ?? counts;
+  // `db.execute` is typed as `QueryResult<Record<string, unknown>> | unknown[]`:
+  // node-postgres returns a result object with `.rows`, other drivers return the
+  // array directly. Normalise both shapes so indexing is type-safe.
+  const rows = ((tables as unknown as { rows?: unknown[] }).rows ?? tables) as unknown[];
+  const countRows = ((counts as unknown as { rows?: unknown[] }).rows ?? counts) as unknown[];
   return NextResponse.json({
     success: true,
     generatedAt: new Date().toISOString(),

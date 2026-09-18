@@ -1878,9 +1878,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                       // Compress on device (~4MB → ~70KB). The data-URL stays in
                       // state and is persisted by the server only when the bill is
                       // actually paid — a canceled photo never touches the database.
-                      // Receipts are stored in Postgres, not object storage. Keep each one tiny
-                                // so normal payment traffic cannot consume the volume.
-                                const small = await compressImage(f, 640, 0.5);
+                      const small = await compressImage(f, 800, 0.65);
                       setReceiptImage(small);
                     } catch {
                       showToast("Could not read that photo. Try again");

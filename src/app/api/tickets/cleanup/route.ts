@@ -6,7 +6,7 @@ import { cleanupOldReceipts } from "@/lib/receipt-cleanup";
 /**
  * POST: permanently deletes old RECEIPTS (bill photos) for finished bills
  * older than N days (the "Clean Old Receipts" button in the admin Order
- * History tab). Default 7 days (?days=30 to change). Finished means
+ * History tab). Default 30 days (?days=60 to change). Finished means
  * completed, closed, paid or cancelled — open tickets are never touched.
  * The order record itself (items, amounts, method) is always kept.
  *

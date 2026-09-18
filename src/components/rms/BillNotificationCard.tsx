@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { X, Receipt } from "lucide-react";
+import { X } from "lucide-react";
 
 export interface BillNotification {
   id: string;
@@ -9,7 +9,6 @@ export interface BillNotification {
   tableName: string;
   waiterName: string;
   receiptRequestedAt?: string | null;
-  totalAmount?: number;
 }
 
 interface BillNotificationCardProps {
@@ -18,7 +17,7 @@ interface BillNotificationCardProps {
 }
 
 /**
- * Format table name in authentic cafe style, e.g. "Table 2" -> "የTABLE 2"
+ * Format table name in cafe style, e.g. "Table 2" -> "የTABLE 2"
  */
 export function formatTableBillNotice(tableName: string): string {
   const trimmed = String(tableName || "").trim();
@@ -29,79 +28,73 @@ export function formatTableBillNotice(tableName: string): string {
     const num = trimmed.replace(/^table\s*/i, "").trim().toUpperCase();
     return `የTABLE ${num}`;
   }
+  if (/^group\s*/i.test(trimmed)) {
+    const num = trimmed.replace(/^group\s*/i, "").trim().toUpperCase();
+    return `የGROUP ${num}`;
+  }
   return `የ${trimmed.toUpperCase()}`;
 }
 
+/**
+ * Waiter "need the bill" slip — a vertical 3:4 note, NOT the guest
+ * full-screen "BILL REQUESTED" overlay.
+ */
 export default function BillNotificationCard({
   notification,
   onDismiss,
 }: BillNotificationCardProps) {
   const formattedTable = formatTableBillNotice(notification.tableName);
-  const waiterName = notification.waiterName || "Waiter";
+  const waiterName = (notification.waiterName || "Waiter").trim();
 
   return (
     <div
       role="alert"
-      className="relative w-72 sm:w-80 aspect-[3/4] bg-[#16100E]/95 backdrop-blur-xl border-2 border-[#C9A227]/60 rounded-3xl p-5 sm:p-6 shadow-2xl shadow-black/90 flex flex-col justify-between text-white overflow-hidden animate-in fade-in slide-in-from-top-4 duration-300"
+      className="relative w-[13.5rem] sm:w-60 aspect-[3/4] rounded-[1.25rem] overflow-hidden flex flex-col text-[#1A120E] shadow-[0_18px_40px_rgba(0,0,0,0.55)] animate-in fade-in zoom-in-95 duration-300"
+      style={{
+        background:
+          "linear-gradient(165deg, #F3E6C8 0%, #E8D4A4 42%, #DCC48A 100%)",
+        boxShadow:
+          "0 18px 40px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.45)",
+      }}
     >
-      {/* Background ambient lighting */}
-      <div className="absolute -top-12 -right-12 w-32 h-32 bg-[#C9A227]/15 rounded-full blur-2xl pointer-events-none" />
-      <div className="absolute -bottom-12 -left-12 w-32 h-32 bg-amber-600/15 rounded-full blur-2xl pointer-events-none" />
+      {/* torn-note edge */}
+      <div
+        className="absolute inset-y-0 left-0 w-3 opacity-40"
+        style={{
+          backgroundImage:
+            "repeating-linear-gradient(180deg, transparent, transparent 10px, #8B5A2B 10px, #8B5A2B 11px)",
+        }}
+      />
+      <div className="absolute top-0 left-0 right-0 h-1.5 bg-[#8B4513]/30" />
 
-      {/* Top Header: Badge & Close X */}
-      <div className="flex items-center justify-between w-full relative z-10">
-        <span className="text-[10px] font-black tracking-widest uppercase px-2.5 py-1 rounded-full bg-[#C9A227]/20 text-[#D8B93E] border border-[#C9A227]/40 flex items-center gap-1.5">
-          <Receipt className="w-3.5 h-3.5 text-[#C9A227]" />
-          <span>BILL REQUEST</span>
-        </span>
+      <button
+        type="button"
+        onClick={() => onDismiss(notification.id)}
+        className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-[#2C1B17]/85 text-[#F3E6C8] flex items-center justify-center active:scale-95"
+        aria-label="Close"
+      >
+        <X className="w-4 h-4" />
+      </button>
+
+      <div className="flex-1 flex flex-col items-center justify-center text-center px-5 pt-8 pb-3">
+        <p className="w-full font-black text-lg sm:text-xl uppercase tracking-wide text-[#2C1B17] leading-tight">
+          {waiterName}
+        </p>
+
+        <p className="mt-3 w-full font-black text-3xl sm:text-[2.1rem] leading-none tracking-wide text-[#1A120E]">
+          {formattedTable}
+        </p>
+
+        <p className="mt-5 w-full font-extrabold text-[15px] sm:text-base leading-snug text-[#3D1F14]">
+          ደረሰኝ አሁኑኑ ይፈልጋሉ ስሪላቸው!!!
+        </p>
+      </div>
+
+      <div className="px-4 pb-4">
         <button
           type="button"
           onClick={() => onDismiss(notification.id)}
-          className="p-1.5 text-stone-400 hover:text-white hover:bg-white/10 rounded-full transition active:scale-95"
-          aria-label="Close notification"
-        >
-          <X className="w-5 h-5" />
-        </button>
-      </div>
-
-      {/* Main Content: Central, Vertical, Modern */}
-      <div className="flex flex-col items-center justify-center text-center my-auto py-2 relative z-10 space-y-3">
-        {/* Name of the waiter at the top (bold and central top) */}
-        <div className="w-full">
-          <p className="text-[10px] font-extrabold uppercase tracking-widest text-stone-400 mb-0.5">
-            Waiter
-          </p>
-          <p className="text-xl sm:text-2xl font-black text-amber-300 tracking-wide uppercase drop-shadow">
-            {waiterName}
-          </p>
-        </div>
-
-        {/* Table number bigger and bold size (central and 2nd line) */}
-        <div className="w-full py-1">
-          <h3 className="font-serif font-black text-4xl sm:text-5xl text-amber-200 tracking-wider text-center drop-shadow-xl">
-            {formattedTable}
-          </h3>
-          {notification.totalAmount ? (
-            <p className="text-xs font-bold text-[#C9A227] mt-1.5">
-              {notification.totalAmount} ETB
-            </p>
-          ) : null}
-        </div>
-
-        {/* Common Amharic instruction (central) */}
-        <div className="w-full bg-[#2C1B17]/90 border border-[#C9A227]/30 rounded-2xl py-3 px-3 shadow-inner">
-          <p className="text-sm sm:text-base font-black text-amber-100 leading-snug">
-            ደረሰኝ አሁኑኑ ይፈልጋሉ ስሪላቸው!!!
-          </p>
-        </div>
-      </div>
-
-      {/* Bottom Action: Okay button */}
-      <div className="w-full relative z-10 pt-2">
-        <button
-          type="button"
-          onClick={() => onDismiss(notification.id)}
-          className="w-full py-3.5 px-4 bg-gradient-to-r from-[#C9A227] to-amber-500 hover:from-amber-400 hover:to-amber-300 text-[#1E110D] font-black text-sm uppercase tracking-wider rounded-2xl shadow-lg shadow-amber-950/60 transition active:scale-95 flex items-center justify-center gap-2"
+          className="w-full py-3 rounded-xl bg-[#2C1B17] text-[#F3E6C8] font-black text-sm tracking-widest uppercase active:scale-[0.98]"
         >
           Okay
         </button>

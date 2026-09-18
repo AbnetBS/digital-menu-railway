@@ -354,29 +354,35 @@ export default function CashierDashboard() {
 
         // Which of these came from a GUEST? Those are the unpredictable ones
         // that deserve the full-screen alarm, not just a line in the list.
+        const isWaiterBill = (t: Ticket) =>
+          !!t.receiptRequestedAt && !!String(t.receiptRequestedBy || "").trim();
+        const isGuestBill = (t: Ticket) =>
+          !!t.receiptRequestedAt && !String(t.receiptRequestedBy || "").trim();
         const guestEvent = newEvents.find(
           (t) =>
             (t.status === "pending_waiter" && !knownTicketsRef.current.has(t.id)) ||
-            (!!t.receiptRequestedAt && !billAskedRef.current.has(t.id)) ||
+            (isGuestBill(t) && !billAskedRef.current.has(t.id)) ||
             isGuestTopUp(t)
         );
         if (guestEvent) {
-          const isBill = !!guestEvent.receiptRequestedAt && !billAskedRef.current.has(guestEvent.id);
+          const isBill = isGuestBill(guestEvent) && !billAskedRef.current.has(guestEvent.id);
           const isNew = guestEvent.status === "pending_waiter" && !knownTicketsRef.current.has(guestEvent.id);
           const id = `${guestEvent.id}:${isBill ? "bill" : isNew ? "order" : `add${guestEvent.unprintedCustomerSubmissions || 0}`}`;
           if (!answeredRef.current.has(id)) {
-            // Bill requests are presented as the modern 3:4 notification card in the top right corner.
-            // Full-screen overlay is for new QR orders and guest additions.
-            if (!isBill) {
+            // Guest bill request keeps the full-screen overlay.
+            // Waiter "Bill" taps use the 3:4 paper note in the top-right instead.
+            if (!isWaiterBill(guestEvent)) {
               setUrgent({
                 id,
-                kind: isNew ? "order" : "added",
+                kind: isBill ? "bill" : isNew ? "order" : "added",
                 ticketId: guestEvent.id,
                 table: guestEvent.tableName,
-                detail: isNew
+                detail: isBill
+                  ? `${guestEvent.totalAmount} ETB • guest asked for the bill`
+                  : isNew
                   ? `${guestEvent.totalAmount} ETB • new QR order`
                   : `${guestEvent.totalAmount} ETB • guest added items`,
-                actionLabel: isNew ? "✓ ACCEPT ORDER" : "GOT IT",
+                actionLabel: isBill ? "OPEN BILL" : isNew ? "✓ ACCEPT ORDER" : "GOT IT",
                 onAction: isNew ? () => setStatusRef.current(guestEvent.id, "confirmed") : undefined,
               });
             }
@@ -1553,12 +1559,12 @@ export default function CashierDashboard() {
                           </p>
                         )}
 
-                        {/* The guest tapped "bring us the bill" on their own phone.
-                            Arrives instantly over the realtime orders channel. */}
                         {t.receiptRequestedAt && (
-                          <div className="flex items-center justify-between gap-2 bg-emerald-500/15 border border-emerald-500/50 rounded-xl px-3 py-2">
-                            <p className="text-[11px] font-black text-emerald-300">
-                              🧾 Guest asked for the bill at {formatClock(t.receiptRequestedAt)}
+                          <div className="flex items-center justify-between gap-2 bg-amber-500/15 border border-amber-500/40 rounded-xl px-3 py-2">
+                            <p className="text-[11px] font-black text-amber-200">
+                              {t.receiptRequestedBy
+                                ? `📝 ${t.receiptRequestedBy} asked for the bill at ${formatClock(t.receiptRequestedAt)}`
+                                : `🧾 Guest asked for the bill at ${formatClock(t.receiptRequestedAt)}`}
                             </p>
                             <button
                               onClick={() => clearReceiptRequest(t)}

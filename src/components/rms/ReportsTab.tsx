@@ -2,14 +2,15 @@
 
 import { useState, useEffect } from "react";
 import { TrendingUp, ShoppingBag, RefreshCw, ImageIcon, PieChart, Coffee, CookingPot, Printer, XCircle, Users } from "lucide-react";
-import { ReportData, Ticket } from "@/types";
+import { ReportData, ReportPeriod, Ticket } from "@/types";
 import { formatClock, formatDateTime } from "@/lib/order-lines";
 
-type Period = "today" | "yesterday" | "week" | "month";
+type Period = ReportPeriod;
 
 const PERIOD_LABELS: Record<Period, string> = {
   today: "Today",
   yesterday: "Yesterday",
+  dayBefore: "Day Before Yesterday",
   week: "Last 7 Days",
   month: "Last 30 Days",
 };
@@ -18,6 +19,7 @@ const PERIOD_LABELS: Record<Period, string> = {
 const PERIOD_EMPTY: Record<Period, string> = {
   today: "yet today",
   yesterday: "yesterday",
+  dayBefore: "on the day before yesterday",
   week: "in the last 7 days",
   month: "in the last 30 days",
 };
@@ -26,13 +28,41 @@ const PERIOD_EMPTY: Record<Period, string> = {
 const PERIOD_COVER: Record<Period, string> = {
   today: "today's sales",
   yesterday: "yesterday's sales",
+  dayBefore: "the day before yesterday's sales",
   week: "the last 7 days of sales",
   month: "the last 30 days of sales",
 };
 
+/** The five interval cards in the order the owner asked for: the day before
+ *  yesterday sits BETWEEN Yesterday and Last 7 Days. */
+const PERIOD_ORDER: Period[] = ["today", "yesterday", "dayBefore", "week", "month"];
+
+/**
+ * What each interval card shows. The five revenue/order pairs always come back
+ * all-period (they ARE the selector), so a card reads its own pair here; the
+ * three single-day cards also name their real Ethiopian date so the
+ * cross-checker never has to work out which day "day before yesterday" is.
+ */
+const PERIOD_CARDS: Record<Period, (d: ReportData) => { label: string; rev: number; cnt: number; day?: string | null }> = {
+  today: (d) => ({ label: PERIOD_LABELS.today, rev: d.todayRevenue || 0, cnt: d.todayOrders || 0, day: d.dayKeys?.today }),
+  yesterday: (d) => ({ label: PERIOD_LABELS.yesterday, rev: d.yesterdayRevenue || 0, cnt: d.yesterdayOrders || 0, day: d.dayKeys?.yesterday }),
+  dayBefore: (d) => ({ label: PERIOD_LABELS.dayBefore, rev: d.dayBeforeRevenue || 0, cnt: d.dayBeforeOrders || 0, day: d.dayKeys?.dayBefore }),
+  week: (d) => ({ label: PERIOD_LABELS.week, rev: d.weeklyRevenue || 0, cnt: d.weekOrders || 0 }),
+  month: (d) => ({ label: PERIOD_LABELS.month, rev: d.monthlyRevenue || 0, cnt: d.monthOrders || 0 }),
+};
+
+/** "2026-09-30" (the server's EAT date key) → "30 Sep 2026" for humans. */
+function fmtDayKey(key?: string | null): string {
+  if (!key) return "";
+  const [y, m, d] = key.split("-").map(Number);
+  if (!y || !m || !d) return key;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${String(d).padStart(2, "0")} ${months[m - 1] || ""} ${y}`;
+}
+
 export default function ReportsTab() {
   const [data, setData] = useState<ReportData | null>(null);
-  // The selected period: the four cards above are the switch, and EVERY section
+  // The selected period: the five cards above are the switch, and EVERY section
   // below (cross-check, KPIs, peak hours, highest-selling, categories, printed
   // bills, receipts) describes only this period. The server computes it all —
   // the client just re-fetches with ?period=.
@@ -85,18 +115,33 @@ export default function ReportsTab() {
 
   const label = data?.periodLabel || PERIOD_LABELS[period];
   const emptySuffix = PERIOD_EMPTY[period];
-  // KPI numbers follow the selected period (the four summary fields are always
+  // KPI numbers follow the selected period (the five summary fields are always
   // all-period, so the client picks the matching pair here).
   const kpiRevenue =
     period === "yesterday" ? data?.yesterdayRevenue || 0
+    : period === "dayBefore" ? data?.dayBeforeRevenue || 0
     : period === "week" ? data?.weeklyRevenue || 0
     : period === "month" ? data?.monthlyRevenue || 0
     : data?.todayRevenue || 0;
   const kpiOrders =
     period === "yesterday" ? data?.yesterdayOrders || 0
+    : period === "dayBefore" ? data?.dayBeforeOrders || 0
     : period === "week" ? data?.weekOrders || 0
     : period === "month" ? data?.monthOrders || 0
     : data?.todayOrders || 0;
+  // The exact Ethiopian dates this paper/screen covers — the cross-checker must
+  // never have to guess which 30 days she is holding ("Last 30 Days" is a
+  // rolling window: today plus the 29 days before it, never a calendar month).
+  const range = data?.periodRange;
+  const rangeText =
+    range?.from && range?.to
+      ? range.from === range.to
+        ? fmtDayKey(range.from)
+        : `${fmtDayKey(range.from)} – ${fmtDayKey(range.to)}`
+      : "";
+  // Lines sold in the period that are not on an EFD receipt yet (added after the
+  // bill's print, waiting for receipt #2). Zero in the normal case.
+  const pending = data?.printedPending;
   const kpiAvg = kpiOrders > 0 ? Math.round(kpiRevenue / kpiOrders) : 0;
   const waiterOrders = data?.waiterOrders || [];
   const waiterDetails = waiterModal ? waiterOrders.filter((row) => row.waiterName === waiterModal) : [];
@@ -144,9 +189,13 @@ export default function ReportsTab() {
         </div>
         <div style={{ textAlign: "center" }}>
           <p style={{ fontSize: "14px", fontWeight: 800, marginTop: 8 }}>Sales Report ({label})</p>
+          {rangeText && (
+            <p style={{ fontSize: "12px", fontWeight: 700 }}>Covers: {rangeText}</p>
+          )}
           <p style={{ fontSize: "11px" }}>
             This paper covers {PERIOD_COVER[period]} and was printed {new Date().toLocaleString()}. Every amount on it
-            comes from bills keyed into the EFD or marked paid.
+            comes from a bill the cashier keyed into the EFD and printed. Cancelled (voided) orders are never counted
+            anywhere on this paper.
           </p>
         </div>
       </div>
@@ -161,7 +210,9 @@ export default function ReportsTab() {
         <div>
           <h2 className="text-xl font-serif font-bold text-amber-100">Sales Reports &amp; Analytics</h2>
           <p className="text-xs text-stone-400">
-            Showing <strong className="text-amber-200">{label}</strong> • every bill keyed into the EFD (printed) or marked paid. Tap a period card below to switch.
+            Showing <strong className="text-amber-200">{label}</strong>
+            {rangeText ? ` • ${rangeText}` : ""} • every bill the cashier keyed into the EFD and printed (cancelled
+            orders are never counted). Tap a period card below to switch.
           </p>
         </div>
         <div className="flex items-center gap-2 no-print">
@@ -182,36 +233,52 @@ export default function ReportsTab() {
         <div className="p-10 text-center text-stone-500 text-sm">Loading reports...</div>
       ) : (
         <>
-          {/* TIME INTERVAL cards — Today / Yesterday / Last 7 Days / Last 30 Days.
-              These are the PERIOD SWITCH: tapping one reloads every section below
-              for that period (the selected card is gold). */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            {(
-              [
-                { key: "today", label: "Today", rev: data.todayRevenue, cnt: data.todayOrders },
-                { key: "yesterday", label: "Yesterday", rev: data.yesterdayRevenue || 0, cnt: data.yesterdayOrders || 0 },
-                { key: "week", label: "Last 7 Days", rev: data.weeklyRevenue || 0, cnt: data.weekOrders || 0 },
-                { key: "month", label: "Last 30 Days", rev: data.monthlyRevenue || 0, cnt: data.monthOrders || 0 },
-              ] as const
-            ).map((p) => (
-              <button
-                key={p.key}
-                onClick={() => switchPeriod(p.key)}
-                title={`Show every section below for ${p.label}`}
-                className={`rounded-2xl p-4 text-left transition active:scale-[0.98] ${
-                  period === p.key
-                    ? "bg-gradient-to-br from-[#C9A227] to-[#8C6D18] text-[#2C1B17]"
-                    : "bg-[#2C1B17] border border-stone-800 text-white hover:border-[#C9A227]/60"
-                }`}
-              >
-                <p className={`text-[10px] font-extrabold uppercase tracking-wider ${period === p.key ? "opacity-80" : "text-stone-400"}`}>
-                  {p.label}
-                </p>
-                <p className="font-serif font-black text-xl">{fmt(p.rev)}</p>
-                <p className={`text-[10px] font-bold mt-0.5 ${period === p.key ? "opacity-70" : "text-stone-500"}`}>{p.cnt} order(s)</p>
-              </button>
-            ))}
+          {/* TIME INTERVAL cards — Today / Yesterday / DAY BEFORE YESTERDAY /
+              Last 7 Days / Last 30 Days. These are the PERIOD SWITCH: tapping one
+              reloads every section below for that period (the selected card is
+              gold). The cross-checker asked for the day before yesterday (owner,
+              Sept 2026): a bill pile is sometimes settled two mornings later and
+              "Last 7 Days" mixes that day with six others. Each single-day card
+              names its real Ethiopian date so nobody has to work it out. */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            {PERIOD_ORDER.map((key) => {
+              const card = PERIOD_CARDS[key](data);
+              const selected = period === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => switchPeriod(key)}
+                  title={`Show every section below for ${card.label}${card.day ? ` (${fmtDayKey(card.day)})` : ""}`}
+                  className={`rounded-2xl p-4 text-left transition active:scale-[0.98] ${
+                    selected
+                      ? "bg-gradient-to-br from-[#C9A227] to-[#8C6D18] text-[#2C1B17]"
+                      : "bg-[#2C1B17] border border-stone-800 text-white hover:border-[#C9A227]/60"
+                  }`}
+                >
+                  <p className={`text-[10px] font-extrabold uppercase tracking-wider ${selected ? "opacity-80" : "text-stone-400"}`}>
+                    {card.label}
+                  </p>
+                  {card.day && (
+                    <p className={`text-[10px] font-bold ${selected ? "opacity-70" : "text-stone-500"}`}>{fmtDayKey(card.day)}</p>
+                  )}
+                  <p className="font-serif font-black text-xl">{fmt(card.rev)}</p>
+                  <p className={`text-[10px] font-bold mt-0.5 ${selected ? "opacity-70" : "text-stone-500"}`}>{card.cnt} order(s)</p>
+                </button>
+              );
+            })}
           </div>
+
+          {/* HOW THE WINDOW IS COUNTED — one line, so the person holding the paper
+              knows exactly which days are in it. Nothing is deleted from the
+              database: the report only ever READS this rolling window. */}
+          <p className="text-[11px] text-stone-500 -mt-2">
+            The window slides one day at a time, it never resets on the 1st of a month:{" "}
+            <strong className="text-stone-300">Last 30 Days</strong> is today plus the 29 days before it
+            {data.periodRange?.from && data.dayKeys?.today
+              ? ` (${fmtDayKey(data.periodRange.from)} – ${fmtDayKey(data.dayKeys.today)})`
+              : ""}
+            . Older bills stay stored; they simply leave the report. Cancelled orders are excluded from every figure.
+          </p>
 
           {/* ═══ CROSS-CHECK BY STATION — the paper world's four piles ═══
               Before this system the cross-checker collected the kitchen's, the
@@ -431,7 +498,10 @@ export default function ReportsTab() {
               the digital receipt pile the cross-checker compares with the station
               piles above. Tap any card to open the whole bill. Screen only: the
               printed paper carries just the one-line EFD total below instead of
-              this whole archive of bills. */}
+              this whole archive of bills.
+              ONLY bills the cashier actually printed are here (owner's decision,
+              Sept 2026) — never a cancelled order, never a bill that has no EFD
+              paper — so this total is the receipt pile in her hand, no more. */}
           <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5 no-print">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider flex items-center gap-2">
@@ -443,9 +513,20 @@ export default function ReportsTab() {
                 <p className="font-serif font-black text-xl text-emerald-400">{fmt(data.printedTodayTotal || 0)}</p>
               </div>
             </div>
+            <p className="text-[11px] text-stone-500 mb-3">
+              Cancelled orders are never listed or added here: only bills the cashier tapped ✓ PRINTED.
+            </p>
             {data.archiveCapped && (
               <p className="text-[11px] font-bold text-amber-300 bg-amber-950/40 border border-amber-700/40 rounded-xl px-3 py-2 mb-4">
                 Showing the newest {(data.printedToday || []).length} of {data.archiveTotal} bills • the total above covers the whole period.
+              </p>
+            )}
+            {!!pending && pending.amount > 0 && (
+              <p className="text-[11px] font-bold text-amber-300 bg-amber-950/40 border border-amber-700/40 rounded-xl px-3 py-2 mb-4">
+                ⚠ {pending.bills} bill(s) received {pending.items} item line(s) ({pending.amount.toLocaleString("en-US")} ETB) AFTER
+                their last print. Those lines are counted above but are not on an EFD receipt yet: key them in and print
+                receipt #2, and the two piles will match.
+                {pending.partial ? ` (Counted over the newest ${(data.printedToday || []).length} bills shown here.)` : ""}
               </p>
             )}
             {(data.printedToday || []).length === 0 ? (
@@ -483,6 +564,11 @@ export default function ReportsTab() {
                         {cleared && (
                           <p className="text-[10px] font-black text-stone-400 uppercase">✓ cleared {t.closedAt ? formatClock(t.closedAt) : ""}</p>
                         )}
+                        {!!t.itemsAfterPrint && t.itemsAfterPrint > 0 && (
+                          <p className="text-[10px] font-black text-amber-300 truncate" title="Lines added after this bill was printed: counted as sales here, but still waiting for their own EFD receipt (receipt #2).">
+                            ⚠ +{t.itemsAfterPrint} line(s) • {t.itemsAfterPrintAmount || 0} ETB not printed yet
+                          </p>
+                        )}
                       </div>
                       <div className="text-right shrink-0">
                         <p className="text-sm font-black text-emerald-400">{t.totalAmount} ETB</p>
@@ -499,13 +585,22 @@ export default function ReportsTab() {
               on screen, where it belongs. */}
           <div className="print-only" style={{ border: "1px solid #000", padding: "8px 10px" }}>
             <p style={{ fontSize: "13px", fontWeight: 800 }}>
-              Bills keyed into the EFD ({label}): {data.archiveTotal || (data.printedToday || []).length} bills • {fmt(data.printedTodayTotal || 0)}
+              Bills keyed into the EFD ({label}
+              {rangeText ? `, ${rangeText}` : ""}): {data.archiveTotal || (data.printedToday || []).length} bills •{" "}
+              {fmt(data.printedTodayTotal || 0)}
             </p>
             <p style={{ fontSize: "11px" }}>
               The bills themselves live in this screen&apos;s Printed Bills archive and are not listed on this paper. Add
               the four station pile totals above and compare with this EFD pile total. If they match, the day&apos;s sales
-              are fully accounted for.
+              are fully accounted for. Cancelled (voided) orders are excluded from both sides.
             </p>
+            {!!pending && pending.amount > 0 && (
+              <p style={{ fontSize: "11px", fontWeight: 700 }}>
+                Difference to explain: {pending.bills} bill(s) took {pending.items} item line(s) ({pending.amount.toLocaleString("en-US")}{" "}
+                ETB) after their last print, so those lines are in the totals above but not on an EFD receipt yet
+                (receipt #2 still to be keyed in).
+              </p>
+            )}
           </div>
 
           {/* Receipt photos */}
@@ -653,16 +748,26 @@ export default function ReportsTab() {
             </div>
             <div className="px-5 py-4 space-y-3">
               <div className="bg-[#3D2314] rounded-xl divide-y divide-stone-800">
-                {(billModal.items || []).filter((i) => !i.removed).map((i) => (
-                  <div key={i.id} className="p-3 flex items-center justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-bold text-amber-100 truncate">{i.name}</p>
-                      <p className="text-xs font-semibold text-stone-300">{i.quantity} × {i.price} ETB</p>
-                      {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic mt-0.5">📝 {i.notes}</p>}
+                {(billModal.items || []).filter((i) => !i.removed).map((i) => {
+                  // A line added AFTER this bill's print is a sale, but it is not on
+                  // the EFD paper the cross-checker holds yet (receipt #2). Say so
+                  // on the line itself instead of leaving her to find the difference.
+                  const afterPrint =
+                    !!billModal.printedAt && !!i.createdAt && new Date(i.createdAt).getTime() > new Date(billModal.printedAt).getTime();
+                  return (
+                    <div key={i.id} className="p-3 flex items-center justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-amber-100 truncate">{i.name}</p>
+                        <p className="text-xs font-semibold text-stone-300">{i.quantity} × {i.price} ETB</p>
+                        {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic mt-0.5">📝 {i.notes}</p>}
+                        {afterPrint && (
+                          <p className="text-[10px] font-black text-amber-300 mt-0.5">⚠ added after the print: not on the EFD receipt yet</p>
+                        )}
+                      </div>
+                      <span className="text-sm font-black text-[#C9A227] shrink-0">{i.price * i.quantity} ETB</span>
                     </div>
-                    <span className="text-sm font-black text-[#C9A227] shrink-0">{i.price * i.quantity} ETB</span>
-                  </div>
-                ))}
+                  );
+                })}
                 {(billModal.items || []).filter((i) => !i.removed).length === 0 && (
                   <p className="p-3 text-center text-xs text-stone-500">No items.</p>
                 )}

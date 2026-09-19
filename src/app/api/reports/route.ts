@@ -1,22 +1,25 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { tickets, ticketItems, categories, orderSubmissions, ticketEvents, staffUsers } from "@/db/schema";
+import { tickets, ticketItems, categories, orderSubmissions, ticketEvents, staffUsers, siteSettings } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { inArray, or, gt } from "drizzle-orm";
+import { inArray, or, gt, eq } from "drizzle-orm";
 import { requireAdmin } from "@/lib/session";
 import { stationOf, STATION_NAMES, type StationName } from "@/lib/stations";
-import { isTodayET, isYesterdayET, etHour } from "@/lib/timezone";
+import {
+  isTodayET,
+  isYesterdayET,
+  isDayBeforeYesterdayET,
+  isWithinEtDays,
+  etHour,
+  etDayKeyDaysAgo,
+  etStartOfDaysAgo,
+} from "@/lib/timezone";
 
 // Day boundaries follow the ETHIOPIAN wall clock (see @/lib/timezone), never
 // the server's: the office PC and the report must agree on what "today" is.
-function isWithinDays(d: Date | string | null | undefined, days: number): boolean {
-  if (!d) return false;
-  const date = new Date(d);
-  const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  return diff >= 0 && diff < days * 24 * 60 * 60 * 1000;
-}
-
+// Every window here is a CALENDAR window (isWithinEtDays / isOnEtDayDaysAgo),
+// so "Last 30 Days" is exactly 30 Ethiopian days — today plus the 29 before it
+// — and slides forward one day at a time instead of resetting each month.
 /**
  * WHEN was this bill SOLD in the real world?
  *
@@ -32,24 +35,77 @@ function soldAt(t: { printedAt: Date | string | null; closedAt: Date | string | 
   return t.printedAt || t.closedAt || t.updatedAt || t.createdAt;
 }
 
-/** True when this bill counts as a sale (printed into the EFD, or paid/completed). */
-function isSold(t: { status: string; printedAt: Date | string | null }): boolean {
+/**
+ * True when this bill counts as a sale.
+ *
+ * PRINT-QUEUE MODE (Fana's real flow): the ONLY money moment is the cashier's
+ * ✓ PRINTED tap, so a bill counts when it carries that print stamp — whatever
+ * happened to it afterwards (still open, table cleared, even later marked
+ * paid). A bill that was never keyed into the EFD has no receipt paper and
+ * must never enter the report: the cross-checker adds the EFD pile and the
+ * numbers have to agree with the paper in her hand.
+ *
+ * FULL-PAYMENT MODE (the owner's Settings switch): nothing is ever printed, so
+ * there the paid/completed mark IS the money moment.
+ *
+ * Cancelled bills NEVER count in either mode: a voided order is not a sale and
+ * must not sit in any total the cross-checker reads.
+ */
+function isSold(t: { status: string; printedAt: Date | string | null }, printQueueMode: boolean): boolean {
   if (t.status === "cancelled") return false;
-  if (t.status === "paid" || t.status === "completed") return true;
   // Print-queue workflow: printed (still open) or closed (table cleared).
-  return (t.status === "printed" || t.status === "closed") && !!t.printedAt;
+  if ((t.status === "printed" || t.status === "closed") && !!t.printedAt) return true;
+  if (t.status === "paid" || t.status === "completed") {
+    // Born-paid sales (the Coffee Note's outdoor bill) are keyed into the EFD
+    // and stamped printedAt, so they count in print-queue mode too; an
+    // UNPRINTED paid bill only counts where nobody prints at all.
+    return printQueueMode ? !!t.printedAt : true;
+  }
+  return false;
 }
 
 /**
  * PERIOD REPORTS (owner, Sept 2026): ?period=today (default) | yesterday |
- * week | month. The four summary cards are ALWAYS all-period (they are the
- * selector), but every section below them — station cross-check, KPIs, peak
- * hours, highest-selling, categories, receipts and the printed-bills archive —
- * describes ONLY the selected period. Callers without ?period= get exactly the
- * old today-based response (the order-history feed never takes a period).
+ * dayBefore | week | month. The five summary cards are ALWAYS all-period (they
+ * are the selector), but every section below them — station cross-check, KPIs,
+ * peak hours, highest-selling, categories, receipts and the printed-bills
+ * archive — describes ONLY the selected period. Callers without ?period= get
+ * exactly the old today-based response (the order-history feed never takes a
+ * period).
+ *
+ * `dayBefore` is the day BEFORE yesterday: the cross-checker sometimes has to
+ * settle a bill pile two mornings later, and "Last 7 Days" mixes it with six
+ * other days.
  */
-const PERIOD_LABELS = { today: "Today", yesterday: "Yesterday", week: "Last 7 Days", month: "Last 30 Days" } as const;
+const PERIOD_LABELS = {
+  today: "Today",
+  yesterday: "Yesterday",
+  dayBefore: "Day Before Yesterday",
+  week: "Last 7 Days",
+  month: "Last 30 Days",
+} as const;
 type Period = keyof typeof PERIOD_LABELS;
+
+/**
+ * How many EAT calendar days each period covers, and how far back it starts.
+ * `today`/`yesterday`/`dayBefore` are ONE day each; `week` is today + the 6
+ * days before it, `month` today + the 29 days before it — exactly 30 days,
+ * never "since the 1st of the month".
+ */
+const PERIOD_START_DAYS_AGO: Record<Period, number> = {
+  today: 0,
+  yesterday: 1,
+  dayBefore: 2,
+  week: 6,
+  month: 29,
+};
+const PERIOD_LENGTH_DAYS: Record<Period, number> = {
+  today: 1,
+  yesterday: 1,
+  dayBefore: 1,
+  week: 7,
+  month: 30,
+};
 
 function toIso(value: Date | string | null | undefined): string | null {
   if (!value) return null;
@@ -268,13 +324,35 @@ export async function GET(request: Request) {
   await ensureTablesExist();
   const rawPeriod = new URL(request.url).searchParams.get("period");
   const period: Period =
-    rawPeriod === "yesterday" || rawPeriod === "week" || rawPeriod === "month" ? rawPeriod : "today";
+    rawPeriod === "yesterday" || rawPeriod === "dayBefore" || rawPeriod === "week" || rawPeriod === "month"
+      ? rawPeriod
+      : "today";
   try {
-    // PERFORMANCE: every figure in this report only spans the last 30 days —
-    // scope the tickets query in SQL (instead of loading the entire table forever)
-    // and fetch items ONLY for those tickets.
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 30);
+    // WHICH MONEY SYSTEM is this cafe on? The owner's Settings switch
+    // (cashier_mode): "print-queue" (the EFD workflow Fana runs) counts a bill
+    // the moment the cashier taps ✓ PRINTED; "full" records payments in the app
+    // instead and never prints. Unreadable setting → the print-queue default.
+    let printQueueMode = true;
+    try {
+      const modeRows = await db.select().from(siteSettings).where(eq(siteSettings.key, "cashier_mode"));
+      printQueueMode = String(modeRows[0]?.value || "print-queue") !== "full";
+    } catch {
+      /* unreadable setting → the default (print-queue) */
+    }
+
+    // RETENTION (owner's decision, Sept 2026): NOTHING is ever deleted here —
+    // the reports and the order history simply READ a rolling window of exactly
+    // 30 Ethiopian calendar days: today plus the 29 days before it. On 1 Oct
+    // the window is 2 Sep – 1 Oct, so 1 Sep drops out of the report that same
+    // day and the paper always covers exactly 30 days. It never resets on the
+    // 1st of a month, and the rows stay in the database (only old receipt
+    // PHOTOS are swept, by /api/tickets/cleanup).
+    //
+    // PERFORMANCE: scoping the tickets query in SQL keeps this endpoint from
+    // loading the entire table forever; items are fetched ONLY for those
+    // tickets. printedAt joins the cutoff list because a bill printed inside
+    // the window is a window sale even if it was opened before it.
+    const cutoff = etStartOfDaysAgo(PERIOD_START_DAYS_AGO.month);
 
     const allTickets = await db
       .select()
@@ -283,7 +361,8 @@ export async function GET(request: Request) {
         or(
           gt(tickets.createdAt, cutoff),
           gt(tickets.updatedAt, cutoff),
-          gt(tickets.closedAt, cutoff)
+          gt(tickets.closedAt, cutoff),
+          gt(tickets.printedAt, cutoff)
         )
       );
 
@@ -294,33 +373,54 @@ export async function GET(request: Request) {
     ]);
 
     // A bill counts as sold when it was PRINTED into the EFD (print-queue
-    // workflow: printed / closed) or marked paid/completed (full mode).
-    const revenueTickets = allTickets.filter(isSold);
+    // workflow — the cashier's ✓ PRINTED tap) or, in full-payment mode, marked
+    // paid/completed. Cancelled bills never count.
+    const revenueTickets = allTickets.filter((t) => isSold(t, printQueueMode));
 
     const todayTickets = revenueTickets.filter((t) => isTodayET(soldAt(t)));
     const yesterdayTickets = revenueTickets.filter((t) => isYesterdayET(soldAt(t)));
-    const weekTickets = revenueTickets.filter((t) => isWithinDays(soldAt(t), 7));
-    const monthTickets = revenueTickets.filter((t) => isWithinDays(soldAt(t), 30));
+    const dayBeforeTickets = revenueTickets.filter((t) => isDayBeforeYesterdayET(soldAt(t)));
+    const weekTickets = revenueTickets.filter((t) => isWithinEtDays(soldAt(t), PERIOD_LENGTH_DAYS.week));
+    const monthTickets = revenueTickets.filter((t) => isWithinEtDays(soldAt(t), PERIOD_LENGTH_DAYS.month));
 
-    const todayRevenue = todayTickets.reduce((s, t) => s + (t.totalAmount || 0), 0);
-    const yesterdayRevenue = yesterdayTickets.reduce((s, t) => s + (t.totalAmount || 0), 0);
-    const weeklyRevenue = weekTickets.reduce((s, t) => s + (t.totalAmount || 0), 0);
-    const monthlyRevenue = monthTickets.reduce((s, t) => s + (t.totalAmount || 0), 0);
+    const sumOf = (rows: typeof revenueTickets) => rows.reduce((s, t) => s + (t.totalAmount || 0), 0);
+    const todayRevenue = sumOf(todayTickets);
+    const yesterdayRevenue = sumOf(yesterdayTickets);
+    const dayBeforeRevenue = sumOf(dayBeforeTickets);
+    const weeklyRevenue = sumOf(weekTickets);
+    const monthlyRevenue = sumOf(monthTickets);
     const todayOrders = todayTickets.length;
     const averageOrderValue = todayOrders > 0 ? Math.round(todayRevenue / todayOrders) : 0;
 
-    // Every section below describes ONLY the selected period. The four summary
+    // Every section below describes ONLY the selected period. The five summary
     // sets above stay all-period (they feed the selector cards).
     const scopeTickets =
       period === "yesterday" ? yesterdayTickets
+      : period === "dayBefore" ? dayBeforeTickets
       : period === "week" ? weekTickets
       : period === "month" ? monthTickets
       : todayTickets;
     const inScopeDay =
       period === "yesterday" ? isYesterdayET
-      : period === "week" ? (d: Date | string | null | undefined) => isWithinDays(d, 7)
-      : period === "month" ? (d: Date | string | null | undefined) => isWithinDays(d, 30)
+      : period === "dayBefore" ? isDayBeforeYesterdayET
+      : period === "week" ? (d: Date | string | null | undefined) => isWithinEtDays(d, PERIOD_LENGTH_DAYS.week)
+      : period === "month" ? (d: Date | string | null | undefined) => isWithinEtDays(d, PERIOD_LENGTH_DAYS.month)
       : isTodayET;
+
+    // The exact EAT calendar dates this response covers, so the screen and the
+    // printed paper can say "2 Sep 2026 – 1 Oct 2026" instead of leaving the
+    // cross-checker guessing which 30 days they are holding.
+    const periodRange = {
+      from: etDayKeyDaysAgo(PERIOD_START_DAYS_AGO[period]),
+      to: etDayKeyDaysAgo(PERIOD_START_DAYS_AGO[period] - PERIOD_LENGTH_DAYS[period] + 1),
+      days: PERIOD_LENGTH_DAYS[period],
+    };
+    // The three single-day cards name their real date too ("Yesterday • 30 Sep").
+    const dayKeys = {
+      today: etDayKeyDaysAgo(0),
+      yesterday: etDayKeyDaysAgo(1),
+      dayBefore: etDayKeyDaysAgo(2),
+    };
 
     // GROUP 4 / ITEM 2 — scope item reads to what the report ACTUALLY uses:
     //  • popular-items, category-sales & the STATION CROSS-CHECK need items of
@@ -346,9 +446,15 @@ export async function GET(request: Request) {
     const printedTodayIds = printedTodayTickets.map((t) => t.id);
     const printedTodayTotal = printedPeriodTickets.reduce((s, t) => s + (t.totalAmount || 0), 0);
 
-    // Full-payment deployments that never print: their paid/completed bills of
-    // the period are still sales, so include them in the archive too.
-    const paidTodayIds = scopeTickets.filter((t) => !printedTodayIds.includes(t.id)).map((t) => t.id);
+    // Full-payment deployments never print, so there the paid/completed bills of
+    // the period ARE the archive. In PRINT-QUEUE mode the archive is the EFD
+    // receipt pile EXACTLY (owner's decision, Sept 2026): a bill the cashier
+    // never keyed in has no paper, so it must not sit in the list the
+    // cross-checker counts against her receipts — that is how "the report says
+    // more than the EFD" confusion starts.
+    const paidTodayIds = printQueueMode
+      ? []
+      : scopeTickets.filter((t) => !t.printedAt && !printedTodayIds.includes(t.id)).map((t) => t.id);
 
     const orderHistoryTickets = allTickets
       .filter((t) => t.status === "paid" || t.status === "completed" || t.status === "cancelled" || t.status === "closed")
@@ -582,17 +688,54 @@ export async function GET(request: Request) {
 
     // The printed-bills archive for the owner — the same bills the cashier
     // sees below her tables, WITH items so each card opens the full bill for
-    // the cross-check. (Full-mode paid bills of the period are appended so the
-    // archive is complete whatever workflow the owner runs. Long periods show
-    // the newest ARCHIVE_CAP bills; the total above still covers everything.)
-    const printedToday = printedTodayTickets.map((t) => ({
-      ...t,
-      items: itemsByTicket.get(t.id) || [],
-    }));
+    // the cross-check. (In full-payment mode the period's paid bills are
+    // appended, because nothing there is ever printed. Long periods show the
+    // newest ARCHIVE_CAP bills; the total above still covers everything.)
+    //
+    // ADDED-AFTER-PRINT (owner's decision, Sept 2026): a bill the waiter topped
+    // up after the cashier's print is a sale of ALL its lines, but only the
+    // lines that existed at print time are on the EFD paper in her hand — the
+    // rest wait for receipt #2 in her TO PRINT queue. Counting them here but
+    // hiding that fact is exactly what makes the piles disagree, so each card
+    // says how many lines and how many ETB are not on an EFD receipt yet, and
+    // the section total shows the same figure once for the whole period.
+    const printedAtMs = (t: { printedAt: Date | string | null }) => new Date(t.printedAt || 0).getTime();
+    const afterPrintOf = (t: { printedAt: Date | string | null }, items: ItemRow[]) => {
+      if (!printQueueMode || !t.printedAt) return { count: 0, amount: 0 };
+      const at = printedAtMs(t);
+      const pending = items.filter(
+        (it) => !it.removed && !!it.createdAt && new Date(it.createdAt).getTime() > at
+      );
+      return {
+        count: pending.length,
+        amount: pending.reduce((s, it) => s + (it.price || 0) * (it.quantity || 0), 0),
+      };
+    };
+
+    const printedToday = printedTodayTickets.map((t) => {
+      const items = itemsByTicket.get(t.id) || [];
+      const pending = afterPrintOf(t, items);
+      return { ...t, items, itemsAfterPrint: pending.count, itemsAfterPrintAmount: pending.amount };
+    });
     for (const id of paidTodayIds) {
       const t = scopeTickets.find((x) => x.id === id);
-      if (t) printedToday.push({ ...t, items: itemsByTicket.get(id) || [] });
+      if (t) {
+        const items = itemsByTicket.get(id) || [];
+        const pending = afterPrintOf(t, items);
+        printedToday.push({ ...t, items, itemsAfterPrint: pending.count, itemsAfterPrintAmount: pending.amount });
+      }
     }
+    // "Not on an EFD receipt yet" figure for the bills whose lines were actually
+    // loaded — the newest ARCHIVE_CAP bills of the period (a whole month of item
+    // rows is never fetched, by design). The UI says so when the list is capped,
+    // so the cross-checker knows the figure covers the bills she can see.
+    const pendingAll = printedToday.map((t) => afterPrintOf(t, t.items));
+    const printedPending = {
+      bills: pendingAll.filter((p) => p.count > 0).length,
+      items: pendingAll.reduce((s, p) => s + p.count, 0),
+      amount: pendingAll.reduce((s, p) => s + p.amount, 0),
+      partial: archiveCapped,
+    };
 
     // Full order history (completed/paid/closed/cancelled), newest first, with
     // items + payment + receipt. Items come from the scoped historyItems query
@@ -606,10 +749,12 @@ export async function GET(request: Request) {
     return NextResponse.json({
       todayRevenue,
       yesterdayRevenue,
+      dayBeforeRevenue,
       weeklyRevenue,
       monthlyRevenue,
       todayOrders,
       yesterdayOrders: yesterdayTickets.length,
+      dayBeforeOrders: dayBeforeTickets.length,
       weekOrders: weekTickets.length,
       monthOrders: monthTickets.length,
       averageOrderValue,
@@ -628,9 +773,20 @@ export async function GET(request: Request) {
       // The printed-bills archive + its total (compare with the EFD receipt pile).
       printedTodayTotal,
       printedToday,
+      // Lines sold in the period that are NOT on an EFD receipt yet (added to an
+      // already-printed bill, waiting for the cashier's receipt #2). Explains a
+      // pile difference instead of leaving the cross-checker to find it.
+      printedPending,
       // Which period the sections above describe + helpers for the UI.
       period,
       periodLabel: PERIOD_LABELS[period],
+      // The exact Ethiopian calendar dates this response covers (rolling window:
+      // "month" is today + the 29 days before it, never a calendar month).
+      periodRange,
+      dayKeys,
+      // Which money workflow the figures come from: "print-queue" (only bills the
+      // cashier tapped ✓ PRINTED count) or "full" (paid/completed bills count).
+      cashierMode: printQueueMode ? "print-queue" : "full",
       totalItems,
       archiveCapped,
       archiveTotal: printedPeriodTickets.length + paidTodayIds.length,

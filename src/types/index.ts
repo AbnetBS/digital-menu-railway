@@ -280,6 +280,15 @@ export interface Ticket {
   unprintedCustomerSubmissions?: number;
   /** Of those waiting submissions, how many were keyed by staff. */
   unprintedStaffSubmissions?: number;
+  /**
+   * Report archive only (GET /api/reports): how many bill lines were added AFTER
+   * this bill's last EFD print. They are real sales, but they are not on the
+   * receipt paper yet — the cashier still owes them a receipt #2 — so the
+   * cross-check card says so instead of letting the piles disagree silently.
+   */
+  itemsAfterPrint?: number;
+  /** ETB value of those not-yet-printed lines. */
+  itemsAfterPrintAmount?: number;
   /** Guest asked for the bill/receipt (Group 8). Null until they tap it. */
   receiptRequestedAt?: string | null;
   /** Waiter or guest who requested the bill. */
@@ -318,13 +327,24 @@ export interface WaiterOrderRecord {
   detail?: string | null;
 }
 
+/**
+ * The report's time-interval cards. `dayBefore` is the day BEFORE yesterday:
+ * the person who cross-checks the bills sometimes settles a pile two mornings
+ * later, and "Last 7 Days" buries that day among six others.
+ */
+export type ReportPeriod = "today" | "yesterday" | "dayBefore" | "week" | "month";
+
 export interface ReportData {
   todayRevenue: number;
   yesterdayRevenue: number;
+  /** The day BEFORE yesterday (the cross-checker's third single-day card). */
+  dayBeforeRevenue?: number;
   weeklyRevenue: number;
   monthlyRevenue: number;
   todayOrders: number;
   yesterdayOrders: number;
+  /** Bill count of the day before yesterday. */
+  dayBeforeOrders?: number;
   weekOrders: number;
   monthOrders: number;
   averageOrderValue: number;
@@ -348,10 +368,26 @@ export interface ReportData {
   printedTodayTotal?: number;
   /** Every bill printed in the selected period (any status except cancelled), newest first, with items. */
   printedToday?: Ticket[];
+  /**
+   * Sold in the period but NOT on an EFD receipt yet: lines a waiter added to an
+   * already-printed bill, waiting for the cashier's receipt #2. Shown next to the
+   * cross-check total so a pile difference explains itself.
+   */
+  printedPending?: { bills: number; items: number; amount: number; partial?: boolean } | null;
   /** Which period this response describes (echoes ?period=, defaults to "today"). */
-  period?: "today" | "yesterday" | "week" | "month";
+  period?: ReportPeriod;
   /** Plain-language label for the selected period, e.g. "Today" or "Last 7 Days". */
   periodLabel?: string;
+  /**
+   * The exact ETHIOPIAN calendar dates this response covers. Rolling windows:
+   * "month" is today + the 29 days before it (exactly 30 days, never a calendar
+   * month), "week" today + the 6 before it, the single-day periods one date each.
+   */
+  periodRange?: { from: string | null; to: string | null; days: number } | null;
+  /** EAT date keys ("2026-09-30") of the three single-day cards. */
+  dayKeys?: { today: string | null; yesterday: string | null; dayBefore: string | null } | null;
+  /** Which money workflow produced the figures: EFD prints or in-app payments. */
+  cashierMode?: "print-queue" | "full";
   /** Total item units sold in the selected period (non-removed lines). */
   totalItems?: number;
   /** Waiter ranking for the selected interval. */

@@ -109,7 +109,14 @@ export default function OrderHistoryTab() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-serif font-bold text-amber-100">Order History ({filtered.length})</h2>
-          <p className="text-xs text-stone-400">Every finished bill with audit trail • search by date, table, waiter, outdoor note or status.</p>
+          {/* The list is the newest finished bills of the report's rolling window
+              (today plus the 29 Ethiopian days before it). Say so: the owner's
+              rule is that NOTHING is ever deleted, so an older bill is not lost,
+              it has simply slid out of the window the reports read. */}
+          <p className="text-xs text-stone-400">
+            Newest finished bills of the last 30 days (today plus the 29 days before it) with audit trail • older bills
+            are still stored, they just slide out of this window • search by date, table, waiter, outdoor note or status.
+          </p>
         </div>
         <div className="flex gap-2 self-start">
           <button

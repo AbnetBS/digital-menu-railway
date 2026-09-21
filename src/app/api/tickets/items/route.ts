@@ -1,3 +1,4 @@
+import { isCashierItemLocked, CORRECTION_LOCK_MESSAGE } from "@/lib/cashier-corrections";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { tickets, ticketItems } from "@/db/schema";
@@ -90,6 +91,12 @@ export async function PUT(request: Request) {
     // The line edit and the bill-total recompute share one transaction so two
     // staff correcting the same bill at once cannot leave a stale total.
     const updated = await db.transaction(async (tx) => {
+      if (__auth.session.kind === "staff" && actorRole === "cashier") {
+        const [ticket] = await tx.select().from(tickets).where(eq(tickets.id, before[0].ticketId)).for("update");
+        const [item] = await tx.select().from(ticketItems).where(eq(ticketItems.id, before[0].id)).for("update");
+        if (!ticket || !item || isCashierItemLocked(item, ticket)) throw new Error(CORRECTION_LOCK_MESSAGE);
+      }
+
       const rows = await tx
         .update(ticketItems)
         .set(updates)
@@ -206,6 +213,9 @@ export async function PUT(request: Request) {
     publish(CHANNELS.orders);
     return NextResponse.json({ ...updated[0], reopened });
   } catch (error) {
+    if (error instanceof Error && error.message === CORRECTION_LOCK_MESSAGE) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
@@ -230,6 +240,11 @@ export async function DELETE(request: Request) {
     // The removal and the bill-total recompute share one transaction so two
     // staff correcting the same bill at once cannot leave a stale total.
     await db.transaction(async (tx) => {
+      if (__auth.session.kind === "staff" && actorRole === "cashier") {
+        const [ticket] = await tx.select().from(tickets).where(eq(tickets.id, rows[0].ticketId)).for("update");
+        const [item] = await tx.select().from(ticketItems).where(eq(ticketItems.id, rows[0].id)).for("update");
+        if (!ticket || !item || isCashierItemLocked(item, ticket)) throw new Error(CORRECTION_LOCK_MESSAGE);
+      }
       if (hard) {
         await tx.delete(ticketItems).where(eq(ticketItems.id, Number(id)));
       } else {
@@ -310,6 +325,9 @@ export async function DELETE(request: Request) {
     publish(CHANNELS.orders);
     return NextResponse.json({ success: true, id: Number(id) });
   } catch (error) {
+    if (error instanceof Error && error.message === CORRECTION_LOCK_MESSAGE) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }

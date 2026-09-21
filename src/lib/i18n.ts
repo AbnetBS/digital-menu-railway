@@ -171,6 +171,7 @@ const STRINGS = {
     os_bill_requested_at: "Requested at",
     os_rate_visit: "Rate your visit",
     close: "Close",
+    press_back_again_to_exit: "Press back again to exit",
 
     /* customer menu — no table */
     scan_qr_title: "Scan a Table QR Code",
@@ -374,6 +375,7 @@ const STRINGS = {
     os_bill_requested_at: "የተጠየቀበት ሰዓት",
     os_rate_visit: "ስለ አገልግሎታችን ግምገማ ይስጡ",
     close: "ዝጋ",
+    press_back_again_to_exit: "ለመውጣት እንደገና ወደ ኋላ ይጫኑ",
 
     /* customer menu — no table */
     scan_qr_title: "የጠረጴዛ QR ኮድ ይቃኙ",

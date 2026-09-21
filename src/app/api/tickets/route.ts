@@ -1,3 +1,4 @@
+import { isCashierOrderLocked, CORRECTION_LOCK_MESSAGE } from "@/lib/cashier-corrections";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { tickets, ticketItems, cafeTables, menuItems, announcements, orderSubmissions, siteSettings, ticketEvents } from "@/db/schema";
@@ -1177,7 +1178,15 @@ export async function PUT(request: Request) {
     }
 
     let updated;
-    if (persistedReceipt !== undefined) {
+    if (body.status === "cancelled" && __auth.session.kind === "staff" && actorRole === "cashier") {
+      updated = await db.transaction(async (tx) => {
+        const [ticket] = await tx.select().from(tickets).where(eq(tickets.id, cur.id)).for("update");
+        const items = await tx.select().from(ticketItems).where(eq(ticketItems.ticketId, cur.id)).for("update");
+        if (!ticket || isCashierOrderLocked({ ...ticket, items })) throw new Error(CORRECTION_LOCK_MESSAGE);
+        if (persistedReceipt !== undefined) updates.receiptImage = await persistImageRef(persistedReceipt, tx);
+        return tx.update(tickets).set(updates).where(and(eq(tickets.id, cur.id), eq(tickets.status, cur.status))).returning();
+      });
+    } else if (persistedReceipt !== undefined) {
       updated = await db.transaction(async (tx) => {
         updates.receiptImage = await persistImageRef(persistedReceipt, tx);
         return tx.update(tickets).set(updates).where(
@@ -1319,6 +1328,9 @@ export async function PUT(request: Request) {
     publish(CHANNELS.orders);
     return NextResponse.json(updated[0]);
   } catch (error) {
+    if (error instanceof Error && error.message === CORRECTION_LOCK_MESSAGE) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }

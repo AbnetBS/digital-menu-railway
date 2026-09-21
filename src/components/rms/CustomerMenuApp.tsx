@@ -1,5 +1,6 @@
 "use client";
 
+import { installMenuBackNavigation } from "@/lib/menu-back-navigation";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import {
@@ -81,6 +82,11 @@ export default function CustomerMenuApp() {
   const [viewingStatus, setViewingStatus] = useState(false);
   const [error, setError] = useState("");
 
+  const [exitToast, setExitToast] = useState(false);
+  const closeTopLayerRef = useRef<() => boolean>(() => false);
+  const openDetail = (item: MenuItem) => setDetailItem(item);
+  const closeDetail = () => setDetailItem(null);
+
   // ── IDEMPOTENCY (Group 1): one key per submission attempt, reused on retries so
   //    a double-tap or WiFi retry can NEVER create a duplicate order. If the cart
   //    changes after a failed attempt, the next click is a NEW submission (new key).
@@ -127,6 +133,20 @@ export default function CustomerMenuApp() {
   const logoUrl = String(settings.logo_url || "/logo.png");
   // Brand guard: business is Fana Cafe & Restaurant — never show FanaQueen text
   const brandName = fixBrandText(settings.cafe_name || "Fana Cafe & Restaurant");
+
+  // Back dismisses the current view without clearing the cart or leaving the QR URL.
+  closeTopLayerRef.current = () => {
+    if (detailItem) setDetailItem(null);
+    else if (galleryPhotoIdx !== null) setGalleryPhotoIdx(null);
+    else if (viewingStatus) setViewingStatus(false);
+    else if (reviewMode) setReviewMode(false);
+    else if (submitted) setSubmitted(false);
+    else return false;
+    return true;
+  };
+  useEffect(() => installMenuBackNavigation(
+    window, () => closeTopLayerRef.current(), setExitToast,
+  ), []);
 
   // SPEED: show cached menu + announcements INSTANTLY on repeat visits,
   // then refresh silently in the background (stale-while-revalidate)
@@ -872,7 +892,7 @@ export default function CustomerMenuApp() {
               <div key={m.id} className={`bg-white rounded-2xl overflow-hidden border shadow-sm ${out ? "opacity-60 border-stone-200" : "border-[#C9A227]/25"}`}>
                 {/* Tap photo or name → BIG detail view with full description */}
                 <button
-                  onClick={() => setDetailItem(m)}
+                  onClick={() => openDetail(m)}
                   className="relative w-full text-left cursor-pointer"
                   title="Tap for full details"
                 >
@@ -892,7 +912,7 @@ export default function CustomerMenuApp() {
                   )}
                 </button>
                 <div className="p-3 space-y-1.5">
-                  <button onClick={() => setDetailItem(m)} className="text-left w-full">
+                  <button onClick={() => openDetail(m)} className="text-left w-full">
                     <p className="text-xs font-bold text-[#2C1B17] leading-tight line-clamp-2 min-h-[2rem] hover:text-[#C9A227] transition-colors">{menuText(m.name)}</p>
                   </button>
                   <p className="text-[10px] text-stone-500 line-clamp-2">{menuText(m.description)}</p>
@@ -953,7 +973,7 @@ export default function CustomerMenuApp() {
 
       {/* ── ITEM DETAIL MODAL — big photo + FULL description ── */}
       {detailItem && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setDetailItem(null)}>
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm" onClick={closeDetail}>
           <div
             className="bg-white rounded-t-3xl sm:rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto shadow-2xl animate-scaleUp"
             onClick={(e) => e.stopPropagation()}
@@ -966,7 +986,7 @@ export default function CustomerMenuApp() {
                 className="w-full h-56 sm:h-64 object-cover bg-stone-100"
               />
               <button
-                onClick={() => setDetailItem(null)}
+                onClick={closeDetail}
                 className="absolute top-3 right-3 w-9 h-9 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black"
                 aria-label="Close"
               >
@@ -1301,6 +1321,13 @@ export default function CustomerMenuApp() {
               <Coffee className="w-4 h-4" /> {t("review_order")}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Double back to exit toast */}
+      {exitToast && (
+        <div role="status" className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 bg-[#2C1B17]/95 text-amber-100 text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl border border-amber-400/50 flex items-center gap-2 pointer-events-none animate-fadeIn backdrop-blur-sm whitespace-nowrap">
+          <span>{t("press_back_again_to_exit")}</span>
         </div>
       )}
     </div>

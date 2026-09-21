@@ -226,18 +226,20 @@ export function RequestReceiptButton() {
 
   return (
     <div
-      className={`w-full rounded-2xl border px-3.5 py-3 shadow-sm ${
-        billRequested ? "bg-emerald-50 border-emerald-300" : "bg-white border-[#C9A227]/40"
+      className={`w-full rounded-2xl border px-3.5 py-3 shadow-md transition-all ${
+        billRequested
+          ? "bg-emerald-50 border-emerald-300"
+          : "bg-gradient-to-r from-amber-500/10 via-orange-500/15 to-amber-500/10 border-2 border-amber-400 shadow-amber-500/15"
       }`}
     >
       {canAsk && (
         <button
           type="button"
-          onClick={requestBill}
+          className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-[#2C1B17] font-black text-base uppercase py-3.5 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-orange-500/30 ring-2 ring-amber-300/60 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-orange-700 active:scale-[0.99] transition disabled:opacity-60"
           disabled={requesting}
-          className="w-full bg-[#4E342E] text-amber-200 font-black text-sm uppercase py-3.5 rounded-xl flex items-center justify-center gap-2 disabled:opacity-60 active:scale-[0.99] transition"
+          onClick={requestBill}
         >
-          {requesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Receipt className="w-5 h-5" />}
+          {requesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Receipt className="w-5 h-5 drop-shadow" />}
           {requesting ? t("os_sending") : t("os_request_bill")}
         </button>
       )}
@@ -588,6 +590,7 @@ export function OrderStatusPage({
         ) : (
           <div className="space-y-3">
             <OrderStatusBody ticket={ticket} />
+            <RequestReceiptButton />
           </div>
         )}
         {onBackToMenu && (

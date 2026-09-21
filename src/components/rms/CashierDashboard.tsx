@@ -1,5 +1,6 @@
 "use client";
 
+import { isCashierItemLocked, isCashierOrderLocked } from "@/lib/cashier-corrections";
 import { useState, useEffect, useRef } from "react";
 import {
   Coffee, RefreshCw, LogOut, BellRing, CheckCircle2, XCircle,
@@ -85,6 +86,13 @@ export default function CashierDashboard() {
   const modeRef = useRef(true);
   // Which queue cards have the ✗ Problem panel open (cancel / correction).
   const [problemOpen, setProblemOpen] = useState<Set<number>>(new Set());
+
+  // Reactive clock tick for time-based button locking (e.g. 10-minute rule)
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // ── CONNECTION INDICATOR (Group 3) ──
   // Reflects REAL backend communication (fetch success/failure), NOT the browser's
@@ -840,6 +848,13 @@ export default function CashierDashboard() {
       sourceItem: line.ids.length === 1 ? visible.find((i) => i.id === line.ids[0]) || null : null,
     }));
   };
+
+  const isItemLocked = (item: TicketItem, ticket: Ticket) => isCashierItemLocked(item, ticket, nowTick);
+  const isOrderLocked = (ticket: Ticket) => isCashierOrderLocked(ticket, nowTick);
+  const editTicket = tickets.find((t) => t.id === editTarget?.item.ticketId);
+  const liveEditItem = editTicket?.items?.find((i) => i.id === editTarget?.item.id);
+  const canKeepEditing = !!editTicket && !!liveEditItem && !isItemLocked(liveEditItem, editTicket);
+
   const statusPill = (t: Ticket) =>
     outdoorReady(t)
       ? { label: "READY TO DELIVER", cls: "bg-emerald-600 text-white" }
@@ -1156,6 +1171,7 @@ export default function CashierDashboard() {
                 const items = t.items || [];
                 const visible = items.filter((item) => !item.removed);
                 const problem = problemOpen.has(t.id);
+                const orderLocked = isOrderLocked(t);
                 return (
                   <div key={t.id} className="bg-[#241714] border border-violet-500/30 rounded-2xl p-4 space-y-3">
                     <div className="flex items-start justify-between gap-3">
@@ -1196,7 +1212,7 @@ export default function CashierDashboard() {
                                 : " • pending"}
                             </p>
                           </div>
-                          {!i.removed && (
+                          {!i.removed && !isItemLocked(i, t) && (
                             <button
                               onClick={() => setEditTarget({ item: i })}
                               className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
@@ -1205,7 +1221,7 @@ export default function CashierDashboard() {
                               ✎ Edit
                             </button>
                           )}
-                          {problem && !i.removed ? (
+                          {!orderLocked && problem && !i.removed && !isItemLocked(i, t) ? (
                             <button
                               onClick={() => removeItem(i.id)}
                               className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
@@ -1242,16 +1258,18 @@ export default function CashierDashboard() {
                           Mark Delivered
                         </button>
                       )}
-                      <button
-                        onClick={() => toggleProblem(t.id)}
-                        className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
-                          problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
-                        }`}
-                      >
-                        <AlertTriangle className="w-4 h-4" /> Problem
-                      </button>
+                      {!orderLocked && (
+                        <button
+                          onClick={() => toggleProblem(t.id)}
+                          className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
+                            problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
+                          }`}
+                        >
+                          <AlertTriangle className="w-4 h-4" /> Problem
+                        </button>
+                      )}
                     </div>
-                    {problem && (
+                    {!orderLocked && problem && (
                       <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
                         <p>Wrong item? Use <strong>Remove</strong> on a line above, or cancel the whole outdoor order:</p>
                         <button
@@ -1372,6 +1390,7 @@ export default function CashierDashboard() {
                     const visible = items.filter((i) => !i.removed);
                     const groupedVisible = groupedPrePrintItems(items);
                     const problem = problemOpen.has(t.id);
+                    const orderLocked = isOrderLocked(t);
                     return (
                       <div key={t.id} className="bg-[#241714] border-2 border-sky-500/70 rounded-2xl p-4 space-y-3">
                         <div className="flex items-start justify-between gap-2">
@@ -1420,7 +1439,7 @@ export default function CashierDashboard() {
                                 <p className="font-extrabold text-amber-100">× {line.quantity}</p>
                                 <p className="text-[10px] font-black text-[#C9A227]">{line.price * line.quantity} ETB</p>
                               </div>
-                              {sourceItem ? (
+                              {sourceItem && !isItemLocked(sourceItem, t) ? (
                                 <button
                                   onClick={() => setEditTarget({ item: sourceItem })}
                                   className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
@@ -1429,7 +1448,7 @@ export default function CashierDashboard() {
                                   ✎ Edit
                                 </button>
                               ) : null}
-                              {problem && sourceItem ? (
+                              {!orderLocked && problem && sourceItem && !isItemLocked(sourceItem, t) ? (
                                 <button
                                   onClick={() => removeItem(sourceItem.id)}
                                   className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
@@ -1451,16 +1470,18 @@ export default function CashierDashboard() {
                           >
                             <CheckCircle2 className="w-5 h-5" /> ✓ CONFIRM & SEND
                           </button>
-                          <button
-                            onClick={() => toggleProblem(t.id)}
-                            className={`px-4 py-4 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
-                              problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
-                            }`}
-                          >
-                            <AlertTriangle className="w-4 h-4" /> Problem
-                          </button>
+                          {!orderLocked && (
+                            <button
+                              onClick={() => toggleProblem(t.id)}
+                              className={`px-4 py-4 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
+                                problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
+                              }`}
+                            >
+                              <AlertTriangle className="w-4 h-4" /> Problem
+                            </button>
+                          )}
                         </div>
-                        {problem && (
+                        {!orderLocked && problem && (
                           <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
                             <p>Use <strong>Remove</strong> on an item above if it is unavailable, or cancel the whole order:</p>
                             <button
@@ -1505,6 +1526,7 @@ export default function CashierDashboard() {
                     const newTotal = newItems.reduce((s, line) => s + line.item.price * line.addedQuantity, 0);
                     const newCount = newItems.reduce((s, line) => s + line.addedQuantity, 0);
                     const problem = problemOpen.has(t.id);
+                    const orderLocked = isOrderLocked(t);
                     return (
                       <div key={t.id} className={`bg-[#2C1B17] rounded-2xl border-2 p-4 space-y-3 ${added ? "border-amber-400" : "border-[#C9A227]/70"}`}>
                         {/* header */}
@@ -1614,7 +1636,7 @@ export default function CashierDashboard() {
                                   <span className="font-extrabold text-amber-100 shrink-0">
                                     × {showFullBill ? i.quantity : line.addedQuantity}
                                   </span>
-                                  {!i.removed && (
+                                  {!i.removed && !isItemLocked(i, t) && (
                                     <button
                                       onClick={() => setEditTarget({ item: i })}
                                       className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
@@ -1623,7 +1645,7 @@ export default function CashierDashboard() {
                                       ✎ Edit
                                     </button>
                                   )}
-                                  {problem && !i.removed ? (
+                                  {!orderLocked && problem && !i.removed && !isItemLocked(i, t) ? (
                                     <button
                                       onClick={() => removeItem(i.id)}
                                       className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
@@ -1655,7 +1677,7 @@ export default function CashierDashboard() {
                                   <p className="font-extrabold text-amber-100">× {line.quantity}</p>
                                   <p className="text-[10px] font-black text-[#C9A227]">{line.price * line.quantity} ETB</p>
                                 </div>
-                                {sourceItem ? (
+                                {sourceItem && !isItemLocked(sourceItem, t) ? (
                                   <button
                                     onClick={() => setEditTarget({ item: sourceItem })}
                                     className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
@@ -1664,7 +1686,7 @@ export default function CashierDashboard() {
                                     ✎ Edit
                                   </button>
                                 ) : null}
-                                {problem && sourceItem ? (
+                                {!orderLocked && problem && sourceItem && !isItemLocked(sourceItem, t) ? (
                                   <button
                                     onClick={() => removeItem(sourceItem.id)}
                                     className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
@@ -1703,16 +1725,18 @@ export default function CashierDashboard() {
                           >
                             <Printer className="w-5 h-5" /> ✓ PRINTED
                           </button>
-                          <button
-                            onClick={() => toggleProblem(t.id)}
-                            className={`px-4 py-4 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
-                              problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
-                            }`}
-                          >
-                            <AlertTriangle className="w-4 h-4" /> Problem
-                          </button>
+                          {!orderLocked && (
+                            <button
+                              onClick={() => toggleProblem(t.id)}
+                              className={`px-4 py-4 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
+                                problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
+                              }`}
+                            >
+                              <AlertTriangle className="w-4 h-4" /> Problem
+                            </button>
+                          )}
                         </div>
-                        {problem && (
+                        {!orderLocked && problem && (
                           <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
                             <p>Use <strong>Remove</strong> on an item above if it is unavailable, or cancel the whole order:</p>
                             <button
@@ -1814,7 +1838,7 @@ export default function CashierDashboard() {
                             <p className="font-bold text-amber-100 truncate">{i.name}</p>
                             {i.notes && <p className="text-[10px] text-amber-300 italic">📝 {i.notes}</p>}
                           </div>
-                          {!i.removed ? (
+                          {!i.removed && !isItemLocked(i, t) ? (
                             <div className="flex items-center gap-1.5 shrink-0">
                               <button onClick={() => updateItemQty(i, Math.max(1, i.quantity - 1))} className="w-6 h-6 bg-white/10 rounded text-xs">−</button>
                               <span className="font-extrabold w-4 text-center">{i.quantity}</span>
@@ -1828,7 +1852,7 @@ export default function CashierDashboard() {
                               </button>
                             </div>
                           ) : (
-                            <span className="text-[10px] font-bold text-rose-400">REMOVED</span>
+                            <span className="text-[10px] font-bold text-stone-400">{i.removed ? "REMOVED" : `× ${i.quantity}`}</span>
                           )}
                         </div>
                       ))}
@@ -1903,9 +1927,11 @@ export default function CashierDashboard() {
                           <CheckCircle2 className="w-4 h-4" /> Mark PAID & Release Table
                         </button>
                       )}
-                      <button onClick={() => cancelTicket(t.id)} className="px-3 py-2.5 bg-rose-900/60 text-rose-300 text-xs font-bold rounded-xl hover:bg-rose-700 hover:text-white flex items-center gap-1">
-                        <XCircle className="w-3.5 h-3.5" /> Cancel
-                      </button>
+                      {!isOrderLocked(t) && (
+                        <button onClick={() => cancelTicket(t.id)} className="px-3 py-2.5 bg-rose-900/60 text-rose-300 text-xs font-bold rounded-xl hover:bg-rose-700 hover:text-white flex items-center gap-1">
+                          <XCircle className="w-3.5 h-3.5" /> Cancel
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -2102,7 +2128,7 @@ export default function CashierDashboard() {
 
       {/* ITEM EDITOR — fix a wrong QR/waiter line on the queue card. Saving
           only corrects the bill; it never prints (hold without printing). */}
-      {editTarget && (
+      {editTarget && canKeepEditing && (
         <EditItemModal
           item={editTarget.item}
           onClose={() => setEditTarget(null)}
@@ -2188,7 +2214,12 @@ function EditItemModal({ item, onClose, onSaved }: { item: TicketItem; onClose: 
     if (!confirm(`Remove "${item.name}" x${item.quantity} from the bill?\n\nThe bill total updates at once. The crew is told only if they already started it.`)) return;
     setSaving(true);
     try {
-      await fetch(`/api/tickets/items?id=${item.id}`, { method: "DELETE" });
+      const r = await fetch(`/api/tickets/items?id=${item.id}`, { method: "DELETE" });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert(d?.error || "Could not remove item");
+        return;
+      }
       onSaved();
     } finally {
       setSaving(false);

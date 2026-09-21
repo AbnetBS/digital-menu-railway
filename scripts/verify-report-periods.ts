@@ -111,7 +111,7 @@ const historyUi = read("src/components/rms/OrderHistoryTab.tsx");
   pass("runtime: the window is 30 days wide, not a calendar month", Math.round((oct1.getTime() + 24 * 60 * 60 * 1000 - windowStartFromOct1.getTime()) / (24 * 60 * 60 * 1000)) === 30);
 
   // Runtime, against the real clock: today and 29 days back are in, 30 days back is out.
-  pass("runtime: today's bill is inside the live 30-day window", isWithinEtDays(new Date(etStartOfDaysAgo(0).getTime() + 60 * 60 * 1000), 30));
+  pass("runtime: today's bill is inside the live 30-day window", isWithinEtDays(new Date(Math.min(Date.now(), etStartOfDaysAgo(0).getTime() + 60 * 60 * 1000)), 30));
   pass("runtime: a bill from 29 EAT days ago is inside (the oldest day kept)", isWithinEtDays(new Date(etStartOfDaysAgo(29).getTime() + 60 * 60 * 1000), 30));
   pass("runtime: a bill from 30 EAT days ago is outside (it left the window)", !isWithinEtDays(new Date(etStartOfDaysAgo(30).getTime() + 60 * 60 * 1000), 30));
   pass("runtime: the FIRST morning of that oldest day still counts (calendar, not 24h)", isWithinEtDays(new Date(etStartOfDaysAgo(29).getTime() + 5 * 60 * 1000), 30));

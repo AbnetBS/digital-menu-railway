@@ -168,10 +168,13 @@ function pass(name, cond) {
     /!confirmedAt && !printedAt/.test(stationsApi) &&
     /if \(isHeld\(confirmedAt, printedAt\)\) return \[\];/.test(stationsApi) &&
     /return items;/.test(stationsApi));
-  pass("no per-line cutoff survives anywhere (additions never wait for a print)",
+  pass("normal stations have no per-line print cutoff (additions never wait for a print)",
     !/releaseCutoff/.test(stationsApi) && !/prevStamp/.test(stationsApi) && !/prevStamp/.test(tickets));
-  pass("the gate is bill-level (never looks at line time), so legacy lines stay visible",
-    !/createdAt/.test((stationsApi.split("const releasedItems = (")[1] || "").split("};")[0] || ""));
+  const releaseHelper = (stationsApi.split("const releasedItems = (")[1] || "").split("};")[0] || "";
+  pass("the shared release gate is bill-level; the buna print-clear filter is separate",
+    !/createdAt/.test(releaseHelper) && /liveItemsForStation/.test(stationsApi));
+  pass("buna live requests clear from the makers' dashboard after the cashier prints",
+    /station !== "buna"/.test(stationsApi) && /it\.stationStatus === "done"/.test(stationsApi) && /createdMs > printedMs/.test(stationsApi));
   pass("the acceptance stamp is written and self-heals on old databases", /updates\.confirmedAt = new Date\(\)/.test(tickets) && /confirmedAt: timestamp\("confirmed_at"\)/.test(schema) && /confirmed_at: \{ type: "timestamp", dropNotNull: true \}/.test(migrate));
   pass("a ticket with zero released items disappears from the station list", /\.filter\(\(t\) => t\.items\.length > 0\)/.test(stationsApi));
   pass("accepting rings ONLY the crews with items on the bill, plus the cashier", /case "confirmed"/.test(alerts) && /t\.stations/.test(alerts) && /fana-cook-\$\{t\.id\}-\$\{station\}/.test(alerts) && /New order to cook/.test(alerts));
@@ -179,6 +182,8 @@ function pass(name, cond) {
   pass("the waiter's button says where the order goes", /Accept & Send → Stations & Cashier/.test(waiter));
   pass("the cashier's button says plain ✓ PRINTED (the print sends nothing — instant release)",
     /<Printer className="w-5 h-5" \/> ✓ PRINTED/.test(cashier) && !/PRINTED & SEND/.test(cashier));
+  pass("cashier printing auto-clears pending buna station lines", /body\.status === "printed"/.test(tickets) && /eq\(ticketItems\.stationName, "buna"\)/.test(tickets) && /stationStatus: "done"/.test(tickets));
+  pass("the buna makers' lane is read-only (no Accept or Done buttons)", /Cashier prints to clear/.test(waiter) && !/setBunaStatus/.test(waiter));
   pass("her addition card still shows ONLY the new items", /isNewUnprinted/.test(cashier) && /new items only/.test(cashier));
   pass("the print NEVER pushes the crews (EFD audit only — they already have the lines)",
     !/sendPushToRoles\(stations/.test(putHalf) && !/fana-station-/.test(putHalf));

@@ -1177,31 +1177,43 @@ export async function PUT(request: Request) {
       updates.verifiedAt = new Date();
     }
 
-    let updated;
-    if (body.status === "cancelled" && __auth.session.kind === "staff" && actorRole === "cashier") {
-      updated = await db.transaction(async (tx) => {
+    const updated = await db.transaction(async (tx) => {
+      if (body.status === "cancelled" && __auth.session.kind === "staff" && actorRole === "cashier") {
         const [ticket] = await tx.select().from(tickets).where(eq(tickets.id, cur.id)).for("update");
         const items = await tx.select().from(ticketItems).where(eq(ticketItems.ticketId, cur.id)).for("update");
         if (!ticket || isCashierOrderLocked({ ...ticket, items })) throw new Error(CORRECTION_LOCK_MESSAGE);
-        if (persistedReceipt !== undefined) updates.receiptImage = await persistImageRef(persistedReceipt, tx);
-        return tx.update(tickets).set(updates).where(and(eq(tickets.id, cur.id), eq(tickets.status, cur.status))).returning();
-      });
-    } else if (persistedReceipt !== undefined) {
-      updated = await db.transaction(async (tx) => {
-        updates.receiptImage = await persistImageRef(persistedReceipt, tx);
-        return tx.update(tickets).set(updates).where(
-          body.status && body.status !== cur.status
-            ? and(eq(tickets.id, body.id), eq(tickets.status, cur.status))
-            : eq(tickets.id, body.id)
-        ).returning();
-      });
-    } else {
-      updated = await db.update(tickets).set(updates).where(
+      }
+      if (persistedReceipt !== undefined) updates.receiptImage = await persistImageRef(persistedReceipt, tx);
+      const rows = await tx.update(tickets).set(updates).where(
         body.status && body.status !== cur.status
           ? and(eq(tickets.id, body.id), eq(tickets.status, cur.status))
           : eq(tickets.id, body.id)
       ).returning();
-    }
+
+      // Buna makers use their lane as a read-only request list. They do not tap
+      // Accept or Done; once the cashier prints the EFD/order paper, the buna
+      // request is considered cleared and leaves their dashboard. New buna
+      // additions after a print are separate pending rows and clear on the next
+      // print.
+      if (rows[0] && body.status === "printed") {
+        await tx
+          .update(ticketItems)
+          .set({
+            stationStatus: "done",
+            stationStatusBy: String(updates.printedBy || actorName || "(cashier)").slice(0, 100),
+            stationStatusAt: new Date(),
+          })
+          .where(
+            and(
+              eq(ticketItems.ticketId, rows[0].id),
+              eq(ticketItems.stationName, "buna"),
+              eq(ticketItems.removed, false),
+              sql`COALESCE(${ticketItems.stationStatus}, '') <> 'done'`
+            )
+          );
+      }
+      return rows;
+    });
 
     if (!updated[0]) return NextResponse.json({ error: "Ticket was changed by another staff member. Refresh and try again." }, { status: 409 });
 

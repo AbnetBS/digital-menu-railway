@@ -87,13 +87,6 @@ export default function CashierDashboard() {
   // Which queue cards have the ✗ Problem panel open (cancel / correction).
   const [problemOpen, setProblemOpen] = useState<Set<number>>(new Set());
 
-  // Reactive clock tick for time-based button locking (e.g. 10-minute rule)
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNowTick(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
   // ── CONNECTION INDICATOR (Group 3) ──
   // Reflects REAL backend communication (fetch success/failure), NOT the browser's
   // internet status. Lets the cashier tell "no new orders" from "we're not talking
@@ -209,14 +202,25 @@ export default function CashierDashboard() {
   const isGroup = (t: Ticket) => isOutdoor(t) && /^GROUP \d+$/i.test(String(t.tableName || ""));
   const outdoorBadge = (t: Ticket) => (isGroup(t) ? "👥 Group" : "Outdoor");
   /**
-   * An outdoor order is ready when EVERY live line on it is done — kitchen,
-   * barista, juice AND buna. Buna lines reach done through the buna makers'
-   * own lane exactly like the other stations, so they count too: the runner
-   * must collect the whole order, not most of it.
+   * An outdoor order is ready when every live line that needs crew completion is
+   * done. Buna is the exception: the buna makers use a read-only request list,
+   * so the cashier's ✓ PRINTED tap clears their line instead of waiting for a
+   * station Done tap. This lets a buna-only outdoor order show Mark Delivered
+   * as soon as it is printed, and mixed orders wait only for the other crews.
    */
   const outdoorReady = (t: Ticket) => {
     const live = (t.items || []).filter((item) => !item.removed);
-    return live.length > 0 && live.every((item) => item.stationStatus === "done");
+    if (live.length === 0) return false;
+    return live.every((item) => {
+      if (item.stationName === "buna") {
+        if (item.stationStatus === "done") return true;
+        if (!t.printedAt) return false;
+        const printedMs = new Date(t.printedAt).getTime() || 0;
+        const createdMs = item.createdAt ? new Date(item.createdAt).getTime() || 0 : 0;
+        return printedMs > 0 && createdMs <= printedMs;
+      }
+      return item.stationStatus === "done";
+    });
   };
   const isGuestTopUp = (t: Ticket) =>
     customerAddOnsRef.current.has(t.id) && customerAddsOf(t) > (customerAddOnsRef.current.get(t.id) || 0);
@@ -849,8 +853,8 @@ export default function CashierDashboard() {
     }));
   };
 
-  const isItemLocked = (item: TicketItem, ticket: Ticket) => isCashierItemLocked(item, ticket, nowTick);
-  const isOrderLocked = (ticket: Ticket) => isCashierOrderLocked(ticket, nowTick);
+  const isItemLocked = (item: TicketItem, ticket: Ticket) => isCashierItemLocked(item, ticket);
+  const isOrderLocked = (ticket: Ticket) => isCashierOrderLocked(ticket);
   const editTicket = tickets.find((t) => t.id === editTarget?.item.ticketId);
   const liveEditItem = editTicket?.items?.find((i) => i.id === editTarget?.item.id);
   const canKeepEditing = !!editTicket && !!liveEditItem && !isItemLocked(liveEditItem, editTicket);

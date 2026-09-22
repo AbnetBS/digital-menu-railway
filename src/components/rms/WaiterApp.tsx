@@ -76,7 +76,8 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   // ── THE BUNA LANE (buna makers only) ──
   // Their own work, pinned above the table grid: every traditional-buna line
-  // released to them, with Accept / Done exactly like the station screens.
+  // released to them. This lane is read-only now: buna makers see the request,
+  // and the cashier's ✓ PRINTED tap clears it from here.
   // Nothing here rings on its own — the push from the server does that, so the
   // phone in a pocket and the strip on screen stay in step.
   const [bunaLines, setBunaLines] = useState<BunaLine[]>([]);
@@ -641,31 +642,23 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       }>;
       setBunaLines(
         data.flatMap((t) =>
-          t.items.map((i) => ({
-            id: i.id,
-            ticketId: t.id,
-            tableName: t.tableName,
-            name: i.name,
-            quantity: i.quantity,
-            notes: i.notes,
-            stationStatus: i.stationStatus,
-            createdAt: i.createdAt,
-          }))
+          t.items
+            .filter((i) => i.stationStatus !== "done")
+            .map((i) => ({
+              id: i.id,
+              ticketId: t.id,
+              tableName: t.tableName,
+              name: i.name,
+              quantity: i.quantity,
+              notes: i.notes,
+              stationStatus: i.stationStatus,
+              createdAt: i.createdAt,
+            }))
         )
       );
     } catch {
       /* the lane is a convenience view; never break the screen over it */
     }
-  };
-
-  /** Accept / Done on one buna line — the same call the station screens make. */
-  const setBunaStatus = async (line: BunaLine, status: "accepted" | "done") => {
-    await fetch("/api/station-items", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ itemId: line.id, stationStatus: status }),
-    });
-    void loadBunaLane();
   };
 
   useEffect(() => {
@@ -1287,9 +1280,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
               <div className="flex items-center justify-between mb-3">
                 <h2 className="font-serif font-bold text-rose-200 text-sm flex items-center gap-2">
                   🫖 My Buna
-                  {bunaLines.filter((l) => l.stationStatus !== "done").length > 0 && (
+                  {bunaLines.length > 0 && (
                     <span className="text-[10px] font-black bg-rose-600 text-white rounded-full px-2 py-0.5">
-                      {bunaLines.filter((l) => l.stationStatus !== "done").length} to make
+                      {bunaLines.length} request{bunaLines.length === 1 ? "" : "s"}
                     </span>
                   )}
                 </h2>
@@ -1304,7 +1297,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
               {bunaLines.length === 0 ? (
                 <p className="text-[11px] text-stone-500 text-center py-3">
-                  No traditional buna right now. Your phone rings the moment an order with buna is accepted.
+                  No traditional buna right now. New buna requests disappear after the cashier taps Printed.
                 </p>
               ) : (
                 <div className="space-y-2 divide-y divide-stone-800">
@@ -1341,27 +1334,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                             </p>
                           )}
                         </div>
-                        {line.stationStatus === "pending" && (
-                          <button
-                            onClick={() => void setBunaStatus(line, "accepted")}
-                            className="shrink-0 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black uppercase transition"
-                          >
-                            Accept ✓
-                          </button>
-                        )}
-                        {line.stationStatus === "accepted" && (
-                          <button
-                            onClick={() => void setBunaStatus(line, "done")}
-                            className="shrink-0 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase transition flex items-center gap-1"
-                          >
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Done
-                          </button>
-                        )}
-                        {line.stationStatus === "done" && (
-                          <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700">
-                            ✓ Done
-                          </span>
-                        )}
+                        <span className="shrink-0 max-w-[120px] text-center text-[10px] font-black text-rose-200 bg-rose-950/60 px-2.5 py-1 rounded-full uppercase border border-rose-700">
+                          Cashier prints to clear
+                        </span>
                       </div>
                     ))}
                 </div>

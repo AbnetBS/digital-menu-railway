@@ -49,8 +49,9 @@ export async function GET(request: Request) {
     // CONFIRM & SEND on a held QR order. From that second on, EVERY line on
     // the bill — the original order AND anything added later by the waiter or
     // the guest's own phone — is the crew's work immediately, exactly like the
-    // cashier and waiter see it. The cashier's print is only the EFD receipt:
-    // it never gates what the kitchen, barista, buna or juice makers see.
+    // cashier and waiter see it. The cashier's print is only the EFD receipt
+    // for kitchen, barista and juice. Buna is read-only: print clears its
+    // already-visible request instead of waiting for a Done tap.
     // The ONLY thing still held back is a HELD bill: her plain accept of a QR
     // order only acknowledges it (alarms stop, nothing sent), so a confirmed
     // bill with neither a confirmed_at nor a printed_at stamp releases NOTHING
@@ -65,6 +66,27 @@ export async function GET(request: Request) {
     ) => {
       if (isHeld(confirmedAt, printedAt)) return [];
       return items;
+    };
+
+    // Buna makers only need a read-only work list. They do not press Accept or
+    // Done; the cashier's EFD print clears the buna request. Future prints mark
+    // the lines done, and this cutoff also hides any older pending buna rows
+    // that were printed before this rule existed. Additions created after the
+    // last print still appear until the cashier prints receipt #2.
+    const liveItemsForStation = (
+      confirmedAt: Date | string | null,
+      printedAt: Date | string | null,
+      items: any[]
+    ) => {
+      const released = releasedItems(confirmedAt, printedAt, items);
+      if (station !== "buna") return released;
+      const printedMs = printedAt ? new Date(printedAt).getTime() || 0 : 0;
+      return released.filter((it: any) => {
+        if (it.stationStatus === "done") return false;
+        if (!printedMs) return true;
+        const createdMs = it.createdAt ? new Date(it.createdAt).getTime() || 0 : 0;
+        return createdMs > printedMs;
+      });
     };
 
     if (historyOnly) {
@@ -241,7 +263,7 @@ export async function GET(request: Request) {
     const payload = open
       .filter((t) => map.has(t.id))
       .map((t) => {
-        const items = releasedItems(t.confirmedAt, t.printedAt, map.get(t.id) || []);
+        const items = liveItemsForStation(t.confirmedAt, t.printedAt, map.get(t.id) || []);
         return {
           id: t.id,
           tableName: t.tableName,

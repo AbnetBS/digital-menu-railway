@@ -394,6 +394,11 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     // a "done" nobody remembers pressing can always be traced to a person.
     station_status_by: { type: "text" },
     station_status_at: { type: "timestamp", dropNotNull: true },
+    // Shift report: who ACCEPTED and who FINISHED each line (both kept).
+    station_accepted_by: { type: "text" },
+    station_accepted_at: { type: "timestamp", dropNotNull: true },
+    station_done_by: { type: "text" },
+    station_done_at: { type: "timestamp", dropNotNull: true },
   },
   push_subscriptions: {
     endpoint: { type: "text" },

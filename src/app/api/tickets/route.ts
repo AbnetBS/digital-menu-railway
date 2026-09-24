@@ -1202,6 +1202,8 @@ export async function PUT(request: Request) {
             stationStatus: "done",
             stationStatusBy: String(updates.printedBy || actorName || "(cashier)").slice(0, 100),
             stationStatusAt: new Date(),
+            stationDoneBy: String(updates.printedBy || actorName || "(cashier)").slice(0, 100),
+            stationDoneAt: new Date(),
           })
           .where(
             and(

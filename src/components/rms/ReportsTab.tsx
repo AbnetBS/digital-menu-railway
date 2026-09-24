@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { TrendingUp, ShoppingBag, RefreshCw, ImageIcon, PieChart, Coffee, CookingPot, Printer, XCircle, Users } from "lucide-react";
 import { ReportData, ReportPeriod, Ticket } from "@/types";
 import { formatClock, formatDateTime } from "@/lib/order-lines";
+import ShiftReport from "@/components/rms/ShiftReport";
 
 type Period = ReportPeriod;
 
@@ -74,6 +75,8 @@ export default function ReportsTab() {
   // Cafe letterhead (name, address, phone, logo) for the printed paper.
   const [brand, setBrand] = useState<Record<string, string>>({});
   const [expired, setExpired] = useState(false);
+  // SHIFT REPORT (cross-checker, Sept 2026): who handled what, per shift.
+  const [shiftOpen, setShiftOpen] = useState(false);
 
   const load = async (p: Period) => {
     const r = await fetch(`/api/reports?period=${p}`);
@@ -216,6 +219,13 @@ export default function ReportsTab() {
           </p>
         </div>
         <div className="flex items-center gap-2 no-print">
+          <button
+            onClick={() => setShiftOpen(true)}
+            className="bg-sky-600 hover:bg-sky-500 text-white font-black text-xs uppercase px-4 py-2.5 rounded-xl flex items-center gap-2"
+            title="Who handled which order, per shift (morning / afternoon / combined)"
+          >
+            <Users className="w-4 h-4" /> Shift Report
+          </button>
           <button
             onClick={() => window.print()}
             className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase px-4 py-2.5 rounded-xl flex items-center gap-2"
@@ -786,6 +796,8 @@ export default function ReportsTab() {
           </div>
         </div>
       )}
+
+      {shiftOpen && <ShiftReport onClose={() => setShiftOpen(false)} />}
 
       {receiptModal && (
         <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 no-print" onClick={() => setReceiptModal(null)}>

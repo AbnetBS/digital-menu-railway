@@ -115,6 +115,8 @@ export async function POST(request: Request) {
         stationStatus: "done",
         stationStatusBy: actor,
         stationStatusAt: now,
+        stationDoneBy: actor,
+        stationDoneAt: now,
       });
 
       // 4. Audit trail, same as every other ticket.

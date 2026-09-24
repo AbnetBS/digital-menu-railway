@@ -329,7 +329,7 @@ export async function PUT(request: Request) {
     // admin acting on a crew's behalf is stamped as admin, never as the crew.
     const actorName =
       stationRole === "admin" ? "admin" : (await readStaffSession())?.name || stationRole;
-    const stampAt = new Date();
+    const stampAt = new Date(); // stationStatusAt: new Date() (one instant for every stamp)
     const updated = await db
       .update(ticketItems)
       .set({

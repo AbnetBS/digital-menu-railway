@@ -174,6 +174,17 @@ export default function ShiftReport({ onClose }: { onClose: () => void }) {
                 {data.dayKeys?.length ? ` • ${data.dayKeys[data.dayKeys.length - 1]}${data.dayKeys.length > 1 ? ` → ${data.dayKeys[0]}` : ""}` : ""}
               </p>
 
+              {/* TOTALS TABLE (cross-checker, Sept 2026): one line per person per
+                  shift: "Abel • Waiter • Morning • 5 orders • 4,250 ETB". */}
+              <TotalsTable
+                role={role}
+                rows={[
+                  ...(showMorning ? data.morning.map((p) => ({ name: p.name, shift: "Morning", orders: p.orders, amount: p.amount })) : []),
+                  ...(showAfternoon ? data.afternoon.map((p) => ({ name: p.name, shift: "Afternoon", orders: p.orders, amount: p.amount })) : []),
+                  ...(showCombined ? data.combined.map((g) => ({ name: g.label, shift: "Combined", orders: g.orders, amount: g.amount })) : []),
+                ]}
+              />
+
               {showMorning && (
                 <ShiftSection
                   icon={<Sun className="w-4 h-4 text-amber-300" />}
@@ -263,6 +274,52 @@ export default function ShiftReport({ onClose }: { onClose: () => void }) {
 
       {detail && <OrderDetail order={detail} role={role} station={station} onClose={() => setDetail(null)} />}
     </div>
+  );
+}
+
+function TotalsTable({ role, rows }: { role: ShiftRole; rows: { name: string; shift: string; orders: number; amount: number }[] }) {
+  if (rows.length === 0) return null;
+  const byShift = (sh: string) => rows.filter((r) => r.shift === sh).reduce((s, r) => s + r.amount, 0);
+  const shifts = [...new Set(rows.map((r) => r.shift))];
+  return (
+    <section className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/40 p-4 overflow-x-auto">
+      <h3 className="text-sm font-black text-amber-200 uppercase tracking-wider mb-2">Totals per person</h3>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[10px] uppercase text-stone-500 text-left">
+            <th className="py-1 pr-2">#</th>
+            <th className="py-1 pr-2">Name</th>
+            <th className="py-1 pr-2">Role</th>
+            <th className="py-1 pr-2">Shift</th>
+            <th className="py-1 pr-2 text-right">Orders</th>
+            <th className="py-1 text-right">Total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-stone-800">
+          {rows.map((r, i) => (
+            <tr key={`${r.shift}-${r.name}`}>
+              <td className="py-1.5 pr-2 font-black text-[#C9A227]">{i + 1}</td>
+              <td className="py-1.5 pr-2 font-black text-amber-100">{r.name}</td>
+              <td className="py-1.5 pr-2 text-stone-300">{SHIFT_ROLE_LABELS[role]}</td>
+              <td className="py-1.5 pr-2 text-stone-300">{r.shift}</td>
+              <td className="py-1.5 pr-2 text-right text-stone-300">{r.orders}</td>
+              <td className="py-1.5 text-right font-black text-[#C9A227]">{etb(r.amount)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          {shifts.map((sh) => (
+            <tr key={sh} className="border-t border-stone-700">
+              <td colSpan={5} className="py-1.5 pr-2 text-right font-black text-stone-300">{sh} total</td>
+              <td className="py-1.5 text-right font-black text-amber-100">{etb(byShift(sh))}</td>
+            </tr>
+          ))}
+        </tfoot>
+      </table>
+      <p className="text-[10px] text-stone-500 mt-2">
+        Combined orders are shared, so they are counted on each person and again under Combined. Compare shift totals, not the sum of all rows.
+      </p>
+    </section>
   );
 }
 

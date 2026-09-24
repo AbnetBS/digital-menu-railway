@@ -227,6 +227,13 @@ export const ticketItems = pgTable("ticket_items", {
   // Crew-action audit: WHO last pressed Accept/Done on this line and WHEN.
   stationStatusBy: varchar("station_status_by", { length: 100 }),
   stationStatusAt: timestamp("station_status_at"),
+  // SHIFT REPORT (owner, Sept 2026): stationStatusBy only keeps the LAST tap,
+  // so "accepted by Abel, finished by Mitke" was lost. These keep BOTH steps
+  // permanently, so the cross-checker can see who started and who finished.
+  stationAcceptedBy: varchar("station_accepted_by", { length: 100 }),
+  stationAcceptedAt: timestamp("station_accepted_at"),
+  stationDoneBy: varchar("station_done_by", { length: 100 }),
+  stationDoneAt: timestamp("station_done_at"),
   createdAt: timestamp("created_at").defaultNow(),
   // Shared by all rows of one order submission (see tickets.idempotencyKey).
   idempotencyKey: varchar("idempotency_key", { length: 64 }),

@@ -329,13 +329,13 @@ export async function PUT(request: Request) {
     // admin acting on a crew's behalf is stamped as admin, never as the crew.
     const actorName =
       stationRole === "admin" ? "admin" : (await readStaffSession())?.name || stationRole;
-    const stampAt = new Date(); // stationStatusAt: new Date() (one instant for every stamp)
+    const stampAt = new Date();
     const updated = await db
       .update(ticketItems)
       .set({
         stationStatus: nextStatus,
         stationStatusBy: String(actorName).slice(0, 100),
-        stationStatusAt: stampAt,
+        stationStatusAt: new Date(),
         // Shift report: keep the accept AND the done step separately.
         ...(nextStatus === "accepted"
           ? { stationAcceptedBy: String(actorName).slice(0, 100), stationAcceptedAt: stampAt }

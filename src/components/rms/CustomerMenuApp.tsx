@@ -275,8 +275,12 @@ export default function CustomerMenuApp() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ customerName: revName.trim(), rating: revRating, reviewText: revText.trim() }),
-    });
+    }).catch(() => null);
     setRevSending(false);
+    if (!r) {
+      setRevMsg(t("review_fail"));
+      return;
+    }
     if (r.ok) {
       setRevName("");
       setRevText("");

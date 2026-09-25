@@ -221,12 +221,27 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
 
   const saveSplit = async (h: number) => {
     setSavingSplit(true);
-    await fetch("/api/reports/shifts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ splitHour: h }),
-    });
+    setError(null);
+    let failed: string | null = null;
+    try {
+      const r = await fetch("/api/reports/shifts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ splitHour: h }),
+      });
+      // The hour is a setting the whole paper depends on: if it did not save,
+      // the report must say so instead of quietly keeping the old split.
+      if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        failed = d?.error || "Could not save the shift change hour.";
+      }
+    } catch (e) {
+      failed = e instanceof Error ? e.message : "Could not save the shift change hour.";
+    }
     setSavingSplit(false);
+    // Nothing changed on a failure, so do NOT reload: load() clears `error`,
+    // and the message is the only thing telling the owner the hour stayed old.
+    if (failed) return setError(failed);
     load(role, date);
   };
 

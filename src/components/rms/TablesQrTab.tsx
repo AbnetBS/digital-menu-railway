@@ -16,6 +16,13 @@ export default function TablesQrTab() {
   const [baseUrl, setBaseUrl] = useState(""); // effective base for QR links
   const [customBase, setCustomBase] = useState(""); // persisted setting (stable domain)
   const [savedMsg, setSavedMsg] = useState("");
+  /** Why a save/add/remove did not work (the success line stays green). */
+  const [errMsg, setErrMsg] = useState("");
+  const fail = (text: string) => {
+    setErrMsg(text);
+    setSavedMsg("");
+    setTimeout(() => setErrMsg(""), 5000);
+  };
 
   const load = async () => {
     const [tRes, sRes] = await Promise.all([fetch("/api/tables"), fetch("/api/settings")]);
@@ -37,34 +44,62 @@ export default function TablesQrTab() {
   }, []);
 
   const saveQrBase = async () => {
-    const r = await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ qr_base_url: customBase.trim() }),
-    });
+    let r: Response;
+    try {
+      r = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ qr_base_url: customBase.trim() }),
+      });
+    } catch {
+      return fail(L("Network error. Try again."));
+    }
     if (r.ok) {
       setBaseUrl(customBase.trim() || window.location.origin);
+      setErrMsg("");
       setSavedMsg(tNow("✓ QR base URL saved • all codes updated"));
       setTimeout(() => setSavedMsg(""), 3000);
+      return;
     }
+    const d = await r.json().catch(() => null);
+    fail(d?.error || L("Could not save the QR domain."));
   };
 
   const addTable = async () => {
     if (!newName) return;
-    const r = await fetch("/api/tables", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newName, sortOrder: tables.length + 1 }),
-    });
-    if (r.ok) {
-      setNewName("");
-      load();
+    try {
+      const r = await fetch("/api/tables", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName, sortOrder: tables.length + 1 }),
+      });
+      if (r.ok) {
+        setNewName("");
+        setErrMsg("");
+        load();
+        return;
+      }
+      const d = await r.json().catch(() => null);
+      fail(d?.error || L("Failed to add the table."));
+    } catch {
+      fail(L("Network error. Try again."));
     }
   };
 
   const removeTable = async (id: number) => {
     if (!confirm(L("Remove this table and its QR code?"))) return;
-    await fetch(`/api/tables?id=${id}`, { method: "DELETE" });
+    try {
+      const r = await fetch(`/api/tables?id=${id}`, { method: "DELETE" });
+      if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        fail(d?.error || L("Failed to remove the table."));
+        return;
+      }
+      setErrMsg("");
+    } catch {
+      fail(L("Network error. Try again."));
+      return;
+    }
     load();
   };
 
@@ -114,6 +149,7 @@ export default function TablesQrTab() {
           </button>
         </div>
         {savedMsg && <p className="text-xs text-emerald-400 font-bold">{savedMsg}</p>}
+        {errMsg && <p className="text-xs text-rose-300 font-bold">{errMsg}</p>}
         {baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1") ? (
           <div className="bg-rose-950/60 border border-rose-600 text-rose-200 text-xs p-3 rounded-xl font-bold">
             {L("⚠️ You're on localhost: customer phones CAN'T reach these QRs. Deploy to your host (e.g. Railway) first, open the live site, then print.")}

@@ -54,17 +54,30 @@ export default function OrderHistoryTab() {
       )
     )
       return;
-    const r = await fetch("/api/tickets/cleanup", { method: "POST" });
-    const d = await r.json();
-    alert(d.message || L("Cleanup done"));
+    try {
+      const r = await fetch("/api/tickets/cleanup", { method: "POST" });
+      const d = await r.json().catch(() => null);
+      // Only a real success may say "done": the old code printed "Cleanup done"
+      // for a failed request too, so the owner believed storage was freed.
+      alert(r.ok ? d?.message || L("Cleanup done") : d?.error || L("Cleanup failed. Try again."));
+    } catch {
+      alert(L("Network error. Try again."));
+    }
     load();
   };
 
   const deleteOrder = async (id: number, tableName: string, amount: number) => {
     if (!confirm(L("Delete this order history?\n\n{tableName} • {amount} ETB\n\nThis permanently removes the record from the database.", { tableName, amount }))) return;
-    const r = await fetch(`/api/tickets?id=${id}`, { method: "DELETE" });
-    if (r.ok) {
-      setOrders((prev) => prev.filter((o) => o.id !== id));
+    try {
+      const r = await fetch(`/api/tickets?id=${id}`, { method: "DELETE" });
+      if (r.ok) {
+        setOrders((prev) => prev.filter((o) => o.id !== id));
+        return;
+      }
+      const d = await r.json().catch(() => null);
+      alert(d?.error || L("Failed to delete this order from the history."));
+    } catch {
+      alert(L("Network error. Try again."));
     }
   };
 

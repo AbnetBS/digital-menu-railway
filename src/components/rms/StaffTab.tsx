@@ -11,6 +11,14 @@ export default function StaffTab() {
   const [name, setName] = useState("");
   const [role, setRole] = useState<"waiter" | "cashier" | "barista" | "kitchen" | "buna" | "juice" | "admin">("waiter");
   const [pin, setPin] = useState("");
+  /** One line of feedback under the form: what worked, or why it did not. */
+  const [msg, setMsg] = useState("");
+  const [msgBad, setMsgBad] = useState(false);
+  const say = (text: string, bad: boolean) => {
+    setMsg(text);
+    setMsgBad(bad);
+    setTimeout(() => setMsg(""), 4000);
+  };
 
   const load = async () => {
     const r = await fetch("/api/staff");
@@ -23,21 +31,39 @@ export default function StaffTab() {
 
   const addStaff = async () => {
     if (!name || !pin) return;
-    const r = await fetch("/api/staff", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, role, pin }),
-    });
-    if (r.ok) {
+    try {
+      const r = await fetch("/api/staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, role, pin }),
+      });
+      // A rejected account (a name that already exists, a bad PIN) used to fail
+      // in silence, so the owner tapped CREATE again and again.
+      const d = await r.json().catch(() => null);
+      if (!r.ok) return say(d?.error || L("Failed to create the staff account."), true);
       setName("");
       setPin("");
+      say(L("✓ Staff account created"), false);
       load();
+    } catch {
+      say(L("Network error. Try again."), true);
     }
   };
 
   const removeStaff = async (id: number) => {
     if (!confirm(L("Remove this staff account?"))) return;
-    await fetch(`/api/staff?id=${id}`, { method: "DELETE" });
+    try {
+      const r = await fetch(`/api/staff?id=${id}`, { method: "DELETE" });
+      if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        say(d?.error || L("Failed to remove the staff account."), true);
+        return;
+      }
+      say(L("✓ Staff account removed"), false);
+    } catch {
+      say(L("Network error. Try again."), true);
+      return;
+    }
     load();
   };
 
@@ -93,6 +119,9 @@ export default function StaffTab() {
             <Plus className="w-4 h-4" /> {L("Create Account")}
           </button>
         </div>
+        {msg && (
+          <p className={`mt-3 text-xs font-bold ${msgBad ? "text-rose-300" : "text-emerald-400"}`}>{msg}</p>
+        )}
       </div>
 
       {/* Staff list */}

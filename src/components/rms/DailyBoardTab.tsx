@@ -61,7 +61,17 @@ export default function DailyBoardTab() {
 
   const remove = async (id: number) => {
     if (!confirm(L("Delete this announcement?"))) return;
-    await fetch(`/api/announcements?id=${id}`, { method: "DELETE" });
+    try {
+      const r = await fetch(`/api/announcements?id=${id}`, { method: "DELETE" });
+      if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        alert(d?.error || L("Failed to delete announcement."));
+        return;
+      }
+    } catch {
+      alert(L("Network error. Try again."));
+      return;
+    }
     load();
   };
 

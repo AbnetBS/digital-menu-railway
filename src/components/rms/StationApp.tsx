@@ -243,13 +243,19 @@ export default function StationApp({ station }: { station: Station }) {
 
   const login = async () => {
     setLoginError("");
+    // A LOGIN tap with no answer at all (offline, server restarting) used to do
+    // nothing whatsoever, so the crew kept re-typing a PIN that was fine.
     const r = await fetch("/api/staff/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: selectedName, pin, role: station }),
-    });
-    const d = await r.json();
-    if (r.ok && d.success) {
+    }).catch(() => null);
+    if (!r) {
+      setLoginError(tNow("Network error. Try again."));
+      return;
+    }
+    const d = await r.json().catch(() => null);
+    if (r.ok && d?.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem(`fana_${station}`, JSON.stringify(d.staff));
       // GROUP 10: the login tap is the gesture browsers need — unlock the loud
@@ -503,11 +509,22 @@ export default function StationApp({ station }: { station: Station }) {
   };
 
   const setStatus = async (item: StationItem, status: "accepted" | "done" | "pending") => {
-    await fetch("/api/station-items", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ itemId: item.id, stationStatus: status }),
-    });
+    // A tap that does not reach the server leaves the line sitting there while
+    // the cook believes it is accepted/done — so every failure says so out loud.
+    try {
+      const r = await fetch("/api/station-items", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId: item.id, stationStatus: status }),
+      });
+      if (r.status === 401) return expireSession();
+      if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        showToast(d?.error || tNow("That tap did not go through. Try again."));
+      }
+    } catch {
+      showToast(tNow("Network error. Try again."));
+    }
     load();
     // The tap the crew just made is what the "Items sold" figures count, so the
     // tile (and an open panel on today) follows it right away.

@@ -10,8 +10,19 @@ import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import Link from "next/link";
-import { phrase, useStaffT, tNow } from "@/lib/staff-i18n";
+import { phrase, useStaffT, tNow, staffEtb } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
+import {
+  SALES_MODES,
+  SALES_MODE_LABELS,
+  SALES_PERIODS,
+  SALES_PERIOD_LABELS,
+  salesRangeText,
+  type SalesMode,
+  type SalesPeriod,
+  type StationSalesPile,
+  type StationSalesReport,
+} from "@/lib/station-sales";
 
 type Station = "barista" | "kitchen" | "juice";
 
@@ -53,38 +64,6 @@ interface StationTicket {
   items: StationItem[];
 }
 
-/**
- * One order in "Today's History" — every line this crew RECEIVED today, from
- * bills that are still open or already cleared. `releasedAt` is when the work
- * reached them (the send, or the moment an addition landed), which is also
- * the day the history list groups by.
- */
-interface HistoryTicket {
-  id: number;
-  tableName: string;
-  orderNumber?: string | null;
-  orderType?: string | null;
-  serviceNote?: string | null;
-  status: string;
-  createdBy?: string | null;
-  confirmedBy?: string | null;
-  createdAt?: string | null;
-  closedAt?: string | null;
-  printedAt?: string | null;
-  confirmedAt?: string | null;
-  releasedAt?: string | null;
-  items: Array<{
-    id: number;
-    name: string;
-    quantity: number;
-    notes?: string | null;
-    stationStatus: string;
-    stationStatusBy?: string | null;
-    stationStatusAt?: string | null;
-    createdAt?: string | null;
-  }>;
-}
-
 const STATION_META = {
   barista: { label: phrase("Barista"), icon: Coffee, color: "amber", slug: "barista" as Station, desc: phrase("Machine coffee & cold beverages") },
   kitchen: { label: phrase("Kitchen (Chef)"), icon: CookingPot, color: "emerald", slug: "kitchen" as Station, desc: phrase("Foods, pastries, meals & snacks") },
@@ -110,45 +89,90 @@ export default function StationApp({ station }: { station: Station }) {
   const [toast, setToast] = useState("");
   // Always points at the CURRENT load() for the SSE + push relays.
   const loadRef = useRef<() => void>(() => {});
+  // Same for the "Items sold" tile's own today count.
+  const todayUnitsLoadRef = useRef<() => void>(() => {});
 
-  // ── TODAY'S HISTORY ──
-  // The crew's own archive: every order they received today (open or already
-  // cleared), exactly like the cashier's "Printed Today" pile but only THEIR
-  // items. This replaces the old "Open Tables" counter — the crew asked for
-  // their day's work, not the table count.
-  const [showHistory, setShowHistory] = useState(false);
-  const [salesPeriod, setSalesPeriod] = useState("today");
-  const [salesMode, setSalesMode] = useState<"accepted" | "done" | "combined">("done");
-  const [sales, setSales] = useState<Record<string, Array<{name: string; quantity: number; amount: number; bills: number}>>>({});
+  // ── ITEMS SOLD (the crew's own tab) ──
+  // What THIS cook / barista / juice maker sold, grouped by menu category, for
+  // the date they tap and the pile they choose (accepted / done / combined).
+  // The owner replaced the old "Today's History" counter with it: the crew
+  // asked what they SOLD, not how many tables were open. All counting rules
+  // live in the pure @/lib/station-sales module (the same attribution the shift
+  // report uses), served by /api/station-sales, so the two papers agree.
+  const [showSales, setShowSales] = useState(false);
+  const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>("today");
+  const [salesMode, setSalesMode] = useState<SalesMode>("combined");
+  const [sales, setSales] = useState<StationSalesReport | null>(null);
   const [salesLoading, setSalesLoading] = useState(false);
-  const loadSales = async (period: string) => {
-    setSalesLoading(true);
-    try {
-      const r = await fetch(`/api/station-sales?period=${period}`, { cache: "no-store" });
-      if (r.ok) setSales(await r.json());
-    } finally { setSalesLoading(false); }
-  };
-  const [historyTickets, setHistoryTickets] = useState<HistoryTicket[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const historyLoadRef = useRef<() => void>(() => {});
+  const [salesError, setSalesError] = useState("");
+  // Today's unit count for the CLOSED screen: the tile shows a live number, so
+  // the crew watches their day grow without opening the tab (and an empty day
+  // reads as "nothing yet", never as a broken screen).
+  const [todayUnits, setTodayUnits] = useState<number | null>(null);
+  // Refs follow the latest render (same reason the alarm reads alertsOnRef):
+  // the after-tap refresh below is called from a handler that must not read a
+  // stale panel state.
+  const salesPeriodRef = useRef<SalesPeriod>("today");
+  const showSalesRef = useRef(false);
 
-  const loadHistory = async () => {
-    setHistoryLoading(true);
+  const fetchSales = async (period: SalesPeriod): Promise<StationSalesReport | null> => {
+    const r = await fetch(`/api/station-sales?period=${period}`, { cache: "no-store" });
+    if (r.status === 401) {
+      // The 12-hour staff cookie died mid-shift: go back to the login screen
+      // WITH an explanation instead of leaving a panel full of zeros.
+      setShowSales(false);
+      expireSession();
+      return null;
+    }
+    if (!r.ok) throw new Error(`station-sales answered ${r.status}`);
+    return (await r.json()) as StationSalesReport;
+  };
+
+  const loadSales = async (period: SalesPeriod) => {
+    setSalesLoading(true);
+    setSalesError("");
     try {
-      const r = await fetch(`/api/station-items?station=${station}&history=1`);
-      if (r.status === 401) return expireSession();
-      if (r.ok) setHistoryTickets(await r.json());
+      const report = await fetchSales(period);
+      if (report) {
+        setSales(report);
+        setSalesPeriod(report.period);
+        salesPeriodRef.current = report.period;
+        if (report.period === "today") setTodayUnits(report.modes?.combined?.quantity ?? 0);
+      }
     } catch {
-      /* a failed history load keeps the previous list */
+      setSalesError(tNow("Could not load your sales. Tap refresh to try again."));
     } finally {
-      setHistoryLoading(false);
+      setSalesLoading(false);
     }
   };
 
-  const openHistory = () => {
-    setShowHistory(true);
+  /** Keeps the tile's number honest after an Accept/Done tap. */
+  const refreshTodayUnits = async () => {
+    try {
+      const report = await fetchSales("today");
+      if (!report) return;
+      setTodayUnits(report.modes?.combined?.quantity ?? 0);
+      if (showSalesRef.current && salesPeriodRef.current === "today") setSales(report);
+    } catch {
+      /* the tile simply keeps the previous number */
+    }
+  };
+
+  const openSales = () => {
+    setShowSales(true);
+    showSalesRef.current = true;
     loadSales(salesPeriod);
   };
+
+  const closeSales = () => {
+    setShowSales(false);
+    showSalesRef.current = false;
+  };
+
+  useEffect(() => {
+    salesPeriodRef.current = salesPeriod;
+    showSalesRef.current = showSales;
+  }, [salesPeriod, showSales]);
 
   // THIS PAGE'S ALARM SOUND (owner's decision, Sept 2026): the juice bar
   // stands next to the kitchen and the one shared alarm made the crews
@@ -402,7 +426,7 @@ export default function StationApp({ station }: { station: Station }) {
 
   useEffect(() => {
     loadRef.current = load;
-    historyLoadRef.current = loadHistory;
+    todayUnitsLoadRef.current = refreshTodayUnits;
   });
 
   // POCKET MODE: keeps this tablet/phone subscribed (self-healing) and rings
@@ -415,6 +439,9 @@ export default function StationApp({ station }: { station: Station }) {
   useEffect(() => {
     if (staffName) {
       load();
+      // The "Items sold" tile shows today's own figures the moment the crew
+      // logs in, so the number is already there before anyone opens the tab.
+      todayUnitsLoadRef.current();
       // REALTIME (SSE): the server pushes a "refresh" signal only when an
       // order/item changes, instead of polling every 8s.
       //
@@ -482,6 +509,9 @@ export default function StationApp({ station }: { station: Station }) {
       body: JSON.stringify({ itemId: item.id, stationStatus: status }),
     });
     load();
+    // The tap the crew just made is what the "Items sold" figures count, so the
+    // tile (and an open panel on today) follows it right away.
+    void refreshTodayUnits();
   };
 
   /* ── LOGIN ── */
@@ -535,6 +565,8 @@ export default function StationApp({ station }: { station: Station }) {
 
   const pendingCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "pending").length, 0);
   const acceptedCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "accepted").length, 0);
+  /** The pile the crew is looking at right now (accepted / done / combined). */
+  const salesPile: StationSalesPile | null = sales?.modes?.[salesMode] ?? null;
 
   return (
     <div className="min-h-screen bg-[#14100C] text-white pb-12">
@@ -590,8 +622,10 @@ export default function StationApp({ station }: { station: Station }) {
         <PocketAlertsHint />
       </div>
 
-      {/* counters + the crew's own history button (owner's decision, Sept 2026:
-          the crew asked for their day's work, not the table count) */}
+      {/* counters + the crew's own "Items sold" tab (owner's decision, Sept
+          2026: the crew asked what they SOLD, not how many tables were open).
+          The tile already carries today's own unit count, so the day's work is
+          visible without opening the tab. */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 pt-6 grid grid-cols-3 gap-3 text-center">
         <div className="bg-violet-950/60 border border-violet-700 rounded-2xl p-3.5">
           <p className="text-[10px] font-extrabold uppercase text-violet-300">{L("New Incoming")}</p>
@@ -602,12 +636,14 @@ export default function StationApp({ station }: { station: Station }) {
           <p className="font-serif font-black text-2xl text-white">{acceptedCount}</p>
         </div>
         <button
-          onClick={openHistory}
+          onClick={openSales}
           className="bg-[#2C1B17] border border-[#C9A227]/50 hover:border-[#C9A227] hover:bg-[#3D2314] rounded-2xl p-3.5 transition flex flex-col items-center justify-center gap-1"
-          title={L("Every order you received today, open or already cleared")}
+          title={L("What you sold, by date and by category")}
         >
           <History className="w-5 h-5 text-[#C9A227]" />
           <p className="text-[10px] font-extrabold uppercase text-amber-200">{L("Items sold")}</p>
+          <p className="font-serif font-black text-2xl text-white">{todayUnits === null ? "…" : todayUnits}</p>
+          <p className="text-[9px] font-extrabold uppercase text-stone-400">{L("Today • tap to open")}</p>
         </button>
       </div>
 
@@ -732,157 +768,148 @@ export default function StationApp({ station }: { station: Station }) {
         )}
       </div>
 
-      {showHistory && <div className="fixed inset-0 z-40 bg-[#14100C] overflow-y-auto p-4 md:p-8 text-stone-100">
-        <div className="max-w-3xl mx-auto space-y-5">
-          <div className="flex items-center justify-between"><h2 className="text-xl font-black text-amber-200">{L("Items sold • {name}", { name: staffName })}</h2><button onClick={() => setShowHistory(false)} aria-label={L("Close")}><X /></button></div>
-          <div className="flex flex-wrap gap-2">{[["today","Today"],["yesterday","Yesterday"],["dayBefore","Day Before Yesterday"],["week","Last 7 Days"]].map(([key,label]) => <button key={key} onClick={() => { setSalesPeriod(key); loadSales(key); }} className={`rounded-xl px-3 py-2 text-xs font-bold ${salesPeriod === key ? "bg-amber-500 text-black" : "bg-stone-800"}`}>{label}</button>)}</div>
-          <div className="flex gap-2">{(["accepted","done","combined"] as const).map(mode => <button key={mode} onClick={() => setSalesMode(mode)} className={`rounded-xl px-3 py-2 text-xs font-bold capitalize ${salesMode === mode ? "bg-emerald-600" : "bg-stone-800"}`}>{mode}</button>)}<button onClick={() => loadSales(salesPeriod)} aria-label={L("Refresh sales")}><RefreshCw className={salesLoading ? "animate-spin" : ""} /></button></div>
-          <p className="text-xs text-stone-400">{L("Accepted and Done count your own taps. Combined shows lines you accepted that someone else finished; it overlaps Accepted.")}</p>
-          <div className="rounded-2xl border border-amber-700 bg-[#2C1B17] p-4">
-            <h3 className="font-black text-amber-200">{L("{mode} • ITEMS SOLD", { mode: salesMode.toUpperCase() })}</h3>
-            <p className="text-sm mt-1">{L("{n} items • {amount}", { n: (sales[salesMode] || []).reduce((n,r) => n+r.quantity,0), amount: `${(sales[salesMode] || []).reduce((n,r) => n+r.amount,0).toLocaleString()} ETB` })}</p>
-            <div className="max-h-[55vh] overflow-y-auto mt-3 space-y-1">{(sales[salesMode] || []).map(r => <div key={r.name} className="flex justify-between gap-3 border-b border-stone-700 py-2 text-sm"><span>{r.name} ×{r.quantity}</span><span>{r.amount.toLocaleString()} ETB</span></div>)}{!salesLoading && !sales[salesMode]?.length && <p className="text-stone-400">{L("No items for this selection.")}</p>}</div>
-          </div>
-        </div>
-      </div>}
-
-      {/* ═══ TODAY'S HISTORY — the crew's archive of today's work ═══
-          Every order this crew RECEIVED today (open or already cleared), the
-          same idea as the cashier's "Printed Today" pile but only their items:
-          the paper stack they used to keep next to the station. */}
-      {false && showHistory && (
-        <div className="fixed inset-0 z-40 bg-[#14100C] overflow-y-auto">
-          <div className="sticky top-0 z-10 bg-[#2C1B17]/95 backdrop-blur border-b border-[#C9A227]/30 px-4 md:px-8 py-3.5 flex items-center justify-between">
-            <div className="flex items-center gap-3">
+      {/* ═══ ITEMS SOLD — the crew's own sales tab ═══
+          What this cook / barista / juice maker sold, grouped by menu CATEGORY,
+          for the DATE they tap and the pile they choose (accepted / done /
+          combined). The counting rules live in @/lib/station-sales — the same
+          attribution the shift report uses — and are served by
+          /api/station-sales, so this screen and the cross-checker's paper can
+          never disagree about who sold what. */}
+      {showSales && (
+        <div className="fixed inset-0 z-40 bg-[#14100C] overflow-y-auto text-stone-100">
+          <div className="sticky top-0 z-10 bg-[#2C1B17]/95 backdrop-blur border-b border-[#C9A227]/30 px-4 md:px-8 py-3.5 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
               <button
-                onClick={() => setShowHistory(false)}
+                onClick={closeSales}
                 className="p-2 rounded-xl bg-white/10 text-amber-200 hover:bg-white/20"
                 title={L("Back to the live list")}
+                aria-label={L("Back to the live list")}
               >
                 <X className="w-4 h-4" />
               </button>
-              <div>
-                <h1 className="font-serif font-bold text-amber-100 leading-none">{L("Today’s History • {label}", { label: L(meta.label) })}</h1>
-                <p className="text-[10px] text-stone-400">{L("Every order you received today, open or already cleared")}</p>
+              <div className="min-w-0">
+                <h1 className="font-serif font-bold text-amber-100 leading-none truncate">
+                  {L("Items sold • {name}", { name: staffName })}
+                </h1>
+                <p className="text-[10px] text-stone-400 truncate">{L(meta.label)} • {L(meta.desc)}</p>
               </div>
             </div>
-            <button onClick={loadHistory} className="p-2 rounded-xl bg-white/10 text-amber-200 hover:bg-white/20" title={L("Refresh")}>
-              <RefreshCw className={`w-4 h-4 ${historyLoading ? "animate-spin" : ""}`} />
+            <button
+              onClick={() => loadSales(salesPeriod)}
+              className="p-2 rounded-xl bg-white/10 text-amber-200 hover:bg-white/20 shrink-0"
+              title={L("Refresh sales")}
+              aria-label={L("Refresh sales")}
+            >
+              <RefreshCw className={`w-4 h-4 ${salesLoading ? "animate-spin" : ""}`} />
             </button>
           </div>
 
-          <div className="max-w-4xl mx-auto px-4 md:px-6 pt-5 pb-12">
-            {/* day summary */}
-            <div className="grid grid-cols-3 gap-3 text-center mb-5">
-              <div className="bg-[#2C1B17] border border-stone-700 rounded-2xl p-3.5">
-                <p className="text-[10px] font-extrabold uppercase text-stone-400">{L("Orders today")}</p>
-                <p className="font-serif font-black text-2xl text-white">{historyTickets.length}</p>
-              </div>
-              <div className="bg-amber-950/60 border border-amber-700 rounded-2xl p-3.5">
-                <p className="text-[10px] font-extrabold uppercase text-amber-300">{L("Items made / to make")}</p>
-                <p className="font-serif font-black text-2xl text-white">
-                  {historyTickets.reduce((s, t) => s + t.items.reduce((x, i) => x + i.quantity, 0), 0)}
-                </p>
-              </div>
-              <div className="bg-emerald-950/60 border border-emerald-700 rounded-2xl p-3.5">
-                <p className="text-[10px] font-extrabold uppercase text-emerald-300">{L("Lines done")}</p>
-                <p className="font-serif font-black text-2xl text-white">
-                  {historyTickets.reduce((s, t) => s + t.items.filter((i) => i.stationStatus === "done").length, 0)}
-                  <span className="text-sm text-stone-400">
-                    /{historyTickets.reduce((s, t) => s + t.items.length, 0)}
-                  </span>
-                </p>
+          <div className="max-w-3xl mx-auto px-4 md:px-6 pt-5 pb-12 space-y-4">
+            {/* DATE — the Ethiopian calendar day (or rolling window) counted */}
+            <div>
+              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-2">{L("Date")}</p>
+              <div className="flex flex-wrap gap-2">
+                {SALES_PERIODS.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => loadSales(p)}
+                    className={`rounded-xl px-3 py-2 text-xs font-bold transition ${
+                      salesPeriod === p
+                        ? "bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17]"
+                        : "bg-stone-800 text-stone-200 hover:bg-stone-700"
+                    }`}
+                  >
+                    {Ld(SALES_PERIOD_LABELS[p])}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {historyLoading && historyTickets.length === 0 ? (
-              <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
-                {L("Loading today’s orders...")}
+            {/* WHICH TAPS COUNT — accepted / done / combined, each with its own
+                unit count so the crew sees the three piles at a glance */}
+            <div>
+              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-2">{L("Which taps to count")}</p>
+              <div className="grid grid-cols-3 gap-2">
+                {SALES_MODES.map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setSalesMode(m)}
+                    className={`rounded-xl px-3 py-2 text-xs font-black uppercase transition ${
+                      salesMode === m ? "bg-emerald-600 text-white" : "bg-stone-800 text-stone-200 hover:bg-stone-700"
+                    }`}
+                  >
+                    {Ld(SALES_MODE_LABELS[m])}
+                    <span className="block text-[10px] font-bold normal-case opacity-80">
+                      {sales?.modes?.[m] ? sales.modes[m].quantity.toLocaleString("en-US") : "…"}
+                    </span>
+                  </button>
+                ))}
               </div>
-            ) : historyTickets.length === 0 ? (
+            </div>
+
+            <p className="text-[11px] text-stone-400">
+              {L("Accepted counts the lines you tapped Accept on, Done the lines you tapped Done on, and Combined every line you touched, counted once. Removed lines and cancelled orders are never counted.")}
+            </p>
+
+            {salesError ? (
+              <div className="bg-rose-900/60 border border-rose-500 text-rose-200 text-xs p-4 rounded-2xl">{salesError}</div>
+            ) : !sales || !salesPile ? (
               <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
-                {L("Nothing yet today. Orders appear here the moment you receive them.")}
+                {L("Loading your sales...")}
               </div>
             ) : (
-              <div className="space-y-4">
-                {historyTickets.map((t) => {
-                  const doneCount = t.items.filter((i) => i.stationStatus === "done").length;
-                  const stamp = t.releasedAt || t.createdAt;
-                  return (
-                    <div key={t.id} className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 space-y-2">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-serif font-bold text-lg text-amber-100">{t.tableName}</p>
-                            {t.orderNumber && (
-                              <span className="align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
-                                {L("Order #{orderNumber}", { orderNumber: t.orderNumber })}
-                              </span>
-                            )}
-                            {t.orderType === "outdoor" && (
-                              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                                {L("Outdoor")}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-[11px] font-bold text-stone-300 mt-0.5">
-                            {L("🕒 received {clock} • {dayMonthYear}", { clock: formatClock(stamp), dayMonthYear: formatDayMonthYear(stamp) })}
-                          </p>
-                          <p className="text-xs text-[#D8B93E] font-black truncate">
-                            👤 {t.confirmedBy || t.createdBy || L("staff")}
-                          </p>
-                          {t.serviceNote && <p className="text-[11px] font-bold text-sky-300 truncate">📍 {t.serviceNote}</p>}
-                        </div>
-                        <div className="text-right shrink-0 space-y-1">
-                          <span
-                            className={`inline-block text-[10px] font-black px-2.5 py-1 rounded-full uppercase ${
-                              t.status === "closed"
-                                ? "bg-stone-800 text-stone-300"
-                                : t.status === "printed"
-                                ? "bg-amber-900/60 text-amber-300 border border-amber-700"
-                                : "bg-emerald-900/60 text-emerald-300 border border-emerald-700"
-                            }`}
-                          >
-                            {t.status === "closed" ? L("✓ cleared") : t.status === "printed" ? L("🖨 printed") : t.status.replace(/_/g, " ")}
-                          </span>
-                          <p className="text-[10px] font-black text-emerald-400">
-                            {L("{doneCount}/{length} done", { doneCount, length: t.items.length })}
+              <div className="rounded-2xl border border-[#C9A227]/40 bg-[#2C1B17] p-4 space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h2 className="font-black text-amber-200">
+                      {L("{mode} • ITEMS SOLD", { mode: Ld(SALES_MODE_LABELS[salesMode]).toUpperCase() })}
+                    </h2>
+                    <p className="text-[11px] text-stone-400 mt-0.5">
+                      {L("Covers: {rangeText}", { rangeText: salesRangeText(sales.range) })}
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-[#C9A227]/20 text-[#C9A227] shrink-0">
+                    {L("{orders} bill(s)", { orders: salesPile.bills })}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 text-center">
+                  <div className="bg-black/25 border border-stone-800 rounded-xl p-3">
+                    <p className="text-[10px] font-extrabold uppercase text-stone-400">{L("Items sold")}</p>
+                    <p className="font-serif font-black text-2xl text-white">{salesPile.quantity.toLocaleString("en-US")}</p>
+                  </div>
+                  <div className="bg-black/25 border border-stone-800 rounded-xl p-3">
+                    <p className="text-[10px] font-extrabold uppercase text-stone-400">{L("Total sell")}</p>
+                    <p className="font-serif font-black text-2xl text-[#C9A227]">{staffEtb(salesPile.amount)}</p>
+                  </div>
+                </div>
+
+                {/* THE CATEGORIES — what they sold, pile by pile */}
+                {salesPile.categories.length === 0 ? (
+                  <p className="text-xs text-stone-400 text-center py-6">{L("No items for this selection.")}</p>
+                ) : (
+                  <div className="space-y-3">
+                    {salesPile.categories.map((c) => (
+                      <div key={c.category} className="rounded-xl bg-black/25 border border-stone-800 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-black uppercase tracking-wider text-amber-100 truncate">{c.category}</p>
+                          <p className="text-[11px] font-bold text-stone-400 shrink-0">
+                            {L("{n} sold", { n: c.quantity.toLocaleString("en-US") })} • {staffEtb(c.amount)}
                           </p>
                         </div>
-                      </div>
-                      <div className="divide-y divide-stone-800">
-                        {t.items.map((i) => (
-                          <div key={i.id} className="py-2 flex items-center justify-between gap-3 text-xs">
-                            <div className="flex-1 min-w-0">
-                              <p className={`font-bold ${i.stationStatus === "done" ? "text-stone-500 line-through" : "text-amber-100"}`}>
-                                {i.name} <span className="text-[#C9A227]">x{i.quantity}</span>
-                              </p>
-                              {i.notes && <p className="text-[11px] text-amber-200/80 italic mt-0.5">📝 {i.notes}</p>}
-                              {(i.stationStatus === "done" || i.stationStatus === "accepted") && i.stationStatusBy && (
-                                <p className="text-[11px] font-bold text-stone-400 mt-0.5">
-                                  {i.stationStatus === "done" ? L("✓ Done") : L("▶ Started")} {L("by {stationStatusBy}{value}", { stationStatusBy: i.stationStatusBy, value: i.stationStatusAt ? ` • ${formatClock(i.stationStatusAt)}` : "" })}
-                                </p>
-                              )}
+                        <div className="mt-2 divide-y divide-stone-800">
+                          {c.items.map((i) => (
+                            <div key={i.name} className="flex items-center justify-between gap-3 py-1.5 text-sm">
+                              <span className="font-bold text-stone-100 truncate">{i.name}</span>
+                              <span className="text-stone-400 font-bold shrink-0">×{i.quantity}</span>
+                              <span className="font-extrabold text-[#C9A227] shrink-0">{staffEtb(i.amount)}</span>
                             </div>
-                            {i.stationStatus === "done" ? (
-                              <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700">
-                                {L("✓ Done")}
-                              </span>
-                            ) : i.stationStatus === "accepted" ? (
-                              <span className="shrink-0 text-[10px] font-black text-amber-300 bg-amber-950/60 px-2.5 py-1 rounded-full uppercase border border-amber-700">
-                                {L("Started")}
-                              </span>
-                            ) : (
-                              <span className="shrink-0 text-[10px] font-black text-violet-300 bg-violet-950/60 px-2.5 py-1 rounded-full uppercase border border-violet-700">
-                                {L("New")}
-                              </span>
-                            )}
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-09-16-1";
+const SCHEMA_VERSION = "2026-09-24-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -836,6 +836,43 @@ async function runFullMigrate(force: boolean) {
     await run(
       `INSERT INTO site_settings (key, value, updated_at) VALUES ('default_cats_pruned', 'on', now()) ON CONFLICT (key) DO NOTHING`
     );
+  }
+
+  //  • OWNER REQUEST (Sept 2026): "wrong Amharic like 'semin', some text does
+  //    not translate". The old translator cached whatever Google answered,
+  //    including the English sent back unchanged, Latin romanisation and
+  //    HTML-escaped text. ONE-TIME purge of every cached row that is not real
+  //    Amharic. From now on translate-guard.ts checks every answer before it
+  //    is cached AND every row when it is read, so this only clears the
+  //    backlog (gated by a flag, and only stamped when the DELETE worked).
+  const txPurgedRows = await db.execute(
+    sql`SELECT value FROM site_settings WHERE key = 'translations_purged_v1' LIMIT 1`
+  );
+  const txPurgedList = (txPurgedRows as unknown as { rows?: Array<{ value: string }> }).rows ?? [];
+  // Best effort, never fatal: the read path rejects (and deletes) bad rows
+  // anyway, so a failure here must not block the schema-version stamp (that
+  // would re-run the whole migration on every cold start). The Ethiopic
+  // ranges need a UTF8 database (Railway's default); anything else skips.
+  const encodingRows = await db.execute(sql`SELECT current_setting('server_encoding') AS enc`).catch(() => null);
+  const serverEncoding = ((encodingRows as unknown as { rows?: Array<{ enc: string }> } | null)?.rows?.[0]?.enc || "").toUpperCase();
+  if (txPurgedList.length === 0 && serverEncoding !== "UTF8") {
+    console.warn(`translation cache purge skipped: database encoding is ${serverEncoding || "unknown"}, not UTF8`);
+  } else if (txPurgedList.length === 0) {
+    const purgeErr = await run(`
+      DELETE FROM translations
+      WHERE translated_text !~ '[\\u1200-\\u139F\\u2D80-\\u2DDF\\uAB00-\\uAB2F]'
+         OR lower(btrim(translated_text)) = lower(btrim(source_text))
+         OR translated_text ~ '<[A-Za-z/]'
+         OR translated_text ~* '&(#x?[0-9a-f]+|[a-z]+);'
+         OR strpos(translated_text, chr(65533)) > 0
+         OR length(regexp_replace(translated_text, '[^A-Za-z]', '', 'g')) >
+            1.5 * length(regexp_replace(translated_text, '[^\\u1200-\\u139F\\u2D80-\\u2DDF\\uAB00-\\uAB2F]', '', 'g'))
+    `);
+    if (purgeErr) console.warn(`translation cache purge skipped: ${purgeErr}`);
+    else
+      await run(
+        `INSERT INTO site_settings (key, value, updated_at) VALUES ('translations_purged_v1', 'on', now()) ON CONFLICT (key) DO NOTHING`
+      );
   }
 
   //  • OWNER REQUEST (2026-08-25) — the cafe is in TOWN SQUARE BUILDING, not

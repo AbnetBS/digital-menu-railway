@@ -10,6 +10,8 @@ import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import Link from "next/link";
+import { phrase, useStaffT, tNow } from "@/lib/staff-i18n";
+import StaffLangToggle from "@/components/rms/StaffLangToggle";
 
 type Station = "barista" | "kitchen" | "juice";
 
@@ -84,12 +86,13 @@ interface HistoryTicket {
 }
 
 const STATION_META = {
-  barista: { label: "Barista", icon: Coffee, color: "amber", slug: "barista" as Station, desc: "Machine coffee & cold beverages" },
-  kitchen: { label: "Kitchen (Chef)", icon: CookingPot, color: "emerald", slug: "kitchen" as Station, desc: "Foods, pastries, meals & snacks" },
-  juice: { label: "Juice Maker", icon: CupSoda, color: "lime", slug: "juice" as Station, desc: "Fresh juices, spris & punches" },
+  barista: { label: phrase("Barista"), icon: Coffee, color: "amber", slug: "barista" as Station, desc: phrase("Machine coffee & cold beverages") },
+  kitchen: { label: phrase("Kitchen (Chef)"), icon: CookingPot, color: "emerald", slug: "kitchen" as Station, desc: phrase("Foods, pastries, meals & snacks") },
+  juice: { label: phrase("Juice Maker"), icon: CupSoda, color: "lime", slug: "juice" as Station, desc: phrase("Fresh juices, spris & punches") },
 };
 
 export default function StationApp({ station }: { station: Station }) {
+  const { t: L, rich: Lr, td: Ld } = useStaffT();
   const meta = STATION_META[station];
   const Icon = meta.icon;
 
@@ -222,7 +225,7 @@ export default function StationApp({ station }: { station: Station }) {
       alertsOnRef.current = true;
       void enablePocketAlerts().then(() => pocket.refreshStatus());
     } else {
-      setLoginError(`Wrong name or PIN. Ask admin for your ${meta.label} PIN.`);
+      setLoginError(tNow("Wrong name or PIN. Ask admin for your {label} PIN.", { label: tNow(meta.label) }));
     }
   };
 
@@ -241,7 +244,7 @@ export default function StationApp({ station }: { station: Station }) {
       sessionStorage.removeItem(`fana_${station}`);
     } catch {}
     setPin("");
-    setLoginError("Your session ended. Log in again to keep receiving orders.");
+    setLoginError(tNow("Your session ended. Log in again to keep receiving orders."));
     setStaffName("");
   };
 
@@ -340,12 +343,12 @@ export default function StationApp({ station }: { station: Station }) {
       else playDing();
       const message =
         removed.length > 0
-          ? `✗ ${removed[0].tableName}: ${removed[0].name} was REMOVED, do not prepare it`
+          ? tNow("✗ {tableName}: {name} was REMOVED, do not prepare it", { tableName: removed[0].tableName, name: removed[0].name })
           : gone.length > 0
-            ? `⛔ ${gone[0]}: order closed or cancelled, stop preparing`
-            : `✎ ${changed[0].tableName}: ${changed[0].name} quantity ${changed[0].from} to ${changed[0].to}`;
+            ? tNow("⛔ {tableName}: order closed or cancelled, stop preparing", { tableName: gone[0] })
+            : tNow("✎ {tableName}: {name} quantity {from} to {to}", { tableName: changed[0].tableName, name: changed[0].name, from: changed[0].from, to: changed[0].to });
       triggerDesktopNotification({
-        title: `Fana Cafe • ${meta.label} update`,
+        title: tNow("Fana Cafe • {label} update", { label: tNow(meta.label) }),
         message,
         tag: `fana-station-change-${Date.now()}`,
       });
@@ -361,7 +364,8 @@ export default function StationApp({ station }: { station: Station }) {
       gone.length === 0 &&
       changed.length === 0
     ) {
-      showToast(`✓ ${closedQuiet[0]}: bill closed • all your items were done`);
+      const tableName = closedQuiet[0];
+      showToast(tNow("✓ {tableName}: bill closed • all your items were done", { tableName }));
     }
 
     if (initRef.current && alertsOnRef.current && fresh.length > 0) {
@@ -371,8 +375,8 @@ export default function StationApp({ station }: { station: Station }) {
       for (const t of data) for (const i of t.items) {
         if (fresh.includes(i.id)) {
           triggerDesktopNotification({
-            title: `Fana Cafe • ${meta.label} Alert`,
-            message: `New item at ${t.tableName}: ${i.name} x${i.quantity}${i.notes ? ` • note: ${i.notes}` : ""}`,
+            title: tNow("Fana Cafe • {label} Alert", { label: tNow(meta.label) }),
+            message: tNow("New item at {tableName}: {name} x{quantity}{value}", { tableName: t.tableName, name: i.name, quantity: i.quantity, value: i.notes ? tNow(" • note: {note}", { note: i.notes }) : "" }),
           });
           break;
         }
@@ -472,14 +476,15 @@ export default function StationApp({ station }: { station: Station }) {
   /* ── LOGIN ── */
   if (!staffName) {
     return (
-      <div className="min-h-screen bg-[#1C120F] flex items-center justify-center p-4 text-white">
+      <div className="relative min-h-screen bg-[#1C120F] flex items-center justify-center p-4 text-white">
+        <StaffLangToggle compact className="absolute top-3 right-3" />
         <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-3xl p-8 w-full max-w-sm space-y-6 shadow-2xl">
           <div className="text-center space-y-2">
             <div className="w-14 h-14 rounded-2xl bg-[#C9A227] text-[#2C1B17] flex items-center justify-center mx-auto">
               <Icon className="w-7 h-7" />
             </div>
-            <h1 className="font-serif text-2xl font-bold text-amber-100">{meta.label} Login</h1>
-            <p className="text-xs text-stone-400">{meta.desc}</p>
+            <h1 className="font-serif text-2xl font-bold text-amber-100">{L("{label} Login", { label: L(meta.label) })}</h1>
+            <p className="text-xs text-stone-400">{L(meta.desc)}</p>
           </div>
           {loginError && (
             <div className="bg-rose-900/60 border border-rose-500 text-rose-200 text-xs p-3 rounded-xl">{loginError}</div>
@@ -490,7 +495,7 @@ export default function StationApp({ station }: { station: Station }) {
               onChange={(e) => setSelectedName(e.target.value)}
               className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm text-white"
             >
-              <option value="">Select your name...</option>
+              <option value="">{L("Select your name...")}</option>
               {staffList.map((s) => (
                 <option key={s.id} value={s.name}>{s.name}</option>
               ))}
@@ -508,9 +513,9 @@ export default function StationApp({ station }: { station: Station }) {
               disabled={!selectedName || !pin}
               className="w-full bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] font-black text-sm uppercase py-4 rounded-xl disabled:opacity-40"
             >
-              Login as {meta.label}
+              {L("Login as {label}", { label: L(meta.label) })}
             </button>
-            <Link href="/" className="block text-center text-xs text-[#C9A227] hover:underline">← Back to public website</Link>
+            <Link href="/" className="block text-center text-xs text-[#C9A227] hover:underline">{L("← Back to public website")}</Link>
           </div>
         </div>
       </div>
@@ -529,8 +534,8 @@ export default function StationApp({ station }: { station: Station }) {
             <Icon className="w-5 h-5 text-[#2C1B17]" />
           </div>
           <div>
-            <h1 className="font-serif font-bold text-amber-100 leading-none">Fana Cafe • {meta.label}</h1>
-            <p className="text-[10px] text-stone-400">{meta.desc} • {staffName}</p>
+            <h1 className="font-serif font-bold text-amber-100 leading-none">{L("Fana Cafe • {label}", { label: L(meta.label) })}</h1>
+            <p className="text-[10px] text-stone-400">{L(meta.desc)} • {staffName}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -550,12 +555,13 @@ export default function StationApp({ station }: { station: Station }) {
             }`}
           >
             <BellRing className="w-3.5 h-3.5" />
-            {alertsOn ? "ON" : "🔔 ENABLE"}
+            {alertsOn ? L("ON") : L("🔔 ENABLE")}
           </button>
-          <button onClick={load} className="p-2 rounded-xl bg-white/10 text-amber-200" title="Refresh">
+          <StaffLangToggle compact />
+          <button onClick={load} className="p-2 rounded-xl bg-white/10 text-amber-200" title={L("Refresh")}>
             <RefreshCw className="w-4 h-4" />
           </button>
-          <button onClick={logout} className="p-2 rounded-xl bg-rose-600/80 text-white" title="Logout">
+          <button onClick={logout} className="p-2 rounded-xl bg-rose-600/80 text-white" title={L("Logout")}>
             <LogOut className="w-4 h-4" />
           </button>
         </div>
@@ -577,20 +583,20 @@ export default function StationApp({ station }: { station: Station }) {
           the crew asked for their day's work, not the table count) */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 pt-6 grid grid-cols-3 gap-3 text-center">
         <div className="bg-violet-950/60 border border-violet-700 rounded-2xl p-3.5">
-          <p className="text-[10px] font-extrabold uppercase text-violet-300">New Incoming</p>
+          <p className="text-[10px] font-extrabold uppercase text-violet-300">{L("New Incoming")}</p>
           <p className="font-serif font-black text-2xl text-white">{pendingCount}</p>
         </div>
         <div className="bg-amber-950/60 border border-amber-700 rounded-2xl p-3.5">
-          <p className="text-[10px] font-extrabold uppercase text-amber-300">Started (Accepted)</p>
+          <p className="text-[10px] font-extrabold uppercase text-amber-300">{L("Started (Accepted)")}</p>
           <p className="font-serif font-black text-2xl text-white">{acceptedCount}</p>
         </div>
         <button
           onClick={openHistory}
           className="bg-[#2C1B17] border border-[#C9A227]/50 hover:border-[#C9A227] hover:bg-[#3D2314] rounded-2xl p-3.5 transition flex flex-col items-center justify-center gap-1"
-          title="Every order you received today, open or already cleared"
+          title={L("Every order you received today, open or already cleared")}
         >
           <History className="w-5 h-5 text-[#C9A227]" />
-          <p className="text-[10px] font-extrabold uppercase text-amber-200">Today&rsquo;s History</p>
+          <p className="text-[10px] font-extrabold uppercase text-amber-200">{L("Today’s History")}</p>
         </button>
       </div>
 
@@ -598,7 +604,7 @@ export default function StationApp({ station }: { station: Station }) {
       <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5 space-y-4">
         {tickets.length === 0 ? (
           <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
-            All clear • no incoming items for the {meta.label} right now. New orders and added items appear here instantly when they are sent.
+            {L("All clear • no incoming items for the {label} right now. New orders and added items appear here instantly when they are sent.", { label: L(meta.label) })}
           </div>
         ) : (
           tickets.map((t) => (
@@ -609,12 +615,12 @@ export default function StationApp({ station }: { station: Station }) {
                     <p className="font-serif font-bold text-lg text-amber-100">{t.tableName}</p>
                     {t.orderNumber && (
                       <span className="align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
-                        Order #{t.orderNumber}
+                        {L("Order #{orderNumber}", { orderNumber: t.orderNumber })}
                       </span>
                     )}
                     {t.orderType === "outdoor" && (
                       <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                        Outdoor
+                        {L("Outdoor")}
                       </span>
                     )}
                   </div>
@@ -625,31 +631,27 @@ export default function StationApp({ station }: { station: Station }) {
                       and how long has the table been waiting? */}
                   <p className="mt-1 flex items-center gap-1.5 flex-wrap text-sm font-black text-amber-200">
                     <Clock className="w-4 h-4 text-[#C9A227]" />
-                    Arrived {formatClock(t.createdAt)}
-                    <span className="text-[11px] font-bold text-stone-300">{formatDayMonthYear(t.createdAt)}</span>
-                    <span
+                    {Lr("Arrived {clock}<s>{dayMonthYear}</s><s2>waiting {waitingLabel}</s2>", { s: (s) => <span className="text-[11px] font-bold text-stone-300">{s}</span>, s2: (s) => <span
                       className={`text-[11px] font-black uppercase px-2 py-0.5 rounded-full ${
                         minutesSince(t.createdAt, now) >= 10
                           ? "bg-rose-600 text-white"
                           : "bg-stone-800 text-stone-200"
                       }`}
-                    >
-                      waiting {waitingLabel(t.createdAt, now)}
-                    </span>
+                    >{s}</span> }, { clock: formatClock(t.createdAt), dayMonthYear: formatDayMonthYear(t.createdAt), waitingLabel: Ld(waitingLabel(t.createdAt, now)) })}
                   </p>
                   <p className="text-xs text-[#D8B93E] mt-0.5 font-black">
-                    👤 Ordered by {t.createdBy || "staff"}
-                    {t.confirmedBy ? ` • Confirmed by ${t.confirmedBy}` : ""}
+                    {L("👤 Ordered by")} {t.createdBy || L("staff")}
+                    {t.confirmedBy ? L(" • Confirmed by {confirmedBy}", { confirmedBy: t.confirmedBy }) : ""}
                   </p>
                   {t.serviceNote && <p className="text-[11px] font-bold text-sky-300 mt-0.5">📍 {t.serviceNote}</p>}
                   {t.receiptRequestedAt && (
                     <p className="mt-1 inline-block text-[11px] font-black text-emerald-300 bg-emerald-950/60 border border-emerald-700 rounded-lg px-2 py-1">
-                      🧾 Table asked for the bill at {formatClock(t.receiptRequestedAt)}
+                      {L("🧾 Table asked for the bill at {clock}", { clock: formatClock(t.receiptRequestedAt) })}
                     </p>
                   )}
                 </div>
                 <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-[#C9A227]/20 text-[#C9A227]">
-                  {t.items.length} item(s) for you
+                  {L("{length} item(s) for you", { length: t.items.length })}
                 </span>
               </div>
 
@@ -668,13 +670,13 @@ export default function StationApp({ station }: { station: Station }) {
                         </span>
                         {i.stationStatus === "pending" && (newPendingBadges[i.id] || 0) > 0 && (
                           <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-400 text-black border border-amber-200">
-                            {(newPendingBadges[i.id] || 0) > 1 ? `NEW +${newPendingBadges[i.id]}` : "NEW"}
+                            {(newPendingBadges[i.id] || 0) > 1 ? L("NEW +{newPendingBadges}", { newPendingBadges: newPendingBadges[i.id] }) : L("NEW")}
                           </span>
                         )}
                       </p>
                       {i.createdAt && (
                         <p className="text-[11px] font-bold text-stone-300 mt-0.5">
-                          🕒 {formatClock(i.createdAt)} • waiting {waitingLabel(i.createdAt, now)}
+                          {L("🕒 {clock} • waiting {waitingLabel}", { clock: formatClock(i.createdAt), waitingLabel: Ld(waitingLabel(i.createdAt, now)) })}
                         </p>
                       )}
                       {i.notes && (
@@ -686,8 +688,7 @@ export default function StationApp({ station }: { station: Station }) {
                           traceable to a person and a minute, never a mystery. */}
                       {(i.stationStatus === "done" || i.stationStatus === "accepted") && i.stationStatusBy && (
                         <p className="text-[11px] font-bold text-stone-400 mt-0.5">
-                          {i.stationStatus === "done" ? "✓ Done" : "▶ Started"} by {i.stationStatusBy}
-                          {i.stationStatusAt ? ` • ${formatClock(i.stationStatusAt)}` : ""}
+                          {i.stationStatus === "done" ? L("✓ Done") : L("▶ Started")} {L("by {stationStatusBy}{value}", { stationStatusBy: i.stationStatusBy, value: i.stationStatusAt ? ` • ${formatClock(i.stationStatusAt)}` : "" })}
                         </p>
                       )}
                     </div>
@@ -696,7 +697,7 @@ export default function StationApp({ station }: { station: Station }) {
                         onClick={() => setStatus(i, "accepted")}
                         className="shrink-0 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black uppercase transition"
                       >
-                        Accept ✓
+                        {L("Accept ✓")}
                       </button>
                     )}
                     {i.stationStatus === "accepted" && (
@@ -704,12 +705,12 @@ export default function StationApp({ station }: { station: Station }) {
                         onClick={() => setStatus(i, "done")}
                         className="shrink-0 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase transition flex items-center gap-1"
                       >
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Done
+                        <CheckCircle2 className="w-3.5 h-3.5" /> {L("Done")}
                       </button>
                     )}
                     {i.stationStatus === "done" && (
                       <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700">
-                        ✓ Done
+                        {L("✓ Done")}
                       </span>
                     )}
                   </div>
@@ -731,16 +732,16 @@ export default function StationApp({ station }: { station: Station }) {
               <button
                 onClick={() => setShowHistory(false)}
                 className="p-2 rounded-xl bg-white/10 text-amber-200 hover:bg-white/20"
-                title="Back to the live list"
+                title={L("Back to the live list")}
               >
                 <X className="w-4 h-4" />
               </button>
               <div>
-                <h1 className="font-serif font-bold text-amber-100 leading-none">Today&rsquo;s History • {meta.label}</h1>
-                <p className="text-[10px] text-stone-400">Every order you received today, open or already cleared</p>
+                <h1 className="font-serif font-bold text-amber-100 leading-none">{L("Today’s History • {label}", { label: L(meta.label) })}</h1>
+                <p className="text-[10px] text-stone-400">{L("Every order you received today, open or already cleared")}</p>
               </div>
             </div>
-            <button onClick={loadHistory} className="p-2 rounded-xl bg-white/10 text-amber-200 hover:bg-white/20" title="Refresh">
+            <button onClick={loadHistory} className="p-2 rounded-xl bg-white/10 text-amber-200 hover:bg-white/20" title={L("Refresh")}>
               <RefreshCw className={`w-4 h-4 ${historyLoading ? "animate-spin" : ""}`} />
             </button>
           </div>
@@ -749,17 +750,17 @@ export default function StationApp({ station }: { station: Station }) {
             {/* day summary */}
             <div className="grid grid-cols-3 gap-3 text-center mb-5">
               <div className="bg-[#2C1B17] border border-stone-700 rounded-2xl p-3.5">
-                <p className="text-[10px] font-extrabold uppercase text-stone-400">Orders today</p>
+                <p className="text-[10px] font-extrabold uppercase text-stone-400">{L("Orders today")}</p>
                 <p className="font-serif font-black text-2xl text-white">{historyTickets.length}</p>
               </div>
               <div className="bg-amber-950/60 border border-amber-700 rounded-2xl p-3.5">
-                <p className="text-[10px] font-extrabold uppercase text-amber-300">Items made / to make</p>
+                <p className="text-[10px] font-extrabold uppercase text-amber-300">{L("Items made / to make")}</p>
                 <p className="font-serif font-black text-2xl text-white">
                   {historyTickets.reduce((s, t) => s + t.items.reduce((x, i) => x + i.quantity, 0), 0)}
                 </p>
               </div>
               <div className="bg-emerald-950/60 border border-emerald-700 rounded-2xl p-3.5">
-                <p className="text-[10px] font-extrabold uppercase text-emerald-300">Lines done</p>
+                <p className="text-[10px] font-extrabold uppercase text-emerald-300">{L("Lines done")}</p>
                 <p className="font-serif font-black text-2xl text-white">
                   {historyTickets.reduce((s, t) => s + t.items.filter((i) => i.stationStatus === "done").length, 0)}
                   <span className="text-sm text-stone-400">
@@ -771,11 +772,11 @@ export default function StationApp({ station }: { station: Station }) {
 
             {historyLoading && historyTickets.length === 0 ? (
               <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
-                Loading today&rsquo;s orders...
+                {L("Loading today’s orders...")}
               </div>
             ) : historyTickets.length === 0 ? (
               <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
-                Nothing yet today. Orders appear here the moment you receive them.
+                {L("Nothing yet today. Orders appear here the moment you receive them.")}
               </div>
             ) : (
               <div className="space-y-4">
@@ -790,20 +791,20 @@ export default function StationApp({ station }: { station: Station }) {
                             <p className="font-serif font-bold text-lg text-amber-100">{t.tableName}</p>
                             {t.orderNumber && (
                               <span className="align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
-                                Order #{t.orderNumber}
+                                {L("Order #{orderNumber}", { orderNumber: t.orderNumber })}
                               </span>
                             )}
                             {t.orderType === "outdoor" && (
                               <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                                Outdoor
+                                {L("Outdoor")}
                               </span>
                             )}
                           </div>
                           <p className="text-[11px] font-bold text-stone-300 mt-0.5">
-                            🕒 received {formatClock(stamp)} • {formatDayMonthYear(stamp)}
+                            {L("🕒 received {clock} • {dayMonthYear}", { clock: formatClock(stamp), dayMonthYear: formatDayMonthYear(stamp) })}
                           </p>
                           <p className="text-xs text-[#D8B93E] font-black truncate">
-                            👤 {t.confirmedBy || t.createdBy || "staff"}
+                            👤 {t.confirmedBy || t.createdBy || L("staff")}
                           </p>
                           {t.serviceNote && <p className="text-[11px] font-bold text-sky-300 truncate">📍 {t.serviceNote}</p>}
                         </div>
@@ -817,10 +818,10 @@ export default function StationApp({ station }: { station: Station }) {
                                 : "bg-emerald-900/60 text-emerald-300 border border-emerald-700"
                             }`}
                           >
-                            {t.status === "closed" ? "✓ cleared" : t.status === "printed" ? "🖨 printed" : t.status.replace(/_/g, " ")}
+                            {t.status === "closed" ? L("✓ cleared") : t.status === "printed" ? L("🖨 printed") : t.status.replace(/_/g, " ")}
                           </span>
                           <p className="text-[10px] font-black text-emerald-400">
-                            {doneCount}/{t.items.length} done
+                            {L("{doneCount}/{length} done", { doneCount, length: t.items.length })}
                           </p>
                         </div>
                       </div>
@@ -834,22 +835,21 @@ export default function StationApp({ station }: { station: Station }) {
                               {i.notes && <p className="text-[11px] text-amber-200/80 italic mt-0.5">📝 {i.notes}</p>}
                               {(i.stationStatus === "done" || i.stationStatus === "accepted") && i.stationStatusBy && (
                                 <p className="text-[11px] font-bold text-stone-400 mt-0.5">
-                                  {i.stationStatus === "done" ? "✓ Done" : "▶ Started"} by {i.stationStatusBy}
-                                  {i.stationStatusAt ? ` • ${formatClock(i.stationStatusAt)}` : ""}
+                                  {i.stationStatus === "done" ? L("✓ Done") : L("▶ Started")} {L("by {stationStatusBy}{value}", { stationStatusBy: i.stationStatusBy, value: i.stationStatusAt ? ` • ${formatClock(i.stationStatusAt)}` : "" })}
                                 </p>
                               )}
                             </div>
                             {i.stationStatus === "done" ? (
                               <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700">
-                                ✓ Done
+                                {L("✓ Done")}
                               </span>
                             ) : i.stationStatus === "accepted" ? (
                               <span className="shrink-0 text-[10px] font-black text-amber-300 bg-amber-950/60 px-2.5 py-1 rounded-full uppercase border border-amber-700">
-                                Started
+                                {L("Started")}
                               </span>
                             ) : (
                               <span className="shrink-0 text-[10px] font-black text-violet-300 bg-violet-950/60 px-2.5 py-1 rounded-full uppercase border border-violet-700">
-                                New
+                                {L("New")}
                               </span>
                             )}
                           </div>

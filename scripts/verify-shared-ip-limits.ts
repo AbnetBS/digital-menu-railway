@@ -212,6 +212,44 @@ assert(
   assert("  …and the ceiling is far above what a real venue needs", VENUE_POLICIES.customerOrder.perIp >= 40 * 3 * 4);
 }
 
+/* ── 3b. Amharic menu translation: a full room switching language ─────────
+      (owner, Sept 2026: "some text does not translate"). 40 tables × 4 phones
+      open the menu, switch to አማርኛ, and each phone makes ~3 calls per screen
+      plus a few retries while the translator is busy (≈ 8 calls per phone).
+      The old rule (40 per minute per IP) blocked most of that room. ──────── */
+{
+  const ip = "203.0.113.35";
+  const request = requestFor(ip);
+  clock = realNow;
+  let allowed = 0;
+  let blocked = 0;
+  const phones = 40 * 4;
+  for (let round = 0; round < 8; round++) {
+    for (let phone = 0; phone < phones; phone++) {
+      const r = checkSharedIpRateLimit("translate", request, `device-${phone}`, VENUE_POLICIES.translate);
+      if (r.allowed) allowed++;
+      else blocked++;
+    }
+    clock += 60_000; // spread over 8 minutes
+  }
+  assert("a full room switching the menu to Amharic is never throttled", blocked === 0, `${allowed} allowed, ${blocked} blocked`);
+  clock = realNow + 3_600_000;
+  let legacyBlocked = 0;
+  for (let round = 0; round < 8; round++) {
+    for (let phone = 0; phone < phones; phone++) {
+      if (!checkRateLimit(`legacy-translate:${ip}`, 40, 60_000).allowed) legacyBlocked++;
+    }
+    clock += 60_000;
+  }
+  assert("  …the old 40/min per-IP rule would have left most phones in English", legacyBlocked > phones * 8 * 0.5, `${legacyBlocked} blocked`);
+  clock = realNow + 7_200_000;
+  let loopAllowed = 0;
+  for (let i = 0; i < 1_000; i++) {
+    if (checkSharedIpRateLimit("translate", request, "device-runaway", VENUE_POLICIES.translate).allowed) loopAllowed++;
+  }
+  assert("  …but one runaway phone is still capped per device", loopAllowed === VENUE_POLICIES.translate.perClient, `${loopAllowed} allowed`);
+}
+
 /* ── 4. proof the OLD per-IP-only limits would have failed tomorrow ───────── */
 {
   const legacy = replayVenue({

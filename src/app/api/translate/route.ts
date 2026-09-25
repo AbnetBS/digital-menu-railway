@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { ensureTablesExist } from "@/db/migrate";
-import { checkRateLimit } from "@/lib/rate-limit";
-import { SUPPORTED_TX_LANGS, translateBatch } from "@/lib/translate-server";
+import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
+import { SUPPORTED_TX_LANGS, translateBatchDetailed } from "@/lib/translate-server";
 
 /**
  * POST /api/translate — public auto-translation for owner-managed content.
  * Body:  { lang: "am", texts: string[] }
- * Reply: { translations: { "English text": "የተተረጎመ ጽሑፍ", ... } }
+ * Reply: { translations: { "English text": "የተተረጎመ ጽሑፍ", ... },
+ *          pending?: ["texts to ask again later"], retryAfterSeconds?: n }
  *
  * Failures ALWAYS return an empty map (HTTP 200) — the client then simply
  * keeps the English text, so a Google/DB hiccup can never break the menu.
@@ -15,10 +16,17 @@ export const dynamic = "force-dynamic";
 
 const MAX_TEXTS = 150;
 
+/** The per-device id the browser sends (random, kept in localStorage). */
+function clientIdOf(request: Request): string {
+  const id = request.headers.get("x-fana-client")?.trim() || "";
+  return /^[A-Za-z0-9-]{8,64}$/.test(id) ? id : "anon";
+}
+
 export async function POST(request: Request) {
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
-  // The client batches strings (one call per view), so 40/min/IP is generous.
-  const rl = checkRateLimit(`translate:${ip}`, 40, 60_000);
+  // Per DEVICE and per venue: every guest shares the café's one WiFi IP, so a
+  // plain per-IP limit (the old 40/min) ran out on a busy evening and those
+  // phones stayed English. See VENUE_POLICIES.translate.
+  const rl = checkSharedIpRateLimit("translate", request, clientIdOf(request), VENUE_POLICIES.translate);
   if (!rl.allowed) {
     return NextResponse.json(
       { translations: {}, retryAfterSeconds: rl.retryAfterSeconds },
@@ -50,8 +58,13 @@ export async function POST(request: Request) {
 
   await ensureTablesExist();
   try {
-    const translations = await translateBatch(lang, texts);
-    return NextResponse.json({ translations }, { headers: { "Cache-Control": "no-store" } });
+    const { translations, pending, retryAfterSeconds } = await translateBatchDetailed(lang, texts);
+    // `pending`: the translator refused or timed out for these texts; the
+    // browser asks again after `retryAfterSeconds` instead of giving up.
+    return NextResponse.json(
+      pending.length ? { translations, pending, retryAfterSeconds } : { translations },
+      { headers: { "Cache-Control": "no-store" } }
+    );
   } catch (error) {
     console.error("translate error:", error);
     return NextResponse.json(

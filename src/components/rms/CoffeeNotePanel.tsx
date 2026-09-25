@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { BunaNote, MenuItem } from "@/types";
 import { formatClock } from "@/lib/order-lines";
+import { useStaffT, tNow } from "@/lib/staff-i18n";
 
 /**
  * THE COFFEE NOTE PAGE (owner's decision, Sept 2026).
@@ -53,6 +54,7 @@ export default function CoffeeNotePanel({
   /** "held" = a note was added/edited/deleted · "paid" = one joined history. */
   onChanged: (kind: "held" | "paid") => void;
 }) {
+  const { t: L, rich: Lr } = useStaffT();
   const [notes, setNotes] = useState<NotesPayload>({ held: [], paidToday: [] });
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -141,7 +143,7 @@ export default function CoffeeNotePanel({
     if (holding) return;
     const item = pickedItem ?? bunaDefault;
     if (!item) {
-      flash("No buna item on the menu. Search and pick an item first.");
+      flash(tNow("No buna item on the menu. Search and pick an item first."));
       return;
     }
     setHolding(true);
@@ -158,16 +160,16 @@ export default function CoffeeNotePanel({
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
-        flash(d?.error || "Could not hold this note. Try again.");
+        flash(d?.error || tNow("Could not hold this note. Try again."));
         return;
       }
       resetForm();
       setFormOpen(false);
       await load();
       onChanged("held");
-      flash(`✓ Note #${d?.note?.seq ?? ""} held${place.trim() ? ` • ${place.trim()}` : ""}`);
+      flash(tNow("✓ Note #{seq} held{value}", { seq: d?.note?.seq ?? "", value: place.trim() ? ` • ${place.trim()}` : "" }));
     } catch {
-      flash("Connection problem. Try again.");
+      flash(tNow("Connection problem. Try again."));
     } finally {
       setHolding(false);
     }
@@ -197,22 +199,22 @@ export default function CoffeeNotePanel({
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
-        flash(d?.error || "Could not update this note. Try again.");
+        flash(d?.error || tNow("Could not update this note. Try again."));
         return;
       }
       setEditingId(null);
       await load();
       onChanged("held");
-      flash("✓ Note updated");
+      flash(tNow("✓ Note updated"));
     } catch {
-      flash("Connection problem. Try again.");
+      flash(tNow("Connection problem. Try again."));
     } finally {
       setSaving(false);
     }
   };
 
   const payNote = async (note: BunaNote) => {
-    if (!confirm(`Mark note #${note.seq} as PAID?\n${note.itemName} ×${note.quantity} • ${note.placeNote || "no place note"}\nThis adds it to order history as an outdoor order.`)) return;
+    if (!confirm(tNow("Mark note #{seq} as PAID?\n{itemName} ×{quantity} • {placeNote}\nThis adds it to order history as an outdoor order.", { seq: note.seq, itemName: note.itemName, quantity: note.quantity, placeNote: note.placeNote || tNow("no place note") }))) return;
     try {
       const r = await fetch("/api/buna-notes/pay", {
         method: "POST",
@@ -221,31 +223,31 @@ export default function CoffeeNotePanel({
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
-        flash(d?.error || "Could not mark this note paid. Try again.");
+        flash(d?.error || tNow("Could not mark this note paid. Try again."));
         return;
       }
       await load();
       onChanged("paid");
-      flash(`✓ Note #${note.seq} paid • ${d?.orderNumber || "added to order history"}`);
+      flash(tNow("✓ Note #{seq} paid • {orderNumber}", { seq: note.seq, orderNumber: d?.orderNumber || tNow("added to order history") }));
     } catch {
-      flash("Connection problem. Try again.");
+      flash(tNow("Connection problem. Try again."));
     }
   };
 
   const deleteNote = async (note: BunaNote) => {
-    if (!confirm(`Delete note #${note.seq} (${note.itemName} ×${note.quantity})?\nIt was never an order, so nothing else changes.`)) return;
+    if (!confirm(L("Delete note #{seq} ({itemName} ×{quantity})?\nIt was never an order, so nothing else changes.", { seq: note.seq, itemName: note.itemName, quantity: note.quantity }))) return;
     try {
       const r = await fetch(`/api/buna-notes?id=${note.id}`, { method: "DELETE" });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
-        flash(d?.error || "Could not delete this note. Try again.");
+        flash(d?.error || tNow("Could not delete this note. Try again."));
         return;
       }
       await load();
       onChanged("held");
-      flash(`✓ Note #${note.seq} deleted`);
+      flash(tNow("✓ Note #{seq} deleted", { seq: note.seq }));
     } catch {
-      flash("Connection problem. Try again.");
+      flash(tNow("Connection problem. Try again."));
     }
   };
 
@@ -261,16 +263,16 @@ export default function CoffeeNotePanel({
     <div className="space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
         <span className={`px-3 py-1.5 rounded-xl text-xs font-black border ${picked ? "bg-[#C9A227] text-black border-[#C9A227]" : "bg-white/5 text-stone-400 border-stone-700"}`}>
-          {picked ? `${picked.name} • ${picked.price} ETB` : "Pick an item"}
+          {picked ? `${picked.name} • ${picked.price} ETB` : L("Pick an item")}
         </span>
         {showDefaultChip && buna && picked?.id !== buna.id && (
           <button
             type="button"
             onClick={() => onPick(buna.id)}
             className="px-3 py-1.5 rounded-xl text-[11px] font-black bg-white/10 text-amber-200 border border-stone-700 hover:bg-white/20"
-            title="Back to the default"
+            title={L("Back to the default")}
           >
-            ↺ Buna (default)
+            {L("↺ Buna (default)")}
           </button>
         )}
       </div>
@@ -279,13 +281,13 @@ export default function CoffeeNotePanel({
         <input
           value={search}
           onChange={(e) => onSearch(e.target.value)}
-          placeholder="Change the item? Search the menu..."
+          placeholder={L("Change the item? Search the menu...")}
           className="w-full bg-[#1C120F] border border-stone-700 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white"
         />
       </div>
       {search && (
         <div className="max-h-40 overflow-y-auto rounded-xl border border-stone-800 divide-y divide-stone-800">
-          {list.length === 0 && <p className="p-3 text-xs text-stone-500">No menu item matches.</p>}
+          {list.length === 0 && <p className="p-3 text-xs text-stone-500">{L("No menu item matches.")}</p>}
           {list.map((m) => (
             <button
               key={m.id}
@@ -297,7 +299,7 @@ export default function CoffeeNotePanel({
               className={`w-full text-left px-3 py-2.5 text-sm font-bold hover:bg-white/10 ${picked?.id === m.id ? "text-[#C9A227]" : "text-amber-100"}`}
             >
               {m.name} <span className="text-stone-400 font-semibold">• {m.price} ETB</span>
-              {m.isBuna && <span className="ml-2 text-[10px] font-black text-amber-300 uppercase">buna</span>}
+              {m.isBuna && <span className="ml-2 text-[10px] font-black text-amber-300 uppercase">{L("buna")}</span>}
             </button>
           ))}
         </div>
@@ -311,7 +313,7 @@ export default function CoffeeNotePanel({
         type="button"
         onClick={() => setValue(Math.max(1, value - 1))}
         className="w-11 h-11 rounded-xl bg-white/10 text-stone-100 border border-stone-700 flex items-center justify-center hover:bg-white/20 active:scale-95"
-        aria-label="One less"
+        aria-label={L("One less")}
       >
         <Minus className="w-5 h-5" />
       </button>
@@ -320,7 +322,7 @@ export default function CoffeeNotePanel({
         type="button"
         onClick={() => setValue(Math.min(99, value + 1))}
         className="w-11 h-11 rounded-xl bg-[#C9A227] text-black flex items-center justify-center hover:bg-amber-400 active:scale-95"
-        aria-label="One more"
+        aria-label={L("One more")}
       >
         <Plus className="w-5 h-5" />
       </button>
@@ -336,23 +338,23 @@ export default function CoffeeNotePanel({
         {/* header */}
         <div className="sticky top-0 z-10 bg-[#2C1B17]/95 backdrop-blur border-b border-[#C9A227]/30 px-4 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <button onClick={onClose} className="p-2 rounded-xl bg-white/10 text-stone-200 hover:bg-white/20" title="Back to the cashier dashboard">
+            <button onClick={onClose} className="p-2 rounded-xl bg-white/10 text-stone-200 hover:bg-white/20" title={L("Back to the cashier dashboard")}>
               <ArrowLeft className="w-4 h-4" />
             </button>
             <div className="min-w-0">
               <h2 className="font-serif font-black text-xl text-amber-100 flex items-center gap-2">
-                <Coffee className="w-5 h-5 text-[#C9A227]" /> Coffee Note
+                <Coffee className="w-5 h-5 text-[#C9A227]" /> {L("Coffee Note")}
               </h2>
               <p className="text-[11px] text-stone-400">
-                Outdoor buna tab • held until the buna maker settles, then PAID joins order history
+                {L("Outdoor buna tab • held until the buna maker settles, then PAID joins order history")}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button onClick={() => void load()} className="p-2 rounded-xl bg-white/10 text-stone-200 hover:bg-white/20" title="Refresh">
+            <button onClick={() => void load()} className="p-2 rounded-xl bg-white/10 text-stone-200 hover:bg-white/20" title={L("Refresh")}>
               <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
             </button>
-            <button onClick={onClose} className="p-2 rounded-xl bg-rose-900/40 text-rose-300 hover:bg-rose-700 hover:text-white" title="Close">
+            <button onClick={onClose} className="p-2 rounded-xl bg-rose-900/40 text-rose-300 hover:bg-rose-700 hover:text-white" title={L("Close")}>
               <XCircle className="w-4 h-4" />
             </button>
           </div>
@@ -372,14 +374,14 @@ export default function CoffeeNotePanel({
                 onClick={() => setFormOpen(true)}
                 className="w-full bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] text-sm font-black py-4 rounded-2xl border-2 border-[#C9A227] flex items-center justify-center gap-2 active:scale-[0.99]"
               >
-                <Plus className="w-4 h-4" /> Add New
+                <Plus className="w-4 h-4" /> {L("Add New")}
               </button>
             ) : (
               <div className="bg-[#241714] border border-[#C9A227]/40 rounded-2xl p-4 space-y-4">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-[11px] font-black uppercase tracking-wider text-amber-200">New note (a call came in)</p>
+                  <p className="text-[11px] font-black uppercase tracking-wider text-amber-200">{L("New note (a call came in)")}</p>
                   <button onClick={() => { setFormOpen(false); resetForm(); }} className="text-[11px] font-bold text-stone-400 hover:text-stone-200">
-                    ✕ Cancel
+                    {L("✕ Cancel")}
                   </button>
                 </div>
 
@@ -387,15 +389,15 @@ export default function CoffeeNotePanel({
 
                 <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-4 items-start">
                   <div>
-                    <p className="text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1.5">Amount</p>
+                    <p className="text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1.5">{L("Amount")}</p>
                     {qtyStepper(qty, setQty)}
                   </div>
                   <div>
-                    <p className="text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1.5">Place (note)</p>
+                    <p className="text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1.5">{L("Place (note)")}</p>
                     <input
                       value={place}
                       onChange={(e) => setPlace(e.target.value.slice(0, 200))}
-                      placeholder="Gate, parking, office, white car, for Ahmed..."
+                      placeholder={L("Gate, parking, office, white car, for Ahmed...")}
                       className="w-full bg-[#1C120F] border border-stone-700 rounded-xl px-3 py-3 text-sm text-white"
                     />
                   </div>
@@ -403,7 +405,7 @@ export default function CoffeeNotePanel({
 
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm font-black text-stone-300">
-                    Total <span className="font-serif text-xl text-[#C9A227]">{(pickedItem?.price ?? 0) * qty} ETB</span>
+                    {Lr("Total <s>{n} ETB</s>", { s: (s) => <span className="font-serif text-xl text-[#C9A227]">{s}</span> }, { n: (pickedItem?.price ?? 0) * qty })}
                   </p>
                   <button
                     onClick={hold}
@@ -411,7 +413,7 @@ export default function CoffeeNotePanel({
                     className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-black px-8 py-3.5 rounded-2xl flex items-center gap-2"
                   >
                     {holding ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                    {holding ? "Holding..." : "HOLD"}
+                    {holding ? L("Holding...") : L("HOLD")}
                   </button>
                 </div>
               </div>
@@ -422,13 +424,13 @@ export default function CoffeeNotePanel({
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-xs font-black uppercase tracking-widest text-amber-200">
-                On Hold <span className="text-stone-500">({notes.held.length})</span>
+                {Lr("On Hold <s>({length})</s>", { s: (s) => <span className="text-stone-500">{s}</span> }, { length: notes.held.length })}
               </h3>
-              <p className="text-[10px] font-bold text-stone-500">newest first • not in the outdoor orders list</p>
+              <p className="text-[10px] font-bold text-stone-500">{L("newest first • not in the outdoor orders list")}</p>
             </div>
             {notes.held.length === 0 ? (
               <div className="bg-[#241714] border border-stone-800 rounded-2xl p-5 text-center text-sm text-stone-500">
-                No notes on hold. Tap <strong className="text-stone-300">Add New</strong> when a call comes in.
+                {Lr("No notes on hold. Tap <b>Add New</b> when a call comes in.", { b: (s) => <strong className="text-stone-300">{s}</strong> })}
               </div>
             ) : (
               <div className="space-y-2.5">
@@ -447,11 +449,11 @@ export default function CoffeeNotePanel({
                         )}
                         <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-3 items-start">
                           <div>
-                            <p className="text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1.5">Amount</p>
+                            <p className="text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1.5">{L("Amount")}</p>
                             {qtyStepper(editQty, setEditQty)}
                           </div>
                           <div>
-                            <p className="text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1.5">Place (note)</p>
+                            <p className="text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1.5">{L("Place (note)")}</p>
                             <input
                               value={editPlace}
                               onChange={(e) => setEditPlace(e.target.value.slice(0, 200))}
@@ -465,13 +467,13 @@ export default function CoffeeNotePanel({
                             disabled={saving}
                             className="flex-1 bg-[#C9A227] hover:bg-amber-400 disabled:opacity-40 text-black text-xs font-black py-3 rounded-xl flex items-center justify-center gap-1.5"
                           >
-                            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />} Save
+                            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />} {L("Save")}
                           </button>
                           <button
                             onClick={() => setEditingId(null)}
                             className="flex-1 bg-white/10 hover:bg-white/20 text-stone-200 text-xs font-black py-3 rounded-xl"
                           >
-                            Cancel
+                            {L("Cancel")}
                           </button>
                         </div>
                       </div>
@@ -479,17 +481,17 @@ export default function CoffeeNotePanel({
                       <>
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0 flex items-start gap-2.5">
-                            <span className="shrink-0 w-8 h-8 rounded-lg bg-[#C9A227] text-black font-serif font-black text-sm flex items-center justify-center" title={`Note number ${note.seq}`}>
+                            <span className="shrink-0 w-8 h-8 rounded-lg bg-[#C9A227] text-black font-serif font-black text-sm flex items-center justify-center" title={L("Note number {seq}", { seq: note.seq })}>
                               {note.seq}
                             </span>
                             <div className="min-w-0">
                               <p className="text-sm font-black text-amber-100 leading-snug">
                                 {note.itemName} <span className="text-stone-300 font-bold">×{note.quantity}</span>
-                                <span className="text-stone-400 font-semibold text-xs ml-1.5">({note.unitPrice} ETB each)</span>
+                                <span className="text-stone-400 font-semibold text-xs ml-1.5">{L("({unitPrice} ETB each)", { unitPrice: note.unitPrice })}</span>
                               </p>
                               {note.placeNote && <p className="text-[11px] font-bold text-sky-300 mt-0.5">📍 {note.placeNote}</p>}
                               <p className="text-[10px] font-bold text-stone-500 mt-0.5">
-                                held {formatClock(note.heldAt)}{note.heldBy ? ` • by ${note.heldBy}` : ""}
+                                {L("held {clock}", { clock: formatClock(note.heldAt) })}{note.heldBy ? L(" • by {heldBy}", { heldBy: note.heldBy }) : ""}
                               </p>
                             </div>
                           </div>
@@ -502,20 +504,20 @@ export default function CoffeeNotePanel({
                             onClick={() => startEdit(note)}
                             className="flex-1 min-w-[90px] bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded-xl text-xs font-black py-2.5 flex items-center justify-center gap-1.5 hover:bg-[#C9A227] hover:text-black"
                           >
-                            <Pencil className="w-3.5 h-3.5" /> Edit
+                            <Pencil className="w-3.5 h-3.5" /> {L("Edit")}
                           </button>
                           <button
                             onClick={() => void payNote(note)}
                             className="flex-1 min-w-[90px] bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black py-2.5 flex items-center justify-center gap-1.5"
                           >
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Paid
+                            <CheckCircle2 className="w-3.5 h-3.5" /> {L("Paid")}
                           </button>
                           <button
                             onClick={() => void deleteNote(note)}
                             className="px-3 bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white rounded-xl text-xs font-bold py-2.5 flex items-center justify-center gap-1.5"
-                            title="Delete this note"
+                            title={L("Delete this note")}
                           >
-                            <Trash2 className="w-3.5 h-3.5" /> Delete
+                            <Trash2 className="w-3.5 h-3.5" /> {L("Delete")}
                           </button>
                         </div>
                       </>
@@ -533,16 +535,16 @@ export default function CoffeeNotePanel({
               className="w-full bg-[#241714] hover:bg-[#2C1B17] px-4 py-3 flex items-center justify-between gap-2"
             >
               <span className="text-xs font-black uppercase tracking-widest text-stone-400">
-                Paid today <span className="text-emerald-400">({notes.paidToday.length})</span>
+                {Lr("Paid today <s>({length})</s>", { s: (s) => <span className="text-emerald-400">{s}</span> }, { length: notes.paidToday.length })}
               </span>
               <span className="text-[10px] font-bold text-stone-500 flex items-center gap-1">
-                already in order history <ChevronDown className={`w-4 h-4 transition-transform ${paidOpen ? "" : "rotate-180"}`} />
+                {L("already in order history")} <ChevronDown className={`w-4 h-4 transition-transform ${paidOpen ? "" : "rotate-180"}`} />
               </span>
             </button>
             {paidOpen && (
               <div className="divide-y divide-stone-800">
                 {notes.paidToday.length === 0 ? (
-                  <p className="px-4 py-4 text-xs text-stone-500">Nothing settled from the coffee note yet today.</p>
+                  <p className="px-4 py-4 text-xs text-stone-500">{L("Nothing settled from the coffee note yet today.")}</p>
                 ) : (
                   notes.paidToday.map((note) => (
                     <div key={note.id} className="px-4 py-2.5 flex items-center justify-between gap-3 text-xs">
@@ -556,7 +558,7 @@ export default function CoffeeNotePanel({
                         </p>
                       </div>
                       <p className="shrink-0 text-stone-500 font-bold">
-                        paid {formatClock(note.paidAt)}{note.ticketId ? ` • FANA-${note.ticketId}` : ""}
+                        {L("paid {clock}", { clock: formatClock(note.paidAt) })}{note.ticketId ? ` • FANA-${note.ticketId}` : ""}
                       </p>
                     </div>
                   ))

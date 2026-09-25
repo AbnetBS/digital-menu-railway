@@ -3,8 +3,10 @@
 import { useState, useEffect } from "react";
 import { Users, Plus, Trash2, ClipboardList, Monitor, RefreshCw } from "lucide-react";
 import { StaffUser } from "@/types";
+import { useStaffT } from "@/lib/staff-i18n";
 
 export default function StaffTab() {
+  const { t: L, rich: Lr, td: Ld } = useStaffT();
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [name, setName] = useState("");
   const [role, setRole] = useState<"waiter" | "cashier" | "barista" | "kitchen" | "buna" | "juice" | "admin">("waiter");
@@ -34,7 +36,7 @@ export default function StaffTab() {
   };
 
   const removeStaff = async (id: number) => {
-    if (!confirm("Remove this staff account?")) return;
+    if (!confirm(L("Remove this staff account?"))) return;
     await fetch(`/api/staff?id=${id}`, { method: "DELETE" });
     load();
   };
@@ -43,22 +45,22 @@ export default function StaffTab() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-serif font-bold text-amber-100">Staff Accounts</h2>
-          <p className="text-xs text-stone-400">Create waiter & cashier logins (name + PIN). Share the PIN directly with staff.</p>
+          <h2 className="text-xl font-serif font-bold text-amber-100">{L("Staff Accounts")}</h2>
+          <p className="text-xs text-stone-400">{L("Create waiter & cashier logins (name + PIN). Share the PIN directly with staff.")}</p>
         </div>
-        <button onClick={load} className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl" title="Refresh">
+        <button onClick={load} className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl" title={L("Refresh")}>
           <RefreshCw className="w-4 h-4" />
         </button>
       </div>
 
       {/* Add staff form */}
       <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 p-5">
-        <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-3">Add New Staff</h3>
+        <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-3">{L("Add New Staff")}</h3>
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Staff name (e.g. Samuel)"
+            placeholder={L("Staff name (e.g. Samuel)")}
             className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
           />
           <select
@@ -68,18 +70,18 @@ export default function StaffTab() {
             }
             className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
           >
-            <option value="waiter">Waiter (/waiter)</option>
-            <option value="cashier">Cashier (/cashier)</option>
-            <option value="barista">Barista (/barista)</option>
-            <option value="kitchen">Kitchen/Chef (/kitchen)</option>
-            <option value="buna">Buna Maker (/buna)</option>
-            <option value="juice">Juice Maker (/juice)</option>
-            <option value="admin">Admin (owner dashboard)</option>
+            <option value="waiter">{L("Waiter (/waiter)")}</option>
+            <option value="cashier">{L("Cashier (/cashier)")}</option>
+            <option value="barista">{L("Barista (/barista)")}</option>
+            <option value="kitchen">{L("Kitchen/Chef (/kitchen)")}</option>
+            <option value="buna">{L("Buna Maker (/buna)")}</option>
+            <option value="juice">{L("Juice Maker (/juice)")}</option>
+            <option value="admin">{L("Admin (owner dashboard)")}</option>
           </select>
           <input
             value={pin}
             onChange={(e) => setPin(e.target.value)}
-            placeholder="PIN (e.g. 4321)"
+            placeholder={L("PIN (e.g. 4321)")}
             inputMode="numeric"
             className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
           />
@@ -88,7 +90,7 @@ export default function StaffTab() {
             disabled={!name || !pin}
             className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase rounded-xl flex items-center justify-center gap-2 disabled:opacity-40"
           >
-            <Plus className="w-4 h-4" /> Create Account
+            <Plus className="w-4 h-4" /> {L("Create Account")}
           </button>
         </div>
       </div>
@@ -104,23 +106,23 @@ export default function StaffTab() {
               <div>
                 <p className="text-sm font-bold text-amber-100">{s.name}</p>
                 <p className="text-[10px] text-stone-400 uppercase font-extrabold">
-                  {s.role} • PIN: {s.pinSet ? "•••• (set)" : "not set"}
+                  {Ld(s.role)} • PIN: {s.pinSet ? L("•••• (set)") : L("not set")}
                 </p>
                 {s.alertsOff && (
-                  <p className="text-[10px] font-bold text-amber-300 mt-0.5" title="They tapped 'Off duty' in their app. Signing in with their PIN switches alerts back on.">
-                    🔕 Off duty (alerts silent)
+                  <p className="text-[10px] font-bold text-amber-300 mt-0.5" title={L("They tapped 'Off duty' in their app. Signing in with their PIN switches alerts back on.")}>
+                    {L("🔕 Off duty (alerts silent)")}
                   </p>
                 )}
               </div>
             </div>
-            <button onClick={() => removeStaff(s.id)} className="p-2 bg-rose-500/20 text-rose-300 hover:bg-rose-500 hover:text-white rounded-lg transition" title="Remove">
+            <button onClick={() => removeStaff(s.id)} className="p-2 bg-rose-500/20 text-rose-300 hover:bg-rose-500 hover:text-white rounded-lg transition" title={L("Remove")}>
               <Trash2 className="w-4 h-4" />
             </button>
           </div>
         ))}
         {staff.length === 0 && (
           <div className="col-span-3 bg-[#2C1B17] rounded-2xl border border-stone-800 p-8 text-center text-stone-500 text-xs">
-            No staff yet. Create your first waiter or cashier above.
+            {L("No staff yet. Create your first waiter or cashier above.")}
           </div>
         )}
       </div>
@@ -128,8 +130,7 @@ export default function StaffTab() {
       <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-4 flex items-start gap-3">
         <Users className="w-5 h-5 text-[#C9A227] shrink-0 mt-0.5" />
         <p className="text-xs text-stone-400 leading-relaxed">
-          Staff open <strong className="text-white">/waiter</strong> (phones) or <strong className="text-white">/cashier</strong> (counter), pick their name, and enter this PIN.
-          Admin access stays separate with your master password.
+          {Lr("Staff open <b>/waiter</b> (phones) or <b>/cashier</b> (counter), pick their name, and enter this PIN. Admin access stays separate with your master password.", { b: (s) => <strong className="text-white">{s}</strong> })}
         </p>
       </div>
     </div>

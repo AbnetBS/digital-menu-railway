@@ -6,8 +6,11 @@ import { MenuItem, Category, SiteSettings, Review, GalleryItem } from "@/types";
 import { DEFAULT_SETTINGS, DEFAULT_CATEGORIES, DEFAULT_MENU_ITEMS, DEFAULT_REVIEWS, DEFAULT_GALLERY } from "@/lib/initial-data";
 import { Lock, ShieldAlert, ArrowLeft } from "lucide-react";
 import Link from "next/link";
+import { useStaffT, tNow } from "@/lib/staff-i18n";
+import StaffLangToggle from "@/components/rms/StaffLangToggle";
 
 export default function DedicatedAdminPage() {
+  const { t: L } = useStaffT();
   const [settings, setSettings] = useState<SiteSettings>(DEFAULT_SETTINGS as SiteSettings);
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES as Category[]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>(DEFAULT_MENU_ITEMS as MenuItem[]);
@@ -72,10 +75,10 @@ export default function DedicatedAdminPage() {
         setIsAuthenticated(true);
         loadAdminData();
       } else {
-        setErrorMsg("Incorrect password. Access denied.");
+        setErrorMsg(tNow("Incorrect password. Access denied."));
       }
     } catch (err) {
-      setErrorMsg("Incorrect password. Access denied.");
+      setErrorMsg(tNow("Incorrect password. Access denied."));
     } finally {
       setIsLoading(false);
     }
@@ -84,18 +87,19 @@ export default function DedicatedAdminPage() {
   if (isAuthenticated === null) {
     return (
       <div className="min-h-screen bg-[#1C120F] flex items-center justify-center text-amber-200 text-sm">
-        Verifying admin access...
+        {L("Verifying admin access...")}
       </div>
     );
   }
 
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-[#1C120F] flex flex-col items-center justify-center p-4 text-white">
+      <div className="relative min-h-screen bg-[#1C120F] flex flex-col items-center justify-center p-4 text-white">
+        <StaffLangToggle compact className="absolute top-3 right-3" />
         <div className="mb-6">
           <Link href="/" className="inline-flex items-center gap-2 text-xs text-[#C9A227] hover:underline bg-white/10 px-4 py-2 rounded-full">
             <ArrowLeft className="w-4 h-4" />
-            <span>Back to Fana Cafe Website</span>
+            <span>{L("Back to Fana Cafe Website")}</span>
           </Link>
         </div>
 
@@ -104,8 +108,8 @@ export default function DedicatedAdminPage() {
             <div className="w-14 h-14 rounded-2xl bg-[#C9A227] text-[#2C1B17] flex items-center justify-center mx-auto shadow-lg font-bold">
               <Lock className="w-7 h-7" />
             </div>
-            <h1 className="text-2xl font-serif font-bold text-amber-100">Owner Dashboard • Fana Cafe</h1>
-            <p className="text-xs text-stone-300">Enter your security credentials to access the management dashboard.</p>
+            <h1 className="text-2xl font-serif font-bold text-amber-100">{L("Owner Dashboard • Fana Cafe")}</h1>
+            <p className="text-xs text-stone-300">{L("Enter your security credentials to access the management dashboard.")}</p>
           </div>
 
           {errorMsg && (
@@ -117,14 +121,14 @@ export default function DedicatedAdminPage() {
 
           <form onSubmit={handleLoginSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-amber-200 mb-1">Owner Password</label>
+              <label className="block text-xs font-bold text-amber-200 mb-1">{L("Owner Password")}</label>
               <input
                 type="password"
                 required
                 autoFocus
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter password..."
+                placeholder={L("Enter password...")}
                 className="w-full bg-[#3D2314] border border-stone-700 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-[#C9A227]"
               />
             </div>
@@ -133,7 +137,7 @@ export default function DedicatedAdminPage() {
               disabled={isLoading}
               className="w-full bg-gradient-to-r from-[#C9A227] to-[#B8921F] hover:from-[#d6ad2a] hover:to-[#c29b21] text-[#2C1B17] font-black text-xs uppercase tracking-wider py-4 rounded-xl shadow-xl transition"
             >
-              {isLoading ? "Unlocking..." : "Login To Dashboard"}
+              {isLoading ? L("Unlocking...") : L("Login To Dashboard")}
             </button>
           </form>
         </div>

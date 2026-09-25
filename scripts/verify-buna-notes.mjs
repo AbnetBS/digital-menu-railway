@@ -65,7 +65,7 @@ const pass = (name, cond) => {
   );
   pass("the migration creates the same table", /CREATE TABLE IF NOT EXISTS buna_notes/.test(migrate) && /place_note varchar\(200\)/.test(migrate));
   pass("the migration indexes the held/paid reads", /buna_notes_paid_at_held_at_idx/.test(migrate));
-  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-16-1"/.test(migrate));
+  pass("the schema version was bumped so deployments migrate", (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-09-16-1");
   pass("the shared BunaNote type exists", /export interface BunaNote/.test(types));
 }
 
@@ -126,7 +126,7 @@ const pass = (name, cond) => {
 {
   pass("Add New sits at the top of the page", /Add New/.test(panel) && /setFormOpen\(true\)/.test(panel));
   pass("the item defaults to Buna and can be changed by search", /defaultBunaItem/.test(panel) && /Buna \(default\)/.test(panel) && /Change the item\? Search the menu/.test(panel));
-  pass("the amount uses square +/− steppers", /qtyStepper/.test(panel) && /w-11 h-11 rounded-xl/.test(panel) && /aria-label="One less"/.test(panel) && /aria-label="One more"/.test(panel));
+  pass("the amount uses square +/− steppers", /qtyStepper/.test(panel) && /w-11 h-11 rounded-xl/.test(panel) && /aria-label=\{L\("One less"\)\}/.test(panel) && /aria-label=\{L\("One more"\)\}/.test(panel));
   pass("the place (note) input is there", /Place \(note\)/.test(panel) && /Gate, parking, office/.test(panel));
   pass("the button says HOLD and holds a note", /HOLD/.test(panel) && /fetch\("\/api\/buna-notes",[\s\S]{0,200}method: "POST"/.test(panel));
   pass("held rows are numbered, newest first, with the time added", /\{note\.seq\}/.test(panel) && /formatClock\(note\.heldAt\)/.test(panel) && /newest first/.test(panel));
@@ -138,7 +138,7 @@ const pass = (name, cond) => {
       /editSearch/.test(panel) &&
       /value=\{editPlace\}/.test(panel)
   );
-  pass("paying and deleting both ask for confirmation", /Mark note #\$\{note\.seq\} as PAID/.test(panel) && /Delete note #\$\{note\.seq\}/.test(panel));
+  pass("paying and deleting both ask for confirmation", /Mark note #\{seq\} as PAID[^\n]*seq: note\.seq/.test(panel) && /Delete note #\{seq\}[^\n]*seq: note\.seq/.test(panel));
   pass("paid rows collapse into the 'paid today' strip with the order number", /Paid today/.test(panel) && /already in order history/.test(panel) && /FANA-\$\{note\.ticketId\}/.test(panel));
   pass("the panel holds a held note via POST /api/buna-notes", /fetch\("\/api\/buna-notes",[\s\S]{0,200}method: "POST"/.test(panel));
   pass("the panel marks paid via POST /api/buna-notes/pay", /fetch\("\/api\/buna-notes\/pay"/.test(panel));

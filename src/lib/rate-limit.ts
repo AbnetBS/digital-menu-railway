@@ -115,6 +115,15 @@ export const VENUE_POLICIES = {
    *  review needs admin approval before it is shown, so the cap only has to
    *  stop a spam run, not a busy Saturday. */
   review: { perClient: 5, perIp: 200, windowMs: ONE_HOUR },
+  /**
+   * POST /api/translate: a phone asking for the Amharic of the owner's menu
+   * texts. One phone sends 1-3 calls per screen (120 texts each) and retries a
+   * few times when the translator is busy. The old rule, 40 per minute per
+   * IP, was shared by the WHOLE venue behind one WiFi address, so on a busy
+   * evening phones got 429 and stayed English for the rest of the visit.
+   * `perClient` is per DEVICE (the X-Fana-Client id each browser keeps).
+   */
+  translate: { perClient: 60, perIp: 1_500, windowMs: TEN_MINUTES },
 } satisfies Record<string, VenuePolicy>;
 
 export function checkSharedIpRateLimit(

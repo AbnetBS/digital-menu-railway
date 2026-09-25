@@ -117,6 +117,17 @@ export default function StationApp({ station }: { station: Station }) {
   // items. This replaces the old "Open Tables" counter — the crew asked for
   // their day's work, not the table count.
   const [showHistory, setShowHistory] = useState(false);
+  const [salesPeriod, setSalesPeriod] = useState("today");
+  const [salesMode, setSalesMode] = useState<"accepted" | "done" | "combined">("done");
+  const [sales, setSales] = useState<Record<string, Array<{name: string; quantity: number; amount: number; bills: number}>>>({});
+  const [salesLoading, setSalesLoading] = useState(false);
+  const loadSales = async (period: string) => {
+    setSalesLoading(true);
+    try {
+      const r = await fetch(`/api/station-sales?period=${period}`, { cache: "no-store" });
+      if (r.ok) setSales(await r.json());
+    } finally { setSalesLoading(false); }
+  };
   const [historyTickets, setHistoryTickets] = useState<HistoryTicket[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const historyLoadRef = useRef<() => void>(() => {});
@@ -136,7 +147,7 @@ export default function StationApp({ station }: { station: Station }) {
 
   const openHistory = () => {
     setShowHistory(true);
-    loadHistory();
+    loadSales(salesPeriod);
   };
 
   // THIS PAGE'S ALARM SOUND (owner's decision, Sept 2026): the juice bar
@@ -596,7 +607,7 @@ export default function StationApp({ station }: { station: Station }) {
           title={L("Every order you received today, open or already cleared")}
         >
           <History className="w-5 h-5 text-[#C9A227]" />
-          <p className="text-[10px] font-extrabold uppercase text-amber-200">{L("Today’s History")}</p>
+          <p className="text-[10px] font-extrabold uppercase text-amber-200">{L("Items sold")}</p>
         </button>
       </div>
 
@@ -721,11 +732,25 @@ export default function StationApp({ station }: { station: Station }) {
         )}
       </div>
 
+      {showHistory && <div className="fixed inset-0 z-40 bg-[#14100C] overflow-y-auto p-4 md:p-8 text-stone-100">
+        <div className="max-w-3xl mx-auto space-y-5">
+          <div className="flex items-center justify-between"><h2 className="text-xl font-black text-amber-200">{L("Items sold • {name}", { name: staffName })}</h2><button onClick={() => setShowHistory(false)} aria-label={L("Close")}><X /></button></div>
+          <div className="flex flex-wrap gap-2">{[["today","Today"],["yesterday","Yesterday"],["dayBefore","Day Before Yesterday"],["week","Last 7 Days"]].map(([key,label]) => <button key={key} onClick={() => { setSalesPeriod(key); loadSales(key); }} className={`rounded-xl px-3 py-2 text-xs font-bold ${salesPeriod === key ? "bg-amber-500 text-black" : "bg-stone-800"}`}>{label}</button>)}</div>
+          <div className="flex gap-2">{(["accepted","done","combined"] as const).map(mode => <button key={mode} onClick={() => setSalesMode(mode)} className={`rounded-xl px-3 py-2 text-xs font-bold capitalize ${salesMode === mode ? "bg-emerald-600" : "bg-stone-800"}`}>{mode}</button>)}<button onClick={() => loadSales(salesPeriod)} aria-label={L("Refresh sales")}><RefreshCw className={salesLoading ? "animate-spin" : ""} /></button></div>
+          <p className="text-xs text-stone-400">{L("Accepted and Done count your own taps. Combined shows lines you accepted that someone else finished; it overlaps Accepted.")}</p>
+          <div className="rounded-2xl border border-amber-700 bg-[#2C1B17] p-4">
+            <h3 className="font-black text-amber-200">{L("{mode} • ITEMS SOLD", { mode: salesMode.toUpperCase() })}</h3>
+            <p className="text-sm mt-1">{L("{n} items • {amount}", { n: (sales[salesMode] || []).reduce((n,r) => n+r.quantity,0), amount: `${(sales[salesMode] || []).reduce((n,r) => n+r.amount,0).toLocaleString()} ETB` })}</p>
+            <div className="max-h-[55vh] overflow-y-auto mt-3 space-y-1">{(sales[salesMode] || []).map(r => <div key={r.name} className="flex justify-between gap-3 border-b border-stone-700 py-2 text-sm"><span>{r.name} ×{r.quantity}</span><span>{r.amount.toLocaleString()} ETB</span></div>)}{!salesLoading && !sales[salesMode]?.length && <p className="text-stone-400">{L("No items for this selection.")}</p>}</div>
+          </div>
+        </div>
+      </div>}
+
       {/* ═══ TODAY'S HISTORY — the crew's archive of today's work ═══
           Every order this crew RECEIVED today (open or already cleared), the
           same idea as the cashier's "Printed Today" pile but only their items:
           the paper stack they used to keep next to the station. */}
-      {showHistory && (
+      {false && showHistory && (
         <div className="fixed inset-0 z-40 bg-[#14100C] overflow-y-auto">
           <div className="sticky top-0 z-10 bg-[#2C1B17]/95 backdrop-blur border-b border-[#C9A227]/30 px-4 md:px-8 py-3.5 flex items-center justify-between">
             <div className="flex items-center gap-3">

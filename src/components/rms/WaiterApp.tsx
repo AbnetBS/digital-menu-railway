@@ -10,6 +10,7 @@ import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
 import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import GroupComposer from "@/components/rms/GroupComposer";
+import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
@@ -91,6 +92,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   // from their tables, so each group of people gets its own auto-numbered
   // bill. Always available, from the top corner of the tables view.
   const [groupComposerOpen, setGroupComposerOpen] = useState(false);
+  const [outdoorComposerOpen, setOutdoorComposerOpen] = useState(false);
+  const [bunaStats, setBunaStats] = useState<{requested:number;cancelled:number;printed:number;outdoor:number;pending:number} | null>(null);
+  const loadBunaStats = async () => {
+    try { const r = await fetch("/api/buna-stats", { cache: "no-store" }); if (r.ok) setBunaStats(await r.json()); } catch { /* keep the last totals */ }
+  };
   /**
    * Open GROUP bills, managed EXACTLY like tables: they render as cards in
    * the grid below, and tapping one opens the same bill / add-items /
@@ -610,7 +616,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   const loadAll = async () => {
     loadTables();
-    if (isBuna) void loadBunaLane();
+    if (isBuna) { void loadBunaLane(); void loadBunaStats(); }
     const m = await fetch("/api/menu");
     if (m.ok) setMenu(await m.json());
     const cr = await fetch("/api/categories");
@@ -1271,6 +1277,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
         }}
       />
 
+      {isBuna && <OutdoorOrderComposer
+        open={outdoorComposerOpen} cashierName={staffName} makerMode
+        onClose={() => setOutdoorComposerOpen(false)}
+        onSent={(message) => { showToast(message); void loadBunaLane(); void loadBunaStats(); loadTables(); }}
+      />}
+
       {/* Toast */}
       {toast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl">
@@ -1284,6 +1296,14 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           <PocketAlertsHint />
 
           {/* ── MY BUNA ── the makers' own work, above the table grid ── */}
+          {isBuna && <div className="bg-[#2C1B17] border border-amber-700/50 rounded-2xl p-4 space-y-3">
+            <div className="flex justify-between items-center gap-2"><h2 className="text-amber-200 font-black">{L("🫖 Buna today • all makers")}</h2><button onClick={() => { void loadBunaStats(); void loadBunaLane(); }} aria-label={L("Refresh buna totals")} className="text-amber-200"><RefreshCw className="w-4 h-4" /></button></div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">{([
+              ["Requested cups", bunaStats?.requested], ["Cancelled cups", bunaStats?.cancelled], ["Printed cups", bunaStats?.printed], ["Outdoor cups", bunaStats?.outdoor]
+            ] as const).map(([label, value]) => <div key={label} className="bg-black/30 rounded-xl p-2"><p className="text-stone-400">{L(label)}</p><p className="font-black text-xl text-white">{value ?? "…"}</p></div>)}</div>
+            <p className="text-[11px] text-stone-400">{L("Today’s table and outdoor requests. Printed cups are a receipt-based estimate, not an individual maker’s Done count.")} {bunaStats ? L("{n} cup(s) not printed or cancelled yet.", { n: bunaStats.pending }) : ""}</p>
+            <button onClick={() => setOutdoorComposerOpen(true)} className="w-full rounded-xl bg-orange-700 text-white font-black py-3">{L("+ New Outdoor Order")}</button>
+          </div>}
           {isBuna && (
             <div className="bg-[#2C1B17] border-2 border-rose-500/40 rounded-2xl p-4">
               <div className="flex items-center justify-between mb-3">

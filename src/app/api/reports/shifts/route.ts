@@ -89,7 +89,7 @@ export async function GET(request: Request) {
       staffRoles,
     });
     return NextResponse.json(
-      { ...report, dayKeys, staff: staff.filter((s) => s.role === role).map((s) => s.name) },
+      { ...report, dayKeys, staff: staff.filter((s) => s.role === role || (role === "waiter" && s.role === "buna")).map((s) => s.name) },
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch (error) {

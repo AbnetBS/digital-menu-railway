@@ -18,6 +18,8 @@ export default function ReviewsSection({ reviews, onReviewSubmitted }: ReviewsPr
   const [rating, setRating] = useState(5);
   const [reviewText, setReviewText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  /** The submit that went nowhere: the guest must not think it was sent. */
+  const [submitFailed, setSubmitFailed] = useState(false);
 
   const highlights = [
     "Calm Atmosphere",
@@ -33,6 +35,7 @@ export default function ReviewsSection({ reviews, onReviewSubmitted }: ReviewsPr
     if (!customerName || !reviewText) return;
 
     setIsSubmitting(true);
+    setSubmitFailed(false);
     try {
       const res = await fetch("/api/reviews", {
         method: "POST",
@@ -49,9 +52,13 @@ export default function ReviewsSection({ reviews, onReviewSubmitted }: ReviewsPr
         setReviewText("");
         setShowAddModal(false);
         onReviewSubmitted();
+      } else {
+        // The modal used to stay open with no explanation at all.
+        setSubmitFailed(true);
       }
     } catch (err) {
       console.error(err);
+      setSubmitFailed(true);
     } finally {
       setIsSubmitting(false);
     }
@@ -234,6 +241,10 @@ export default function ReviewsSection({ reviews, onReviewSubmitted }: ReviewsPr
                   className="w-full bg-[#3D2314] border border-stone-700 rounded-xl px-3 py-2 text-xs text-stone-100 focus:outline-none focus:border-[#C9A227]"
                 />
               </div>
+
+              {submitFailed && (
+                <p className="text-xs font-bold text-rose-300">{t("review_fail")}</p>
+              )}
 
               <button
                 type="submit"

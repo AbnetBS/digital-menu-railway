@@ -96,6 +96,8 @@ interface OrderStatusValue {
   ticket: TableTicketStatus | null;
   /** Bill request in flight. */
   requesting: boolean;
+  /** The bill request did not reach the café — the guest must not wait on it. */
+  billFailed: boolean;
   requestBill: () => Promise<void>;
   /** Immediate re-poll (the panel's "refresh now" button). */
   refresh: () => Promise<void>;
@@ -123,6 +125,7 @@ export function OrderStatusProvider({
 }: OrderStatusProviderProps) {
   const [status, setStatus] = useState<TableStatus | null>(null);
   const [requesting, setRequesting] = useState(false);
+  const [billFailed, setBillFailed] = useState(false);
 
   // The live badge on the "sent successfully" screen waits for the waiter or
   // cashier to accept: while that flip is still pending, poll faster.
@@ -164,6 +167,7 @@ export function OrderStatusProvider({
   const requestBill = useCallback(async () => {
     if (!tableId || requesting) return;
     setRequesting(true);
+    setBillFailed(false);
     try {
       const response = await fetch("/api/table-status", {
         method: "POST",
@@ -171,9 +175,15 @@ export function OrderStatusProvider({
         body: JSON.stringify({ table: tableId }),
       });
       if (response.ok) setStatus(await response.json());
-      else await refresh();
+      else {
+        // The button used to go quietly back to idle, so the guest kept
+        // waiting for a waiter nobody had called.
+        await refresh();
+        setBillFailed(true);
+      }
     } catch {
       await refresh();
+      setBillFailed(true);
     } finally {
       setRequesting(false);
     }
@@ -184,10 +194,11 @@ export function OrderStatusProvider({
       tableId,
       ticket: status?.ticket ?? null,
       requesting,
+      billFailed,
       requestBill,
       refresh,
     }),
-    [tableId, status, requesting, requestBill, refresh]
+    [tableId, status, requesting, billFailed, requestBill, refresh]
   );
 
   return <OrderStatusContext.Provider value={value}>{children}</OrderStatusContext.Provider>;
@@ -216,7 +227,7 @@ function canAskForBill(ticket: TableTicketStatus): boolean {
  * for the same bill.
  */
 export function RequestReceiptButton() {
-  const { ticket, requestBill, requesting } = useOrderStatus();
+  const { ticket, requestBill, requesting, billFailed } = useOrderStatus();
   const t = useT();
   if (!ticket) return null;
 
@@ -242,6 +253,9 @@ export function RequestReceiptButton() {
           {requesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Receipt className="w-5 h-5 drop-shadow" />}
           {requesting ? t("os_sending") : t("os_request_bill")}
         </button>
+      )}
+      {canAsk && billFailed && (
+        <p className="mt-1.5 text-[11px] font-bold text-rose-700">{t("os_bill_failed")}</p>
       )}
       {billRequested && (
         <div className="space-y-1">

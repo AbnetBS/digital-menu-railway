@@ -619,13 +619,19 @@ export default function CashierDashboard() {
 
   const login = async () => {
     setLoginError("");
+    // A LOGIN tap with no answer at all (offline, server restarting) used to do
+    // nothing whatsoever, so the crew kept re-typing a PIN that was fine.
     const r = await fetch("/api/staff/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: selectedName, pin, role: "cashier" }),
-    });
-    const d = await r.json();
-    if (r.ok && d.success) {
+    }).catch(() => null);
+    if (!r) {
+      setLoginError(tNow("Network error. Try again."));
+      return;
+    }
+    const d = await r.json().catch(() => null);
+    if (r.ok && d?.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem("fana_cashier", JSON.stringify(d.staff));
       // GROUP 10: the login tap unlocks audio AND arms pocket notifications —
@@ -709,11 +715,19 @@ export default function CashierDashboard() {
    * shouting. This touches ONLY receipt_requested_at — never a status or a price.
    */
   const clearReceiptRequest = async (t: Ticket) => {
-    await fetch("/api/tickets", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: t.id, receiptRequested: false }),
-    });
+    try {
+      const r = await fetch("/api/tickets", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: t.id, receiptRequested: false }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        showToast(d?.error || tNow("Could not clear the bill request. Try again."));
+      }
+    } catch {
+      showToast(tNow("Network error. Try again."));
+    }
     loadAll();
   };
 
@@ -1000,11 +1014,25 @@ export default function CashierDashboard() {
 
   // Cashier can correct/record whether the bill was paid (separate from order status).
   const setPaymentStatus = async (id: number, paymentStatus: string) => {
-    await fetch("/api/tickets", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, paymentStatus }),
-    });
+    try {
+      const r = await fetch("/api/tickets", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, paymentStatus }),
+      });
+      if (!r.ok) {
+        // The server refuses a locked correction with its own explanation —
+        // show THAT, so the cashier knows why the switch did not move.
+        const d = await r.json().catch(() => null);
+        showToast(d?.error || tNow("Could not save the payment status. Try again."));
+        loadAll();
+        return;
+      }
+    } catch {
+      showToast(tNow("Network error. Try again."));
+      loadAll();
+      return;
+    }
     loadAll();
   };
 

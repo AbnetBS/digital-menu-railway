@@ -117,6 +117,8 @@ export default function AdminPanel({
         setSettingsMsg(tNow("✓ Website info saved successfully!"));
         onRefreshData();
       } else setSettingsMsg(tNow("Failed to save. Try again."));
+    } catch {
+      setSettingsMsg(tNow("Network error. Try again."));
     } finally {
       setSavingSettings(false);
     }
@@ -146,7 +148,19 @@ export default function AdminPanel({
 
   const handleDeleteMenuItem = async (id: number) => {
     if (!confirm(L("Delete this menu item?"))) return;
-    await fetch(`/api/menu?id=${id}`, { method: "DELETE" });
+    // A delete that fails must SAY so: silently keeping the item on the menu
+    // looks exactly like a button that does nothing.
+    try {
+      const res = await fetch(`/api/menu?id=${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const d = await res.json().catch(() => null);
+        alert(d?.error || L("Failed to delete menu item."));
+        return;
+      }
+    } catch {
+      alert(L("Network error. Try again."));
+      return;
+    }
     onRefreshData();
   };
 
@@ -173,7 +187,17 @@ export default function AdminPanel({
 
   const handleDeleteGalleryItem = async (id: number) => {
     if (!confirm(L("Delete this gallery photo?"))) return;
-    await fetch(`/api/gallery?id=${id}`, { method: "DELETE" });
+    try {
+      const res = await fetch(`/api/gallery?id=${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const d = await res.json().catch(() => null);
+        alert(d?.error || L("Failed to delete gallery photo."));
+        return;
+      }
+    } catch {
+      alert(L("Network error. Try again."));
+      return;
+    }
     onRefreshData();
   };
 
@@ -183,14 +207,23 @@ export default function AdminPanel({
       setPasswordMsg(tNow("Password must be at least 4 characters."));
       return;
     }
-    const res = await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ admin_password: newPassword }),
-    });
-    if (res.ok) {
-      setPasswordMsg(tNow("✓ Admin password updated successfully!"));
-      setNewPassword("");
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ admin_password: newPassword }),
+      });
+      // A password that did NOT change must say so: the owner would otherwise
+      // believe the new password is in force and be locked out next login.
+      if (res.ok) {
+        setPasswordMsg(tNow("✓ Admin password updated successfully!"));
+        setNewPassword("");
+      } else {
+        const d = await res.json().catch(() => null);
+        setPasswordMsg(d?.error || tNow("Failed to save. Try again."));
+      }
+    } catch {
+      setPasswordMsg(tNow("Network error. Try again."));
     }
   };
 
@@ -471,13 +504,16 @@ export default function AdminPanel({
                   key={b.action}
                   onClick={async () => {
                     if (!confirm(L("⚠️ {label}?\n\n{desc}\n\nThis CANNOT be undone. Continue?", { label: b.label, desc: b.desc }))) return;
+                    // After a "CANNOT be undone" confirm the owner must hear
+                    // the answer, including "the request never landed".
                     const r = await fetch("/api/reset", {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ action: b.action }),
-                    });
-                    const d = await r.json();
-                    alert(d.message || d.error || L("Done"));
+                    }).catch(() => null);
+                    if (!r) return alert(L("Network error. Try again."));
+                    const d = await r.json().catch(() => null);
+                    alert(d?.message || d?.error || (r.ok ? L("Done") : L("Failed to save. Try again.")));
                     onRefreshData();
                   }}
                   className="bg-rose-700/40 hover:bg-rose-600/70 border border-rose-500/50 text-rose-100 rounded-2xl p-4 text-left transition group"
@@ -507,11 +543,18 @@ export default function AdminPanel({
                       onBlur={(e) => {
                         const v = e.target.value.trim();
                         if (v && v !== c.name) {
+                          // The box keeps the typed name either way, so a failed
+                          // rename has to say so — otherwise it looks saved.
                           fetch("/api/categories", {
                             method: "PUT",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ id: c.id, name: v }),
-                          }).then(() => onRefreshData());
+                          })
+                            .then((r) => {
+                              if (!r.ok) alert(L("Failed to rename the category."));
+                              onRefreshData();
+                            })
+                            .catch(() => alert(L("Network error. Try again.")));
                         }
                       }}
                       className="bg-transparent text-xs font-bold text-amber-100 w-28 focus:outline-none"
@@ -520,7 +563,9 @@ export default function AdminPanel({
                       <button
                         onClick={async () => {
                           if (confirm(L("Delete category \"{name}\"? Dishes keep their old group (hidden from filters).", { name: c.name }))) {
-                            await fetch(`/api/categories?id=${c.id}`, { method: "DELETE" });
+                            const r = await fetch(`/api/categories?id=${c.id}`, { method: "DELETE" }).catch(() => null);
+                            if (!r) alert(L("Network error. Try again."));
+                            else if (!r.ok) alert(L("Failed to delete the category."));
                             onRefreshData();
                           }
                         }}
@@ -540,7 +585,7 @@ export default function AdminPanel({
                   const name = String(fd.get("name") || "").trim();
                   if (!name) return;
                   const icon = String(fd.get("icon") || "Utensils");
-                  await fetch("/api/categories", {
+                  const r = await fetch("/api/categories", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -549,7 +594,13 @@ export default function AdminPanel({
                       slug: name.toLowerCase().replace(/&/g, "").replace(/[^\w\s-]/g, "").trim().replace(/[\s_]+/g, "-"),
                       sortOrder: categories.length,
                     }),
-                  });
+                  }).catch(() => null);
+                  if (!r || !r.ok) {
+                    // Keep what was typed so the owner can press Add again.
+                    alert(!r ? L("Network error. Try again.") : L("Failed to add the category."));
+                    onRefreshData();
+                    return;
+                  }
                   (e.target as HTMLFormElement).reset();
                   onRefreshData();
                 }}
@@ -606,8 +657,15 @@ export default function AdminPanel({
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ text: ta.value, prepTime: bulkPrepTime }),
                       });
-                      const d = await r.json();
-                      alert(d.message || d.error || L("Import done"));
+                      const d = await r.json().catch(() => null);
+                      // A refused import must not wipe the pasted menu: that is
+                      // the owner's typing, and "Import done" would be a lie.
+                      if (!r.ok) {
+                        alert(d?.error || L("Failed to save. Try again."));
+                        onRefreshData();
+                        return;
+                      }
+                      alert(d?.message || L("Import done"));
                       ta.value = "";
                       onRefreshData();
                     } catch (e) {
@@ -816,11 +874,13 @@ export default function AdminPanel({
                       {!rev.isApproved && (
                         <button
                           onClick={async () => {
-                            await fetch("/api/reviews", {
+                            const r = await fetch("/api/reviews", {
                               method: "PUT",
                               headers: { "Content-Type": "application/json" },
                               body: JSON.stringify({ id: rev.id, isApproved: true, customerName: rev.customerName, rating: rev.rating, reviewText: rev.reviewText }),
-                            });
+                            }).catch(() => null);
+                            if (!r) alert(L("Network error. Try again."));
+                            else if (!r.ok) alert(L("Failed to approve the review."));
                             onRefreshData();
                           }}
                           className="text-emerald-400 hover:underline text-[11px] font-bold"
@@ -830,7 +890,9 @@ export default function AdminPanel({
                       )}
                       <button
                         onClick={async () => {
-                          await fetch(`/api/reviews?id=${rev.id}`, { method: "DELETE" });
+                          const r = await fetch(`/api/reviews?id=${rev.id}`, { method: "DELETE" }).catch(() => null);
+                          if (!r) alert(L("Network error. Try again."));
+                          else if (!r.ok) alert(L("Failed to delete the review."));
                           onRefreshData();
                         }}
                         className="text-rose-400 hover:underline text-[11px]"

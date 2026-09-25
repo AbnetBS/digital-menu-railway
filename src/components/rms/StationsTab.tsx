@@ -40,8 +40,9 @@ export default function StationsTab() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ category_routing: JSON.stringify(routing) }),
-    });
+    }).catch(() => null);
     setSaving(false);
+    if (!res) return alert(L("Network error. Try again."));
     if (res.ok) {
       setSavedMsg(tNow("✓ Stations routing saved • all new orders will split correctly by station"));
       setTimeout(() => setSavedMsg(""), 3500);

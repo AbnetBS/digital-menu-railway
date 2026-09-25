@@ -684,13 +684,19 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   const login = async () => {
     setLoginError("");
+    // A LOGIN tap with no answer at all (offline, server restarting) used to do
+    // nothing whatsoever, so the waiter kept re-typing a PIN that was fine.
     const r = await fetch("/api/staff/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: selectedName, pin, role }),
-    });
-    const d = await r.json();
-    if (r.ok && d.success) {
+    }).catch(() => null);
+    if (!r) {
+      setLoginError(tNow("Network error. Try again."));
+      return;
+    }
+    const d = await r.json().catch(() => null);
+    if (r.ok && d?.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem(sessionKey, JSON.stringify(d.staff));
       setView("tables");
@@ -776,13 +782,24 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     setSelectedTable(t);
     setCart([]);
     if (t.activeTicketId) {
-      const r = await fetch("/api/tickets?active=1");
-      const all: Ticket[] = await r.json();
-      const tk = all.find((x) => x.id === t.activeTicketId);
-      if (tk) {
-        setActiveTicket(tk);
-        setView("bill");
-        return;
+      // A failed read used to throw inside the tap, so the waiter pressed a
+      // table and NOTHING happened. Now she at least lands on a working screen
+      // and hears why the open bill could not be loaded.
+      try {
+        const r = await fetch("/api/tickets?active=1");
+        if (r.ok) {
+          const all: Ticket[] = await r.json();
+          const tk = all.find((x) => x.id === t.activeTicketId);
+          if (tk) {
+            setActiveTicket(tk);
+            setView("bill");
+            return;
+          }
+        } else {
+          showToast(tNow("Could not open the bill. Try again."));
+        }
+      } catch {
+        showToast(tNow("Network error. Try again."));
       }
     }
     setActiveTicket(null);
@@ -857,6 +874,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     // flow — the same bill (targetTicketId), the label stays the
     // server-stamped "GROUP n", and the stations are released at once.
     const groupRound = selectedTable.isGroup === true && !!selectedTable.activeTicketId;
+    // A SEND that never reaches the server used to leave the button disabled
+    // forever (setSending stayed true) with no message at all. The idempotency
+    // key is kept, so pressing SEND again cannot duplicate the order.
     const r = await fetch("/api/tickets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -875,8 +895,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           notes: c.notes,
         })),
       }),
-    });
+    }).catch(() => null);
     setSending(false);
+    if (!r) {
+      showToast(tNow("Network error. Try again."));
+      return;
+    }
     if (r.ok) {
       const d = await r.json();
       pendingKeyRef.current = "";
@@ -947,6 +971,8 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   const saveEditedItem = async (item: TicketItem) => {
     const qty = Math.max(1, Math.min(100, Math.floor(Number(editQty) || 1)));
     setEditSaving(true);
+    /** Did the edit itself land? The refresh afterwards must not undo the ✓. */
+    let saved = false;
     try {
       const r = await fetch("/api/tickets/items", {
         method: "PUT",
@@ -961,8 +987,13 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       if (activeTicket && qty > item.quantity) creditOwnUnits(activeTicket.id, qty - item.quantity);
       setEditingItemId(null);
       showToast(tNow("✓ Item updated"));
+      saved = true;
       await refreshTicket();
       loadTables();
+    } catch {
+      // Only the request itself failing is worth a message: the edit is
+      // already saved and confirmed by the time the refresh runs.
+      if (!saved) showToast(tNow("Network error. Try again."));
     } finally {
       setEditSaving(false);
     }
@@ -973,7 +1004,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       L("Remove \"{name}\" x{quantity} from the bill?\n\nThe kitchen has not started it yet, so nothing is wasted.", { name: item.name, quantity: item.quantity })
     );
     if (!okToRemove) return;
-    const r = await fetch(`/api/tickets/items?id=${item.id}`, { method: "DELETE" });
+    const r = await fetch(`/api/tickets/items?id=${item.id}`, { method: "DELETE" }).catch(() => null);
+    if (!r) {
+      showToast(tNow("Network error. Try again."));
+      return;
+    }
     if (r.ok) {
       setEditingItemId(null);
       showToast(tNow("✓ Item removed from the bill"));

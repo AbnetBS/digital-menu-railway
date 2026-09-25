@@ -28,11 +28,13 @@ export default function OutdoorOrderComposer({
   cashierName,
   onClose,
   onSent,
+  makerMode = false,
 }: {
   open: boolean;
   cashierName: string;
   onClose: () => void;
   onSent: (message: string) => void;
+  makerMode?: boolean;
 }) {
   const { t: L } = useStaffT();
   const [menu, setMenu] = useState<MenuItem[]>([]);
@@ -174,7 +176,7 @@ export default function OutdoorOrderComposer({
             </button>
             <div className="min-w-0">
               <h2 className="font-serif font-black text-xl text-amber-100">{L("Outdoor Order")}</h2>
-              <p className="text-[11px] text-stone-400">{L("Cashier-only flow • send through the normal kitchen, barista, buna and juice routing")}</p>
+              <p className="text-[11px] text-stone-400">{makerMode ? L("Outdoor order • sends items to their stations and cashier") : L("Cashier-only flow • send through the normal kitchen, barista, buna and juice routing")}</p>
             </div>
           </div>
           <button onClick={close} className="p-2 rounded-xl bg-rose-900/40 text-rose-300 hover:bg-rose-700 hover:text-white">
@@ -215,6 +217,12 @@ export default function OutdoorOrderComposer({
               />
             </div>
 
+            {menu.some((item) => item.isBuna && item.isAvailable) && <div className="rounded-2xl border border-orange-700/60 bg-orange-950/30 p-3">
+              <p className="font-black text-orange-200 mb-2">{L("🫖 Traditional Buna • tap once per cup")}</p>
+              <div className="flex flex-wrap gap-2">{menu.filter((item) => item.isBuna && item.isAvailable).map((item) =>
+                <button key={item.id} onClick={() => addToCart(item)} className="rounded-xl bg-orange-700 px-4 py-2 text-white font-bold text-sm">+ {item.name} • {effectivePrice(item).price} ETB</button>
+              )}</div>
+            </div>}
             <div className="flex flex-wrap gap-2">
               <button
                 onClick={() => setCategory("all")}

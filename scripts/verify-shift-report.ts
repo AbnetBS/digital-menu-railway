@@ -55,6 +55,25 @@ assert.equal(w.combined[0].label, "Abel - Alem");
 assert.deepEqual(w.combined[0].ticketIds, [3]);
 assert.ok(w.orders[5].flags.some((f) => /Never printed/.test(f)));
 
+// Buna makers also work the floor. Their outdoor food/drink submissions and
+// accepted table orders must appear with waiter actions, not be confused with
+// station Done taps. Shared bills stay visible in Combined for cross-checking.
+const bunaFloor = buildShiftReport({ ...base, role: "waiter",
+  staffRoles: { ...staffRoles, Tigist: "buna" },
+  tickets: [...tickets,
+    T(20, { tableName: "OUTDOOR • gate", orderType: "outdoor", createdBy: "Tigist", printedBy: "Sara", printedAt: at("12:30"), totalAmount: 220 }),
+    T(21, { tableName: "Table 21", confirmedBy: "Tigist", confirmedAt: at("12:20"), printedBy: "Sara", printedAt: at("12:35") }),
+    T(22, { tableName: "Table 22", confirmedBy: "Tigist", confirmedAt: at("13:55"), closedBy: "Abel", closedAt: at("15:00") }),
+  ],
+  items: [...items, I(20, 20, { name: "Sandwich", stationName: "kitchen", price: 220 })],
+  submissions: [{ ticketId: 20, source: "staff", waiterName: "Tigist", lines: 1, createdAt: at("12:00") }],
+});
+assert.deepEqual(bunaFloor.morning.find((p) => p.name === "Tigist")?.ticketIds, [22, 21, 20]);
+assert.ok(bunaFloor.orders[20].actions.some((a) => /Direct send/.test(a.label)));
+assert.ok(bunaFloor.combined.some((g) => g.ticketIds.includes(22)));
+assert.equal(bunaFloor.orders[20].totalAmount, 220);
+assert.ok(!buildShiftReport({ ...base, role: "cashier", staffRoles: { ...staffRoles, Tigist: "buna" }, tickets: [T(20, { createdBy: "Tigist", orderType: "outdoor", printedBy: "Sara", printedAt: at("12:30") })], items: [], events: [], submissions: [] }).morning.some((p) => p.name === "Tigist"));
+
 const c = buildShiftReport({ ...base, role: "cashier" });
 assert.deepEqual(c.morning.map((p) => p.name), ["Sara"]);
 assert.deepEqual(c.afternoon.map((p) => p.name), ["Meron"]);

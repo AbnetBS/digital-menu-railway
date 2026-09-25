@@ -324,7 +324,10 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
   const isRole = (name: string, fallbackRole?: string | null) => {
     if (!name || /^customer/i.test(name) || /^\(.*\)$/.test(name) || name === "admin") return false;
     const r = roleOfName.get(name) ?? fallbackRole ?? null;
-    return r === role;
+    // Buna makers are floor staff too: their table/group/outdoor sends and
+    // accepts belong in the Waiter cross-check, regardless of item station.
+    // Their separate Buna tab remains the production-lane audit.
+    return r === role || (role === "waiter" && r === "buna");
   };
 
   const itemsByTicket = new Map<number, ShiftItemRow[]>();
@@ -387,7 +390,7 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
       if (conf && isRole(conf)) push(conf, t.confirmedAt || t.createdAt, t.orderType === "outdoor" ? "Accepted outdoor order" : "Accepted order");
       for (const s of subsByTicket.get(t.id) || []) {
         const n = clean(s.waiterName);
-        if (s.source === "staff" && n && isRole(n, "waiter")) push(n, s.createdAt, `Direct send • ${s.lines || 0} line(s)`);
+        if (s.source === "staff" && n && isRole(n)) push(n, s.createdAt, `Direct send • ${s.lines || 0} line(s)`);
       }
       for (const e of events) {
         const n = clean(e.actorName);

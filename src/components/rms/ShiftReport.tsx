@@ -42,7 +42,7 @@ const ROLE_LABEL: Record<ShiftRole, StaffPhrase> = {
   buna: "Buna Maker",
 };
 const ROLE_PEOPLE: Record<ShiftRole, StaffPhrase> = {
-  waiter: "Waiters",
+  waiter: "Waiters and Buna makers",
   cashier: "Cashiers",
   kitchen: "Kitchen staff",
   barista: "Baristas",
@@ -354,6 +354,8 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
                   {data.dayKeys?.length ? ` • ${daysCovered(data.dayKeys)}` : ""}
                 </p>
 
+                {role === "waiter" && <p className="text-[11px] text-stone-400">{t("Buna makers who send or accept table and outdoor orders appear here alongside waiters. Bill totals may overlap when two people handle one bill; open the order to cross-check its actions and items.")}</p>}
+
                 {/* TOTALS TABLE (cross-checker, Sept 2026): one line per person per
                     shift: "Abel • Waiter • Morning • 5 orders • 4,250 ETB". */}
                 <TotalsTable role={role} rows={totalsRows} i18n={i18n} />
@@ -663,7 +665,7 @@ function ShiftSection(props: {
                   i18n={props.i18n}
                 />
                 {props.open === key && (
-                  <OrderList
+                  <><PersonSales ids={p.ticketIds} data={props.data} role={props.role} person={p.name} i18n={props.i18n} /><OrderList
                     ids={p.ticketIds}
                     data={props.data}
                     station={props.station}
@@ -672,7 +674,7 @@ function ShiftSection(props: {
                     person={p.name}
                     shift={props.shiftFilter}
                     i18n={props.i18n}
-                  />
+                  /></>
                 )}
               </li>
             );
@@ -681,6 +683,37 @@ function ShiftSection(props: {
       )}
     </section>
   );
+}
+
+/** Item pile attributed to the person who actually handled each station line. */
+function PersonSales({ ids, data, role, person, i18n }: { ids: number[]; data: Report; role: ShiftRole; person: string; i18n: StaffI18n }) {
+  if (role === "cashier") return null;
+  const pile = new Map<string, { quantity: number; amount: number }>();
+  let bills = 0;
+  for (const id of ids) {
+    const order = data.orders[id];
+    if (!order) continue;
+    let counted = false;
+    for (const item of order.items) {
+      if (item.removed || (role !== "waiter" && item.stationName !== role)) continue;
+      // Station ownership is the Accept/Done audit, not the waiter who sent the bill.
+      if (role !== "waiter" && item.acceptedBy !== person && item.doneBy !== person) continue;
+      const row = pile.get(item.name) || { quantity: 0, amount: 0 };
+      row.quantity += item.quantity;
+      row.amount += item.price * item.quantity;
+      pile.set(item.name, row);
+      counted = true;
+    }
+    if (counted) bills++;
+  }
+  const entries = [...pile.entries()].sort((a, b) => b[1].quantity - a[1].quantity);
+  return <div className="mt-2 ml-2 sm:ml-8 rounded-xl border border-[#C9A227]/40 bg-black/25 p-3 text-xs text-stone-200">
+    <p className="font-black text-amber-200 uppercase">{i18n.t(ROLE_LABEL[role])} • {i18n.t("{n} bill(s) • ITEMS SOLD", { n: bills })}</p>
+    <p className="mt-1 font-bold">{i18n.t("{n} items • {amount}", { n: entries.reduce((n, [, v]) => n + v.quantity, 0), amount: staffEtb(entries.reduce((n, [, v]) => n + v.amount, 0)) })}</p>
+    <div className="mt-2 max-h-36 overflow-y-auto space-y-1" role="list" aria-label={i18n.t("Items sold")}>
+      {entries.length ? entries.map(([name, v]) => <div role="listitem" key={name} className="flex justify-between gap-3 border-b border-stone-800 py-1"><span>{name} ×{v.quantity}</span><strong>{staffEtb(v.amount)}</strong></div>) : <p>{i18n.t("No attributed items in these orders.")}</p>}
+    </div>
+  </div>;
 }
 
 function OrderList(props: {
@@ -694,7 +727,7 @@ function OrderList(props: {
   i18n: StaffI18n;
 }) {
   return (
-    <div className="mt-2 ml-2 sm:ml-8 space-y-2">
+    <div className="mt-2 ml-2 sm:ml-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
       {props.ids.map((id) => {
         const o = props.data.orders[id];
         if (!o) return null;
@@ -767,12 +800,10 @@ function FloorCard({
             {order.orderType === "outdoor" && <span className="ml-2 text-[10px] font-black text-violet-300">{t("OUTDOOR")}</span>}
             {order.combined && <span className="ml-2 text-[10px] font-black text-sky-300">{t("SHARED: {names}", { names: order.people.join(" - ") })}</span>}
           </p>
-          {shown.map((a, i) => (
-            <p key={i} className="text-[11px] font-bold text-stone-300">
-              <span className="text-amber-300 uppercase">{td(a.label)}</span> {order.orderNumber ? `#${order.orderNumber}` : ""} • {formatDateTime(a.at)}
-              {!person || order.combined ? <span className="text-stone-400"> • {a.name}</span> : null}
-            </p>
-          ))}
+          <p className="text-[11px] text-stone-300">{order.printedAt ? `printed ${formatClock(order.printedAt)} • ${order.printedBy || "staff"}` : `🕒 ${formatDateTime(order.createdAt)}`}</p>
+          <p className="text-[11px] text-stone-400">#{order.orderNumber || order.ticketId}</p>
+          <p className="text-[11px] text-amber-300">👤 {order.confirmedBy || order.sentBy || "staff"}</p>
+          <p className="text-[11px] text-emerald-300">{statusText(order.status, i18n)} {order.closedAt ? formatClock(order.closedAt) : ""}</p>
           <p className="text-[11px] text-stone-400 font-semibold">{t("{n} line(s) on the bill", { n: lines })}</p>
         </div>
         <div className="text-right shrink-0 space-y-1">

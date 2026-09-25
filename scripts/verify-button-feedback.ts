@@ -238,10 +238,13 @@ const PINNED: Array<{ file: string; needles: string[]; button: string }> = [
   },
   {
     file: "src/components/rms/StaffTab.tsx",
-    button: "staff Add Staff / Remove",
+    button: "staff Add Staff / Edit / Remove",
     needles: [
       'L("✓ Staff account created")',
       'L("Failed to create the staff account.")',
+      'L("✓ Staff account updated")',
+      'L("Failed to update the staff account.")',
+      'L("PIN must be at least 4 characters.")',
       'L("✓ Staff account removed")',
       'L("Failed to remove the staff account.")',
     ],
@@ -307,6 +310,14 @@ if (!read("src/components/rms/OrderHistoryTab.tsx").includes(
 )) {
   problems.push(
     "OrderHistoryTab.cleanOldReceipts must only announce 'Cleanup done' for a request that actually succeeded — it used to print that for a failed cleanup too, so the owner believed storage had been freed."
+  );
+}
+
+// An edit must never cost a person their login: an empty PIN box means "keep
+// the PIN they have", so nothing is sent and the server keeps its hash.
+if (!read("src/components/rms/StaffTab.tsx").includes("...(editPin ? { pin: editPin } : {})")) {
+  problems.push(
+    "StaffTab.saveEdit must send a pin ONLY when the owner typed one — sending an empty pin would rehash it and lock that waiter out of their own screen."
   );
 }
 

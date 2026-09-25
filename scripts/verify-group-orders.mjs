@@ -147,7 +147,7 @@ const pass = (name, ok) => {
   );
   pass(
     "the toast reports the SERVER-stamped group number",
-    /const group = String\(data\?\.tableName \|\| ""\);/.test(composer) && /✓ \$\{group\} created/.test(composer),
+    /const group = String\(data\?\.tableName \|\| ""\);/.test(composer) && /"✓ \{group\} created[^"]*", \{ group \}/.test(composer),
   );
   pass(
     "the payload includes the cart items with notes",
@@ -181,7 +181,7 @@ const pass = (name, ok) => {
   );
   pass(
     "the badge reads 👥 Group for group bills, Outdoor otherwise",
-    /const outdoorBadge = \(t: Ticket\) => \(isGroup\(t\) \? "👥 Group" : "Outdoor"\);/.test(cashier),
+    /const outdoorBadge = \(t: Ticket\) => \(isGroup\(t\) \? L\("👥 Group"\) : L\("Outdoor"\)\);/.test(cashier),
   );
   const uses = (cashier.match(/\{outdoorBadge\(t\)\}/g) || []).length;
   const usesModal = /\{outdoorBadge\(billModal\)\}/.test(cashier);
@@ -195,7 +195,7 @@ const pass = (name, ok) => {
   );
   pass(
     "order history shows the 👥 Group badge on paid group bills",
-    /\{\/\^GROUP \\d\+\$\/i\.test\(String\(o\.tableName \|\| ""\)\) \? "👥 Group" : "Outdoor"\}/.test(history),
+    /\{\/\^GROUP \\d\+\$\/i\.test\(String\(o\.tableName \|\| ""\)\) \? L\("👥 Group"\) : L\("Outdoor"\)\}/.test(history),
   );
 }
 
@@ -219,7 +219,7 @@ const pass = (name, ok) => {
   );
   pass(
     "the group card shows the status chip and total like a table card",
-    /statusChip\(groupTableStatus\(g\)\)/.test(waiter) && /\{g\.totalAmount\} ETB open/.test(waiter),
+    /statusChip\(groupTableStatus\(g\)\)/.test(waiter) && /"\{totalAmount\} ETB open", \{ totalAmount: g\.totalAmount \}/.test(waiter),
   );
   pass(
     "Add Items on a group bill rides the group round flow (same bill, server label)",
@@ -232,15 +232,15 @@ const pass = (name, ok) => {
   );
   pass(
     "the round toast names the group bill",
-    /✓ Items added to \$\{String\(d\.tableName \|\| "the group bill"\)\}/.test(waiter),
+    /"✓ Items added to \{tableName\}", \{ tableName: String\(d\.tableName \|\| tNow\("the group bill"\)\) \}/.test(waiter),
   );
   pass(
     "settling says Group Settled on a group bill, Table Cleared on a table",
-    /selectedTable\?\.isGroup \? "Group Settled • Close Bill" : "Table Cleared • Free Table"/.test(waiter),
+    /selectedTable\?\.isGroup \? L\("Group Settled • Close Bill"\) : L\("Table Cleared • Free Table"\)/.test(waiter),
   );
   pass(
     "the grid hint explains the GROUP cards",
-    /GROUP cards<\/span> are guest groups away from their table: open one to add items or settle it exactly like a table\./.test(waiter),
+    /<s>GROUP cards<\/s> are guest groups away from their table: open one to add items or settle it exactly like a table\./.test(waiter),
   );
 }
 

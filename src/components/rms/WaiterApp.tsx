@@ -19,6 +19,8 @@ import { unlockAudio, playAlarm, playDing, speakTableReady } from "@/lib/sound";
 import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { useRef } from "react";
+import { useStaffT, tNow } from "@/lib/staff-i18n";
+import StaffLangToggle from "@/components/rms/StaffLangToggle";
 
 interface StaffLite {
   id: number;
@@ -50,6 +52,7 @@ interface BunaLine {
 }
 
 export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna" }) {
+  const { t: L, rich: Lr, td: Ld } = useStaffT();
   // ── WHO IS THIS SCREEN FOR? ──
   // The buna makers take orders exactly like a waiter when the room is full, so
   // they get the SAME app, with two differences (owner's decision, Sept 2026):
@@ -58,7 +61,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   //      order, a guest top-up or a bill request;
   //   2. they never close a bill (the waiter clears the table).
   const isBuna = role === "buna";
-  const roleLabel = isBuna ? "Buna Maker" : "Waiter";
+  const roleLabel = isBuna ? L("Buna Maker") : L("Waiter");
   const sessionKey = `fana_${role}`;
   const alertsKey = `fana_alerts_${role}`;
 
@@ -136,7 +139,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   // closing action becomes "Table cleared", and the payment screens are hidden.
   const [printQueueMode, setPrintQueueMode] = useState(true);
   const [categories, setCategories] = useState<Array<{ slug: string; name: string }>>([
-    { slug: "all", name: "All" },
+    { slug: "all", name: L("All") },
   ]);
 
   // ── GUEST EVENTS TAKE OVER THE SCREEN ──
@@ -307,11 +310,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       const res = await enablePocketAlerts();
       void pocket.refreshStatus();
       if (res === "denied") {
-        showToast("Notifications are blocked. Allow them in your browser settings.");
+        showToast(tNow("Notifications are blocked. Allow them in your browser settings."));
       }
     }
     playAlarm();
-    showToast("🔔 Alerts ON • pocket notifications armed");
+    showToast(tNow("🔔 Alerts ON • pocket notifications armed"));
   };
 
   /** Plain-language line for a status somebody else moved the ticket to. */
@@ -322,8 +325,8 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     // "printed" and "preparing" are NOT here either (owner: noise — the waiter
     // has nowhere to walk for either, so they update the screen silently).
     const map: Record<string, string> = {
-      confirmed: `✓ ${tableName}: order confirmed`,
-      cancelled: `⛔ ${tableName}: ORDER CANCELLED, do not serve`,
+      confirmed: tNow("✓ {tableName}: order confirmed", { tableName }),
+      cancelled: tNow("⛔ {tableName}: ORDER CANCELLED, do not serve", { tableName }),
     };
     return map[status] || "";
   };
@@ -377,7 +380,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       sessionStorage.removeItem(sessionKey);
     } catch {}
     setPin("");
-    setLoginError("Your session ended. Log in again to keep serving tables.");
+    setLoginError(tNow("Your session ended. Log in again to keep serving tables."));
     setStaffName("");
     setView("login");
   };
@@ -512,13 +515,13 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
         if (readyItems.length > 0) {
           const r = readyItems[0];
-          const more = readyItems.length > 1 ? ` (+${readyItems.length - 1} more)` : "";
+          const more = readyItems.length > 1 ? tNow(" (+{value} more)", { value: readyItems.length - 1 }) : "";
           triggerDesktopNotification({
-            title: "Fana Cafe • Ready to serve",
-            message: `🔔 ${r.ticket.tableName}: ${r.name} x${r.quantity} is ready${more} • pick it up!`,
+            title: tNow("Fana Cafe • Ready to serve"),
+            message: tNow("🔔 {tableName}: {name} x{quantity} is ready{more} • pick it up!", { tableName: r.ticket.tableName, name: r.name, quantity: r.quantity, more }),
             tag: `fana-waiter-ready-${r.ticket.id}-${Date.now()}`,
           });
-          showToast(`🔔 READY: ${r.ticket.tableName} • ${r.name}${more}`);
+          showToast(tNow("🔔 READY: {tableName} • {name}{more}", { tableName: r.ticket.tableName, name: r.name, more }));
         }
         if (billAsks.length > 0) {
           const b = billAsks[0];
@@ -526,23 +529,23 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             id: `bill-${b.id}-${b.receiptRequestedAt || ""}`,
             kind: "bill",
             table: b.tableName,
-            detail: `${b.totalAmount} ETB • take the receipt over`,
-            actionLabel: "OPEN BILL",
+            detail: tNow("{totalAmount} ETB • take the receipt over", { totalAmount: b.totalAmount }),
+            actionLabel: tNow("OPEN BILL"),
             onAction: () => void openTicketById(b.id),
           });
           triggerDesktopNotification({
-            title: "Fana Cafe • Bill requested",
-            message: `🧾 ${b.tableName} asked for the bill • ${b.totalAmount} ETB`,
+            title: tNow("Fana Cafe • Bill requested"),
+            message: tNow("🧾 {tableName} asked for the bill • {totalAmount} ETB", { tableName: b.tableName, totalAmount: b.totalAmount }),
             tag: `fana-waiter-bill-${b.id}`,
           });
-          if (readyItems.length === 0) showToast(`🧾 ${b.tableName} asked for the bill`);
+          if (readyItems.length === 0) showToast(tNow("🧾 {tableName} asked for the bill", { tableName: b.tableName }));
         }
         if (loudMoves.length > 0 && readyItems.length === 0 && billAsks.length === 0) {
           const m = loudMoves[0];
           const label = statusMoveLabel(m.to, m.ticket.tableName);
           if (label) {
             triggerDesktopNotification({
-              title: "Fana Cafe • Order update",
+              title: tNow("Fana Cafe • Order update"),
               message: label,
               tag: `fana-waiter-status-${m.ticket.id}-${m.to}`,
             });
@@ -563,16 +566,16 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             id: `order-${t0.id}`,
             kind: "order",
             table: t0.tableName,
-            detail: `${t0.totalAmount} ETB • new QR order`,
-            actionLabel: "OPEN & ACCEPT",
+            detail: tNow("{totalAmount} ETB • new QR order", { totalAmount: t0.totalAmount }),
+            actionLabel: tNow("OPEN & ACCEPT"),
             onAction: () => void openTicketById(t0.id),
           });
           triggerDesktopNotification({
-            title: "Fana Cafe • Waiter Alert",
-            message: `🍽 New order request • ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`,
+            title: tNow("Fana Cafe • Waiter Alert"),
+            message: tNow("🍽 New order request • {tableName} • {totalAmount} ETB • go confirm!", { tableName: t0.tableName, totalAmount: t0.totalAmount }),
             tag: `fana-waiter-${t0.id}`,
           });
-          showToast(`🔔 New order request: ${t0.tableName}`);
+          showToast(tNow("🔔 New order request: {tableName}", { tableName: t0.tableName }));
         }
         if (added.length > 0) {
           const t0 = added[0];
@@ -581,22 +584,22 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             id: `added-${t0.id}-${Date.now()}`,
             kind: "added",
             table: t0.tableName,
-            detail: `${t0.totalAmount} ETB • guest added items`,
-            actionLabel: stillPending ? "OPEN & ACCEPT" : "OPEN BILL",
+            detail: tNow("{totalAmount} ETB • guest added items", { totalAmount: t0.totalAmount }),
+            actionLabel: stillPending ? tNow("OPEN & ACCEPT") : tNow("OPEN BILL"),
             onAction: () => void openTicketById(t0.id),
           });
           triggerDesktopNotification({
-            title: "Fana Cafe • Waiter Alert",
+            title: tNow("Fana Cafe • Waiter Alert"),
             message: stillPending
-              ? `🍽 Guest added items • ${t0.tableName} • ${t0.totalAmount} ETB • go confirm!`
-              : `🍽 Guest added items • ${t0.tableName} • ${t0.totalAmount} ETB • check the bill!`,
+              ? tNow("🍽 Guest added items • {tableName} • {totalAmount} ETB • go confirm!", { tableName: t0.tableName, totalAmount: t0.totalAmount })
+              : tNow("🍽 Guest added items • {tableName} • {totalAmount} ETB • check the bill!", { tableName: t0.tableName, totalAmount: t0.totalAmount }),
             tag: `fana-waiter-add-${t0.id}-${Date.now()}`,
           });
           if (fresh.length === 0) {
             showToast(
               stillPending
-                ? `🔔 ${t0.tableName}: guest added items • go confirm!`
-                : `🔔 ${t0.tableName}: guest added items`
+                ? tNow("🔔 {tableName}: guest added items • go confirm!", { tableName: t0.tableName })
+                : tNow("🔔 {tableName}: guest added items", { tableName: t0.tableName })
             );
           }
         }
@@ -695,11 +698,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       void enablePocketAlerts().then((res) => {
         void pocket.refreshStatus();
         if (res === "denied") {
-          showToast("Notifications blocked. Allow them in the browser to hear pocket alerts.");
+          showToast(tNow("Notifications blocked. Allow them in the browser to hear pocket alerts."));
         }
       });
     } else {
-      setLoginError("Wrong name or PIN. Ask admin for your PIN.");
+      setLoginError(tNow("Wrong name or PIN. Ask admin for your PIN."));
     }
   };
 
@@ -713,7 +716,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   const requestBillForTable = async (t: CafeTable) => {
     if (!t.activeTicketId) {
-      showToast("No active order for this table");
+      showToast(tNow("No active order for this table"));
       return;
     }
     const waiterName = staffName || selectedName || "Waiter";
@@ -729,13 +732,13 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       });
       if (r.status === 401) return expireSession();
       if (!r.ok) {
-        showToast("Could not request bill. Try again.");
+        showToast(tNow("Could not request bill. Try again."));
         return;
       }
-      showToast(`🧾 Bill requested for ${t.name}`);
+      showToast(tNow("🧾 Bill requested for {name}", { name: t.name }));
       loadTables();
     } catch {
-      showToast("Network error. Try again.");
+      showToast(tNow("Network error. Try again."));
     }
   };
 
@@ -753,13 +756,13 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       });
       if (r.status === 401) return expireSession();
       if (!r.ok) {
-        showToast("Could not request bill. Try again.");
+        showToast(tNow("Could not request bill. Try again."));
         return;
       }
-      showToast(`🧾 Bill requested for ${g.tableName}`);
+      showToast(tNow("🧾 Bill requested for {tableName}", { tableName: g.tableName }));
       loadTables();
     } catch {
-      showToast("Network error. Try again.");
+      showToast(tNow("Network error. Try again."));
     }
   };
 
@@ -810,21 +813,21 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   const tableStatusLabel = (status: TableStatus | undefined) =>
     printQueueMode
       ? status === "available"
-        ? "Available"
+        ? L("Available")
         : status === "waiting"
-        ? "Confirm Order"
+        ? L("Confirm Order")
         : status === "preparing"
-        ? "👨‍🍳 In Progress"
+        ? L("👨‍🍳 In Progress")
         : status === "ready-for-payment"
-        ? "Bill Requested"
-        : "Sent to Cashier"
+        ? L("Bill Requested")
+        : L("Sent to Cashier")
       : status === "available"
-      ? "Available"
+      ? L("Available")
       : status === "ready-for-payment"
-      ? "Pay Requested"
+      ? L("Pay Requested")
       : status === "preparing"
-      ? "Preparing"
-      : "Occupied";
+      ? L("Preparing")
+      : L("Occupied");
 
   const addToCart = (item: MenuItem) => {
     if (!item.isAvailable) return;
@@ -886,19 +889,19 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       setCart([]);
       showToast(
         d.duplicate
-          ? "✓ Already sent • not sent twice"
+          ? tNow("✓ Already sent • not sent twice")
           : groupRound && d.merged
-          ? `✓ Items added to ${String(d.tableName || "the group bill")}`
+          ? tNow("✓ Items added to {tableName}", { tableName: String(d.tableName || tNow("the group bill")) })
           : d.merged
-          ? "✓ Items added to the table bill"
-          : "✓ Order sent to cashier"
+          ? tNow("✓ Items added to the table bill")
+          : tNow("✓ Order sent to cashier")
       );
       await loadTables();
       onGoBack();
     } else if (r.status === 401) {
       expireSession();
     } else {
-      showToast("Failed to send order. Press Send again, it will not duplicate.");
+      showToast(tNow("Failed to send order. Press Send again, it will not duplicate."));
     }
   };
 
@@ -946,12 +949,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
-        showToast(d?.error || "Could not update item");
+        showToast(d?.error || tNow("Could not update item"));
         return;
       }
       if (activeTicket && qty > item.quantity) creditOwnUnits(activeTicket.id, qty - item.quantity);
       setEditingItemId(null);
-      showToast("✓ Item updated");
+      showToast(tNow("✓ Item updated"));
       await refreshTicket();
       loadTables();
     } finally {
@@ -961,17 +964,17 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   const removeTicketItem = async (item: TicketItem) => {
     const okToRemove = confirm(
-      `Remove "${item.name}" x${item.quantity} from the bill?\n\nThe kitchen has not started it yet, so nothing is wasted.`
+      L("Remove \"{name}\" x{quantity} from the bill?\n\nThe kitchen has not started it yet, so nothing is wasted.", { name: item.name, quantity: item.quantity })
     );
     if (!okToRemove) return;
     const r = await fetch(`/api/tickets/items?id=${item.id}`, { method: "DELETE" });
     if (r.ok) {
       setEditingItemId(null);
-      showToast("✓ Item removed from the bill");
+      showToast(tNow("✓ Item removed from the bill"));
       await refreshTicket();
       loadTables();
     } else {
-      showToast("Could not remove item");
+      showToast(tNow("Could not remove item"));
     }
   };
 
@@ -985,7 +988,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not move this bill. Try again.");
+      showToast(d?.error || tNow("Could not move this bill. Try again."));
       loadTables();
       return;
     }
@@ -1017,7 +1020,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     if (!r.ok) {
       setSending(false);
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not complete payment. Try again.");
+      showToast(d?.error || tNow("Could not complete payment. Try again."));
       loadTables();
       return;
     }
@@ -1026,7 +1029,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     setActiveTicket(null);
     setSelectedTable(null);
     setReceiptImage("");
-    showToast("✓ Payment completed • cashier will verify and release the table");
+    showToast(tNow("✓ Payment completed • cashier will verify and release the table"));
     setView("tables");
     loadTables();
   };
@@ -1051,7 +1054,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     );
     if (cooking.length > 0) {
       const okToClear = confirm(
-        `The crews are still preparing ${cooking.length} item(s) for ${activeTicket.tableName}. The station lists will drop them.\n\nClear the table anyway?`
+        L("The crews are still preparing {length} item(s) for {tableName}. The station lists will drop them.\n\nClear the table anyway?", { length: cooking.length, tableName: activeTicket.tableName })
       );
       if (!okToClear) return;
     }
@@ -1063,12 +1066,16 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not clear this table. Try again.");
+      showToast(d?.error || tNow("Could not clear this table. Try again."));
       loadTables();
       return;
     }
     noteOwnStatus(activeTicket.id, "closed");
-    showToast(`✓ ${activeTicket.tableName} ${selectedTable?.isGroup ? "settled" : "is free for new guests"}`);
+    showToast(
+      selectedTable?.isGroup
+        ? tNow("✓ {tableName} settled", { tableName: activeTicket.tableName })
+        : tNow("✓ {tableName} is free for new guests", { tableName: activeTicket.tableName }),
+    );
     setActiveTicket(null);
     setSelectedTable(null);
     setView("tables");
@@ -1092,21 +1099,21 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   const ticketStatusLabel = (s: string) =>
     printQueueMode
       ? s === "pending_waiter"
-        ? "Waiting for your confirmation"
+        ? L("Waiting for your confirmation")
         : s === "confirmed"
         ? // QR HOLD FLOW: a confirmed bill without a release stamp is HELD —
           // the cashier accepted it but has not sent it to the crews yet.
           activeTicket?.confirmedAt
-          ? "Sent • cashier will print it in the EFD"
-          : "Accepted • held until the cashier sends it"
+          ? L("Sent • cashier will print it in the EFD")
+          : L("Accepted • held until the cashier sends it")
         : s === "printed"
-        ? "Printed • crew is preparing"
+        ? L("Printed • crew is preparing")
         : s === "preparing"
-        ? "In progress"
+        ? L("In progress")
         : s === "ready_for_payment"
-        ? "Bill requested"
+        ? L("Bill requested")
         : s === "completed"
-        ? "Payment stage"
+        ? L("Payment stage")
         : s.replace(/_/g, " ")
       : s.replace(/_/g, " ");
 
@@ -1123,14 +1130,14 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   const statusLabel = (status?: string) =>
     status === "available"
-      ? "Available"
+      ? L("Available")
       : status === "waiting"
-      ? "⏳ Confirm Order"
+      ? L("⏳ Confirm Order")
       : status === "ready-for-payment"
-      ? "Pay Requested"
+      ? L("Pay Requested")
       : status === "preparing"
-      ? "👨‍🍳 Preparing"
-      : "Occupied";
+      ? L("👨‍🍳 Preparing")
+      : L("Occupied");
 
   const confirmOrder = async () => {
     if (!activeTicket) return;
@@ -1142,12 +1149,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not accept this order. Try again.");
+      showToast(d?.error || tNow("Could not accept this order. Try again."));
       loadTables();
       return;
     }
     noteOwnStatus(activeTicket.id, "confirmed");
-    showToast("✓ Accepted • the crews with items on it, and the cashier, all have it");
+    showToast(tNow("✓ Accepted • the crews with items on it, and the cashier, all have it"));
     onGoBack();
     loadTables();
   };
@@ -1155,14 +1162,15 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   /* ── LOGIN SCREEN ─────────────────────────────────────────── */
   if (view === "login") {
     return (
-      <div className="min-h-screen bg-[#1C120F] flex items-center justify-center p-4 text-white">
+      <div className="relative min-h-screen bg-[#1C120F] flex items-center justify-center p-4 text-white">
+        <StaffLangToggle compact className="absolute top-3 right-3" />
         <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-3xl p-8 w-full max-w-sm space-y-6 shadow-2xl">
           <div className="text-center space-y-2">
             <div className="w-14 h-14 rounded-2xl bg-[#C9A227] text-[#2C1B17] flex items-center justify-center mx-auto">
               <Users className="w-7 h-7" />
             </div>
-            <h1 className="font-serif text-2xl font-bold text-amber-100">{roleLabel} Login</h1>
-            <p className="text-xs text-stone-400">Enter your name and PIN given by the admin.</p>
+            <h1 className="font-serif text-2xl font-bold text-amber-100">{L("{roleLabel} Login", { roleLabel })}</h1>
+            <p className="text-xs text-stone-400">{L("Enter your name and PIN given by the admin.")}</p>
           </div>
 
           {loginError && (
@@ -1171,13 +1179,13 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
           <div className="space-y-4">
             <div>
-              <label className="text-xs font-bold text-amber-200 block mb-1">Your Name</label>
+              <label className="text-xs font-bold text-amber-200 block mb-1">{L("Your Name")}</label>
               <select
                 value={selectedName}
                 onChange={(e) => setSelectedName(e.target.value)}
                 className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm text-white"
               >
-                <option value="">Select your name...</option>
+                <option value="">{L("Select your name...")}</option>
                 {staffList.map((s) => (
                   <option key={s.id} value={s.name}>{s.name}</option>
                 ))}
@@ -1199,9 +1207,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
               disabled={!selectedName || !pin}
               className="w-full bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-sm uppercase py-4 rounded-xl disabled:opacity-40"
             >
-              Login as {roleLabel}
+              {L("Login as {roleLabel}", { roleLabel })}
             </button>
-            <a href="/" className="block text-center text-xs text-[#C9A227] hover:underline">← Back to public website</a>
+            <a href="/" className="block text-center text-xs text-[#C9A227] hover:underline">{L("← Back to public website")}</a>
           </div>
         </div>
       </div>
@@ -1219,7 +1227,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           </div>
           <div>
             <p className="text-xs font-bold text-amber-100 leading-none">{staffName}</p>
-            <p className="text-[10px] text-stone-400">{roleLabel} • Fana Cafe</p>
+            <p className="text-[10px] text-stone-400">{L("{roleLabel} • Fana Cafe", { roleLabel })}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -1235,14 +1243,15 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           <button
             onClick={enableAlerts}
             className={`p-2 rounded-xl transition ${alertsOn ? "bg-emerald-600 text-white" : "bg-[#C9A227] text-[#2C1B17] animate-pulse"}`}
-            title={alertsOn ? "Ring bell alerts ON" : "Enable ring bell alerts"}
+            title={alertsOn ? L("Ring bell alerts ON") : L("Enable ring bell alerts")}
           >
             <BellRing className="w-4 h-4" />
           </button>
-          <button onClick={loadAll} className="p-2 rounded-xl bg-white/10 text-amber-200" title="Refresh">
+          <StaffLangToggle compact />
+          <button onClick={loadAll} className="p-2 rounded-xl bg-white/10 text-amber-200" title={L("Refresh")}>
             <RefreshCw className="w-4 h-4" />
           </button>
-          <button onClick={logout} className="p-2 rounded-xl bg-rose-600/80 text-white" title="Logout">
+          <button onClick={logout} className="p-2 rounded-xl bg-rose-600/80 text-white" title={L("Logout")}>
             <LogOut className="w-4 h-4" />
           </button>
         </div>
@@ -1279,17 +1288,17 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             <div className="bg-[#2C1B17] border-2 border-rose-500/40 rounded-2xl p-4">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="font-serif font-bold text-rose-200 text-sm flex items-center gap-2">
-                  🫖 My Buna
+                  {L("🫖 My Buna")}
                   {bunaLines.length > 0 && (
                     <span className="text-[10px] font-black bg-rose-600 text-white rounded-full px-2 py-0.5">
-                      {bunaLines.length} request{bunaLines.length === 1 ? "" : "s"}
+                      {L(bunaLines.length === 1 ? "{n} request" : "{n} requests", { n: bunaLines.length })}
                     </span>
                   )}
                 </h2>
                 <button
                   onClick={() => void loadBunaLane()}
                   className="p-1.5 rounded-lg bg-white/10 text-rose-200"
-                  title="Refresh"
+                  title={L("Refresh")}
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                 </button>
@@ -1297,7 +1306,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
               {bunaLines.length === 0 ? (
                 <p className="text-[11px] text-stone-500 text-center py-3">
-                  No traditional buna right now. New buna requests disappear after the cashier taps Printed.
+                  {L("No traditional buna right now. New buna requests disappear after the cashier taps Printed.")}
                 </p>
               ) : (
                 <div className="space-y-2 divide-y divide-stone-800">
@@ -1322,7 +1331,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                             {line.name} <span className="text-[#C9A227]">x{line.quantity}</span>
                           </p>
                           <p className="text-[11px] font-bold text-stone-300 mt-0.5">
-                            {line.tableName} • waiting {waitingLabel(line.createdAt)}
+                            {L("{tableName} • waiting {waitingLabel}", { tableName: line.tableName, waitingLabel: Ld(waitingLabel(line.createdAt)) })}
                           </p>
                           {line.notes && (
                             <p
@@ -1335,7 +1344,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                           )}
                         </div>
                         <span className="shrink-0 max-w-[120px] text-center text-[10px] font-black text-rose-200 bg-rose-950/60 px-2.5 py-1 rounded-full uppercase border border-rose-700">
-                          Cashier prints to clear
+                          {L("Cashier prints to clear")}
                         </span>
                       </div>
                     ))}
@@ -1345,7 +1354,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           )}
           <div>
             <div className="flex items-center justify-between gap-2">
-              <h1 className="font-serif text-xl font-bold text-amber-100">Select Table</h1>
+              <h1 className="font-serif text-xl font-bold text-amber-100">{L("Select Table")}</h1>
               {/* GROUP ORDERS: always available, top corner of the tables
                   view. One tap opens the auto-numbered group composer. */}
               <button
@@ -1353,14 +1362,14 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 className="shrink-0 flex items-center gap-1.5 bg-emerald-800/80 border-2 border-emerald-400/60 hover:bg-emerald-700 rounded-xl px-3 py-2 text-[11px] font-black text-emerald-100 active:scale-95 transition"
               >
                 <Users className="w-4 h-4" />
-                Groups
+                {L("Groups")}
               </button>
             </div>
             <div className="flex gap-3 text-[10px] mt-1.5">
-              <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />Free</span>
-              <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-violet-500 inline-block" />Waiting</span>
-            <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />{printQueueMode ? "Sent" : "Busy"}</span>
-              <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />{printQueueMode ? "Bill" : "Pay"}</span>
+              <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />{L("Free")}</span>
+              <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-violet-500 inline-block" />{L("Waiting")}</span>
+            <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-rose-500 inline-block" />{printQueueMode ? L("Sent") : L("Busy")}</span>
+              <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" />{printQueueMode ? L("Bill") : L("Pay")}</span>
             </div>
           </div>
 
@@ -1398,10 +1407,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                         ? "bg-amber-400 text-[#1E110D] border-amber-300 ring-2 ring-amber-300/60 shadow-amber-500/20"
                         : "bg-gradient-to-r from-[#C9A227] to-amber-500 hover:from-amber-400 hover:to-amber-300 text-[#1E110D] border-[#C9A227] shadow-black/40"
                     }`}
-                    title={t.activeTicketReceiptRequestedAt ? "Bill already requested • Tap to notify again" : "Request bill • Notify cashier"}
+                    title={t.activeTicketReceiptRequestedAt ? L("Bill already requested • Tap to notify again") : L("Request bill • Notify cashier")}
                   >
                     <Receipt className="w-3.5 h-3.5" />
-                    <span>{t.activeTicketReceiptRequestedAt ? "Bill Sent" : "Bill"}</span>
+                    <span>{t.activeTicketReceiptRequestedAt ? L("Bill Sent") : L("Bill")}</span>
                   </button>
                 ) : null}
 
@@ -1409,35 +1418,35 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(t.status)}`}>
                   {printQueueMode
                     ? t.status === "available"
-                      ? "Available"
+                      ? L("Available")
                       : t.status === "waiting"
-                      ? "Confirm Order"
+                      ? L("Confirm Order")
                       : t.status === "preparing"
-                      ? "👨‍🍳 In Progress"
+                      ? L("👨‍🍳 In Progress")
                       : t.status === "ready-for-payment"
-                      ? "Bill Requested"
-                      : "Sent to Cashier"
+                      ? L("Bill Requested")
+                      : L("Sent to Cashier")
                     : t.status === "available"
-                    ? "Available"
+                    ? L("Available")
                     : t.status === "ready-for-payment"
-                    ? "Pay Requested"
+                    ? L("Pay Requested")
                     : t.status === "preparing"
-                    ? "Preparing"
-                    : "Occupied"}
+                    ? L("Preparing")
+                    : L("Occupied")}
                 </span>
                 {t.activeTicketTotal ? (
-                  <p className="text-xs font-bold text-stone-200 mt-1">{t.activeTicketTotal} ETB open</p>
+                  <p className="text-xs font-bold text-stone-200 mt-1">{L("{activeTicketTotal} ETB open", { activeTicketTotal: t.activeTicketTotal })}</p>
                 ) : null}
                 {t.activeTicketBy ? (
                   <p className="text-[11px] text-[#D8B93E] mt-1 font-black">👤 {t.activeTicketBy}</p>
                 ) : null}
                 {t.activeTicketAt ? (
                   <p className="text-[11px] text-stone-300 mt-0.5 font-bold">
-                    🕒 since {formatClock(t.activeTicketAt)} • {waitingLabel(t.activeTicketAt)}
+                    {L("🕒 since {clock} • {waitingLabel}", { clock: formatClock(t.activeTicketAt), waitingLabel: Ld(waitingLabel(t.activeTicketAt)) })}
                   </p>
                 ) : null}
                 {t.activeTicketReceiptRequestedAt ? (
-                  <p className="text-[11px] text-emerald-300 mt-1 font-black">🧾 bill requested</p>
+                  <p className="text-[11px] text-emerald-300 mt-1 font-black">{L("🧾 bill requested")}</p>
                 ) : null}
               </div>
             ))}
@@ -1471,10 +1480,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                         ? "bg-amber-400 text-[#1E110D] border-amber-300 ring-2 ring-amber-300/60 shadow-amber-500/20"
                         : "bg-gradient-to-r from-[#C9A227] to-amber-500 hover:from-amber-400 hover:to-amber-300 text-[#1E110D] border-[#C9A227] shadow-black/40"
                     }`}
-                    title={g.receiptRequestedAt ? "Bill already requested • Tap to notify again" : "Request bill • Notify cashier"}
+                    title={g.receiptRequestedAt ? L("Bill already requested • Tap to notify again") : L("Request bill • Notify cashier")}
                   >
                     <Receipt className="w-3.5 h-3.5" />
-                    <span>{g.receiptRequestedAt ? "Bill Sent" : "Bill"}</span>
+                    <span>{g.receiptRequestedAt ? L("Bill Sent") : L("Bill")}</span>
                   </button>
                 )}
 
@@ -1484,10 +1493,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(groupTableStatus(g))}`}>
                   {tableStatusLabel(groupTableStatus(g))}
                 </span>
-                <p className="text-xs font-bold text-stone-200 mt-1">{g.totalAmount} ETB open</p>
+                <p className="text-xs font-bold text-stone-200 mt-1">{L("{totalAmount} ETB open", { totalAmount: g.totalAmount })}</p>
                 {g.createdAt ? (
                   <p className="text-[11px] text-stone-300 mt-0.5 font-bold">
-                    🕒 since {formatClock(g.createdAt)} • {waitingLabel(g.createdAt)}
+                    {L("🕒 since {clock} • {waitingLabel}", { clock: formatClock(g.createdAt), waitingLabel: Ld(waitingLabel(g.createdAt)) })}
                   </p>
                 ) : null}
               </div>
@@ -1498,18 +1507,15 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             <p className="text-xs text-stone-400 leading-relaxed">
               {printQueueMode ? (
                 <>
-                  Tap a <span className="text-emerald-400 font-bold">green table</span> to take a new order.
-                  When the guests leave and you have cleared the table, open its bill and tap{" "}
-                  <span className="text-emerald-400 font-bold">Table Cleared</span> • it turns green for the next guests.
+                  {Lr("Tap a <s>green table</s> to take a new order. When the guests leave and you have cleared the table, open its bill and tap <s>Table Cleared</s> • it turns green for the next guests.", { s: (s) => <span className="text-emerald-400 font-bold">{s}</span> })}
                   <br />
-                  👥 <span className="text-emerald-300 font-bold">GROUP cards</span> are guest groups away from their table: open one to add items or settle it exactly like a table.
+                  {Lr("👥 <s>GROUP cards</s> are guest groups away from their table: open one to add items or settle it exactly like a table.", { s: (s) => <span className="text-emerald-300 font-bold">{s}</span> })}
                 </>
               ) : (
                 <>
-                  Tap a <span className="text-emerald-400 font-bold">green table</span> to start a new order.
-                  Tap an <span className="text-rose-400 font-bold">occupied table</span> to view its bill, add more items, or request payment.
+                  {Lr("Tap a <s>green table</s> to start a new order. Tap an <s2>occupied table</s2> to view its bill, add more items, or request payment.", { s: (s) => <span className="text-emerald-400 font-bold">{s}</span>, s2: (s) => <span className="text-rose-400 font-bold">{s}</span> })}
                   <br />
-                  👥 <span className="text-emerald-300 font-bold">GROUP cards</span> are guest groups away from their table: open one to add items or settle it exactly like a table.
+                  {Lr("👥 <s>GROUP cards</s> are guest groups away from their table: open one to add items or settle it exactly like a table.", { s: (s) => <span className="text-emerald-300 font-bold">{s}</span> })}
                 </>
               )}
             </p>
@@ -1524,11 +1530,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             <button onClick={onGoBack} className="p-2 rounded-xl bg-white/10"><ArrowLeft className="w-4 h-4" /></button>
             <div className="flex-1">
               <h2 className="font-serif font-bold text-amber-100 text-lg leading-none">{selectedTable.name}</h2>
-              <p className="text-[11px] text-stone-400">{activeTicket ? "Adding items to existing bill" : "New order"}</p>
+              <p className="text-[11px] text-stone-400">{activeTicket ? L("Adding items to existing bill") : L("New order")}</p>
             </div>
             {activeTicket && (
               <button onClick={() => setView("bill")} className="text-xs bg-[#C9A227]/20 text-[#C9A227] px-3 py-1.5 rounded-lg font-bold">
-                View Bill
+                {L("View Bill")}
               </button>
             )}
           </div>
@@ -1540,7 +1546,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search menu..."
+                placeholder={L("Search menu...")}
                 className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl pl-9 pr-3 py-2.5 text-sm"
               />
             </div>
@@ -1593,10 +1599,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     <p className="text-xs font-bold text-amber-100 leading-tight line-clamp-2">{m.name}</p>
                     <p className="text-[11px] text-[#C9A227] font-extrabold">{effectivePrice(m).onSale ? <span><span className="line-through text-stone-500 text-[10px]">{m.price} </span>{effectivePrice(m).price}</span> : m.price} ETB</p>
                     {out ? (
-                      <span className="text-[10px] font-bold text-rose-400 bg-rose-900/40 px-2 py-0.5 rounded">Unavailable</span>
+                      <span className="text-[10px] font-bold text-rose-400 bg-rose-900/40 px-2 py-0.5 rounded">{L("Unavailable")}</span>
                     ) : (
                       <span className="w-full mt-1 bg-[#C9A227] text-[#2C1B17] text-[11px] font-extrabold py-1.5 rounded-lg flex items-center justify-center gap-1 pointer-events-none">
-                        <Plus className="w-3 h-3" /> {inCart ? `In cart (${inCart.quantity})` : "Add • tap anywhere"}
+                        <Plus className="w-3 h-3" /> {inCart ? L("In cart ({quantity})", { quantity: inCart.quantity }) : L("Add • tap anywhere")}
                       </span>
                     )}
                   </div>
@@ -1623,7 +1629,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     <input
                       value={c.notes}
                       onChange={(e) => setCart(cart.map((x) => (x.menuItemId === c.menuItemId ? { ...x, notes: e.target.value } : x)))}
-                      placeholder="Note: No Sugar, Extra Mayo, Less Spicy..."
+                      placeholder={L("Note: No Sugar, Extra Mayo, Less Spicy...")}
                       className="w-full bg-black/30 border border-stone-700 rounded-lg px-2 py-1 text-[11px] text-stone-300"
                     />
                   </div>
@@ -1635,7 +1641,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 className="w-full bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-sm uppercase py-3.5 rounded-xl flex items-center justify-center gap-2 shadow-xl"
               >
                 <Send className="w-4 h-4" />
-                {sending ? "Sending..." : `Send Order • ${cartTotal} ETB`}
+                {sending ? L("Sending...") : L("Send Order • {cartTotal} ETB", { cartTotal })}
               </button>
             </div>
           )}
@@ -1648,22 +1654,22 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           <div className="flex items-center gap-3">
             <button onClick={onGoBack} className="p-2 rounded-xl bg-white/10"><ArrowLeft className="w-4 h-4" /></button>
             <div className="flex-1">
-              <h2 className="font-serif font-bold text-amber-100 text-lg leading-none">{selectedTable.name} • Bill</h2>
-              <p className="text-xs font-bold text-stone-300 capitalize mt-0.5">Status: {ticketStatusLabel(activeTicket.status)}</p>
+              <h2 className="font-serif font-bold text-amber-100 text-lg leading-none">{L("{name} • Bill", { name: selectedTable.name })}</h2>
+              <p className="text-xs font-bold text-stone-300 capitalize mt-0.5">{L("Status: {ticketStatusLabel}", { ticketStatusLabel: ticketStatusLabel(activeTicket.status) })}</p>
               {/* Group 8: WHEN the order arrived and WHO sent it — the two things
                   staff keep asking for — plus the guest's own bill request. */}
               <p className="text-xs text-[#D8B93E] font-black mt-0.5">
-                🕒 {formatDateTime(activeTicket.createdAt)} • by {activeTicket.confirmedBy || activeTicket.createdBy || "staff"}
+                {L("🕒 {dateTime} • by", { dateTime: formatDateTime(activeTicket.createdAt) })} {activeTicket.confirmedBy || activeTicket.createdBy || L("staff")}
               </p>
               {activeTicket.receiptRequestedAt && (
                 <p className="mt-1 inline-block text-[10px] font-black text-emerald-300 bg-emerald-950/60 border border-emerald-700 rounded-lg px-2 py-0.5">
-                  🧾 Guest asked for the bill at {formatClock(activeTicket.receiptRequestedAt)}
+                  {L("🧾 Guest asked for the bill at {clock}", { clock: formatClock(activeTicket.receiptRequestedAt) })}
                 </p>
               )}
             </div>
             {activeTicket.status !== "ready_for_payment" && (
               <button onClick={() => setView("order")} className="text-xs bg-[#C9A227] text-[#2C1B17] px-3 py-2 rounded-lg font-bold flex items-center gap-1">
-                <Plus className="w-3.5 h-3.5" /> Add Items
+                <Plus className="w-3.5 h-3.5" /> {L("Add Items")}
               </button>
             )}
           </div>
@@ -1685,7 +1691,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   editingItemId === i.id ? (
                     <div className="bg-black/30 border border-[#C9A227]/50 rounded-xl p-2.5 space-y-2">
                       <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-bold text-stone-300 flex-1">Qty</span>
+                        <span className="text-[11px] font-bold text-stone-300 flex-1">{L("Qty")}</span>
                         <button onClick={() => setEditQty(Math.max(1, editQty - 1))} className="w-7 h-7 bg-white/10 rounded-lg flex items-center justify-center"><Minus className="w-3.5 h-3.5" /></button>
                         <span className="text-sm font-extrabold text-[#C9A227] w-6 text-center">{editQty}</span>
                         <button onClick={() => setEditQty(Math.min(100, editQty + 1))} className="w-7 h-7 bg-[#C9A227] text-black rounded-lg flex items-center justify-center"><Plus className="w-3.5 h-3.5" /></button>
@@ -1693,7 +1699,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                       <input
                         value={editNotes}
                         onChange={(e) => setEditNotes(e.target.value)}
-                        placeholder="Note: No Sugar, Extra Mayo, Less Spicy..."
+                        placeholder={L("Note: No Sugar, Extra Mayo, Less Spicy...")}
                         className="w-full bg-black/40 border border-stone-700 rounded-lg px-2 py-2 text-xs text-stone-200"
                       />
                       <div className="flex gap-2">
@@ -1702,21 +1708,21 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                           disabled={editSaving}
                           className="flex-1 bg-emerald-600 text-white text-xs font-extrabold py-2 rounded-lg disabled:opacity-40"
                         >
-                          {editSaving ? "Saving..." : "✓ Save"}
+                          {editSaving ? L("Saving...") : L("✓ Save")}
                         </button>
                         <button
                           onClick={() => removeTicketItem(i)}
                           disabled={editSaving}
                           className="flex-1 bg-rose-700/80 text-white text-xs font-extrabold py-2 rounded-lg disabled:opacity-40"
                         >
-                          ✗ Remove
+                          {L("✗ Remove")}
                         </button>
                         <button
                           onClick={() => setEditingItemId(null)}
                           disabled={editSaving}
                           className="px-3 bg-white/10 text-stone-300 text-xs font-bold py-2 rounded-lg"
                         >
-                          Cancel
+                          {L("Cancel")}
                         </button>
                       </div>
                     </div>
@@ -1725,27 +1731,27 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                       onClick={() => startEditItem(i)}
                       className="text-[11px] font-extrabold text-[#C9A227] bg-[#C9A227]/10 border border-[#C9A227]/40 px-3 py-1.5 rounded-lg"
                     >
-                      ✎ Edit • note / qty / remove
+                      {L("✎ Edit • note / qty / remove")}
                     </button>
                   )
                 ) : (
                   <p className="text-[11px] text-amber-300/80">
                     {itemEditable(i)
-                      ? "Bill is at the payment stage, ask the cashier for changes"
-                      : "👨‍🍳 Kitchen started this, ask the cashier for changes"}
+                      ? L("Bill is at the payment stage, ask the cashier for changes")
+                      : L("👨‍🍳 Kitchen started this, ask the cashier for changes")}
                   </p>
                 )}
               </div>
             ))}
             {billItems.length === 0 && (
               <p className="p-4 text-xs text-stone-400 text-center">
-                All items were removed. If the guests are leaving, ask the cashier to cancel this bill.
+                {L("All items were removed. If the guests are leaving, ask the cashier to cancel this bill.")}
               </p>
             )}
           </div>
 
           <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/40 p-4 flex items-center justify-between">
-            <span className="text-sm font-bold text-stone-300">Total Bill</span>
+            <span className="text-sm font-bold text-stone-300">{L("Total Bill")}</span>
             <span className="font-serif font-black text-2xl text-[#C9A227]">{billTotal} ETB</span>
           </div>
 
@@ -1754,7 +1760,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
               onClick={confirmOrder}
               className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
             >
-              <CheckCircle2 className="w-4 h-4" /> Accept & Send → Stations & Cashier
+              <CheckCircle2 className="w-4 h-4" /> {L("Accept & Send → Stations & Cashier")}
             </button>
           )}
 
@@ -1765,11 +1771,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
               {activeTicket.status === "confirmed" && (
                 activeTicket.confirmedAt ? (
                   <div className="w-full bg-[#2C1B17] border border-emerald-500/40 rounded-xl px-4 py-3 text-center text-xs font-bold text-emerald-300">
-                    ✓ Sent • the crews are cooking, the cashier is printing
+                    {L("✓ Sent • the crews are cooking, the cashier is printing")}
                   </div>
                 ) : (
                   <div className="w-full bg-[#2C1B17] border border-sky-500/40 rounded-xl px-4 py-3 text-center text-xs font-bold text-sky-300">
-                    ⏸ Accepted • the cashier is holding it until the guest finishes ordering
+                    {L("⏸ Accepted • the cashier is holding it until the guest finishes ordering")}
                   </div>
                 )
               )}
@@ -1784,7 +1790,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     onClick={clearTable}
                     className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
                   >
-                    <CheckCircle2 className="w-4 h-4" /> {selectedTable?.isGroup ? "Group Settled • Close Bill" : "Table Cleared • Free Table"}
+                    <CheckCircle2 className="w-4 h-4" /> {selectedTable?.isGroup ? L("Group Settled • Close Bill") : L("Table Cleared • Free Table")}
                   </button>
                 )}
             </>
@@ -1795,7 +1801,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   onClick={requestPayment}
                   className="w-full bg-amber-500 text-black font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
                 >
-                  <CreditCard className="w-4 h-4" /> Request Payment
+                  <CreditCard className="w-4 h-4" /> {L("Request Payment")}
                 </button>
               )}
 
@@ -1804,7 +1810,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   onClick={() => setView("payment")}
                   className="w-full bg-emerald-600 text-white font-black text-sm uppercase py-4 rounded-xl"
                 >
-                  Continue to Payment →
+                  {L("Continue to Payment →")}
                 </button>
               )}
             </>
@@ -1817,30 +1823,29 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
         <div className="p-4 max-w-md mx-auto space-y-5">
           <div className="flex items-center gap-3">
             <button onClick={() => setView("bill")} className="p-2 rounded-xl bg-white/10"><ArrowLeft className="w-4 h-4" /></button>
-            <h2 className="font-serif font-bold text-amber-100 text-lg">Payment • {selectedTable.name}</h2>
+            <h2 className="font-serif font-bold text-amber-100 text-lg">{L("Payment • {name}", { name: selectedTable.name })}</h2>
           </div>
 
           <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/40 p-4 text-center">
-            <p className="text-xs text-stone-400">Amount to collect</p>
+            <p className="text-xs text-stone-400">{L("Amount to collect")}</p>
             <p className="font-serif font-black text-3xl text-[#C9A227]">{billTotal} ETB</p>
           </div>
 
           <div className="bg-[#2C1B17] rounded-2xl border border-stone-700 p-4">
             <p className="text-xs text-stone-300 leading-relaxed">
-              Collect the <strong className="text-white">{billTotal} ETB</strong> from the customer, then confirm below.
-              The cashier verifies and releases the table.
+              {Lr("Collect the <b>{billTotal} ETB</b> from the customer, then confirm below. The cashier verifies and releases the table.", { b: (s) => <strong className="text-white">{s}</strong> }, { billTotal })}
             </p>
           </div>
 
           {receiptEnabled && (
             <div className="bg-[#2C1B17] rounded-2xl border border-stone-700 p-4 space-y-3">
               <p className="text-xs font-bold text-amber-200 flex items-center gap-1.5">
-                <Camera className="w-4 h-4 text-[#C9A227]" /> Receipt Photo (optional)
+                <Camera className="w-4 h-4 text-[#C9A227]" /> {L("Receipt Photo (optional)")}
               </p>
-              {receiptImage && <img src={receiptImage} alt="Receipt" className="w-full h-40 object-cover rounded-xl border border-stone-600" />}
+              {receiptImage && <img src={receiptImage} alt={L("Receipt")} className="w-full h-40 object-cover rounded-xl border border-stone-600" />}
               <label className="flex items-center justify-center gap-2 w-full bg-white/10 hover:bg-white/20 text-white text-xs font-bold py-2.5 rounded-xl cursor-pointer">
                 <Camera className="w-4 h-4" />
-                {receiptImage ? "Retake Photo" : "Take Receipt Photo"}
+                {receiptImage ? L("Retake Photo") : L("Take Receipt Photo")}
                 <input
                   type="file"
                   accept="image/*"
@@ -1856,7 +1861,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                       const small = await compressImage(f, 800, 0.65);
                       setReceiptImage(small);
                     } catch {
-                      showToast("Could not read that photo. Try again");
+                      showToast(tNow("Could not read that photo. Try again"));
                     }
                   }}
                 />
@@ -1869,12 +1874,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             disabled={sending}
             className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm uppercase py-4 rounded-xl disabled:opacity-40"
           >
-            {sending ? "Confirming..." : "Confirm Payment"}
+            {sending ? L("Confirming...") : L("Confirm Payment")}
           </button>
 
           <div className="flex items-center gap-2 text-[11px] text-stone-400 bg-[#2C1B17] rounded-xl p-3">
             <ClipboardList className="w-4 h-4 text-[#C9A227] shrink-0" />
-            After confirmation, the cashier verifies and marks the order <strong className="text-white">Paid</strong>. The table then becomes Available automatically.
+            {Lr("After confirmation, the cashier verifies and marks the order <b>Paid</b>. The table then becomes Available automatically.", { b: (s) => <strong className="text-white">{s}</strong> })}
           </div>
         </div>
       )}

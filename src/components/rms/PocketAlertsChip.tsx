@@ -3,6 +3,7 @@
 import { BellRing, BellOff, Loader2, Volume2, Moon, BellPlus } from "lucide-react";
 import { useState } from "react";
 import type { PocketAlertsStatus } from "@/lib/push-client";
+import { useStaffT, tNow } from "@/lib/staff-i18n";
 
 /**
  * The "will my phone actually ring?" chip.
@@ -36,16 +37,17 @@ export default function PocketAlertsChip({
   notificationsEnabled: boolean | null;
   onSetNotificationsEnabled: (value: boolean) => Promise<boolean>;
 }) {
+  const { t: L } = useStaffT();
   const [open, setOpen] = useState(false);
   const armed = !!status?.armed;
   const offDuty = notificationsEnabled === false;
 
   const handleArm = async () => {
     const res = await onArm();
-    if (res === "subscribed" || res === "granted") onToast("🔔 Pocket alerts armed on this device");
-    else if (res === "denied") onToast("Notifications are blocked. Allow them in your browser settings.");
-    else if (res === "unsupported") onToast("This browser cannot do pocket alerts. Use Chrome on Android.");
-    else onToast("Could not arm pocket alerts. Check your connection and try again.");
+    if (res === "subscribed" || res === "granted") onToast(tNow("🔔 Pocket alerts armed on this device"));
+    else if (res === "denied") onToast(tNow("Notifications are blocked. Allow them in your browser settings."));
+    else if (res === "unsupported") onToast(tNow("This browser cannot do pocket alerts. Use Chrome on Android."));
+    else onToast(tNow("Could not arm pocket alerts. Check your connection and try again."));
   };
 
   const handleDuty = async () => {
@@ -53,13 +55,13 @@ export default function PocketAlertsChip({
     const target = !notificationsEnabled;
     const ok = await onSetNotificationsEnabled(target);
     if (!ok) {
-      onToast("Could not switch alerts. Check your connection and try again.");
+      onToast(tNow("Could not switch alerts. Check your connection and try again."));
       return;
     }
     onToast(
       target
-        ? "🔔 On duty: your phone rings again."
-        : "🔕 Off duty: your phone will stay silent. Rest well!"
+        ? tNow("🔔 On duty: your phone rings again.")
+        : tNow("🔕 Off duty: your phone will stay silent. Rest well!")
     );
   };
 
@@ -68,11 +70,11 @@ export default function PocketAlertsChip({
     if (res.ok) {
       onToast(
         delay > 0
-          ? `Test alert sent to ${res.sent} device(s). Lock your phone now, it rings in ${delay}s.`
-          : `Test alert sent to ${res.sent} device(s).`
+          ? tNow("Test alert sent to {sent} device(s). Lock your phone now, it rings in {delay}s.", { sent: res.sent, delay })
+          : tNow("Test alert sent to {sent} device(s).", { sent: res.sent })
       );
     } else {
-      onToast(res.error || "Test alert failed.");
+      onToast(res.error || tNow("Test alert failed."));
     }
   };
 
@@ -97,8 +99,8 @@ export default function PocketAlertsChip({
         }`}
         title={
           offDuty
-            ? "Off duty: your alerts stay silent until you switch them back on"
-            : status?.reason || "Pocket alerts"
+            ? L("Off duty: your alerts stay silent until you switch them back on")
+            : status?.reason || L("Pocket alerts")
         }
       >
         {busy ? (
@@ -110,7 +112,7 @@ export default function PocketAlertsChip({
         ) : (
           <BellOff className="w-3.5 h-3.5" />
         )}
-        {state === "on" ? "Pocket ON" : state === "offduty" ? "Off duty" : "Pocket OFF"}
+        {state === "on" ? L("Pocket ON") : state === "offduty" ? L("Off duty") : L("Pocket OFF")}
       </button>
 
       {open && (
@@ -124,8 +126,8 @@ export default function PocketAlertsChip({
             >
               <p className={`text-[11px] font-bold leading-relaxed ${offDuty ? "text-amber-200" : "text-emerald-200"}`}>
                 {offDuty
-                  ? "Off duty: your phone stays silent. No order alarms at home."
-                  : "On duty: your phone rings for new orders, even at home."}
+                  ? L("Off duty: your phone stays silent. No order alarms at home.")
+                  : L("On duty: your phone rings for new orders, even at home.")}
               </p>
               <button
                 onClick={handleDuty}
@@ -135,17 +137,17 @@ export default function PocketAlertsChip({
                 }`}
               >
                 {offDuty ? <BellPlus className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-                {offDuty ? "Back on duty: ring my phone" : "Off duty: silence my phone"}
+                {offDuty ? L("Back on duty: ring my phone") : L("Off duty: silence my phone")}
               </button>
               <p className="text-[10px] text-stone-400 leading-relaxed">
                 {offDuty
-                  ? "Tap this when your shift starts. Signing in with your PIN also turns alerts back on."
-                  : "Tap this when your shift ends. This phone stays silent until you are back on duty."}
+                  ? L("Tap this when your shift starts. Signing in with your PIN also turns alerts back on.")
+                  : L("Tap this when your shift ends. This phone stays silent until you are back on duty.")}
               </p>
             </div>
           )}
           <p className={`text-[11px] leading-relaxed ${armed ? "text-emerald-200" : "text-amber-200"}`}>
-            {status?.reason || "Checking this device..."}
+            {status?.reason || L("Checking this device...")}
           </p>
           {!armed && (
             <button
@@ -153,7 +155,7 @@ export default function PocketAlertsChip({
               disabled={busy}
               className="w-full py-2 rounded-xl bg-[#C9A227] text-[#2C1B17] text-xs font-bold disabled:opacity-50"
             >
-              Arm pocket alerts
+              {L("Arm pocket alerts")}
             </button>
           )}
           <button
@@ -162,23 +164,20 @@ export default function PocketAlertsChip({
             className="w-full py-2 rounded-xl bg-white/10 text-amber-100 text-xs font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
             <Volume2 className="w-3.5 h-3.5" />
-            Test ring in 10s (lock your phone)
+            {L("Test ring in 10s (lock your phone)")}
           </button>
           <button
             onClick={() => handleTest(0)}
             disabled={busy}
             className="w-full py-2 rounded-xl bg-white/10 text-amber-100 text-xs font-bold disabled:opacity-50"
           >
-            Test ring now
+            {L("Test ring now")}
           </button>
           <p className="text-[10px] text-stone-400 leading-relaxed">
-            Keep the phone off silent mode. Notification sound uses the ringer volume, the in-app bell uses the media
-            volume.
+            {L("Keep the phone off silent mode. Notification sound uses the ringer volume, the in-app bell uses the media volume.")}
           </p>
           <p className="text-[10px] text-emerald-300/90 leading-relaxed">
-            Pressing the power button to switch the SCREEN off is fine, and it saves battery: the phone still rings,
-            vibrates and shows the alert on the lock screen. Only a phone that is fully powered OFF (held the button and
-            chose Power off) receives nothing until it is switched on again.
+            {L("Pressing the power button to switch the SCREEN off is fine, and it saves battery: the phone still rings, vibrates and shows the alert on the lock screen. Only a phone that is fully powered OFF (held the button and chose Power off) receives nothing until it is switched on again.")}
           </p>
         </div>
       )}

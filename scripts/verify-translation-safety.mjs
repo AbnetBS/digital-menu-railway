@@ -48,7 +48,7 @@ const pass = (name, value) => {
 {
   const route = read("src/app/api/translate/route.ts");
   pass("translate route enforces a language whitelist", /SUPPORTED_TX_LANGS\.has/.test(route));
-  pass("translate route is rate-limited", /checkRateLimit\(/.test(route));
+  pass("translate route is rate-limited", /check(SharedIp)?RateLimit\(/.test(route));
   pass("translate route never fails the UI on error", /status: 200/.test(route) && /translations: \{\}/.test(route));
   const server = read("src/lib/translate-server.ts");
   pass("server translator caps request size", /MAX_TEXTS_PER_CHUNK/.test(server) && /MAX_TEXT_LEN/.test(server));

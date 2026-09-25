@@ -21,6 +21,7 @@
  */
 
 import { Bell, CheckCircle2, Receipt, UtensilsCrossed, X } from "lucide-react";
+import { useStaffT } from "@/lib/staff-i18n";
 
 export interface UrgentAlert {
   /** Stable id, so the same event does not re-open the screen after it is answered. */
@@ -58,6 +59,7 @@ export default function UrgentAlertOverlay({
   alert: UrgentAlert | null;
   onClose: () => void;
 }) {
+  const { t: L } = useStaffT();
   if (!alert) return null;
 
   const look = LOOK[alert.kind];
@@ -80,7 +82,7 @@ export default function UrgentAlertOverlay({
     <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/85 backdrop-blur-sm p-6">
       <button
         onClick={onClose}
-        aria-label="Close"
+        aria-label={L("Close")}
         className="absolute top-5 right-5 p-3 rounded-2xl bg-white/10 text-white/70"
       >
         <X className="w-5 h-5" />
@@ -92,7 +94,7 @@ export default function UrgentAlertOverlay({
         <Icon className="w-14 h-14 text-white" />
       </div>
 
-      <p className="mt-6 text-sm tracking-[0.3em] text-white/60">{look.title}</p>
+      <p className="mt-6 text-sm tracking-[0.3em] text-white/60">{L(look.title)}</p>
       <p className="mt-2 text-4xl font-black text-white text-center leading-tight">{alert.table}</p>
       {alert.detail ? <p className="mt-2 text-lg text-amber-200 text-center">{alert.detail}</p> : null}
 
@@ -103,7 +105,7 @@ export default function UrgentAlertOverlay({
         {alert.actionLabel}
       </button>
       <p className="mt-4 text-xs text-white/45 text-center">
-        It rang once. The card stays here until you press the button.
+        {L("It rang once. The card stays here until you press the button.")}
       </p>
     </div>
   );

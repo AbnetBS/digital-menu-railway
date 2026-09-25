@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Minus, Plus, Search, Send, Users, XCircle } from "lucide-react";
 import { Category, MenuItem, Ticket } from "@/types";
 import { effectivePrice } from "@/lib/price";
+import { useStaffT, tNow } from "@/lib/staff-i18n";
 
 /**
  * GROUP ORDERS (owner's decision, Sept 2026).
@@ -58,6 +59,7 @@ export default function GroupComposer({
   onClose: () => void;
   onSent: (message: string) => void;
 }) {
+  const { t: L } = useStaffT();
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [category, setCategory] = useState("all");
@@ -184,18 +186,18 @@ export default function GroupComposer({
       const data = await response.json().catch(() => ({}));
       alert(
         response.status === 401
-          ? "Your session ended. Log in again, then resend the order."
-          : data?.error || "Could not send the group order"
+          ? L("Your session ended. Log in again, then resend the order.")
+          : data?.error || L("Could not send the group order")
       );
       return;
     }
     const data = await response.json();
     const group = String(data?.tableName || "");
     const message = data?.duplicate
-      ? "Already sent • not sent twice"
+      ? tNow("Already sent • not sent twice")
       : data?.merged
-      ? `✓ Added to ${group}`
-      : `✓ ${group} created • sent to the stations`;
+      ? tNow("✓ Added to {group}", { group })
+      : tNow("✓ {group} created • sent to the stations", { group });
     reset();
     setLoaded(false); // the open-group cards must re-read
     onSent(message);
@@ -216,9 +218,9 @@ export default function GroupComposer({
               <ArrowLeft className="w-4 h-4" />
             </button>
             <div className="min-w-0">
-              <h2 className="font-serif font-black text-xl text-amber-100">Group Orders</h2>
+              <h2 className="font-serif font-black text-xl text-amber-100">{L("Group Orders")}</h2>
               <p className="text-[11px] text-stone-400">
-                Guests away from their table? Each group of people gets its own numbered bill. No table needed.
+                {L("Guests away from their table? Each group of people gets its own numbered bill. No table needed.")}
               </p>
             </div>
           </div>
@@ -232,7 +234,7 @@ export default function GroupComposer({
           <div className="p-4 md:border-r border-stone-800 space-y-4">
             <div>
               <p className="text-[11px] font-black uppercase tracking-wider text-emerald-300">
-                Open groups · tap one to add a round
+                {L("Open groups · tap one to add a round")}
               </p>
               <div className="mt-2 flex flex-wrap gap-2">
                 <button
@@ -244,7 +246,7 @@ export default function GroupComposer({
                   }`}
                 >
                   <Users className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
-                  New group{nextGroup ? ` • will be GROUP ${nextGroup}` : ""}
+                  {L("New group")}{nextGroup ? L(" • will be GROUP {nextGroup}", { nextGroup }) : ""}
                 </button>
                 {openGroups.map((g) => (
                   <button
@@ -262,7 +264,7 @@ export default function GroupComposer({
               </div>
               {openGroups.length === 0 && (
                 <p className="text-[11px] text-stone-500 mt-1.5">
-                  No open groups right now. The first send starts GROUP {nextGroup || 1}.
+                  {L("No open groups right now. The first send starts GROUP {n}.", { n: nextGroup || 1 })}
                 </p>
               )}
             </div>
@@ -272,7 +274,7 @@ export default function GroupComposer({
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search the menu…"
+                placeholder={L("Search the menu…")}
                 className="w-full bg-black/30 border border-stone-700 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white"
               />
             </div>
@@ -284,7 +286,7 @@ export default function GroupComposer({
                   category === "all" ? "bg-amber-500/20 border-amber-400 text-amber-200" : "bg-[#241714] border-stone-700 text-stone-400"
                 }`}
               >
-                All
+                {L("All")}
               </button>
               {categories.map((c) => (
                 <button
@@ -314,14 +316,14 @@ export default function GroupComposer({
                   <div className="mt-3 flex items-center justify-between gap-2">
                     <span className="text-[10px] font-bold text-stone-500 uppercase">{item.category}</span>
                     <span className={`text-[10px] font-black px-2.5 py-1 rounded-full ${item.isAvailable ? "bg-emerald-500/20 text-emerald-300" : "bg-stone-800 text-stone-500"}`}>
-                      {item.isAvailable ? "Add" : "Out"}
+                      {item.isAvailable ? L("Add") : L("Out")}
                     </span>
                   </div>
                 </button>
               ))}
               {filteredMenu.length === 0 && (
                 <div className="md:col-span-2 bg-[#241714] border border-stone-800 rounded-2xl p-6 text-center text-sm text-stone-500">
-                  No menu items match that search.
+                  {L("No menu items match that search.")}
                 </div>
               )}
             </div>
@@ -330,25 +332,25 @@ export default function GroupComposer({
           {/* ── RIGHT: the order summary ── */}
           <div className="p-4 md:p-5 space-y-4 bg-[#16100D]">
             <div>
-              <p className="text-[11px] font-black uppercase tracking-wider text-emerald-300">Order summary</p>
+              <p className="text-[11px] font-black uppercase tracking-wider text-emerald-300">{L("Order summary")}</p>
               <h3 className="font-serif font-black text-2xl text-white mt-1">
-                {target ? target.tableName : nextGroup ? `GROUP ${nextGroup}` : "New group"}
+                {target ? target.tableName : nextGroup ? `GROUP ${nextGroup}` : L("New group")}
               </h3>
               <p className="text-[11px] font-bold text-stone-500 mt-0.5">
-                {target ? "another round on the same bill" : `its own bill, paid separately, labeled GROUP ${nextGroup || 1}`}
+                {target ? L("another round on the same bill") : L("its own bill, paid separately, labeled GROUP {n}", { n: nextGroup || 1 })}
               </p>
             </div>
 
             <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl divide-y divide-stone-800 max-h-[45vh] overflow-y-auto">
               {cart.length === 0 ? (
-                <p className="p-5 text-center text-sm text-stone-500">Pick items on the left to build the order.</p>
+                <p className="p-5 text-center text-sm text-stone-500">{L("Pick items on the left to build the order.")}</p>
               ) : (
                 cart.map((line) => (
                   <div key={line.menuItemId} className="p-3 space-y-2">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-black text-amber-100">{line.name}</p>
-                        <p className="text-[11px] text-stone-400">{line.price} ETB each</p>
+                        <p className="text-[11px] text-stone-400">{L("{price} ETB each", { price: line.price })}</p>
                       </div>
                       <span className="text-sm font-black text-[#C9A227]">{line.price * line.quantity} ETB</span>
                     </div>
@@ -364,7 +366,7 @@ export default function GroupComposer({
                     <input
                       value={line.notes}
                       onChange={(e) => updateNotes(line.menuItemId, e.target.value.slice(0, 500))}
-                      placeholder="Per-item note: no sugar, extra mayo…"
+                      placeholder={L("Per-item note: no sugar, extra mayo…")}
                       className="w-full bg-black/25 border border-stone-700 rounded-xl px-3 py-2 text-xs text-white"
                     />
                   </div>
@@ -373,7 +375,7 @@ export default function GroupComposer({
             </div>
 
             <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-4 flex items-center justify-between">
-              <span className="text-sm font-black text-stone-200">Total</span>
+              <span className="text-sm font-black text-stone-200">{L("Total")}</span>
               <span className="font-serif font-black text-2xl text-[#C9A227]">{total} ETB</span>
             </div>
 
@@ -384,14 +386,14 @@ export default function GroupComposer({
             >
               <Send className="w-4 h-4" />
               {sending
-                ? "Sending…"
+                ? L("Sending…")
                 : target
-                ? `Add to ${target.tableName} • ${total} ETB`
-                : `Send Group Order • ${total} ETB`}
+                ? L("Add to {tableName} • {total} ETB", { tableName: target.tableName, total })
+                : L("Send Group Order • {total} ETB", { total })}
             </button>
             {target && (
               <button onClick={() => setTarget(null)} className="w-full text-[11px] font-bold text-stone-400 hover:text-stone-200 py-1">
-                Start a different group instead
+                {L("Start a different group instead")}
               </button>
             )}
           </div>

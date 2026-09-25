@@ -5,7 +5,16 @@
  * Combined = 2+ people of the same role on one order. Pure, no database.
  */
 import assert from "node:assert/strict";
-import { buildShiftReport, type ShiftTicketRow, type ShiftItemRow } from "../src/lib/shift-report";
+import {
+  buildShiftReport,
+  isLegacyAuditNote,
+  orderSender,
+  timelineText,
+  type ShiftEventRow,
+  type ShiftItemRow,
+  type ShiftSubmissionRow,
+  type ShiftTicketRow,
+} from "../src/lib/shift-report";
 import { etDayKey } from "../src/lib/timezone";
 
 const at = (hhmm: string) => new Date(`2026-09-24T${hhmm}:00+03:00`);
@@ -57,4 +66,75 @@ assert.ok(k.orders[4].flags.some((f) => /never marked done/.test(f)));
 
 const k10 = buildShiftReport({ ...base, role: "kitchen", splitHour: 10 });
 assert.ok(k10.afternoon.some((p) => p.name === "Abnet")); // custom shift change hour
+
+// ── "ACCEPTED BY n/a" (owner, Sept 2026) ─────────────────────────────────
+// A waiter's own order goes straight to the stations and is never
+// "accepted", so confirmedBy stays empty. The card must name the waiter who
+// SENT it: Table 8 #FANA-2431 → "Sent by yeshi".
+const E = (o: Partial<ShiftEventRow>): ShiftEventRow => ({
+  ticketId: 8, eventType: "ticket_created", actorName: null, actorRole: null, toValue: null, details: null, createdAt: at("10:00"), ...o,
+});
+const S = (o: Partial<ShiftSubmissionRow>): ShiftSubmissionRow => ({
+  ticketId: 8, source: "staff", waiterName: "yeshi", lines: 2, createdAt: at("10:00"), ...o,
+});
+const t8 = T(8, { tableName: "Table 8", orderNumber: "FANA-2431", createdBy: "yeshi", printedBy: "Sara", printedAt: at("10:05") });
+const sentReport = buildShiftReport({
+  ...base,
+  role: "waiter",
+  staffRoles: { ...staffRoles, yeshi: "waiter" },
+  tickets: [...tickets, t8],
+  submissions: [S({})],
+  events: [
+    E({ eventType: "ticket_created", actorName: "yeshi", actorRole: "waiter", details: "New staff order created" }),
+    E({ eventType: "ticket_sent", actorName: "yeshi", actorRole: "waiter", details: "Waiter sent a new order to the stations", createdAt: at("10:00") }),
+    E({ eventType: "status_changed", actorName: "Sara", actorRole: "cashier", toValue: "printed", details: "Legacy print backfill", createdAt: at("10:05") }),
+    E({ eventType: "status_changed", actorName: "Abel", actorRole: "waiter", toValue: "confirmed", details: "Legacy confirmation backfill", createdAt: at("10:01") }),
+  ],
+});
+const card8 = sentReport.orders[8];
+assert.equal(card8.confirmedBy, null, "a waiter's own order has no 'accepted by'");
+assert.equal(card8.sentBy, "yeshi", "Table 8 #FANA-2431 → Sent by yeshi");
+assert.equal(card8.sentAt, at("10:00").toISOString());
+// display only: totals / Combined / flags are unchanged by sentBy
+assert.deepEqual(sentReport.morning.find((p) => p.name === "yeshi")?.ticketIds, [8]);
+assert.deepEqual(sentReport.combined.map((g) => g.label), ["Abel - Alem"]);
+assert.equal(sentReport.totals.orders, w.totals.orders + 1);
+// "Legacy ... backfill" never reaches the screen: plain words instead
+const texts = card8.timeline.map((l) => l.text);
+assert.ok(!texts.some((x) => /legacy|backfill/i.test(x)), `timeline shows technical notes: ${texts.join(" | ")}`);
+assert.ok(texts.includes("Order accepted") && texts.includes("Printed (EFD)"), texts.join(" | "));
+// Tickets with an accepting person keep "Accepted by"; sentBy is still filled when known.
+assert.equal(sentReport.orders[1].confirmedBy, "Abel");
+
+// orderSender priority: first STAFF submission → ticket_sent actor → any staff submission → createdBy person
+assert.deepEqual(orderSender(t8, [S({ createdAt: at("10:00") })], []), { name: "yeshi", at: at("10:00").toISOString() });
+assert.equal(
+  orderSender(T(9, { createdBy: "Customer (QR)" }), [S({ ticketId: 9, source: "customer", waiterName: null })], [
+    E({ ticketId: 9, eventType: "ticket_sent", actorName: "Hana", createdAt: at("10:02") }),
+  ]).name,
+  "Hana",
+  "a QR order released by a waiter is 'Sent by' that waiter"
+);
+assert.equal(orderSender(T(9, { createdBy: "Customer (QR)" }), [S({ ticketId: 9, source: "customer", waiterName: null })], []).name, null);
+assert.equal(orderSender(T(9, { createdBy: "Waiter" }), [], []).name, null, "placeholder names are not a person");
+assert.equal(orderSender(T(9, { createdBy: "Customer" }), [], []).name, null);
+assert.equal(orderSender(T(9, { createdBy: "Hana" }), [], []).name, "Hana");
+assert.equal(
+  orderSender(T(9, {}), [S({ ticketId: 9, source: "customer", waiterName: null, createdAt: at("09:00") }), S({ ticketId: 9, waiterName: "Alem", createdAt: at("09:30") })], []).name,
+  "Alem",
+  "a later staff submission still names the waiter"
+);
+
+// timelineText: legacy notes → plain words, real notes untouched
+assert.equal(timelineText({ eventType: "status_changed", toValue: "confirmed", details: "Legacy confirmation backfill" }), "Order accepted");
+assert.equal(timelineText({ eventType: "ticket_created", toValue: null, details: "Legacy bill existed before audit logging" }), "Order created");
+assert.equal(timelineText({ eventType: "status_changed", toValue: "closed", details: "Legacy table-cleared backfill" }), "Table cleared");
+assert.equal(timelineText({ eventType: "status_changed", toValue: "completed", details: "Legacy payment backfill" }), "Marked paid");
+assert.equal(timelineText({ eventType: "status_changed", toValue: "cancelled", details: "Legacy something backfill" }), "Order cancelled");
+assert.equal(timelineText({ eventType: "item_edited", toValue: null, details: "Tea: quantity 2 → 3" }), "Tea: quantity 2 → 3");
+assert.equal(timelineText({ eventType: "status_changed", toValue: "printed", details: null }), "Printed (EFD)");
+assert.equal(timelineText({ eventType: "weird_new_thing", toValue: null, details: null }), "Weird new thing");
+assert.ok(isLegacyAuditNote("Legacy confirmation backfill"));
+assert.ok(isLegacyAuditNote("Legacy bill edit happened before detailed audit logging"));
+assert.ok(!isLegacyAuditNote("Waiter sent a new order to the stations"));
 console.log("verify-shift-report: OK");

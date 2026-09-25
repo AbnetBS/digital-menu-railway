@@ -13,6 +13,8 @@ import TablesQrTab from "@/components/rms/TablesQrTab";
 import OrderHistoryTab from "@/components/rms/OrderHistoryTab";
 import DailyBoardTab from "@/components/rms/DailyBoardTab";
 import StationsTab from "@/components/rms/StationsTab";
+import { useStaffT, tNow } from "@/lib/staff-i18n";
+import StaffLangToggle from "@/components/rms/StaffLangToggle";
 
 interface AdminPanelProps {
   settings: SiteSettings;
@@ -35,6 +37,7 @@ export default function AdminPanel({
   onRefreshData,
   onLogout,
 }: AdminPanelProps) {
+  const { t: L, rich: Lr, td: Ld } = useStaffT();
   const [activeTab, setActiveTab] = useState<Tab>("reports");
 
   const [settingsForm, setSettingsForm] = useState({
@@ -76,13 +79,13 @@ export default function AdminPanel({
       const small = await compressImage(file, 640, 0.6);
       cb(small);
     } catch {
-      alert("Couldn't read that image. Please try a JPG/PNG under 10MB.");
+      alert(L("Couldn't read that image. Please try a JPG/PNG under 10MB."));
     }
   };
 
   // Auto-save ONE setting key immediately (used right after photo selection)
   const autoSaveSetting = async (key: string, value: string, label: string) => {
-    setSettingsMsg(`⏳ Uploading ${label}...`);
+    setSettingsMsg(tNow("⏳ Uploading {label}...", { label }));
     try {
       const res = await fetch("/api/settings", {
         method: "PUT",
@@ -90,13 +93,13 @@ export default function AdminPanel({
         body: JSON.stringify({ [key]: value }),
       });
       if (res.ok) {
-        setSettingsMsg(`✓ ${label} saved instantly. Refresh the site to see it!`);
+        setSettingsMsg(tNow("✓ {label} saved instantly. Refresh the site to see it!", { label }));
         onRefreshData();
       } else {
-        setSettingsMsg(`✗ Failed to save ${label}. Try a smaller JPG/PNG.`);
+        setSettingsMsg(tNow("✗ Failed to save {label}. Try a smaller JPG/PNG.", { label }));
       }
     } catch {
-      setSettingsMsg(`✗ Network error saving ${label}.`);
+      setSettingsMsg(tNow("✗ Network error saving {label}.", { label }));
     }
   };
 
@@ -111,9 +114,9 @@ export default function AdminPanel({
         body: JSON.stringify(settingsForm),
       });
       if (res.ok) {
-        setSettingsMsg("✓ Website info saved successfully!");
+        setSettingsMsg(tNow("✓ Website info saved successfully!"));
         onRefreshData();
-      } else setSettingsMsg("Failed to save. Try again.");
+      } else setSettingsMsg(tNow("Failed to save. Try again."));
     } finally {
       setSavingSettings(false);
     }
@@ -134,15 +137,15 @@ export default function AdminPanel({
       if (res.ok) {
         setEditingItem(null);
         onRefreshData();
-        alert(editingItem.id ? "✓ Menu item updated!" : "✓ New menu item added!");
-      } else alert("Failed to save menu item.");
+        alert(editingItem.id ? L("✓ Menu item updated!") : L("✓ New menu item added!"));
+      } else alert(L("Failed to save menu item."));
     } finally {
       setIsMenuSubmitting(false);
     }
   };
 
   const handleDeleteMenuItem = async (id: number) => {
-    if (!confirm("Delete this menu item?")) return;
+    if (!confirm(L("Delete this menu item?"))) return;
     await fetch(`/api/menu?id=${id}`, { method: "DELETE" });
     onRefreshData();
   };
@@ -161,15 +164,15 @@ export default function AdminPanel({
       if (res.ok) {
         setEditingGallery(null);
         onRefreshData();
-        alert(editingGallery.id ? "✓ Gallery photo updated!" : "✓ Gallery photo added!");
-      } else alert("Failed to save gallery photo.");
+        alert(editingGallery.id ? L("✓ Gallery photo updated!") : L("✓ Gallery photo added!"));
+      } else alert(L("Failed to save gallery photo."));
     } finally {
       setIsGallerySubmitting(false);
     }
   };
 
   const handleDeleteGalleryItem = async (id: number) => {
-    if (!confirm("Delete this gallery photo?")) return;
+    if (!confirm(L("Delete this gallery photo?"))) return;
     await fetch(`/api/gallery?id=${id}`, { method: "DELETE" });
     onRefreshData();
   };
@@ -177,7 +180,7 @@ export default function AdminPanel({
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPassword || newPassword.length < 4) {
-      setPasswordMsg("Password must be at least 4 characters.");
+      setPasswordMsg(tNow("Password must be at least 4 characters."));
       return;
     }
     const res = await fetch("/api/settings", {
@@ -186,23 +189,23 @@ export default function AdminPanel({
       body: JSON.stringify({ admin_password: newPassword }),
     });
     if (res.ok) {
-      setPasswordMsg("✓ Admin password updated successfully!");
+      setPasswordMsg(tNow("✓ Admin password updated successfully!"));
       setNewPassword("");
     }
   };
 
   const tabs: Array<{ key: Tab; label: string; icon: React.ReactNode }> = [
-    { key: "reports", label: "Reports", icon: <TrendingUp className="w-4 h-4" /> },
-    { key: "menu", label: `Menu (${menuItems.length})`, icon: <Utensils className="w-4 h-4" /> },
-    { key: "board", label: "Daily Board", icon: <TrendingUp className="w-4 h-4" /> },
-    { key: "stations", label: "Stations", icon: <Users className="w-4 h-4" /> },
-    { key: "tables", label: "Tables & QR", icon: <QrCode className="w-4 h-4" /> },
-    { key: "staff", label: "Staff", icon: <Users className="w-4 h-4" /> },
-    { key: "gallery", label: `Gallery (${galleryItems.length})`, icon: <Camera className="w-4 h-4" /> },
-    { key: "reviews", label: `Reviews (${reviews.length})`, icon: <Star className="w-4 h-4" /> },
-    { key: "history", label: "Order History", icon: <QrCode className="w-4 h-4" /> },
-    { key: "settings", label: "Website Info", icon: <Settings className="w-4 h-4" /> },
-    { key: "security", label: "Password", icon: <Lock className="w-4 h-4" /> },
+    { key: "reports", label: L("Reports"), icon: <TrendingUp className="w-4 h-4" /> },
+    { key: "menu", label: L("Menu ({length})", { length: menuItems.length }), icon: <Utensils className="w-4 h-4" /> },
+    { key: "board", label: L("Daily Board"), icon: <TrendingUp className="w-4 h-4" /> },
+    { key: "stations", label: L("Stations"), icon: <Users className="w-4 h-4" /> },
+    { key: "tables", label: L("Tables & QR"), icon: <QrCode className="w-4 h-4" /> },
+    { key: "staff", label: L("Staff"), icon: <Users className="w-4 h-4" /> },
+    { key: "gallery", label: L("Gallery ({length})", { length: galleryItems.length }), icon: <Camera className="w-4 h-4" /> },
+    { key: "reviews", label: L("Reviews ({length})", { length: reviews.length }), icon: <Star className="w-4 h-4" /> },
+    { key: "history", label: L("Order History"), icon: <QrCode className="w-4 h-4" /> },
+    { key: "settings", label: L("Website Info"), icon: <Settings className="w-4 h-4" /> },
+    { key: "security", label: L("Password"), icon: <Lock className="w-4 h-4" /> },
   ];
 
   return (
@@ -214,19 +217,20 @@ export default function AdminPanel({
             <Lock className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="font-serif font-black text-2xl text-amber-100">Fana Cafe • Owner Dashboard</h1>
-            <p className="text-xs text-amber-200/70">Menu, tables, staff, reports, reviews & business info • all under your control</p>
+            <h1 className="font-serif font-black text-2xl text-amber-100">{L("Fana Cafe • Owner Dashboard")}</h1>
+            <p className="text-xs text-amber-200/70">{L("Menu, tables, staff, reports, reviews & business info • all under your control")}</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <StaffLangToggle compact />
           <a href="/waiter" className="p-2 bg-emerald-800 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5">
-            <Users className="w-4 h-4" /> Waiter App
+            <Users className="w-4 h-4" /> {L("Waiter App")}
           </a>
           <button onClick={onRefreshData} className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl text-xs flex items-center gap-1.5 font-semibold">
             <RefreshCw className="w-4 h-4" />
           </button>
           <button onClick={onLogout} className="p-2 bg-rose-600/80 hover:bg-rose-600 text-white rounded-xl text-xs flex items-center gap-1.5 font-bold">
-            <LogOut className="w-4 h-4" /> Exit
+            <LogOut className="w-4 h-4" /> {L("Exit")}
           </button>
         </div>
       </div>
@@ -271,12 +275,12 @@ export default function AdminPanel({
           <form onSubmit={handleSaveSettings} className="bg-[#2C1B17] p-6 sm:p-8 rounded-3xl border border-[#C9A227]/30 space-y-6">
             <div className="flex items-center justify-between border-b border-stone-800 pb-4">
               <div>
-                <h2 className="text-xl font-serif font-bold text-amber-100">Business Info & Hero Photo</h2>
-                <p className="text-xs text-stone-400">Upload background photo, edit titles, phone, and announcement text.</p>
+                <h2 className="text-xl font-serif font-bold text-amber-100">{L("Business Info & Hero Photo")}</h2>
+                <p className="text-xs text-stone-400">{L("Upload background photo, edit titles, phone, and announcement text.")}</p>
               </div>
               <button type="submit" disabled={savingSettings} className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-bold text-xs uppercase px-6 py-3 rounded-xl flex items-center gap-2">
                 <Save className="w-4 h-4" />
-                <span>{savingSettings ? "Saving..." : "Save Info"}</span>
+                <span>{savingSettings ? L("Saving...") : L("Save Info")}</span>
               </button>
             </div>
 
@@ -290,11 +294,10 @@ export default function AdminPanel({
             <div className="bg-[#3D2314] p-5 rounded-2xl border border-[#C9A227]/30 flex items-center justify-between gap-4">
               <div className="flex-1">
                 <h3 className="text-sm font-bold text-amber-200 flex items-center gap-2">
-                  <CreditCard className="w-4 h-4 text-[#C9A227]" /> Receipt Photo on Card/Telebirr Payments
+                  <CreditCard className="w-4 h-4 text-[#C9A227]" /> {L("Receipt Photo on Card/Telebirr Payments")}
                 </h3>
                 <p className="text-[11px] text-stone-400 mt-1">
-                  ON = waiter photographs each card/Telebirr receipt (stored in DB, ~70KB each).
-                  OFF = receipts skipped entirely (payments still recorded normally, with zero photo storage).
+                  {L("ON = waiter photographs each card/Telebirr receipt (stored in DB, ~70KB each). OFF = receipts skipped entirely (payments still recorded normally, with zero photo storage).")}
                 </p>
               </div>
               <button
@@ -311,7 +314,7 @@ export default function AdminPanel({
                     : "bg-stone-700 text-stone-300"
                 }`}
               >
-                {settingsForm.receipt_enabled === "true" ? "ON" : "OFF"}
+                {settingsForm.receipt_enabled === "true" ? L("ON") : L("OFF")}
               </button>
             </div>
 
@@ -319,11 +322,10 @@ export default function AdminPanel({
             <div className="bg-[#3D2314] p-5 rounded-2xl border border-[#C9A227]/30 flex items-center justify-between gap-4">
               <div className="flex-1">
                 <h3 className="text-sm font-bold text-amber-200 flex items-center gap-2">
-                  <Monitor className="w-4 h-4 text-[#C9A227]" /> Cashier Print-Queue Mode
+                  <Monitor className="w-4 h-4 text-[#C9A227]" /> {L("Cashier Print-Queue Mode")}
                 </h3>
                 <p className="text-[11px] text-stone-400 mt-1">
-                  ON = cashier does ONE click per order (keys it into the EFD/POS, prints, taps ✓ PRINTED) • payments stay in the EFD; waiters free tables with &quot;Table cleared&quot;.
-                  OFF = full payment mode (cashier records payment method and marks bills Paid, for cafes without an EFD/POS).
+                  {L("ON = cashier does ONE click per order (keys it into the EFD/POS, prints, taps ✓ PRINTED) • payments stay in the EFD; waiters free tables with \"Table cleared\". OFF = full payment mode (cashier records payment method and marks bills Paid, for cafes without an EFD/POS).")}
                 </p>
               </div>
               <button
@@ -340,28 +342,28 @@ export default function AdminPanel({
                     : "bg-stone-700 text-stone-300"
                 }`}
               >
-                {settingsForm.cashier_mode === "print-queue" ? "ON" : "OFF"}
+                {settingsForm.cashier_mode === "print-queue" ? L("ON") : L("OFF")}
               </button>
             </div>
 
             {/* Logo upload */}
             <div className="bg-[#3D2314] p-5 rounded-2xl border border-[#C9A227]/30 space-y-3">
               <h3 className="text-sm font-bold text-amber-200 flex items-center gap-2">
-                <Camera className="w-4 h-4 text-[#C9A227]" /> Restaurant Logo (navbar, QR menu & staff apps)
+                <Camera className="w-4 h-4 text-[#C9A227]" /> {L("Restaurant Logo (navbar, QR menu & staff apps)")}
               </h3>
               <p className="text-[11px] text-stone-400">
-                Tip: the logo shows inside a <strong>small circle</strong>: a square or round icon (not wide text banners) looks best, like the official Fana Cafe badge.
+                {Lr("Tip: the logo shows inside a <b>small circle</b>: a square or round icon (not wide text banners) looks best, like the official Fana Cafe badge.", { b: (s) => <strong>{s}</strong> })}
               </p>
               <div className="flex items-center gap-4">
                 <img
                   src={settingsForm.logo_url || "/logo.png"}
-                  alt="Logo preview"
+                  alt={L("Logo preview")}
                   className="w-16 h-16 rounded-full object-contain bg-white border-2 border-[#C9A227] p-1"
                 />
                 <div className="flex-1 space-y-2">
                   <label className="flex items-center justify-center gap-2 w-full bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-extrabold text-xs py-2.5 px-4 rounded-xl cursor-pointer shadow transition">
                     <Upload className="w-4 h-4" />
-                    <span>Upload New Logo From Device</span>
+                    <span>{L("Upload New Logo From Device")}</span>
                     <input
                       type="file"
                       accept="image/*"
@@ -371,7 +373,7 @@ export default function AdminPanel({
                         if (f) toBase64(f, (d) => {
                           setSettingsForm((prev) => ({ ...prev, logo_url: d }));
                           // AUTO-SAVE instantly — no need to press Save after this
-                          autoSaveSetting("logo_url", d, "Logo");
+                          autoSaveSetting("logo_url", d, tNow("Logo"));
                         });
                       }}
                     />
@@ -380,7 +382,7 @@ export default function AdminPanel({
                     type="text"
                     value={settingsForm.logo_url}
                     onChange={(e) => setSettingsForm({ ...settingsForm, logo_url: e.target.value })}
-                    placeholder="...or paste logo URL (empty = default Fana logo)"
+                    placeholder={L("...or paste logo URL (empty = default Fana logo)")}
                     className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2.5 text-xs text-stone-200"
                   />
                 </div>
@@ -390,23 +392,23 @@ export default function AdminPanel({
             {/* Hero background */}
             <div className="bg-[#3D2314] p-5 rounded-2xl border border-[#C9A227]/30 space-y-3">
               <h3 className="text-sm font-bold text-amber-200 flex items-center gap-2">
-                <ImageIcon className="w-4 h-4 text-[#C9A227]" /> Hero Background Photo
+                <ImageIcon className="w-4 h-4 text-[#C9A227]" /> {L("Hero Background Photo")}
               </h3>
               {settingsForm.hero_bg_image && (
                 <div className="relative h-44 w-full rounded-2xl overflow-hidden border border-stone-700 bg-stone-900">
-                  <img src={settingsForm.hero_bg_image} alt="Hero preview" className="w-full h-full object-cover" />
+                  <img src={settingsForm.hero_bg_image} alt={L("Hero preview")} className="w-full h-full object-cover" />
                 </div>
               )}
               <label className="flex items-center justify-center gap-2 w-full bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-extrabold text-xs py-3 px-4 rounded-xl cursor-pointer shadow transition">
                 <Upload className="w-4 h-4" />
-                <span>Upload Custom Cafe Image From Device</span>
-                <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) toBase64(f, (d) => { setSettingsForm((prev) => ({ ...prev, hero_bg_image: d })); autoSaveSetting("hero_bg_image", d, "Hero photo"); }); }} />
+                <span>{L("Upload Custom Cafe Image From Device")}</span>
+                <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) toBase64(f, (d) => { setSettingsForm((prev) => ({ ...prev, hero_bg_image: d })); autoSaveSetting("hero_bg_image", d, tNow("Hero photo")); }); }} />
               </label>
               <input
                 type="text"
                 value={settingsForm.hero_bg_image}
                 onChange={(e) => setSettingsForm({ ...settingsForm, hero_bg_image: e.target.value })}
-                placeholder="...or paste image URL"
+                placeholder={L("...or paste image URL")}
                 className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2.5 text-xs text-stone-200"
               />
             </div>
@@ -414,14 +416,14 @@ export default function AdminPanel({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {(
                 [
-                  ["Café Name", "cafe_name"],
-                  ["Tagline", "tagline"],
-                  ["Hero Title", "hero_title"],
-                  ["Phone Number", "phone"],
-                  ["Plus Code (Google Maps)", "plus_code"],
-                  ["Opening Hours Text", "opening_hours"],
-                  ["Address", "address"],
-                  ["Announcement Text", "announcement"],
+                  [L("Café Name"), "cafe_name"],
+                  [L("Tagline"), "tagline"],
+                  [L("Hero Title"), "hero_title"],
+                  [L("Phone Number"), "phone"],
+                  [L("Plus Code (Google Maps)"), "plus_code"],
+                  [L("Opening Hours Text"), "opening_hours"],
+                  [L("Address"), "address"],
+                  [L("Announcement Text"), "announcement"],
                 ] as Array<[string, keyof typeof settingsForm]>
               ).map(([label, key]) => (
                 <div key={key} className={String(key).includes("hero_title") || String(key).includes("announcement") ? "md:col-span-2" : ""}>
@@ -435,7 +437,7 @@ export default function AdminPanel({
                 </div>
               ))}
               <div className="md:col-span-2">
-                <label className="block text-xs font-bold text-amber-200 mb-1">Hero Subtitle</label>
+                <label className="block text-xs font-bold text-amber-200 mb-1">{L("Hero Subtitle")}</label>
                 <textarea
                   rows={2}
                   value={settingsForm.hero_subtitle}
@@ -451,32 +453,31 @@ export default function AdminPanel({
         {activeTab === "settings" && (
           <div className="bg-rose-950/30 border-2 border-rose-700/60 rounded-3xl p-6 space-y-4">
             <div>
-              <h3 className="font-serif font-black text-lg text-rose-300 flex items-center gap-2">🗑 Factory Reset (Danger Zone)</h3>
+              <h3 className="font-serif font-black text-lg text-rose-300 flex items-center gap-2">{L("🗑 Factory Reset (Danger Zone)")}</h3>
               <p className="text-[11px] text-rose-200/70 mt-1">
-                One-time setup zone before launching live. Deletes test orders, photos & announcements you uploaded while testing.
-                This is PERMANENT, there is no undo button. Read each button before pressing.
+                {L("One-time setup zone before launching live. Deletes test orders, photos & announcements you uploaded while testing. This is PERMANENT, there is no undo button. Read each button before pressing.")}
               </p>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {(
                 [
-                  { action: "orders", label: "Delete Test Orders", desc: "Bills, receipts, reports → 0" },
-                  { action: "menu", label: "Delete All Menu Items", desc: "Test dishes & photos gone" },
-                  { action: "announcements", label: "Delete Announcements", desc: "Daily Board slides cleared" },
-                  { action: "gallery", label: "Delete Gallery Photos", desc: "Test gallery images gone" },
+                  { action: "orders", label: L("Delete Test Orders"), desc: L("Bills, receipts, reports → 0") },
+                  { action: "menu", label: L("Delete All Menu Items"), desc: L("Test dishes & photos gone") },
+                  { action: "announcements", label: L("Delete Announcements"), desc: L("Daily Board slides cleared") },
+                  { action: "gallery", label: L("Delete Gallery Photos"), desc: L("Test gallery images gone") },
                 ] as const
               ).map((b) => (
                 <button
                   key={b.action}
                   onClick={async () => {
-                    if (!confirm(`⚠️ ${b.label}?\n\n${b.desc}\n\nThis CANNOT be undone. Continue?`)) return;
+                    if (!confirm(L("⚠️ {label}?\n\n{desc}\n\nThis CANNOT be undone. Continue?", { label: b.label, desc: b.desc }))) return;
                     const r = await fetch("/api/reset", {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
                       body: JSON.stringify({ action: b.action }),
                     });
                     const d = await r.json();
-                    alert(d.message || d.error || "Done");
+                    alert(d.message || d.error || L("Done"));
                     onRefreshData();
                   }}
                   className="bg-rose-700/40 hover:bg-rose-600/70 border border-rose-500/50 text-rose-100 rounded-2xl p-4 text-left transition group"
@@ -495,8 +496,8 @@ export default function AdminPanel({
             {/* 📂 CATEGORIES MANAGER — owner renames/reorders/adds food groups easily */}
             <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 p-4 space-y-3">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold text-amber-200">📂 Menu Categories ({categories.length})</h3>
-                <p className="text-[10px] text-stone-500">Rename or organize food groups, dishes follow automatically.</p>
+                <h3 className="text-sm font-bold text-amber-200">{L("📂 Menu Categories ({length})", { length: categories.length })}</h3>
+                <p className="text-[10px] text-stone-500">{L("Rename or organize food groups, dishes follow automatically.")}</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {categories.map((c) => (
@@ -518,13 +519,13 @@ export default function AdminPanel({
                     {c.slug !== "all" && (
                       <button
                         onClick={async () => {
-                          if (confirm(`Delete category "${c.name}"? Dishes keep their old group (hidden from filters).`)) {
+                          if (confirm(L("Delete category \"{name}\"? Dishes keep their old group (hidden from filters).", { name: c.name }))) {
                             await fetch(`/api/categories?id=${c.id}`, { method: "DELETE" });
                             onRefreshData();
                           }
                         }}
                         className="w-6 h-6 rounded-md bg-rose-500/20 text-rose-400 hover:bg-rose-500 hover:text-white flex items-center justify-center text-xs"
-                        title="Delete category"
+                        title={L("Delete category")}
                       >
                         ✕
                       </button>
@@ -556,7 +557,7 @@ export default function AdminPanel({
               >
                 <input
                   name="name"
-                  placeholder="New group name (e.g. Breakfast)"
+                  placeholder={L("New group name (e.g. Breakfast)")}
                   className="flex-1 min-w-[160px] bg-[#3D2314] border border-stone-700 rounded-xl px-3 py-2 text-xs text-white placeholder-stone-500"
                 />
                 <select
@@ -564,23 +565,23 @@ export default function AdminPanel({
                   defaultValue="Utensils"
                   className="bg-[#3D2314] border border-stone-700 rounded-xl px-3 py-2 text-xs text-white"
                 >
-                  <option value="Utensils">🍴 Default</option>
-                  <option value="Soup">🥣 Soup</option>
-                  <option value="Beef">🍔 Burger</option>
-                  <option value="UtensilsCrossed">🍝 Pasta</option>
-                  <option value="Salad">🥗 Salad</option>
-                  <option value="Pizza">🍕 Pizza</option>
-                  <option value="CookingPot">🍚 Rice</option>
-                  <option value="ChefHat">👨‍🍳 Traditional</option>
-                  <option value="Sandwich">🥪 Sandwich</option>
-                  <option value="Package">🌯 Wrap</option>
-                  <option value="GlassWater">🥤 Juice</option>
-                  <option value="Coffee">☕ Hot Drinks</option>
-                  <option value="CupSoda">🧃 Soft Drinks</option>
-                  <option value="Cake">🍰 Pastry</option>
+                  <option value="Utensils">{L("🍴 Default")}</option>
+                  <option value="Soup">{L("🥣 Soup")}</option>
+                  <option value="Beef">{L("🍔 Burger")}</option>
+                  <option value="UtensilsCrossed">{L("🍝 Pasta")}</option>
+                  <option value="Salad">{L("🥗 Salad")}</option>
+                  <option value="Pizza">{L("🍕 Pizza")}</option>
+                  <option value="CookingPot">{L("🍚 Rice")}</option>
+                  <option value="ChefHat">{L("👨‍🍳 Traditional")}</option>
+                  <option value="Sandwich">{L("🥪 Sandwich")}</option>
+                  <option value="Package">{L("🌯 Wrap")}</option>
+                  <option value="GlassWater">{L("🥤 Juice")}</option>
+                  <option value="Coffee">{L("☕ Hot Drinks")}</option>
+                  <option value="CupSoda">{L("🧃 Soft Drinks")}</option>
+                  <option value="Cake">{L("🍰 Pastry")}</option>
                 </select>
                 <button type="submit" className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase px-4 py-2 rounded-xl flex items-center gap-1.5">
-                  <Plus className="w-3.5 h-3.5" /> Add Group
+                  <Plus className="w-3.5 h-3.5" /> {L("Add Group")}
                 </button>
               </form>
             </div>
@@ -589,14 +590,14 @@ export default function AdminPanel({
             <div className="bg-[#2C1B17] rounded-2xl border border-emerald-700/40 p-5 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-bold text-emerald-300">📋 Bulk Menu Import</h3>
-                  <p className="text-[11px] text-stone-400 mt-0.5">Paste your full dish list, one line per item in the format below. Items matching an existing name are updated in place (only the differences change, e.g. a new prep time).</p>
+                  <h3 className="text-sm font-bold text-emerald-300">{L("📋 Bulk Menu Import")}</h3>
+                  <p className="text-[11px] text-stone-400 mt-0.5">{L("Paste your full dish list, one line per item in the format below. Items matching an existing name are updated in place (only the differences change, e.g. a new prep time).")}</p>
                 </div>
                 <button
                   id="bulk-import-btn"
                   onClick={async () => {
                     const ta = document.getElementById("bulk-menu-text") as HTMLTextAreaElement | null;
-                    if (!ta?.value?.trim()) return alert("Paste your menu text first");
+                    if (!ta?.value?.trim()) return alert(L("Paste your menu text first"));
                     const btn = ta.closest("div")?.querySelector("#bulk-import-btn") as HTMLButtonElement | null;
                     if (btn) btn.disabled = true;
                     try {
@@ -606,49 +607,49 @@ export default function AdminPanel({
                         body: JSON.stringify({ text: ta.value, prepTime: bulkPrepTime }),
                       });
                       const d = await r.json();
-                      alert(d.message || d.error || "Import done");
+                      alert(d.message || d.error || L("Import done"));
                       ta.value = "";
                       onRefreshData();
                     } catch (e) {
-                      alert("Import failed: " + String(e));
+                      alert(tNow("Import failed: {error}", { error: String(e) }));
                     } finally {
                       if (btn) btn.disabled = false;
                     }
                   }}
                   className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase px-5 py-3 rounded-xl flex items-center gap-2 disabled:opacity-40"
                 >
-                  <Upload className="w-4 h-4" /> Import Items
+                  <Upload className="w-4 h-4" /> {L("Import Items")}
                 </button>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] font-bold text-emerald-200 mb-1">⏱ Prep Time to apply (all items)</label>
+                  <label className="block text-[10px] font-bold text-emerald-200 mb-1">{L("⏱ Prep Time to apply (all items)")}</label>
                   <input
                     value={bulkPrepTime}
                     onChange={(e) => setBulkPrepTime(e.target.value)}
-                    placeholder="e.g. 15-20 min • leave empty to keep existing times"
+                    placeholder={L("e.g. 15-20 min • leave empty to keep existing times")}
                     className="w-full bg-black/30 border border-stone-700 rounded-xl p-2.5 text-xs text-stone-200"
                   />
-                  <p className="text-[10px] text-stone-500 mt-1">Type a time here to set/update it on EVERY item in your paste (even existing ones). Leave empty to keep each item's current time. A per-line &quot;Name | Category | Price | PrepTime | Description&quot; value wins for that item.</p>
+                  <p className="text-[10px] text-stone-500 mt-1">{L("Type a time here to set/update it on EVERY item in your paste (even existing ones). Leave empty to keep each item's current time. A per-line \"Name | Category | Price | PrepTime | Description\" value wins for that item.")}</p>
                 </div>
               </div>
 
               <textarea
                 id="bulk-menu-text"
                 rows={5}
-                placeholder="Fresh Mango Juice | juices | 150 | 10 min | Pure mango blended with honey & lime&#10;Chicken Shawarma | snack-and-wrap | 380 | 15-20 min | Grilled chicken wrap with garlic sauce&#10;Classic Margherita | pizza | 420 | 20 min | mozzarella, basil & tomato sauce&#10;...paste more lines..."
+                placeholder={L("Fresh Mango Juice | juices | 150 | 10 min | Pure mango blended with honey & lime\nChicken Shawarma | snack-and-wrap | 380 | 15-20 min | Grilled chicken wrap with garlic sauce\nClassic Margherita | pizza | 420 | 20 min | mozzarella, basil & tomato sauce\n...paste more lines...")}
                 className="w-full bg-black/30 border border-stone-700 rounded-xl p-3 text-xs text-stone-200 font-mono leading-relaxed"
               />
               <p className="text-[10px] text-stone-500">
-                Format per line: <code className="text-[#C9A227]">Name | Category-slug | Price | PrepTime(optional) | Description(optional)</code>. Categories: soup, burger, pasta, salad, pizza, rice, ethiopian-traditional-meals, sandwich, snack-and-wrap, juices, hot-drinks, soft-drinks, pastry-and-cakes. Same name → updates the item (re-category, re-price, new prep time) instead of duplicating.
+                {Lr("Format per line: <c>Name | Category-slug | Price | PrepTime(optional) | Description(optional)</c>. Categories: soup, burger, pasta, salad, pizza, rice, ethiopian-traditional-meals, sandwich, snack-and-wrap, juices, hot-drinks, soft-drinks, pastry-and-cakes. Same name → updates the item (re-category, re-price, new prep time) instead of duplicating.", { c: (s) => <code className="text-[#C9A227]">{s}</code> })}
               </p>
             </div>
 
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-xl font-serif font-bold text-amber-100">Menu Manager</h2>
-                <p className="text-xs text-stone-400">Add/edit dishes, ETB prices, photos from device, In/Out of stock.</p>
+                <h2 className="text-xl font-serif font-bold text-amber-100">{L("Menu Manager")}</h2>
+                <p className="text-xs text-stone-400">{L("Add/edit dishes, ETB prices, photos from device, In/Out of stock.")}</p>
               </div>
               <button
                 onClick={() =>
@@ -671,7 +672,7 @@ export default function AdminPanel({
                 className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-bold text-xs uppercase px-5 py-3 rounded-2xl flex items-center gap-2 shadow"
               >
                 <Plus className="w-4 h-4" />
-                <span>Add Dish</span>
+                <span>{L("Add Dish")}</span>
               </button>
             </div>
 
@@ -680,11 +681,11 @@ export default function AdminPanel({
                 <table className="w-full text-left text-xs">
                   <thead className="bg-[#3D2314] text-amber-200 uppercase font-bold text-[10px] tracking-wider">
                     <tr>
-                      <th className="p-4">Dish & Photo</th>
-                      <th className="p-4">Category</th>
-                      <th className="p-4">Price (ETB)</th>
-                      <th className="p-4">Status</th>
-                      <th className="p-4 text-right">Actions</th>
+                      <th className="p-4">{L("Dish & Photo")}</th>
+                      <th className="p-4">{L("Category")}</th>
+                      <th className="p-4">{L("Price (ETB)")}</th>
+                      <th className="p-4">{L("Status")}</th>
+                      <th className="p-4 text-right">{L("Actions")}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-800">
@@ -697,22 +698,22 @@ export default function AdminPanel({
                               {item.name}
                               {item.isBuna && (
                                 <span className="text-[9px] font-black uppercase bg-amber-900/60 text-amber-300 border border-amber-700 rounded px-1.5 py-0.5">
-                                  🫖 Buna Makers
+                                  {L("🫖 Buna Makers")}
                                 </span>
                               )}
                               {item.stationOverride === "barista" && (
                                 <span className="text-[9px] font-black uppercase bg-amber-900/40 text-amber-300 border border-amber-700/60 rounded px-1.5 py-0.5">
-                                  ☕ Barista
+                                  {L("☕ Barista")}
                                 </span>
                               )}
                               {item.stationOverride === "kitchen" && (
                                 <span className="text-[9px] font-black uppercase bg-emerald-900/40 text-emerald-300 border border-emerald-700/60 rounded px-1.5 py-0.5">
-                                  🍳 Kitchen
+                                  {L("🍳 Kitchen")}
                                 </span>
                               )}
                               {item.stationOverride === "juice" && (
                                 <span className="text-[9px] font-black uppercase bg-lime-900/40 text-lime-300 border border-lime-700/60 rounded px-1.5 py-0.5">
-                                  🧃 Juice
+                                  {L("🧃 Juice")}
                                 </span>
                               )}
                             </p>
@@ -723,16 +724,16 @@ export default function AdminPanel({
                         <td className="p-4 font-serif font-black text-[#C9A227] text-sm">{item.price} ETB</td>
                         <td className="p-4">
                           {item.isAvailable ? (
-                            <span className="text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded text-[10px] font-bold border border-emerald-800">In Stock</span>
+                            <span className="text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded text-[10px] font-bold border border-emerald-800">{L("In Stock")}</span>
                           ) : (
-                            <span className="text-rose-400 bg-rose-950/60 px-2.5 py-1 rounded text-[10px] font-bold border border-rose-800">Out of Stock</span>
+                            <span className="text-rose-400 bg-rose-950/60 px-2.5 py-1 rounded text-[10px] font-bold border border-rose-800">{L("Out of Stock")}</span>
                           )}
                         </td>
                         <td className="p-4 text-right space-x-2">
-                          <button onClick={() => setEditingItem(item)} className="p-2 bg-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-black rounded-lg transition" title="Edit">
+                          <button onClick={() => setEditingItem(item)} className="p-2 bg-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-black rounded-lg transition" title={L("Edit")}>
                             <Edit3 className="w-3.5 h-3.5" />
                           </button>
-                          <button onClick={() => handleDeleteMenuItem(item.id)} className="p-2 bg-rose-500/20 text-rose-300 hover:bg-rose-500 hover:text-white rounded-lg transition" title="Delete">
+                          <button onClick={() => handleDeleteMenuItem(item.id)} className="p-2 bg-rose-500/20 text-rose-300 hover:bg-rose-500 hover:text-white rounded-lg transition" title={L("Delete")}>
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </td>
@@ -750,15 +751,15 @@ export default function AdminPanel({
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-xl font-serif font-bold text-amber-100">Gallery Manager</h2>
-                <p className="text-xs text-stone-400">Upload real cafe photos from your device.</p>
+                <h2 className="text-xl font-serif font-bold text-amber-100">{L("Gallery Manager")}</h2>
+                <p className="text-xs text-stone-400">{L("Upload real cafe photos from your device.")}</p>
               </div>
               <button
                 onClick={() => setEditingGallery({ title: "", category: "Interior", imageUrl: "", caption: "" })}
                 className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-bold text-xs uppercase px-5 py-3 rounded-2xl flex items-center gap-2 shadow"
               >
                 <Plus className="w-4 h-4" />
-                <span>Add Photo</span>
+                <span>{L("Add Photo")}</span>
               </button>
             </div>
 
@@ -768,7 +769,7 @@ export default function AdminPanel({
                   <div className="relative h-48 bg-stone-900">
                     <img src={gal.imageUrl} alt={gal.title} className="w-full h-full object-cover" />
                     <span className="absolute top-3 left-3 bg-black/70 text-[#C9A227] text-[10px] font-bold uppercase px-2.5 py-1 rounded-full border border-[#C9A227]/40">
-                      {gal.category}
+                      {Ld(gal.category)}
                     </span>
                   </div>
                   <div className="p-4 space-y-2">
@@ -777,10 +778,10 @@ export default function AdminPanel({
                   </div>
                   <div className="p-4 pt-0 flex justify-end gap-2">
                     <button onClick={() => setEditingGallery(gal)} className="p-2 bg-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-black rounded-lg text-xs font-bold transition flex items-center gap-1">
-                      <Edit3 className="w-3.5 h-3.5" /> Edit
+                      <Edit3 className="w-3.5 h-3.5" /> {L("Edit")}
                     </button>
                     <button onClick={() => handleDeleteGalleryItem(gal.id)} className="p-2 bg-rose-500/20 text-rose-300 hover:bg-rose-500 hover:text-white rounded-lg text-xs font-bold transition flex items-center gap-1">
-                      <Trash2 className="w-3.5 h-3.5" /> Delete
+                      <Trash2 className="w-3.5 h-3.5" /> {L("Delete")}
                     </button>
                   </div>
                 </div>
@@ -793,8 +794,8 @@ export default function AdminPanel({
         {activeTab === "reviews" && (
           <div className="space-y-6">
             <div>
-              <h2 className="text-xl font-serif font-bold text-amber-100">Reviews Moderation</h2>
-              <p className="text-xs text-stone-400">New reviews are hidden until you approve them. Approve = publicly visible.</p>
+              <h2 className="text-xl font-serif font-bold text-amber-100">{L("Reviews Moderation")}</h2>
+              <p className="text-xs text-stone-400">{L("New reviews are hidden until you approve them. Approve = publicly visible.")}</p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {reviews.map((rev) => (
@@ -809,7 +810,7 @@ export default function AdminPanel({
                   <p className="text-xs text-stone-300 italic">"{rev.reviewText}"</p>
                   <div className="pt-2 border-t border-stone-800 flex items-center justify-between text-xs">
                     <span className={rev.isApproved ? "text-emerald-400" : "text-amber-400"}>
-                      {rev.isApproved ? "✓ Publicly visible" : "⏳ Pending approval"}
+                      {rev.isApproved ? L("✓ Publicly visible") : L("⏳ Pending approval")}
                     </span>
                     <div className="flex gap-3">
                       {!rev.isApproved && (
@@ -824,7 +825,7 @@ export default function AdminPanel({
                           }}
                           className="text-emerald-400 hover:underline text-[11px] font-bold"
                         >
-                          Approve
+                          {L("Approve")}
                         </button>
                       )}
                       <button
@@ -834,7 +835,7 @@ export default function AdminPanel({
                         }}
                         className="text-rose-400 hover:underline text-[11px]"
                       >
-                        Delete
+                        {L("Delete")}
                       </button>
                     </div>
                   </div>
@@ -848,19 +849,19 @@ export default function AdminPanel({
         {activeTab === "security" && (
           <div className="bg-[#2C1B17] p-6 sm:p-8 rounded-3xl border border-[#C9A227]/30 max-w-lg mx-auto space-y-6">
             <div>
-              <h2 className="text-xl font-serif font-bold text-amber-100">Update Owner Password</h2>
-              <p className="text-xs text-stone-400">Master password that protects this dashboard.</p>
+              <h2 className="text-xl font-serif font-bold text-amber-100">{L("Update Owner Password")}</h2>
+              <p className="text-xs text-stone-400">{L("Master password that protects this dashboard.")}</p>
             </div>
             {passwordMsg && <div className="bg-amber-900/60 border border-amber-500 text-amber-200 text-xs p-3 rounded-xl">{passwordMsg}</div>}
             <form onSubmit={handleChangePassword} className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-amber-200 mb-1">New Admin Password</label>
+                <label className="block text-xs font-bold text-amber-200 mb-1">{L("New Admin Password")}</label>
                 <div className="relative">
                   <input
                     type={showPassword ? "text" : "password"}
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Enter new admin password"
+                    placeholder={L("Enter new admin password")}
                     className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white pr-10"
                   />
                   <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-white">
@@ -869,7 +870,7 @@ export default function AdminPanel({
                 </div>
               </div>
               <button type="submit" className="w-full bg-[#C9A227] text-[#2C1B17] font-black text-xs uppercase tracking-wider py-3.5 rounded-xl hover:bg-amber-400 transition">
-                Update Master Password
+                {L("Update Master Password")}
               </button>
             </form>
           </div>
@@ -881,18 +882,18 @@ export default function AdminPanel({
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-[#2C1B17] rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 border border-[#C9A227] shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between border-b border-stone-800 pb-3">
-              <h3 className="font-serif font-bold text-lg text-amber-100">{editingItem.id ? "Edit Dish" : "Add New Dish"}</h3>
+              <h3 className="font-serif font-bold text-lg text-amber-100">{editingItem.id ? L("Edit Dish") : L("Add New Dish")}</h3>
               <button onClick={() => setEditingItem(null)} className="text-stone-400 hover:text-white">✕</button>
             </div>
 
             <form onSubmit={handleSaveMenuItem} className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-amber-200 mb-1">Name *</label>
-                <input type="text" required value={editingItem.name || ""} onChange={(e) => setEditingItem({ ...editingItem, name: e.target.value })} placeholder="e.g. Famous Fana Macchiato" className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
+                <label className="block text-xs font-bold text-amber-200 mb-1">{L("Name *")}</label>
+                <input type="text" required value={editingItem.name || ""} onChange={(e) => setEditingItem({ ...editingItem, name: e.target.value })} placeholder={L("e.g. Famous Fana Macchiato")} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-amber-200 mb-1">Category *</label>
+                  <label className="block text-xs font-bold text-amber-200 mb-1">{L("Category *")}</label>
                   <select value={editingItem.category || "signature-coffee"} onChange={(e) => setEditingItem({ ...editingItem, category: e.target.value })} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white">
                     {categories.filter((c) => c.slug !== "all").map((c) => (
                       <option key={c.slug} value={c.slug}>{c.name}</option>
@@ -900,61 +901,61 @@ export default function AdminPanel({
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-amber-200 mb-1">Price (ETB) *</label>
+                  <label className="block text-xs font-bold text-amber-200 mb-1">{L("Price (ETB) *")}</label>
                   <input type="number" required value={editingItem.price || 0} onChange={(e) => setEditingItem({ ...editingItem, price: Number(e.target.value) })} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white font-bold" />
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-bold text-amber-200 mb-1">Description *</label>
-                <textarea rows={2} required value={editingItem.description || ""} onChange={(e) => setEditingItem({ ...editingItem, description: e.target.value })} placeholder="Taste, ingredients..." className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
+                <label className="block text-xs font-bold text-amber-200 mb-1">{L("Description *")}</label>
+                <textarea rows={2} required value={editingItem.description || ""} onChange={(e) => setEditingItem({ ...editingItem, description: e.target.value })} placeholder={L("Taste, ingredients...")} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
               </div>
 
               {/* Photo */}
               <div className="bg-[#3D2314] p-4 rounded-2xl border border-[#C9A227]/30 space-y-3">
                 <label className="text-xs font-bold text-amber-200 flex items-center gap-1.5">
-                  <ImageIcon className="w-4 h-4 text-[#C9A227]" /> Food Photo
+                  <ImageIcon className="w-4 h-4 text-[#C9A227]" /> {L("Food Photo")}
                 </label>
                 {editingItem.imageUrl && (
                   <div className="relative h-32 w-full rounded-xl overflow-hidden border border-stone-700 bg-stone-900">
-                    <img src={editingItem.imageUrl} alt="Preview" className="w-full h-full object-cover" />
+                    <img src={editingItem.imageUrl} alt={L("Preview")} className="w-full h-full object-cover" />
                   </div>
                 )}
                 <label className="flex items-center justify-center gap-2 w-full bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-extrabold text-xs py-2.5 px-4 rounded-xl cursor-pointer shadow transition">
                   <Upload className="w-4 h-4" />
-                  <span>Upload Photo From Device</span>
+                  <span>{L("Upload Photo From Device")}</span>
                   <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) toBase64(f, (d) => setEditingItem((prev) => ({ ...prev, imageUrl: d }))); }} />
                 </label>
-                <input type="text" value={editingItem.imageUrl || ""} onChange={(e) => setEditingItem({ ...editingItem, imageUrl: e.target.value })} placeholder="...or paste image URL" className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2 text-xs text-stone-200" />
+                <input type="text" value={editingItem.imageUrl || ""} onChange={(e) => setEditingItem({ ...editingItem, imageUrl: e.target.value })} placeholder={L("...or paste image URL")} className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2 text-xs text-stone-200" />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-amber-200 mb-1">Badge (optional)</label>
-                  <input type="text" value={editingItem.badge || ""} onChange={(e) => setEditingItem({ ...editingItem, badge: e.target.value })} placeholder="e.g. Best Seller" className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
+                  <label className="block text-xs font-bold text-amber-200 mb-1">{L("Badge (optional)")}</label>
+                  <input type="text" value={editingItem.badge || ""} onChange={(e) => setEditingItem({ ...editingItem, badge: e.target.value })} placeholder={L("e.g. Best Seller")} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-amber-200 mb-1">Prep Time (optional)</label>
+                  <label className="block text-xs font-bold text-amber-200 mb-1">{L("Prep Time (optional)")}</label>
                   <input type="text" value={editingItem.prepTime || "10 min"} onChange={(e) => setEditingItem({ ...editingItem, prepTime: e.target.value })} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
                 </div>
               </div>
 
               {/* SCHEDULED SALE PRICE — automatically applies between dates, auto-reverts after */}
               <div className="bg-[#3D2314] p-4 rounded-2xl border border-emerald-700/40 space-y-3">
-                <p className="text-xs font-bold text-emerald-300">🏷 Auto Sale Price (optional)</p>
-                <p className="text-[10px] text-stone-400">Sets a SALE price between the start & end dates. After the end date, the normal price returns automatically.</p>
+                <p className="text-xs font-bold text-emerald-300">{L("🏷 Auto Sale Price (optional)")}</p>
+                <p className="text-[10px] text-stone-400">{L("Sets a SALE price between the start & end dates. After the end date, the normal price returns automatically.")}</p>
                 <div className="grid grid-cols-3 gap-2">
                   <div>
-                    <label className="block text-[10px] font-bold text-emerald-200 mb-1">Sale Price (ETB)</label>
+                    <label className="block text-[10px] font-bold text-emerald-200 mb-1">{L("Sale Price (ETB)")}</label>
                     <input
                       type="number"
                       value={editingItem.salePrice ?? ""}
                       onChange={(e) => setEditingItem({ ...editingItem, salePrice: e.target.value ? Number(e.target.value) : null })}
-                      placeholder="e.g. 180"
+                      placeholder={L("e.g. 180")}
                       className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2 text-xs text-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold text-emerald-200 mb-1">Start</label>
+                    <label className="block text-[10px] font-bold text-emerald-200 mb-1">{L("Start")}</label>
                     <input
                       type="date"
                       value={editingItem.saleStart || ""}
@@ -963,7 +964,7 @@ export default function AdminPanel({
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold text-emerald-200 mb-1">End</label>
+                    <label className="block text-[10px] font-bold text-emerald-200 mb-1">{L("End")}</label>
                     <input
                       type="date"
                       value={editingItem.saleEnd || ""}
@@ -977,11 +978,11 @@ export default function AdminPanel({
               <div className="flex flex-wrap items-center gap-4 pt-2">
                 <label className="flex items-center gap-2 text-xs font-bold text-amber-100 cursor-pointer">
                   <input type="checkbox" checked={editingItem.isAvailable ?? true} onChange={(e) => setEditingItem({ ...editingItem, isAvailable: e.target.checked })} className="w-4 h-4 accent-[#C9A227]" />
-                  <span>In Stock</span>
+                  <span>{L("In Stock")}</span>
                 </label>
                 <label className="flex items-center gap-2 text-xs font-bold text-amber-100 cursor-pointer">
                   <input type="checkbox" checked={editingItem.isPopular ?? false} onChange={(e) => setEditingItem({ ...editingItem, isPopular: e.target.checked })} className="w-4 h-4 accent-[#C9A227]" />
-                  <span>Popular Highlights</span>
+                  <span>{L("Popular Highlights")}</span>
                 </label>
               </div>
 
@@ -989,7 +990,7 @@ export default function AdminPanel({
                   the category routing from the Stations tab; the other three point
                   this ONE item at a specific crew, whatever its category says. */}
               <div className="bg-[#3D2314] p-4 rounded-2xl border border-[#C9A227]/30 space-y-2">
-                <label className="block text-xs font-bold text-amber-200">👨‍🍳 Prepared by (which crew makes it)</label>
+                <label className="block text-xs font-bold text-amber-200">{L("👨‍🍳 Prepared by (which crew makes it)")}</label>
                 <select
                   value={editingItem.isBuna ? "buna" : editingItem.stationOverride || "auto"}
                   onChange={(e) => {
@@ -1004,22 +1005,19 @@ export default function AdminPanel({
                   }}
                   className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
                 >
-                  <option value="auto">Automatic (follow the category, Stations tab)</option>
-                  <option value="barista">☕ Barista (machine coffee, cold drinks...)</option>
-                  <option value="kitchen">🍳 Kitchen / Chef (food, take away bag...)</option>
-                  <option value="juice">🧃 Juice Maker (fresh juices, spris, punches...)</option>
-                  <option value="buna">🫖 Buna Makers (traditional buna)</option>
+                  <option value="auto">{L("Automatic (follow the category, Stations tab)")}</option>
+                  <option value="barista">{L("☕ Barista (machine coffee, cold drinks...)")}</option>
+                  <option value="kitchen">{L("🍳 Kitchen / Chef (food, take away bag...)")}</option>
+                  <option value="juice">{L("🧃 Juice Maker (fresh juices, spris, punches...)")}</option>
+                  <option value="buna">{L("🫖 Buna Makers (traditional buna)")}</option>
                 </select>
                 <p className="text-[11px] text-stone-400 leading-relaxed">
-                  Use this when one category mixes crews, like <strong className="text-amber-200">Extra Things</strong>:
-                  a coffee cup goes to the <strong className="text-amber-200">Barista</strong>, a take away bag goes to the{" "}
-                  <strong className="text-amber-200">Kitchen</strong>, whatever the category routing says. Traditional buna
-                  always goes to the Buna Makers and rings only their phones.
+                  {Lr("Use this when one category mixes crews, like <b>Extra Things</b>: a coffee cup goes to the <b>Barista</b>, a take away bag goes to the <b>Kitchen</b>, whatever the category routing says. Traditional buna always goes to the Buna Makers and rings only their phones.", { b: (s) => <strong className="text-amber-200">{s}</strong> })}
                 </p>
               </div>
 
               <button type="submit" disabled={isMenuSubmitting} className="w-full bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-xs uppercase tracking-wider py-3.5 rounded-xl shadow-xl transition mt-4">
-                {isMenuSubmitting ? "Saving..." : "Save Dish"}
+                {isMenuSubmitting ? L("Saving...") : L("Save Dish")}
               </button>
             </form>
           </div>
@@ -1031,44 +1029,44 @@ export default function AdminPanel({
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-[#2C1B17] rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 border border-[#C9A227] shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between border-b border-stone-800 pb-3">
-              <h3 className="font-serif font-bold text-lg text-amber-100">{editingGallery.id ? "Edit Gallery Photo" : "Add Gallery Photo"}</h3>
+              <h3 className="font-serif font-bold text-lg text-amber-100">{editingGallery.id ? L("Edit Gallery Photo") : L("Add Gallery Photo")}</h3>
               <button onClick={() => setEditingGallery(null)} className="text-stone-400 hover:text-white">✕</button>
             </div>
             <form onSubmit={handleSaveGalleryItem} className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-amber-200 mb-1">Photo Title *</label>
-                <input type="text" required value={editingGallery.title || ""} onChange={(e) => setEditingGallery({ ...editingGallery, title: e.target.value })} placeholder="e.g. Cozy seating at 22 Square" className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
+                <label className="block text-xs font-bold text-amber-200 mb-1">{L("Photo Title *")}</label>
+                <input type="text" required value={editingGallery.title || ""} onChange={(e) => setEditingGallery({ ...editingGallery, title: e.target.value })} placeholder={L("e.g. Cozy seating at 22 Square")} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-amber-200 mb-1">Category</label>
+                <label className="block text-xs font-bold text-amber-200 mb-1">{L("Category")}</label>
                 <select value={editingGallery.category || "Interior"} onChange={(e) => setEditingGallery({ ...editingGallery, category: e.target.value })} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white">
                   {["Interior", "Outdoor", "Coffee", "Juices", "Meals", "Desserts", "Vibe"].map((c) => (
-                    <option key={c} value={c}>{c}</option>
+                    <option key={c} value={c}>{Ld(c)}</option>
                   ))}
                 </select>
               </div>
               <div className="bg-[#3D2314] p-4 rounded-2xl border border-[#C9A227]/30 space-y-3">
                 <label className="text-xs font-bold text-amber-200 flex items-center gap-1.5">
-                  <Camera className="w-4 h-4 text-[#C9A227]" /> Photo *
+                  <Camera className="w-4 h-4 text-[#C9A227]" /> {L("Photo *")}
                 </label>
                 {editingGallery.imageUrl && (
                   <div className="relative h-36 w-full rounded-xl overflow-hidden border border-stone-700 bg-stone-900">
-                    <img src={editingGallery.imageUrl} alt="Preview" className="w-full h-full object-cover" />
+                    <img src={editingGallery.imageUrl} alt={L("Preview")} className="w-full h-full object-cover" />
                   </div>
                 )}
                 <label className="flex items-center justify-center gap-2 w-full bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-extrabold text-xs py-2.5 px-4 rounded-xl cursor-pointer shadow transition">
                   <Upload className="w-4 h-4" />
-                  <span>Upload From Device</span>
+                  <span>{L("Upload From Device")}</span>
                   <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) toBase64(f, (d) => setEditingGallery((prev) => ({ ...prev, imageUrl: d }))); }} />
                 </label>
-                <input type="text" value={editingGallery.imageUrl || ""} onChange={(e) => setEditingGallery({ ...editingGallery, imageUrl: e.target.value })} placeholder="...or paste photo URL" className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2 text-xs text-stone-200" />
+                <input type="text" value={editingGallery.imageUrl || ""} onChange={(e) => setEditingGallery({ ...editingGallery, imageUrl: e.target.value })} placeholder={L("...or paste photo URL")} className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2 text-xs text-stone-200" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-amber-200 mb-1">Caption</label>
-                <input type="text" value={editingGallery.caption || ""} onChange={(e) => setEditingGallery({ ...editingGallery, caption: e.target.value })} placeholder="Short description" className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
+                <label className="block text-xs font-bold text-amber-200 mb-1">{L("Caption")}</label>
+                <input type="text" value={editingGallery.caption || ""} onChange={(e) => setEditingGallery({ ...editingGallery, caption: e.target.value })} placeholder={L("Short description")} className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
               </div>
               <button type="submit" disabled={isGallerySubmitting} className="w-full bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-xs uppercase tracking-wider py-3.5 rounded-xl shadow-xl transition mt-4">
-                {isGallerySubmitting ? "Saving..." : "Save Photo"}
+                {isGallerySubmitting ? L("Saving...") : L("Save Photo")}
               </button>
             </form>
           </div>

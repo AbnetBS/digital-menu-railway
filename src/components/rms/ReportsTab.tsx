@@ -5,10 +5,13 @@ import { TrendingUp, ShoppingBag, RefreshCw, ImageIcon, PieChart, Coffee, Cookin
 import { ReportData, ReportPeriod, Ticket } from "@/types";
 import { formatClock, formatDateTime } from "@/lib/order-lines";
 import ShiftReport from "@/components/rms/ShiftReport";
+import PrintLetterhead from "@/components/rms/PrintLetterhead";
+import type { StaffPhrase } from "@/lib/staff-dictionary";
+import { useStaffT } from "@/lib/staff-i18n";
 
 type Period = ReportPeriod;
 
-const PERIOD_LABELS: Record<Period, string> = {
+const PERIOD_LABELS: Record<Period, StaffPhrase> = {
   today: "Today",
   yesterday: "Yesterday",
   dayBefore: "Day Before Yesterday",
@@ -17,7 +20,7 @@ const PERIOD_LABELS: Record<Period, string> = {
 };
 
 /** Plain-language empty-state suffix per period ("No sales …"). */
-const PERIOD_EMPTY: Record<Period, string> = {
+const PERIOD_EMPTY: Record<Period, StaffPhrase> = {
   today: "yet today",
   yesterday: "yesterday",
   dayBefore: "on the day before yesterday",
@@ -26,7 +29,7 @@ const PERIOD_EMPTY: Record<Period, string> = {
 };
 
 /** How the printed paper names the period it covers ("This paper covers …"). */
-const PERIOD_COVER: Record<Period, string> = {
+const PERIOD_COVER: Record<Period, StaffPhrase> = {
   today: "today's sales",
   yesterday: "yesterday's sales",
   dayBefore: "the day before yesterday's sales",
@@ -44,7 +47,7 @@ const PERIOD_ORDER: Period[] = ["today", "yesterday", "dayBefore", "week", "mont
  * three single-day cards also name their real Ethiopian date so the
  * cross-checker never has to work out which day "day before yesterday" is.
  */
-const PERIOD_CARDS: Record<Period, (d: ReportData) => { label: string; rev: number; cnt: number; day?: string | null }> = {
+const PERIOD_CARDS: Record<Period, (d: ReportData) => { label: StaffPhrase; rev: number; cnt: number; day?: string | null }> = {
   today: (d) => ({ label: PERIOD_LABELS.today, rev: d.todayRevenue || 0, cnt: d.todayOrders || 0, day: d.dayKeys?.today }),
   yesterday: (d) => ({ label: PERIOD_LABELS.yesterday, rev: d.yesterdayRevenue || 0, cnt: d.yesterdayOrders || 0, day: d.dayKeys?.yesterday }),
   dayBefore: (d) => ({ label: PERIOD_LABELS.dayBefore, rev: d.dayBeforeRevenue || 0, cnt: d.dayBeforeOrders || 0, day: d.dayKeys?.dayBefore }),
@@ -62,6 +65,7 @@ function fmtDayKey(key?: string | null): string {
 }
 
 export default function ReportsTab() {
+  const { t: L, rich: Lr, td: Ld, date: Ldate } = useStaffT();
   const [data, setData] = useState<ReportData | null>(null);
   // The selected period: the five cards above are the switch, and EVERY section
   // below (cross-check, KPIs, peak hours, highest-selling, categories, printed
@@ -110,14 +114,14 @@ export default function ReportsTab() {
   const fmt = (n: number) => n.toLocaleString("en-US") + " ETB";
 
   const stationMeta: Record<string, { label: string; icon: React.ReactNode; cls: string }> = {
-    barista: { label: "Barista", icon: <Coffee className="w-5 h-5 text-amber-300" />, cls: "border-amber-700/60" },
-    kitchen: { label: "Kitchen (Chef)", icon: <CookingPot className="w-5 h-5 text-emerald-300" />, cls: "border-emerald-700/60" },
-    buna: { label: "Buna Makers", icon: <span className="text-xl leading-none">🫖</span>, cls: "border-orange-700/60" },
-    juice: { label: "Juice Maker", icon: <span className="text-xl leading-none">🧃</span>, cls: "border-lime-700/60" },
+    barista: { label: L("Barista"), icon: <Coffee className="w-5 h-5 text-amber-300" />, cls: "border-amber-700/60" },
+    kitchen: { label: L("Kitchen (Chef)"), icon: <CookingPot className="w-5 h-5 text-emerald-300" />, cls: "border-emerald-700/60" },
+    buna: { label: L("Buna Makers"), icon: <span className="text-xl leading-none">🫖</span>, cls: "border-orange-700/60" },
+    juice: { label: L("Juice Maker"), icon: <span className="text-xl leading-none">🧃</span>, cls: "border-lime-700/60" },
   };
 
-  const label = data?.periodLabel || PERIOD_LABELS[period];
-  const emptySuffix = PERIOD_EMPTY[period];
+  const label = Ld(data?.periodLabel || PERIOD_LABELS[period]);
+  const emptySuffix = L(PERIOD_EMPTY[period]);
   // KPI numbers follow the selected period (the five summary fields are always
   // all-period, so the client picks the matching pair here).
   const kpiRevenue =
@@ -181,66 +185,54 @@ export default function ReportsTab() {
           address and phone are left BLANK: the person who writes the report
           fills in their own name, phone and address by hand. */}
       <div className="print-only" style={{ borderBottom: "3px double #000", paddingBottom: 10, marginBottom: 12 }}>
+        <PrintLetterhead logoUrl={brand.logo_url} />
         <div style={{ textAlign: "center" }}>
-          <img src={brand.logo_url || "/logo.png"} alt="Fana Cafe and Restaurant logo" style={{ height: 60, margin: "0 auto 6px" }} />
-          <h1 style={{ fontSize: "22px", fontWeight: 900 }}>Fana Cafe and Restaurant PLC</h1>
-          <p style={{ fontSize: "15px", fontWeight: 700 }}>ፋና ካፌ እና ሬስቶራንት ኃ.የተ.የ.ግ.ማ.</p>
-        </div>
-        <div style={{ fontSize: "12px", marginTop: 8, lineHeight: 2.2 }}>
-          <p>Prepared by (name): ................................................................</p>
-          <p>Phone: .................................... Address: ........................................................</p>
-        </div>
-        <div style={{ textAlign: "center" }}>
-          <p style={{ fontSize: "14px", fontWeight: 800, marginTop: 8 }}>Sales Report ({label})</p>
+          <p style={{ fontSize: "14px", fontWeight: 800, marginTop: 8 }}>{L("Sales Report ({label})", { label })}</p>
           {rangeText && (
-            <p style={{ fontSize: "12px", fontWeight: 700 }}>Covers: {rangeText}</p>
+            <p style={{ fontSize: "12px", fontWeight: 700 }}>{L("Covers: {rangeText}", { rangeText })}</p>
           )}
           <p style={{ fontSize: "11px" }}>
-            This paper covers {PERIOD_COVER[period]} and was printed {new Date().toLocaleString()}. Every amount on it
-            comes from a bill the cashier keyed into the EFD and printed. Cancelled (voided) orders are never counted
-            anywhere on this paper.
+            {L("This paper covers {PERIOD_COVER} and was printed {value}. Every amount on it comes from a bill the cashier keyed into the EFD and printed. Cancelled (voided) orders are never counted anywhere on this paper.", { PERIOD_COVER: L(PERIOD_COVER[period]), value: new Date().toLocaleString() })}
           </p>
         </div>
       </div>
 
       {expired && (
         <div className="bg-rose-900/60 border border-rose-500 text-rose-200 text-xs p-3 rounded-xl font-bold no-print">
-          Your admin session ended. Reload the page and log in again to see fresh figures.
+          {L("Your admin session ended. Reload the page and log in again to see fresh figures.")}
         </div>
       )}
 
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-serif font-bold text-amber-100">Sales Reports &amp; Analytics</h2>
+          <h2 className="text-xl font-serif font-bold text-amber-100">{L("Sales Reports & Analytics")}</h2>
           <p className="text-xs text-stone-400">
-            Showing <strong className="text-amber-200">{label}</strong>
-            {rangeText ? ` • ${rangeText}` : ""} • every bill the cashier keyed into the EFD and printed (cancelled
-            orders are never counted). Tap a period card below to switch.
+            {Lr("Showing <b>{label}</b>{value} • every bill the cashier keyed into the EFD and printed (cancelled orders are never counted). Tap a period card below to switch.", { b: (s) => <strong className="text-amber-200">{s}</strong> }, { label, value: rangeText ? ` • ${rangeText}` : "" })}
           </p>
         </div>
         <div className="flex items-center gap-2 no-print">
           <button
             onClick={() => setShiftOpen(true)}
             className="bg-sky-600 hover:bg-sky-500 text-white font-black text-xs uppercase px-4 py-2.5 rounded-xl flex items-center gap-2"
-            title="Who handled which order, per shift (morning / afternoon / combined)"
+            title={L("Who handled which order, per shift (morning / afternoon / combined)")}
           >
-            <Users className="w-4 h-4" /> Shift Report
+            <Users className="w-4 h-4" /> {L("Shift Report")}
           </button>
           <button
             onClick={() => window.print()}
             className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase px-4 py-2.5 rounded-xl flex items-center gap-2"
-            title={`Print the ${label} report on this computer (EFD office PC)`}
+            title={L("Print the {label} report on this computer (EFD office PC)", { label })}
           >
-            <Printer className="w-4 h-4" /> Print Report
+            <Printer className="w-4 h-4" /> {L("Print Report")}
           </button>
-          <button onClick={() => load(period)} className="p-2.5 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl" title="Refresh">
+          <button onClick={() => load(period)} className="p-2.5 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl" title={L("Refresh")}>
             <RefreshCw className="w-4 h-4" />
           </button>
         </div>
       </div>
 
       {!data ? (
-        <div className="p-10 text-center text-stone-500 text-sm">Loading reports...</div>
+        <div className="p-10 text-center text-stone-500 text-sm">{L("Loading reports...")}</div>
       ) : (
         <>
           {/* TIME INTERVAL cards — Today / Yesterday / DAY BEFORE YESTERDAY /
@@ -258,7 +250,7 @@ export default function ReportsTab() {
                 <button
                   key={key}
                   onClick={() => switchPeriod(key)}
-                  title={`Show every section below for ${card.label}${card.day ? ` (${fmtDayKey(card.day)})` : ""}`}
+                  title={L("Show every section below for {label}{value}", { label: L(card.label), value: card.day ? ` (${fmtDayKey(card.day)})` : "" })}
                   className={`rounded-2xl p-4 text-left transition active:scale-[0.98] ${
                     selected
                       ? "bg-gradient-to-br from-[#C9A227] to-[#8C6D18] text-[#2C1B17]"
@@ -266,13 +258,13 @@ export default function ReportsTab() {
                   }`}
                 >
                   <p className={`text-[10px] font-extrabold uppercase tracking-wider ${selected ? "opacity-80" : "text-stone-400"}`}>
-                    {card.label}
+                    {L(card.label)}
                   </p>
                   {card.day && (
-                    <p className={`text-[10px] font-bold ${selected ? "opacity-70" : "text-stone-500"}`}>{fmtDayKey(card.day)}</p>
+                    <p className={`text-[10px] font-bold ${selected ? "opacity-70" : "text-stone-500"}`}>{Ldate(fmtDayKey(card.day))}</p>
                   )}
                   <p className="font-serif font-black text-xl">{fmt(card.rev)}</p>
-                  <p className={`text-[10px] font-bold mt-0.5 ${selected ? "opacity-70" : "text-stone-500"}`}>{card.cnt} order(s)</p>
+                  <p className={`text-[10px] font-bold mt-0.5 ${selected ? "opacity-70" : "text-stone-500"}`}>{L("{cnt} order(s)", { cnt: card.cnt })}</p>
                 </button>
               );
             })}
@@ -282,12 +274,9 @@ export default function ReportsTab() {
               knows exactly which days are in it. Nothing is deleted from the
               database: the report only ever READS this rolling window. */}
           <p className="text-[11px] text-stone-500 -mt-2">
-            The window slides one day at a time, it never resets on the 1st of a month:{" "}
-            <strong className="text-stone-300">Last 30 Days</strong> is today plus the 29 days before it
-            {data.periodRange?.from && data.dayKeys?.today
+            {Lr("The window slides one day at a time, it never resets on the 1st of a month: <b>Last 30 Days</b> is today plus the 29 days before it{value}. Older bills stay stored; they simply leave the report. Cancelled orders are excluded from every figure.", { b: (s) => <strong className="text-stone-300">{s}</strong> }, { value: data.periodRange?.from && data.dayKeys?.today
               ? ` (${fmtDayKey(data.periodRange.from)} – ${fmtDayKey(data.dayKeys.today)})`
-              : ""}
-            . Older bills stay stored; they simply leave the report. Cancelled orders are excluded from every figure.
+              : "" })}
           </p>
 
           {/* ═══ CROSS-CHECK BY STATION — the paper world's four piles ═══
@@ -299,13 +288,13 @@ export default function ReportsTab() {
           <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/40 p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider">📋 Cross-Check by Station ({label})</h3>
+                <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider">{L("📋 Cross-Check by Station ({label})", { label })}</h3>
                 <p className="text-[11px] text-stone-400 mt-0.5">
-                  Each crew&rsquo;s pile of the period&rsquo;s sales, split per item. Add the four totals and compare with the EFD receipt pile below.
+                  {L("Each crew’s pile of the period’s sales, split per item. Add the four totals and compare with the EFD receipt pile below.")}
                 </p>
               </div>
               <div className="text-right">
-                <p className="text-[10px] font-extrabold uppercase text-stone-400">Barista + Kitchen + Buna + Juice</p>
+                <p className="text-[10px] font-extrabold uppercase text-stone-400">{L("Barista + Kitchen + Buna + Juice")}</p>
                 <p className="font-serif font-black text-xl text-[#C9A227]">
                   {fmt((data.stationSales || []).reduce((s, x) => s + (x.revenue || 0), 0))}
                 </p>
@@ -321,21 +310,21 @@ export default function ReportsTab() {
                       <span className="flex items-center gap-2 text-sm font-black text-amber-100">
                         {meta.icon} {meta.label}
                       </span>
-                      <span className="text-[10px] font-bold text-stone-400">{s.orders} bill(s)</span>
+                      <span className="text-[10px] font-bold text-stone-400">{L("{orders} bill(s)", { orders: s.orders })}</span>
                     </div>
                     <div className="flex items-end justify-between gap-2">
                       <div>
-                        <p className="text-[10px] uppercase font-extrabold text-stone-400">Items sold</p>
+                        <p className="text-[10px] uppercase font-extrabold text-stone-400">{L("Items sold")}</p>
                         <p className="font-serif font-black text-2xl text-white">{s.quantity}</p>
                       </div>
                       <div className="text-right">
-                        <p className="text-[10px] uppercase font-extrabold text-stone-400">Total sell</p>
+                        <p className="text-[10px] uppercase font-extrabold text-stone-400">{L("Total sell")}</p>
                         <p className="font-serif font-black text-2xl text-[#C9A227]">{fmt(s.revenue)}</p>
                       </div>
                     </div>
                     <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1 print-scroll">
                       {items.length === 0 ? (
-                        <p className="text-xs text-stone-500">Nothing sold from this station {emptySuffix}.</p>
+                        <p className="text-xs text-stone-500">{L("Nothing sold from this station {emptySuffix}.", { emptySuffix })}</p>
                       ) : (
                         items.map((i) => (
                           <div key={`${i.station}-${i.name}`} className="flex items-center justify-between gap-2 text-xs bg-black/25 rounded-lg px-2.5 py-1.5">
@@ -358,17 +347,17 @@ export default function ReportsTab() {
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
             <div className="bg-[#2C1B17] rounded-2xl p-5 border border-stone-800">
               <ShoppingBag className="w-5 h-5 mb-2 text-[#C9A227]" />
-              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400">Orders ({label})</p>
+              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400">{L("Orders ({label})", { label })}</p>
               <p className="font-serif font-black text-2xl text-white">{kpiOrders}</p>
             </div>
             <div className="bg-[#2C1B17] rounded-2xl p-5 border border-stone-800">
               <PieChart className="w-5 h-5 mb-2 text-[#C9A227]" />
-              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400">Avg. Order Value</p>
+              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400">{L("Avg. Order Value")}</p>
               <p className="font-serif font-black text-2xl text-white">{fmt(kpiAvg)}</p>
             </div>
             <div className="bg-[#2C1B17] rounded-2xl p-5 border border-stone-800">
               <TrendingUp className="w-5 h-5 mb-2 text-[#C9A227]" />
-              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400">Items Sold ({label})</p>
+              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400">{L("Items Sold ({label})", { label })}</p>
               <p className="font-serif font-black text-2xl text-white">{(data.totalItems || 0).toLocaleString("en-US")}</p>
             </div>
           </div>
@@ -377,15 +366,15 @@ export default function ReportsTab() {
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <div>
                 <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider flex items-center gap-2">
-                  <Users className="w-4 h-4 text-[#C9A227]" /> Waiter Ranking ({label})
+                  <Users className="w-4 h-4 text-[#C9A227]" /> {L("Waiter Ranking ({label})", { label })}
                 </h3>
                 <p className="text-[11px] text-stone-400 mt-0.5">
-                  Separate counts for accepted orders and directly created/sent orders. Tap a waiter to see the underlying order list.
+                  {L("Separate counts for accepted orders and directly created/sent orders. Tap a waiter to see the underlying order list.")}
                 </p>
               </div>
             </div>
             {(data.waiterRanking || []).length === 0 ? (
-              <p className="text-xs text-stone-500">No waiter activity {emptySuffix}.</p>
+              <p className="text-xs text-stone-500">{L("No waiter activity {emptySuffix}.", { emptySuffix })}</p>
             ) : (
               <div className="space-y-2">
                 {(data.waiterRanking || []).map((waiter, idx) => (
@@ -400,17 +389,17 @@ export default function ReportsTab() {
                           <span className="w-6 h-6 rounded-full bg-[#C9A227]/20 text-[#C9A227] flex items-center justify-center text-[10px]">{idx + 1}</span>
                           <span className="truncate">{waiter.name}</span>
                         </p>
-                        <p className="text-[10px] font-bold text-stone-500 mt-1">Tap to view this waiter&apos;s orders</p>
+                        <p className="text-[10px] font-bold text-stone-500 mt-1">{L("Tap to view this waiter's orders")}</p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 justify-end">
                         <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-sky-500/20 text-sky-300">
-                          Accepted {waiter.acceptedOrders}
+                          {L("Accepted {acceptedOrders}", { acceptedOrders: waiter.acceptedOrders })}
                         </span>
                         <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300">
-                          Direct {waiter.directOrders}
+                          {L("Direct {directOrders}", { directOrders: waiter.directOrders })}
                         </span>
                         <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-[#C9A227]/20 text-[#C9A227]">
-                          Total {waiter.totalActions}
+                          {L("Total {totalActions}", { totalActions: waiter.totalActions })}
                         </span>
                       </div>
                     </div>
@@ -423,11 +412,11 @@ export default function ReportsTab() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Peak selling hours */}
             <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5">
-              <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-1">⏰ Peak Selling Hours ({label})</h3>
+              <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-1">{L("⏰ Peak Selling Hours ({label})", { label })}</h3>
               {data.peakHour ? (
                 <>
                   <p className="text-[11px] text-emerald-400 font-bold mb-3">
-                    🔥 Busiest: {data.peakHour.hour}:00 – {data.peakHour.hour + 1}:00 ({data.peakHour.orders} orders, {data.peakHour.revenue.toLocaleString()} ETB)
+                    {L("🔥 Busiest: {hour}:00 – {n}:00 ({orders} orders, {revenue} ETB)", { hour: data.peakHour.hour, n: data.peakHour.hour + 1, orders: data.peakHour.orders, revenue: data.peakHour.revenue.toLocaleString() })}
                   </p>
                   <div className="space-y-2">
                     {(data.hourlySales || [])
@@ -443,22 +432,22 @@ export default function ReportsTab() {
                                 style={{ width: `${(h.revenue / max) * 100}%` }}
                               />
                             </div>
-                            <span className="w-16 text-right font-bold text-[#C9A227]">{h.orders} ord</span>
+                            <span className="w-16 text-right font-bold text-[#C9A227]">{L("{orders} ord", { orders: h.orders })}</span>
                           </div>
                         );
                       })}
                   </div>
                 </>
               ) : (
-                <p className="text-xs text-stone-500">No sales {emptySuffix}. Peaks will appear once the first bills close.</p>
+                <p className="text-xs text-stone-500">{L("No sales {emptySuffix}. Peaks will appear once the first bills close.", { emptySuffix })}</p>
               )}
             </div>
 
             {/* Popular items */}
             <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5">
-              <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-4">🏆 Highest-Selling Foods ({label})</h3>
+              <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-4">{L("🏆 Highest-Selling Foods ({label})", { label })}</h3>
               {data.popularItems.length === 0 ? (
-                <p className="text-xs text-stone-500">No sales {emptySuffix}.</p>
+                <p className="text-xs text-stone-500">{L("No sales {emptySuffix}.", { emptySuffix })}</p>
               ) : (
                 <div className="space-y-2">
                   {data.popularItems.map((it, idx) => (
@@ -477,9 +466,9 @@ export default function ReportsTab() {
 
             {/* Category sales */}
             <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5">
-              <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-4">Sales by Category ({label})</h3>
+              <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-4">{L("Sales by Category ({label})", { label })}</h3>
               {data.categorySales.length === 0 ? (
-                <p className="text-xs text-stone-500">No sales {emptySuffix}.</p>
+                <p className="text-xs text-stone-500">{L("No sales {emptySuffix}.", { emptySuffix })}</p>
               ) : (
                 <div className="space-y-3">
                   {data.categorySales.map((c) => {
@@ -488,7 +477,7 @@ export default function ReportsTab() {
                       <div key={c.category}>
                         <div className="flex justify-between text-xs mb-1">
                           <span className="font-bold text-amber-100 capitalize">{c.category}</span>
-                          <span className="font-bold text-stone-400">{(c.quantity || 0).toLocaleString("en-US")} sold</span>
+                          <span className="font-bold text-stone-400">{L("{n} sold", { n: (c.quantity || 0).toLocaleString("en-US") })}</span>
                           <span className="font-extrabold text-[#C9A227]">{fmt(c.revenue)}</span>
                         </div>
                         <div className="h-2 bg-black/40 rounded-full overflow-hidden">
@@ -515,33 +504,31 @@ export default function ReportsTab() {
           <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5 no-print">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
               <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider flex items-center gap-2">
-                <Printer className="w-4 h-4 text-[#C9A227]" /> Printed Bills ({label}) • {(data.printedToday || []).length}
-                {data.archiveCapped ? ` of ${data.archiveTotal}` : ""}
+                <Printer className="w-4 h-4 text-[#C9A227]" /> {L("Printed Bills ({label}) • {length}", { label, length: (data.printedToday || []).length })}
+                {data.archiveCapped ? L(" of {archiveTotal}", { archiveTotal: data.archiveTotal }) : ""}
               </h3>
               <div className="text-right">
-                <p className="text-[10px] font-extrabold uppercase text-stone-400">Total printed (compare with the EFD pile)</p>
+                <p className="text-[10px] font-extrabold uppercase text-stone-400">{L("Total printed (compare with the EFD pile)")}</p>
                 <p className="font-serif font-black text-xl text-emerald-400">{fmt(data.printedTodayTotal || 0)}</p>
               </div>
             </div>
             <p className="text-[11px] text-stone-500 mb-3">
-              Cancelled orders are never listed or added here: only bills the cashier tapped ✓ PRINTED.
+              {L("Cancelled orders are never listed or added here: only bills the cashier tapped ✓ PRINTED.")}
             </p>
             {data.archiveCapped && (
               <p className="text-[11px] font-bold text-amber-300 bg-amber-950/40 border border-amber-700/40 rounded-xl px-3 py-2 mb-4">
-                Showing the newest {(data.printedToday || []).length} of {data.archiveTotal} bills • the total above covers the whole period.
+                {L("Showing the newest {length} of {archiveTotal} bills • the total above covers the whole period.", { length: (data.printedToday || []).length, archiveTotal: data.archiveTotal })}
               </p>
             )}
             {!!pending && pending.amount > 0 && (
               <p className="text-[11px] font-bold text-amber-300 bg-amber-950/40 border border-amber-700/40 rounded-xl px-3 py-2 mb-4">
-                ⚠ {pending.bills} bill(s) received {pending.items} item line(s) ({pending.amount.toLocaleString("en-US")} ETB) AFTER
-                their last print. Those lines are counted above but are not on an EFD receipt yet: key them in and print
-                receipt #2, and the two piles will match.
-                {pending.partial ? ` (Counted over the newest ${(data.printedToday || []).length} bills shown here.)` : ""}
+                {L("⚠ {bills} bill(s) received {items} item line(s) ({amount} ETB) AFTER their last print. Those lines are counted above but are not on an EFD receipt yet: key them in and print receipt #2, and the two piles will match.", { bills: pending.bills, items: pending.items, amount: pending.amount.toLocaleString("en-US") })}
+                {pending.partial ? L(" (Counted over the newest {length} bills shown here.)", { length: (data.printedToday || []).length }) : ""}
               </p>
             )}
             {(data.printedToday || []).length === 0 ? (
               <p className="text-xs text-stone-500">
-                No bills printed {emptySuffix}. Every bill the cashier taps ✓ PRINTED is registered here for the cross-check.
+                {L("No bills printed {emptySuffix}. Every bill the cashier taps ✓ PRINTED is registered here for the cross-check.", { emptySuffix })}
               </p>
             ) : (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -554,29 +541,29 @@ export default function ReportsTab() {
                       className={`text-left bg-[#241714] rounded-xl p-3 flex items-center justify-between gap-2 transition hover:bg-[#2e1d18] active:scale-[0.98] border ${
                         cleared ? "border-stone-700" : "border-stone-800"
                       }`}
-                      title="Tap to see the full bill"
+                      title={L("Tap to see the full bill")}
                     >
                       <div className="min-w-0 space-y-0.5">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <p className="text-sm font-black text-amber-100">{t.tableName}</p>
                           {t.orderType === "outdoor" && (
                             <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                              Outdoor
+                              {L("Outdoor")}
                             </span>
                           )}
                         </div>
                         <p className="text-[11px] font-bold text-stone-300 truncate flex items-center gap-1">
-                          <Printer className="w-3 h-3 text-[#C9A227] shrink-0" /> printed {formatClock(t.printedAt)} • {t.printedBy || "cashier"}
+                          <Printer className="w-3 h-3 text-[#C9A227] shrink-0" /> {L("printed {clock} •", { clock: formatClock(t.printedAt) })} {t.printedBy || L("cashier")}
                         </p>
                         <p className="text-[11px] font-bold text-stone-300 truncate">🕒 {formatDateTime(t.printedAt || t.createdAt)}</p>
-                        <p className="text-[11px] font-bold text-[#D8B93E] truncate">👤 {t.confirmedBy || t.createdBy || "staff"}</p>
+                        <p className="text-[11px] font-bold text-[#D8B93E] truncate">👤 {t.confirmedBy || t.createdBy || L("staff")}</p>
                         {t.serviceNote && <p className="text-[10px] font-bold text-sky-300 truncate">📍 {t.serviceNote}</p>}
                         {cleared && (
-                          <p className="text-[10px] font-black text-stone-400 uppercase">✓ cleared {t.closedAt ? formatClock(t.closedAt) : ""}</p>
+                          <p className="text-[10px] font-black text-stone-400 uppercase">{L("✓ cleared {value}", { value: t.closedAt ? formatClock(t.closedAt) : "" })}</p>
                         )}
                         {!!t.itemsAfterPrint && t.itemsAfterPrint > 0 && (
-                          <p className="text-[10px] font-black text-amber-300 truncate" title="Lines added after this bill was printed: counted as sales here, but still waiting for their own EFD receipt (receipt #2).">
-                            ⚠ +{t.itemsAfterPrint} line(s) • {t.itemsAfterPrintAmount || 0} ETB not printed yet
+                          <p className="text-[10px] font-black text-amber-300 truncate" title={L("Lines added after this bill was printed: counted as sales here, but still waiting for their own EFD receipt (receipt #2).")}>
+                            {L("⚠ +{itemsAfterPrint} line(s) • {n} ETB not printed yet", { itemsAfterPrint: t.itemsAfterPrint, n: t.itemsAfterPrintAmount || 0 })}
                           </p>
                         )}
                       </div>
@@ -595,20 +582,14 @@ export default function ReportsTab() {
               on screen, where it belongs. */}
           <div className="print-only" style={{ border: "1px solid #000", padding: "8px 10px" }}>
             <p style={{ fontSize: "13px", fontWeight: 800 }}>
-              Bills keyed into the EFD ({label}
-              {rangeText ? `, ${rangeText}` : ""}): {data.archiveTotal || (data.printedToday || []).length} bills •{" "}
-              {fmt(data.printedTodayTotal || 0)}
+              {L("Bills keyed into the EFD ({label}{value}): {n} bills • {value2}", { label, value: rangeText ? `, ${rangeText}` : "", n: data.archiveTotal || (data.printedToday || []).length, value2: fmt(data.printedTodayTotal || 0) })}
             </p>
             <p style={{ fontSize: "11px" }}>
-              The bills themselves live in this screen&apos;s Printed Bills archive and are not listed on this paper. Add
-              the four station pile totals above and compare with this EFD pile total. If they match, the day&apos;s sales
-              are fully accounted for. Cancelled (voided) orders are excluded from both sides.
+              {L("The bills themselves live in this screen's Printed Bills archive and are not listed on this paper. Add the four station pile totals above and compare with this EFD pile total. If they match, the day's sales are fully accounted for. Cancelled (voided) orders are excluded from both sides.")}
             </p>
             {!!pending && pending.amount > 0 && (
               <p style={{ fontSize: "11px", fontWeight: 700 }}>
-                Difference to explain: {pending.bills} bill(s) took {pending.items} item line(s) ({pending.amount.toLocaleString("en-US")}{" "}
-                ETB) after their last print, so those lines are in the totals above but not on an EFD receipt yet
-                (receipt #2 still to be keyed in).
+                {L("Difference to explain: {bills} bill(s) took {items} item line(s) ({amount} ETB) after their last print, so those lines are in the totals above but not on an EFD receipt yet (receipt #2 still to be keyed in).", { bills: pending.bills, items: pending.items, amount: pending.amount.toLocaleString("en-US") })}
               </p>
             )}
           </div>
@@ -616,10 +597,10 @@ export default function ReportsTab() {
           {/* Receipt photos */}
           <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5">
             <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-4 flex items-center gap-2">
-              <ImageIcon className="w-4 h-4 text-[#C9A227]" /> Receipt Photos ({label})
+              <ImageIcon className="w-4 h-4 text-[#C9A227]" /> {L("Receipt Photos ({label})", { label })}
             </h3>
             {data.receipts.length === 0 ? (
-              <p className="text-xs text-stone-500">No receipt photos {emptySuffix}.</p>
+              <p className="text-xs text-stone-500">{L("No receipt photos {emptySuffix}.", { emptySuffix })}</p>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {data.receipts.map((r) => (
@@ -636,7 +617,7 @@ export default function ReportsTab() {
                     <p className="text-[11px] font-bold text-amber-100 truncate">{r.tableName}</p>
                     <p className="text-[10px] text-stone-500">{r.totalAmount} ETB</p>
                     <span className="mt-1.5 inline-flex items-center gap-1 text-[10px] font-extrabold text-sky-300 no-print">
-                      📷 View Receipt
+                      {L("📷 View Receipt")}
                     </span>
                   </button>
                 ))}
@@ -647,20 +628,19 @@ export default function ReportsTab() {
               prepared it and the one who cross-checked it. */}
           <div className="print-only" style={{ marginTop: 8, borderTop: "2px solid #000", paddingTop: 10 }}>
             <p style={{ fontSize: "11px", marginBottom: 18 }}>
-              I have compared the station pile totals on this paper with the EFD receipt pile and found them correct.
-              Any difference is written down and explained below the signatures.
+              {L("I have compared the station pile totals on this paper with the EFD receipt pile and found them correct. Any difference is written down and explained below the signatures.")}
             </p>
             <div style={{ display: "flex", gap: 32 }}>
               <div style={{ flex: 1 }}>
-                <p style={{ fontSize: "12px" }}>Prepared by: ..............................</p>
-                <p style={{ fontSize: "10px" }}>Name and signature</p>
+                <p style={{ fontSize: "12px" }}>{L("Prepared by: ..............................")}</p>
+                <p style={{ fontSize: "10px" }}>{L("Name and signature")}</p>
               </div>
               <div style={{ flex: 1 }}>
-                <p style={{ fontSize: "12px" }}>Checked by: ..............................</p>
-                <p style={{ fontSize: "10px" }}>Name and signature</p>
+                <p style={{ fontSize: "12px" }}>{L("Checked by: ..............................")}</p>
+                <p style={{ fontSize: "10px" }}>{L("Name and signature")}</p>
               </div>
               <div style={{ flex: 1 }}>
-                <p style={{ fontSize: "12px" }}>Date: ..............................</p>
+                <p style={{ fontSize: "12px" }}>{L("Date: ..............................")}</p>
               </div>
             </div>
           </div>
@@ -673,15 +653,15 @@ export default function ReportsTab() {
             <div className="sticky top-0 bg-[#2C1B17] border-b border-stone-800 px-5 py-4 flex items-start justify-between gap-3">
               <div>
                 <h3 className="font-serif font-black text-xl text-amber-100">{waiterModal}</h3>
-                <p className="text-xs font-bold text-stone-300 mt-0.5">Orders and sends in {label}</p>
+                <p className="text-xs font-bold text-stone-300 mt-0.5">{L("Orders and sends in {label}", { label })}</p>
               </div>
-              <button onClick={() => setWaiterModal(null)} className="p-2 rounded-lg bg-white/10 text-stone-300 hover:bg-white/20 shrink-0" title="Close">
+              <button onClick={() => setWaiterModal(null)} className="p-2 rounded-lg bg-white/10 text-stone-300 hover:bg-white/20 shrink-0" title={L("Close")}>
                 <XCircle className="w-5 h-5" />
               </button>
             </div>
             <div className="px-5 py-4 space-y-3">
               {waiterDetails.length === 0 ? (
-                <p className="text-xs text-stone-500">No orders for this waiter in {label.toLowerCase()}.</p>
+                <p className="text-xs text-stone-500">{L("No orders for this waiter in {label}.", { label: label.toLowerCase() })}</p>
               ) : (
                 waiterDetails.map((row, idx) => (
                   <div key={`${row.kind}-${row.ticketId}-${row.happenedAt || idx}`} className="bg-[#3D2314] rounded-xl border border-stone-800 p-3 space-y-1.5">
@@ -691,16 +671,16 @@ export default function ReportsTab() {
                           <p className="text-sm font-black text-amber-100">{row.tableName}</p>
                           {row.orderType === "outdoor" && (
                             <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                              Outdoor
+                              {L("Outdoor")}
                             </span>
                           )}
                           <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${row.kind === "accepted" ? "bg-sky-500/20 text-sky-300" : "bg-emerald-500/20 text-emerald-300"}`}>
-                            {row.kind === "accepted" ? "Accepted" : "Direct send"}
+                            {row.kind === "accepted" ? L("Accepted") : L("Direct send")}
                           </span>
                         </div>
                         <p className="text-[11px] font-bold text-stone-300 mt-0.5">
                           {row.orderNumber ? `#${row.orderNumber} • ` : ""}
-                          {row.happenedAt ? formatDateTime(row.happenedAt) : "n/a"}
+                          {row.happenedAt ? formatDateTime(row.happenedAt) : L("n/a")}
                         </p>
                         {row.serviceNote && <p className="text-[11px] font-bold text-sky-300">📍 {row.serviceNote}</p>}
                         {row.detail && <p className="text-[11px] text-stone-400">{row.detail}</p>}
@@ -735,24 +715,24 @@ export default function ReportsTab() {
                   <h3 className="font-serif font-black text-xl text-amber-100">{billModal.tableName}</h3>
                   {billModal.orderType === "outdoor" && (
                     <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/40">
-                      Outdoor
+                      {L("Outdoor")}
                     </span>
                   )}
                 </div>
                 <p className="text-xs font-bold text-stone-300 mt-0.5">
                   {billModal.orderNumber ? `#${billModal.orderNumber} • ` : ""}
                   {billModal.printedAt
-                    ? `printed ${formatDateTime(billModal.printedAt)} • by ${billModal.printedBy || "cashier"}`
-                    : `arrived ${formatDateTime(billModal.createdAt)} • by ${billModal.confirmedBy || billModal.createdBy || "staff"}`}
+                    ? L("printed {dateTime} • by {printedBy}", { dateTime: formatDateTime(billModal.printedAt), printedBy: billModal.printedBy || L("cashier") })
+                    : L("arrived {dateTime} • by {confirmedBy}", { dateTime: formatDateTime(billModal.createdAt), confirmedBy: billModal.confirmedBy || billModal.createdBy || L("staff") })}
                 </p>
                 <p className="text-xs font-bold text-stone-300">
                   {billModal.status === "closed"
-                    ? `✓ cleared ${billModal.closedAt ? formatDateTime(billModal.closedAt) : ""}`
-                    : "● open bill"}
+                    ? L("✓ cleared {value}", { value: billModal.closedAt ? formatDateTime(billModal.closedAt) : "" })
+                    : L("● open bill")}
                 </p>
                 {billModal.serviceNote && <p className="text-xs font-bold text-sky-300">📍 {billModal.serviceNote}</p>}
               </div>
-              <button onClick={() => setBillModal(null)} className="p-2 rounded-lg bg-white/10 text-stone-300 hover:bg-white/20 shrink-0" title="Close">
+              <button onClick={() => setBillModal(null)} className="p-2 rounded-lg bg-white/10 text-stone-300 hover:bg-white/20 shrink-0" title={L("Close")}>
                 <XCircle className="w-5 h-5" />
               </button>
             </div>
@@ -771,7 +751,7 @@ export default function ReportsTab() {
                         <p className="text-xs font-semibold text-stone-300">{i.quantity} × {i.price} ETB</p>
                         {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic mt-0.5">📝 {i.notes}</p>}
                         {afterPrint && (
-                          <p className="text-[10px] font-black text-amber-300 mt-0.5">⚠ added after the print: not on the EFD receipt yet</p>
+                          <p className="text-[10px] font-black text-amber-300 mt-0.5">{L("⚠ added after the print: not on the EFD receipt yet")}</p>
                         )}
                       </div>
                       <span className="text-sm font-black text-[#C9A227] shrink-0">{i.price * i.quantity} ETB</span>
@@ -779,29 +759,29 @@ export default function ReportsTab() {
                   );
                 })}
                 {(billModal.items || []).filter((i) => !i.removed).length === 0 && (
-                  <p className="p-3 text-center text-xs text-stone-500">No items.</p>
+                  <p className="p-3 text-center text-xs text-stone-500">{L("No items.")}</p>
                 )}
               </div>
               <div className="bg-[#3D2314] border border-[#C9A227]/40 rounded-xl px-4 py-3 flex items-center justify-between">
-                <span className="text-sm font-black text-stone-200">Bill total</span>
+                <span className="text-sm font-black text-stone-200">{L("Bill total")}</span>
                 <span className="font-serif font-black text-2xl text-[#C9A227]">{billModal.totalAmount} ETB</span>
               </div>
               <button
                 onClick={() => setBillModal(null)}
                 className="w-full py-3 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 text-sm font-black"
               >
-                Close
+                {L("Close")}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {shiftOpen && <ShiftReport onClose={() => setShiftOpen(false)} />}
+      {shiftOpen && <ShiftReport onClose={() => setShiftOpen(false)} logoUrl={brand.logo_url} />}
 
       {receiptModal && (
         <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 no-print" onClick={() => setReceiptModal(null)}>
-          <img src={receiptModal} alt="Receipt" className="max-h-[85vh] max-w-full rounded-2xl border border-[#C9A227]" />
+          <img src={receiptModal} alt={L("Receipt")} className="max-h-[85vh] max-w-full rounded-2xl border border-[#C9A227]" />
         </div>
       )}
     </div>

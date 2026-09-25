@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { acceptTranslation } from "@/lib/translate-guard";
 
 /** Native English ⇄ አማርኛ language layer.  It is deliberately local-first:
  * no third-party script ever rewrites React-owned nodes, form values, or order
@@ -542,10 +543,26 @@ const CATEGORY_AM: Record<string, string> = {
  * are persisted in localStorage for instant repeat loads.
  */
 
-const TX_STORAGE_KEY = "fana_tx_am";
+/* FIXES (owner, Sept 2026: "wrong Amharic like 'semin', some text never
+ * translates"):
+ *   • every answer is checked by translate-guard.ts before it is shown or
+ *     cached; the old cache (which kept bad answers forever) is dropped and
+ *     the new one is re-checked each time it is loaded;
+ *   • the cache is loaded BEFORE the first lookup (the first screen used to
+ *     stay English although the Amharic was already stored);
+ *   • a failed request (busy translator, HTTP 429, offline) is retried with a
+ *     growing pause instead of marking the texts "done" for the whole visit;
+ *   • each browser sends its own random id so the rate limit counts phones,
+ *     not the café's shared WiFi address.
+ */
+const TX_STORAGE_KEY = "fana_tx_am_v2";
+const TX_OLD_STORAGE_KEYS = ["fana_tx_am"];
+const TX_CLIENT_ID_KEY = "fana_client_id";
 const TX_FLUSH_DELAY_MS = 600;
 const TX_BATCH_MAX = 120;
 const TX_STORAGE_MAX_ENTRIES = 1500;
+const TX_RETRY_BASE_MS = 5_000;
+const TX_RETRY_MAX_MS = 5 * 60_000;
 
 const GE_EZ_RE = /[\u1200-\u137F]/; // Amharic script already
 
@@ -556,21 +573,33 @@ function txTranslatable(text: string): boolean {
 }
 
 let txCache: Record<string, string> | null = null; // lazy from localStorage
-const txRequested = new Set<string>(); // this tab already asked / received
-const txQueue = new Set<string>();
+const txDone = new Set<string>(); // answered this visit (translated OR no good Amharic exists)
+const txQueue = new Set<string>(); // waiting to be sent (including retries)
 const txListeners = new Set<() => void>();
 let txVersion = 0;
 let txTimer: ReturnType<typeof setTimeout> | null = null;
 let txInFlight = false;
+let txFailures = 0; // consecutive failed requests → growing pause
+let txRetryAt = 0; // do not send before this time (ms)
 
 function txLoad(): Record<string, string> {
   if (txCache) return txCache;
   txCache = {};
+  if (typeof window === "undefined") return txCache;
   try {
+    for (const old of TX_OLD_STORAGE_KEYS) window.localStorage.removeItem(old);
     const raw = window.localStorage.getItem(TX_STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") txCache = parsed as Record<string, string>;
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        let dropped = false;
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          const good = acceptTranslation(k, v);
+          if (good) txCache[k] = good;
+          else dropped = true;
+        }
+        if (dropped) txPersist();
+      }
     }
   } catch {}
   return txCache;
@@ -581,7 +610,24 @@ function txPersist(): void {
     const entries = Object.entries(txCache ?? {});
     const trimmed = entries.slice(-TX_STORAGE_MAX_ENTRIES); // keep the newest
     window.localStorage.setItem(TX_STORAGE_KEY, JSON.stringify(Object.fromEntries(trimmed)));
-  } catch {} // quota/private mode — cache just stays in memory
+  } catch {} // quota/private mode: cache just stays in memory
+}
+
+/** A random id per browser, so the server's rate limit counts phones, not the WiFi. */
+function txClientId(): string {
+  try {
+    let id = window.localStorage.getItem(TX_CLIENT_ID_KEY) || "";
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) {
+      id =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+      window.localStorage.setItem(TX_CLIENT_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return "anon";
+  }
 }
 
 function txEmit(): void {
@@ -599,67 +645,110 @@ function txGetVersion(): number {
   return txVersion;
 }
 
+/** Put texts back in the queue and wait a growing pause (or what the server asked). */
+function txRetryLater(texts: Iterable<string>, serverSeconds?: unknown): void {
+  for (const s of texts) if (!txDone.has(s)) txQueue.add(s);
+  txFailures = Math.min(txFailures + 1, 8);
+  const backoff = Math.min(TX_RETRY_BASE_MS * 3 ** (txFailures - 1), TX_RETRY_MAX_MS);
+  const asked = Number(serverSeconds);
+  const wait = Number.isFinite(asked) && asked > 0 ? Math.min(Math.max(asked * 1000, TX_RETRY_BASE_MS), TX_RETRY_MAX_MS) : backoff;
+  txRetryAt = Date.now() + wait;
+}
+
 async function txFlush(): Promise<void> {
   if (txInFlight || txQueue.size === 0) return;
+  if (Date.now() < txRetryAt) return txSchedule();
   txInFlight = true;
   const batch = [...txQueue].slice(0, TX_BATCH_MAX);
   for (const s of batch) txQueue.delete(s);
   try {
     const r = await fetch("/api/translate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Fana-Client": txClientId() },
       body: JSON.stringify({ lang: "am", texts: batch }),
     });
-    if (r.ok) {
-      const data = await r.json();
-      const map = data?.translations;
-      let changed = false;
-      if (map && typeof map === "object") {
-        const cache = txLoad();
-        for (const [k, v] of Object.entries(map as Record<string, string>)) {
-          if (typeof v === "string" && v) {
-            if (cache[k] !== v) changed = true;
-            cache[k] = v;
-          }
-        }
-        // every requested string is marked done — even ones Google couldn't
-        // translate — so we never re-ask for the same text in this tab.
-        for (const s of batch) txRequested.add(s);
-        if (changed) {
-          txPersist();
-          txEmit();
-        }
+    const data = await r.json().catch(() => null);
+    if (!r.ok) {
+      // 429 (busy) / 5xx: nothing is "done", ask again after a pause
+      txRetryLater(batch, data?.retryAfterSeconds);
+      return;
+    }
+    const map = data?.translations;
+    const pending = new Set<string>(
+      Array.isArray(data?.pending) ? (data.pending as unknown[]).filter((x): x is string => typeof x === "string") : []
+    );
+    let changed = false;
+    const cache = txLoad();
+    if (map && typeof map === "object") {
+      for (const [k, v] of Object.entries(map as Record<string, unknown>)) {
+        const good = acceptTranslation(k, v);
+        if (!good) continue; // never show or keep a bad answer
+        if (cache[k] !== good) changed = true;
+        cache[k] = good;
+        txDone.add(k);
       }
     }
+    // Texts the server could not translate RIGHT NOW come back later; the
+    // rest had no good Amharic and simply stay English for this visit.
+    for (const s of batch) if (!pending.has(s)) txDone.add(s);
+    if (pending.size) txRetryLater(pending, data?.retryAfterSeconds);
+    else txFailures = 0;
+    if (changed) {
+      txPersist();
+      txEmit();
+    }
   } catch {
-    // offline / server down → keep showing English; retry next registration
+    // offline / server down → keep showing English and retry later
+    txRetryLater(batch);
   } finally {
     txInFlight = false;
-    if (txQueue.size > 0) txSchedule(); // leftovers (batch > TX_BATCH_MAX)
+    if (txQueue.size > 0) txSchedule(); // leftovers (batch > TX_BATCH_MAX) or retries
   }
 }
 
 function txSchedule(): void {
-  if (txTimer) return;
+  if (txTimer || typeof window === "undefined") return;
+  const delay = Math.max(TX_FLUSH_DELAY_MS, txRetryAt - Date.now());
   txTimer = setTimeout(() => {
     txTimer = null;
     void txFlush();
-  }, TX_FLUSH_DELAY_MS);
+  }, delay);
 }
 
 function txLookup(text: string): string | undefined {
-  if (txCache) return txCache[text];
-  return undefined;
+  return txLoad()[text];
 }
 
 /** Register a string for auto-translation (only acts when lang = am). */
 function txRegister(text: string): void {
-  if (!txTranslatable(text)) return;
-  txLoad();
-  if (txCache?.[text] || txRequested.has(text)) return;
-  txRequested.add(text);
+  if (typeof window === "undefined" || !txTranslatable(text)) return;
+  if (txLoad()[text] || txDone.has(text) || txQueue.has(text)) return;
   txQueue.add(text);
   txSchedule();
+}
+
+/** Test hook (scripts/verify-translation-guard.ts): forget this tab's state. */
+export function resetAutoTranslateForTests(): void {
+  txCache = null;
+  txDone.clear();
+  txQueue.clear();
+  if (txTimer) clearTimeout(txTimer);
+  txTimer = null;
+  txInFlight = false;
+  txFailures = 0;
+  txRetryAt = 0;
+}
+
+/** Test hook: send the queue now (skips the debounce timer, keeps the retry pause). */
+export function flushAutoTranslateForTests(): Promise<void> {
+  if (txTimer) clearTimeout(txTimer);
+  txTimer = null;
+  return txFlush();
+}
+
+/** Test hook: what the layer would show for `text` right now (and register it). */
+export function autoTranslateForTests(text: string): string {
+  return txBest(text);
 }
 
 /** Best current Amharic for `text` (dictionaries first, then auto-cache). */

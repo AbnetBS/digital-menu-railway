@@ -2,6 +2,7 @@
 
 import React from "react";
 import { X } from "lucide-react";
+import { useStaffT } from "@/lib/staff-i18n";
 
 export interface BillNotification {
   id: string;
@@ -43,8 +44,9 @@ export default function BillNotificationCard({
   notification,
   onDismiss,
 }: BillNotificationCardProps) {
+  const { t: L } = useStaffT();
   const formattedTable = formatTableBillNotice(notification.tableName);
-  const waiterName = (notification.waiterName || "Waiter").trim();
+  const waiterName = (notification.waiterName || L("Waiter")).trim();
 
   return (
     <div
@@ -71,7 +73,7 @@ export default function BillNotificationCard({
         type="button"
         onClick={() => onDismiss(notification.id)}
         className="absolute top-2 right-2 z-10 w-8 h-8 rounded-full bg-[#2C1B17]/85 text-[#F3E6C8] flex items-center justify-center active:scale-95"
-        aria-label="Close"
+        aria-label={L("Close")}
       >
         <X className="w-4 h-4" />
       </button>
@@ -96,7 +98,7 @@ export default function BillNotificationCard({
           onClick={() => onDismiss(notification.id)}
           className="w-full py-3 rounded-xl bg-[#2C1B17] text-[#F3E6C8] font-black text-sm tracking-widest uppercase active:scale-[0.98]"
         >
-          Okay
+          {L("Okay")}
         </button>
       </div>
     </div>

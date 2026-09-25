@@ -18,6 +18,8 @@ import CoffeeNotePanel from "@/components/rms/CoffeeNotePanel";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import BillNotificationCard, { BillNotification } from "@/components/rms/BillNotificationCard";
 import { usePocketAlerts } from "@/lib/use-pocket-alerts";
+import { useStaffT, tNow } from "@/lib/staff-i18n";
+import StaffLangToggle from "@/components/rms/StaffLangToggle";
 
 interface StaffLite {
   id: number;
@@ -41,6 +43,7 @@ interface PrePrintDisplayLine {
 }
 
 export default function CashierDashboard() {
+  const { t: L, rich: Lr, td: Ld } = useStaffT();
   const [staffName, setStaffName] = useState("");
   const [staffList, setStaffList] = useState<StaffLite[]>([]);
   const [selectedName, setSelectedName] = useState("");
@@ -186,7 +189,7 @@ export default function CashierDashboard() {
       void pocket.refreshStatus();
     }
     playAlarm();
-    triggerDesktopNotification({ title: "Fana Cafe • Cashier", message: "🔔 Ring bell + desktop + pocket alerts are now ON for this device!" });
+    triggerDesktopNotification({ title: tNow("Fana Cafe • Cashier"), message: tNow("🔔 Ring bell + desktop + pocket alerts are now ON for this device!") });
   };
 
   const customerAddsOf = (t: Ticket) => t.unprintedCustomerSubmissions || 0;
@@ -200,7 +203,7 @@ export default function CashierDashboard() {
    * GROUP bill. They ride the outdoor flow but the badge must tell the truth.
    */
   const isGroup = (t: Ticket) => isOutdoor(t) && /^GROUP \d+$/i.test(String(t.tableName || ""));
-  const outdoorBadge = (t: Ticket) => (isGroup(t) ? "👥 Group" : "Outdoor");
+  const outdoorBadge = (t: Ticket) => (isGroup(t) ? L("👥 Group") : L("Outdoor"));
   /**
    * An outdoor order is ready when every live line that needs crew completion is
    * done. Buna is the exception: the buna makers use a read-only request list,
@@ -227,35 +230,35 @@ export default function CashierDashboard() {
 
   const eventMessage = (t: Ticket): string | null => {
     // A guest waiting for the bill outranks whatever the status says.
-    if (t.receiptRequestedAt) return `🧾 BILL REQUESTED • ${t.tableName} • ${t.totalAmount} ETB`;
+    if (t.receiptRequestedAt) return tNow("🧾 BILL REQUESTED • {tableName} • {totalAmount} ETB", { tableName: t.tableName, totalAmount: t.totalAmount });
     // Additions to an already-printed bill are their own event. A guest top-up
     // keeps the guest-grade wording; a waiter top-up is quieter and reads as a
     // correction to an existing bill, not a brand-new guest event.
     if (t.status === "printed" && totalAddsOf(t) > 0) {
       if (customerAddsOf(t) > 0) {
-        return `🍽 GUEST ADDED ITEMS • ${t.tableName} • print receipt #2`;
+        return tNow("🍽 GUEST ADDED ITEMS • {tableName} • print receipt #2", { tableName: t.tableName });
       }
       if (staffAddsOf(t) > 0) {
-        return `✎ WAITER ADDED ITEMS • ${t.tableName} • mark the existing bill NEW`;
+        return tNow("✎ WAITER ADDED ITEMS • {tableName} • mark the existing bill NEW", { tableName: t.tableName });
       }
-      return `⚠ ITEMS ADDED • ${t.tableName} • print receipt #2`;
+      return tNow("⚠ ITEMS ADDED • {tableName} • print receipt #2", { tableName: t.tableName });
     }
     // The money/closing steps (ready to pay, payment completed, bill settled,
     // table cleared) are deliberately missing: they update the screen but ring
     // nobody. Payment lives in the EFD/POS, and constant ringing for it is the
     // fastest way to make staff ignore the alerts that DO matter.
     const m: Record<string, string> = {
-      pending_waiter: `🍽 New QR order • ${t.tableName} • ${t.totalAmount} ETB • needs confirmation`,
-      preparing: `👨‍🍳 Preparing • ${t.tableName}`,
-      printed: `🖨 Printed • ${t.tableName}`,
+      pending_waiter: tNow("🍽 New QR order • {tableName} • {totalAmount} ETB • needs confirmation", { tableName: t.tableName, totalAmount: t.totalAmount }),
+      preparing: tNow("👨‍🍳 Preparing • {tableName}", { tableName: t.tableName }),
+      printed: tNow("🖨 Printed • {tableName}", { tableName: t.tableName }),
     };
     // QR HOLD FLOW: a confirmed bill with no release stamp is HELD (she
     // accepted it; the crews see nothing yet) — a different message from the
     // real "to print" cards.
     if (t.status === "confirmed") {
       return t.confirmedAt
-        ? `🧾 TO PRINT • ${t.tableName} • ${t.totalAmount} ETB`
-        : `⏸ ACCEPTED & HELD • ${t.tableName} • ${t.totalAmount} ETB • send when the guest finishes`;
+        ? tNow("🧾 TO PRINT • {tableName} • {totalAmount} ETB", { tableName: t.tableName, totalAmount: t.totalAmount })
+        : tNow("⏸ ACCEPTED & HELD • {tableName} • {totalAmount} ETB • send when the guest finishes", { tableName: t.tableName, totalAmount: t.totalAmount });
     }
     return m[t.status] || null;
   };
@@ -269,7 +272,7 @@ export default function CashierDashboard() {
       sessionStorage.removeItem("fana_cashier");
     } catch {}
     setPin("");
-    setLoginError("Your session ended. Log in again to keep the queue live.");
+    setLoginError(tNow("Your session ended. Log in again to keep the queue live."));
     setStaffName("");
   };
 
@@ -390,11 +393,11 @@ export default function CashierDashboard() {
                 ticketId: guestEvent.id,
                 table: guestEvent.tableName,
                 detail: isBill
-                  ? `${guestEvent.totalAmount} ETB • guest asked for the bill`
+                  ? tNow("{totalAmount} ETB • guest asked for the bill", { totalAmount: guestEvent.totalAmount })
                   : isNew
-                  ? `${guestEvent.totalAmount} ETB • new QR order`
-                  : `${guestEvent.totalAmount} ETB • guest added items`,
-                actionLabel: isBill ? "OPEN BILL" : isNew ? "✓ ACCEPT ORDER" : "GOT IT",
+                  ? tNow("{totalAmount} ETB • new QR order", { totalAmount: guestEvent.totalAmount })
+                  : tNow("{totalAmount} ETB • guest added items", { totalAmount: guestEvent.totalAmount }),
+                actionLabel: isBill ? tNow("OPEN BILL") : isNew ? tNow("✓ ACCEPT ORDER") : tNow("GOT IT"),
                 onAction: isNew ? () => setStatusRef.current(guestEvent.id, "confirmed") : undefined,
               });
             }
@@ -403,8 +406,8 @@ export default function CashierDashboard() {
         const first = loudEvents[0];
         if (first) {
           triggerDesktopNotification({
-            title: "Fana Cafe • Cashier Alert",
-            message: eventMessage(first) || `${first.tableName} updated`,
+            title: tNow("Fana Cafe • Cashier Alert"),
+            message: eventMessage(first) || tNow("{tableName} updated", { tableName: first.tableName }),
             tag: `fana-cashier-${first.id}`,
           });
         }
@@ -427,13 +430,13 @@ export default function CashierDashboard() {
             kind: "ready",
             ticketId: firstReady.id,
             table: firstReady.tableName,
-            detail: `${firstReady.totalAmount} ETB • everything is done • send someone to pick it up`,
-            actionLabel: "GOT IT",
+            detail: tNow("{totalAmount} ETB • everything is done • send someone to pick it up", { totalAmount: firstReady.totalAmount }),
+            actionLabel: tNow("GOT IT"),
           });
         }
         triggerDesktopNotification({
-          title: "Fana Cafe • Outdoor ready",
-          message: `🔔 READY TO DELIVER • ${firstReady.tableName} • send someone to pick it up`,
+          title: tNow("Fana Cafe • Outdoor ready"),
+          message: tNow("🔔 READY TO DELIVER • {tableName} • send someone to pick it up", { tableName: firstReady.tableName }),
           tag: `fana-cashier-ready-${firstReady.id}`,
         });
       }
@@ -639,7 +642,7 @@ export default function CashierDashboard() {
         }
       });
     } else {
-      setLoginError("Wrong name or PIN. Ask admin for your PIN.");
+      setLoginError(tNow("Wrong name or PIN. Ask admin for your PIN."));
     }
   };
 
@@ -667,7 +670,7 @@ export default function CashierDashboard() {
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "That tap did not go through. Try again.");
+      showToast(d?.error || tNow("That tap did not go through. Try again."));
     }
     loadAll();
   };
@@ -681,7 +684,7 @@ export default function CashierDashboard() {
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not remove that item. Try again.");
+      showToast(d?.error || tNow("Could not remove that item. Try again."));
     }
     loadAll();
   };
@@ -695,7 +698,7 @@ export default function CashierDashboard() {
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not update that item. Try again.");
+      showToast(d?.error || tNow("Could not update that item. Try again."));
     }
     loadAll();
   };
@@ -733,17 +736,17 @@ export default function CashierDashboard() {
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not mark this bill paid. Try again.");
+      showToast(d?.error || tNow("Could not mark this bill paid. Try again."));
     }
     loadAll();
   };
 
   const cancelTicket = async (id: number) => {
-    if (confirm("Cancel this whole order/bill?")) await setStatus(id, "cancelled");
+    if (confirm(L("Cancel this whole order/bill?"))) await setStatus(id, "cancelled");
   };
 
   const closeOutdoorOrder = async (t: Ticket) => {
-    if (!confirm(`Mark ${t.tableName} delivered and close it?`)) return;
+    if (!confirm(L("Mark {tableName} delivered and close it?", { tableName: t.tableName }))) return;
     const r = await fetch("/api/tickets", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -752,7 +755,7 @@ export default function CashierDashboard() {
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not close this outdoor order. Try again.");
+      showToast(d?.error || tNow("Could not close this outdoor order. Try again."));
     }
     loadAll();
     loadHistory();
@@ -771,7 +774,7 @@ export default function CashierDashboard() {
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not mark this bill printed. Try again.");
+      showToast(d?.error || tNow("Could not mark this bill printed. Try again."));
     }
     loadAll();
     loadHistory();
@@ -791,7 +794,7 @@ export default function CashierDashboard() {
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || "Could not send this bill. Try again.");
+      showToast(d?.error || tNow("Could not send this bill. Try again."));
     }
     loadAll();
   };
@@ -834,12 +837,12 @@ export default function CashierDashboard() {
     t.status === "printed" && totalAddsOf(t) > 0;
   const additionSourceLabel = (t: Ticket): string =>
     customerAddsOf(t) > 0 && staffAddsOf(t) > 0
-      ? "guest + waiter"
+      ? L("guest + waiter")
       : customerAddsOf(t) > 0
-      ? "guest"
+      ? L("guest")
       : staffAddsOf(t) > 0
-      ? "waiter"
-      : "order";
+      ? L("waiter")
+      : L("order");
   const groupedPrePrintItems = (items: TicketItem[]): PrePrintDisplayLine[] => {
     const visible = items.filter((i) => !i.removed);
     const grouped = groupOrderLines(visible as OrderLine[]);
@@ -861,11 +864,11 @@ export default function CashierDashboard() {
 
   const statusPill = (t: Ticket) =>
     outdoorReady(t)
-      ? { label: "READY TO DELIVER", cls: "bg-emerald-600 text-white" }
+      ? { label: L("READY TO DELIVER"), cls: "bg-emerald-600 text-white" }
       : t.status === "printed"
-      ? { label: "PRINTED • IN PROGRESS", cls: "bg-amber-500 text-black" }
+      ? { label: L("PRINTED • IN PROGRESS"), cls: "bg-amber-500 text-black" }
       : t.status === "confirmed"
-      ? { label: "TO PRINT", cls: "bg-sky-600 text-white" }
+      ? { label: L("TO PRINT"), cls: "bg-sky-600 text-white" }
       : { label: t.status.replace(/_/g, " ").toUpperCase(), cls: "bg-stone-700 text-stone-100" };
 
   // Expanded queue card: the full bill for context, with the NEW items marked.
@@ -881,14 +884,15 @@ export default function CashierDashboard() {
   /* ── LOGIN ── */
   if (!staffName) {
     return (
-      <div className="min-h-screen bg-[#1C120F] flex items-center justify-center p-4 text-white">
+      <div className="relative min-h-screen bg-[#1C120F] flex items-center justify-center p-4 text-white">
+        <StaffLangToggle compact className="absolute top-3 right-3" />
         <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-3xl p-8 w-full max-w-sm space-y-6 shadow-2xl">
           <div className="text-center space-y-2">
             <div className="w-14 h-14 rounded-2xl bg-[#C9A227] text-[#2C1B17] flex items-center justify-center mx-auto">
               <Monitor className="w-7 h-7" />
             </div>
-            <h1 className="font-serif text-2xl font-bold text-amber-100">Cashier Login</h1>
-            <p className="text-xs text-stone-400">Enter your name and PIN given by the admin.</p>
+            <h1 className="font-serif text-2xl font-bold text-amber-100">{L("Cashier Login")}</h1>
+            <p className="text-xs text-stone-400">{L("Enter your name and PIN given by the admin.")}</p>
           </div>
           {loginError && (
             <div className="bg-rose-900/60 border border-rose-500 text-rose-200 text-xs p-3 rounded-xl">{loginError}</div>
@@ -899,7 +903,7 @@ export default function CashierDashboard() {
               onChange={(e) => setSelectedName(e.target.value)}
               className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm text-white"
             >
-              <option value="">Select your name...</option>
+              <option value="">{L("Select your name...")}</option>
               {staffList.map((s) => (
                 <option key={s.id} value={s.name}>{s.name}</option>
               ))}
@@ -917,9 +921,9 @@ export default function CashierDashboard() {
               disabled={!selectedName || !pin}
               className="w-full bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-sm uppercase py-4 rounded-xl disabled:opacity-40"
             >
-              Login as Cashier
+              {L("Login as Cashier")}
             </button>
-            <a href="/" className="block text-center text-xs text-[#C9A227] hover:underline">← Back to public website</a>
+            <a href="/" className="block text-center text-xs text-[#C9A227] hover:underline">{L("← Back to public website")}</a>
           </div>
         </div>
       </div>
@@ -937,7 +941,7 @@ export default function CashierDashboard() {
       id: `${t.id}:${t.receiptRequestedAt}`,
       ticketId: t.id,
       tableName: t.tableName,
-      waiterName: t.receiptRequestedBy || t.confirmedBy || t.createdBy || "Waiter",
+      waiterName: t.receiptRequestedBy || t.confirmedBy || t.createdBy || L("Waiter"),
       receiptRequestedAt: t.receiptRequestedAt,
       totalAmount: t.totalAmount,
     }))
@@ -965,31 +969,31 @@ export default function CashierDashboard() {
   // board is the cashier's ambient awareness: rose = an order is waiting to be
   // keyed into the EFD, orange = printed and the crew is working on it.
   const boardLabel = (s?: string) => {
-    if (s === "available") return "Free";
+    if (s === "available") return L("Free");
     if (printQueueMode) {
-      if (s === "waiting") return "Confirm";
-      if (s === "preparing") return "In progress";
-      if (s === "ready-for-payment") return "Bill";
-      return "TO PRINT";
+      if (s === "waiting") return L("Confirm");
+      if (s === "preparing") return L("In progress");
+      if (s === "ready-for-payment") return L("Bill");
+      return L("TO PRINT");
     }
-    if (s === "waiting") return "Waiting";
-    if (s === "ready-for-payment") return "Pay";
-    if (s === "preparing") return "Kitchen";
-    return "Busy";
+    if (s === "waiting") return L("Waiting");
+    if (s === "ready-for-payment") return L("Pay");
+    if (s === "preparing") return L("Kitchen");
+    return L("Busy");
   };
 
   const statusMeta: Record<string, { label: string; cls: string }> = {
-    pending_waiter: { label: "⏳ NEEDS CONFIRMATION", cls: "bg-violet-600 text-white" },
-    confirmed: { label: "🔔 CONFIRMED • NEW", cls: "bg-amber-500 text-black" },
-    preparing: { label: "👨‍🍳 Preparing", cls: "bg-orange-600 text-white" },
-    ready_for_payment: { label: "💳 Payment Requested", cls: "bg-purple-600 text-white" },
-    completed: { label: "✓ Paid (verify)", cls: "bg-emerald-600 text-white" },
+    pending_waiter: { label: L("⏳ NEEDS CONFIRMATION"), cls: "bg-violet-600 text-white" },
+    confirmed: { label: L("🔔 CONFIRMED • NEW"), cls: "bg-amber-500 text-black" },
+    preparing: { label: L("👨‍🍳 Preparing"), cls: "bg-orange-600 text-white" },
+    ready_for_payment: { label: L("💳 Payment Requested"), cls: "bg-purple-600 text-white" },
+    completed: { label: L("✓ Paid (verify)"), cls: "bg-emerald-600 text-white" },
   };
 
   // No payment-method options (owner's decision): a bill is either paid or it
   // isn't. Historical paid_cash / paid_telebirr / ... statuses still read as paid.
   const paymentStatusLabel = (s?: string | null) =>
-    s && s !== "unpaid" ? "✓ PAID" : "✗ UNPAID";
+    s && s !== "unpaid" ? L("✓ PAID") : L("✗ UNPAID");
 
   const paymentStatusCls = (s?: string | null) =>
     s && s !== "unpaid" ? "bg-emerald-600 text-white" : "bg-rose-600 text-white";
@@ -1013,8 +1017,8 @@ export default function CashierDashboard() {
             <Coffee className="w-5 h-5 text-[#2C1B17]" />
           </div>
           <div>
-            <h1 className="font-serif font-bold text-amber-100 leading-none">Fana Cafe • Cashier</h1>
-            <p className="text-[10px] text-stone-400">{staffName} • coordinating waiters & kitchen</p>
+            <h1 className="font-serif font-bold text-amber-100 leading-none">{L("Fana Cafe • Cashier")}</h1>
+            <p className="text-[10px] text-stone-400">{L("{staffName} • coordinating waiters & kitchen", { staffName })}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -1025,7 +1029,7 @@ export default function CashierDashboard() {
                 ? "text-emerald-300"
                 : "text-rose-300"
             }`}
-            title={connStatus === "online" ? `Connected • last updated ${lastUpdated || "just now"}` : "Lost contact with the server • reconnecting"}
+            title={connStatus === "online" ? L("Connected • last updated {lastUpdated}", { lastUpdated: lastUpdated || L("just now") }) : L("Lost contact with the server • reconnecting")}
           >
             <span className={`flex items-center gap-1.5 text-[10px] font-black px-2.5 py-1 rounded-full border ${
               connStatus === "online"
@@ -1033,10 +1037,10 @@ export default function CashierDashboard() {
                 : "bg-rose-900/60 border-rose-500/60 animate-pulse"
             }`}>
               <span className={`w-2 h-2 rounded-full ${connStatus === "online" ? "bg-emerald-400" : "bg-rose-400"}`} />
-              {connStatus === "online" ? "ONLINE" : "OFFLINE • RECONNECTING"}
+              {connStatus === "online" ? L("ONLINE") : L("OFFLINE • RECONNECTING")}
             </span>
             {lastUpdated && (
-              <span className="text-[9px] text-stone-500 mt-0.5">last updated {lastUpdated}</span>
+              <span className="text-[9px] text-stone-500 mt-0.5">{L("last updated {lastUpdated}", { lastUpdated })}</span>
             )}
           </div>
           <PocketAlertsChip
@@ -1056,26 +1060,26 @@ export default function CashierDashboard() {
                 ? "bg-emerald-600 text-white"
                 : "bg-[#C9A227] text-[#2C1B17] animate-pulse"
             }`}
-            title={alertsOn ? "Ring bell + desktop alerts enabled" : "Click once to enable ring bell & desktop alerts"}
+            title={alertsOn ? L("Ring bell + desktop alerts enabled") : L("Click once to enable ring bell & desktop alerts")}
           >
             <BellRing className="w-3.5 h-3.5" />
-            {alertsOn ? "ALERTS ON" : "🔔 ENABLE ALERTS"}
+            {alertsOn ? L("ALERTS ON") : L("🔔 ENABLE ALERTS")}
           </button>
           {printQueueMode ? (
             <>
               {printQueue.length > 0 && (
                 <span className="bg-amber-500 text-black text-[10px] font-black px-2.5 py-1 rounded-full animate-pulse flex items-center gap-1">
-                  <Printer className="w-3 h-3" /> {printQueue.length} TO PRINT
+                  <Printer className="w-3 h-3" /> {L("{length} TO PRINT", { length: printQueue.length })}
                 </span>
               )}
               {waitingConfirm.length > 0 && (
                 <span className="bg-violet-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1">
-                  <BellRing className="w-3 h-3" /> {waitingConfirm.length} WAITER
+                  <BellRing className="w-3 h-3" /> {L("{length} WAITER", { length: waitingConfirm.length })}
                 </span>
               )}
               {heldCards.length > 0 && (
                 <span className="bg-sky-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1">
-                  <Clock className="w-3 h-3" /> {heldCards.length} HELD
+                  <Clock className="w-3 h-3" /> {L("{length} HELD", { length: heldCards.length })}
                 </span>
               )}
             </>
@@ -1083,23 +1087,24 @@ export default function CashierDashboard() {
             <>
               {pendingCount > 0 && (
                 <span className="bg-violet-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full animate-pulse flex items-center gap-1">
-                  <BellRing className="w-3 h-3" /> {pendingCount} TO CONFIRM
+                  <BellRing className="w-3 h-3" /> {L("{pendingCount} TO CONFIRM", { pendingCount })}
                 </span>
               )}
               {newCount > 0 && (
                 <span className="bg-amber-500 text-black text-[10px] font-black px-2.5 py-1 rounded-full animate-pulse flex items-center gap-1">
-                  <BellRing className="w-3 h-3" /> {newCount} NEW
+                  <BellRing className="w-3 h-3" /> {L("{newCount} NEW", { newCount })}
                 </span>
               )}
               {payCount > 0 && (
-                <span className="bg-purple-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full">{payCount} PAY</span>
+                <span className="bg-purple-600 text-white text-[10px] font-black px-2.5 py-1 rounded-full">{L("{payCount} PAY", { payCount })}</span>
               )}
             </>
           )}
-          <button onClick={() => { loadAll(); loadHistory(); }} className="p-2 rounded-xl bg-white/10 text-amber-200" title="Refresh">
+          <StaffLangToggle compact />
+          <button onClick={() => { loadAll(); loadHistory(); }} className="p-2 rounded-xl bg-white/10 text-amber-200" title={L("Refresh")}>
             <RefreshCw className="w-4 h-4" />
           </button>
-          <button onClick={logout} className="p-2 rounded-xl bg-rose-600/80 text-white" title="Logout">
+          <button onClick={logout} className="p-2 rounded-xl bg-rose-600/80 text-white" title={L("Logout")}>
             <LogOut className="w-4 h-4" />
           </button>
         </div>
@@ -1131,7 +1136,7 @@ export default function CashierDashboard() {
           ))}
           {billNotifications.length > 2 && (
             <div className="bg-[#2C1B17] border border-[#C9A227]/40 px-3 py-1 rounded-full text-xs font-bold text-amber-200">
-              +{billNotifications.length - 2} more bill requests
+              {L("+{n} more bill requests", { n: billNotifications.length - 2 })}
             </div>
           )}
         </div>
@@ -1150,9 +1155,9 @@ export default function CashierDashboard() {
         <section className="bg-[#2C1B17] border border-violet-500/30 rounded-3xl p-4 md:p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-xs font-bold uppercase tracking-widest text-violet-300/90">Outdoor Orders</h2>
+              <h2 className="text-xs font-bold uppercase tracking-widest text-violet-300/90">{L("Outdoor Orders")}</h2>
               <p className="text-xs text-stone-400 mt-1">
-                Cashier-only flow for delivery / outside orders, plus the 👥 group orders waiters take when the seating does not match the tables. The moment every station taps Done, this screen takes over with an alarm so you can send someone to pick it up.
+                {L("Cashier-only flow for delivery / outside orders, plus the 👥 group orders waiters take when the seating does not match the tables. The moment every station taps Done, this screen takes over with an alarm so you can send someone to pick it up.")}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -1160,13 +1165,13 @@ export default function CashierDashboard() {
                 onClick={() => setOutdoorComposerOpen(true)}
                 className="bg-violet-600 hover:bg-violet-500 text-white text-xs font-black px-4 py-3 rounded-2xl"
               >
-                + New Outdoor Order
+                {L("+ New Outdoor Order")}
               </button>
             </div>
           </div>
           {outdoorTickets.length === 0 ? (
             <div className="bg-[#241714] border border-stone-800 rounded-2xl p-4 text-xs text-stone-500">
-              No active outdoor orders right now.
+              {L("No active outdoor orders right now.")}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -1187,8 +1192,7 @@ export default function CashierDashboard() {
                           </span>
                         </div>
                         <p className="text-[11px] font-bold text-stone-300 mt-1">
-                          {t.orderNumber ? `#${t.orderNumber} • ` : ""}
-                          {visible.reduce((sum, item) => sum + item.quantity, 0)} item(s)
+                          {L("{value}{reduce} item(s)", { value: t.orderNumber ? `#${t.orderNumber} • ` : "", reduce: visible.reduce((sum, item) => sum + item.quantity, 0) })}
                         </p>
                         {t.serviceNote && <p className="text-[11px] font-bold text-sky-300 mt-1">📍 {t.serviceNote}</p>}
                       </div>
@@ -1210,48 +1214,48 @@ export default function CashierDashboard() {
                             <p className="text-[10px] font-bold text-stone-400 mt-0.5">
                               × {i.quantity}
                               {i.stationStatus === "done"
-                                ? " • done"
+                                ? L(" • done")
                                 : i.stationStatus === "accepted"
-                                ? " • preparing"
-                                : " • pending"}
+                                ? L(" • preparing")
+                                : L(" • pending")}
                             </p>
                           </div>
                           {!i.removed && !isItemLocked(i, t) && (
                             <button
                               onClick={() => setEditTarget({ item: i })}
                               className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
-                              title="Fix this item's note or quantity, or remove it."
+                              title={L("Fix this item's note or quantity, or remove it.")}
                             >
-                              ✎ Edit
+                              {L("✎ Edit")}
                             </button>
                           )}
                           {!orderLocked && problem && !i.removed && !isItemLocked(i, t) ? (
                             <button
                               onClick={() => removeItem(i.id)}
                               className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
-                              title="Remove (wrong item)"
+                              title={L("Remove (wrong item)")}
                             >
-                              Remove
+                              {L("Remove")}
                             </button>
                           ) : null}
-                          {i.removed && <span className="text-[10px] font-bold text-rose-400">REMOVED</span>}
+                          {i.removed && <span className="text-[10px] font-bold text-rose-400">{L("REMOVED")}</span>}
                         </div>
                       ))}
-                      {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">All items removed. Cancel the order if it was sent by mistake.</p>}
+                      {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">{L("All items removed. Cancel the order if it was sent by mistake.")}</p>}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <button
                         onClick={() => setBillModal(t)}
                         className="flex-1 min-w-[110px] bg-white/10 hover:bg-white/20 text-stone-100 text-xs font-black py-2.5 rounded-xl"
                       >
-                        View Bill
+                        {L("View Bill")}
                       </button>
                       {t.status === "confirmed" && (
                         <button
                           onClick={() => markPrinted(t)}
                           className="flex-1 min-w-[110px] bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black py-2.5 rounded-xl"
                         >
-                          ✓ Printed
+                          {L("✓ Printed")}
                         </button>
                       )}
                       {t.status === "printed" && outdoorReady(t) && (
@@ -1259,7 +1263,7 @@ export default function CashierDashboard() {
                           onClick={() => closeOutdoorOrder(t)}
                           className="flex-1 min-w-[130px] bg-amber-500 hover:bg-amber-400 text-[#2C1B17] text-xs font-black py-2.5 rounded-xl"
                         >
-                          Mark Delivered
+                          {L("Mark Delivered")}
                         </button>
                       )}
                       {!orderLocked && (
@@ -1269,18 +1273,18 @@ export default function CashierDashboard() {
                             problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
                           }`}
                         >
-                          <AlertTriangle className="w-4 h-4" /> Problem
+                          <AlertTriangle className="w-4 h-4" /> {L("Problem")}
                         </button>
                       )}
                     </div>
                     {!orderLocked && problem && (
                       <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
-                        <p>Wrong item? Use <strong>Remove</strong> on a line above, or cancel the whole outdoor order:</p>
+                        <p>{Lr("Wrong item? Use <b>Remove</b> on a line above, or cancel the whole outdoor order:", { b: (s) => <strong>{s}</strong> })}</p>
                         <button
                           onClick={() => cancelTicket(t.id)}
                           className="bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-black px-3 py-2 rounded-xl"
                         >
-                          ✗ Cancel whole order
+                          {L("✗ Cancel whole order")}
                         </button>
                       </div>
                     )}
@@ -1294,7 +1298,7 @@ export default function CashierDashboard() {
         {/* TABLE OVERVIEW */}
         <section>
           <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200/80 mb-3 flex items-center gap-2">
-            <Users className="w-4 h-4 text-[#C9A227]" /> Tables Overview
+            <Users className="w-4 h-4 text-[#C9A227]" /> {L("Tables Overview")}
           </h2>
           <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-10 gap-2">
             {tables.map((t) => (
@@ -1331,7 +1335,7 @@ export default function CashierDashboard() {
                 {/* Group 8/9: the guest asked for the bill — the cashier keys the
                     final receipt into the EFD, so this is HER action item. */}
                 {t.activeTicketReceiptRequestedAt && (
-                  <p className="text-[9px] font-black text-emerald-300 mt-1">🧾 BILL!</p>
+                  <p className="text-[9px] font-black text-emerald-300 mt-1">{L("🧾 BILL!")}</p>
                 )}
                 {!printQueueMode || t.status === "available" ? null : (
                   <p className="text-[9px] text-stone-500 mt-0.5">{t.activeTicketTotal ?? 0} ETB</p>
@@ -1350,7 +1354,7 @@ export default function CashierDashboard() {
             {waitingConfirm.length > 0 && (
               <section>
                 <h2 className="text-xs font-bold uppercase tracking-widest text-violet-300/80 mb-3 flex items-center gap-2">
-                  <Users className="w-4 h-4 text-violet-400" /> Waiting for waiter confirmation ({waitingConfirm.length})
+                  <Users className="w-4 h-4 text-violet-400" /> {L("Waiting for waiter confirmation ({length})", { length: waitingConfirm.length })}
                 </h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {waitingConfirm.map((t) => (
@@ -1360,15 +1364,15 @@ export default function CashierDashboard() {
                           {t.tableName}
                           {t.orderNumber && <span className="ml-1.5 text-[10px] font-black text-stone-400">#{t.orderNumber}</span>}
                         </p>
-                        <p className="text-xs font-bold text-stone-300">🕒 arrived {formatClock(t.createdAt)} • {t.totalAmount} ETB</p>
-                        <p className="text-xs font-bold text-violet-300 truncate">by {t.createdBy || "Customer (QR)"}</p>
+                        <p className="text-xs font-bold text-stone-300">{L("🕒 arrived {clock} • {totalAmount} ETB", { clock: formatClock(t.createdAt), totalAmount: t.totalAmount })}</p>
+                        <p className="text-xs font-bold text-violet-300 truncate">{L("by")} {t.createdBy || L("Customer (QR)")}</p>
                       </div>
                       <button
                         onClick={() => setStatus(t.id, "confirmed")}
                         className="shrink-0 bg-violet-600 hover:bg-violet-500 text-white text-[10px] font-black px-3 py-2.5 rounded-xl"
-                        title="Only if the waiter already verified it with the guest. Normally the waiter does this. The bill is then HELD until you tap CONFIRM & SEND"
+                        title={L("Only if the waiter already verified it with the guest. Normally the waiter does this. The bill is then HELD until you tap CONFIRM & SEND")}
                       >
-                        ✓ Accept (holds it)
+                        {L("✓ Accept (holds it)")}
                       </button>
                     </div>
                   ))}
@@ -1386,7 +1390,7 @@ export default function CashierDashboard() {
             {heldCards.length > 0 && (
               <section>
                 <h2 className="text-xs font-bold uppercase tracking-widest text-sky-300/80 mb-3 flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-sky-400" /> Held • accepted, waiting for your CONFIRM & SEND ({heldCards.length})
+                  <Clock className="w-4 h-4 text-sky-400" /> {L("Held • accepted, waiting for your CONFIRM & SEND ({length})", { length: heldCards.length })}
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                   {heldCards.map((t) => {
@@ -1408,19 +1412,19 @@ export default function CashierDashboard() {
                               )}
                             </p>
                             <p className="text-xs font-bold text-stone-300 flex items-center gap-1">
-                              <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> arrived {formatClock(t.createdAt)} • waiting {waitingLabel(t.createdAt)}
+                              <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {L("arrived {clock} • waiting {waitingLabel}", { clock: formatClock(t.createdAt), waitingLabel: Ld(waitingLabel(t.createdAt)) })}
                             </p>
-                            <p className="text-xs font-bold text-stone-300 truncate">by {t.createdBy || "Customer (QR)"}</p>
+                            <p className="text-xs font-bold text-stone-300 truncate">{L("by")} {t.createdBy || L("Customer (QR)")}</p>
                           </div>
                           <div className="text-right shrink-0">
-                            <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-full bg-sky-500 text-black">⏸ HELD</span>
+                            <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-full bg-sky-500 text-black">{L("⏸ HELD")}</span>
                             <p className="font-serif font-black text-2xl text-[#C9A227] mt-1">{t.totalAmount} ETB</p>
-                            <p className="text-[11px] font-bold text-stone-300">{visible.reduce((s, i) => s + i.quantity, 0)} items • nothing sent yet</p>
+                            <p className="text-[11px] font-bold text-stone-300">{L("{reduce} items • nothing sent yet", { reduce: visible.reduce((s, i) => s + i.quantity, 0) })}</p>
                           </div>
                         </div>
 
                         <p className="text-xs font-bold text-sky-300 bg-sky-950/40 border border-sky-700/40 rounded-xl px-3 py-2">
-                          Accepted. The kitchen, barista, buna and juice makers do NOT have this order yet. If the guest is still ordering, wait; when they finish tap CONFIRM & SEND.
+                          {L("Accepted. The kitchen, barista, buna and juice makers do NOT have this order yet. If the guest is still ordering, wait; when they finish tap CONFIRM & SEND.")}
                         </p>
 
                         <div className="bg-[#3D2314] rounded-xl divide-y divide-stone-800">
@@ -1435,7 +1439,7 @@ export default function CashierDashboard() {
                                 {line.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {line.notes}</p>}
                                 {line.ids.length > 1 && (
                                   <p className="text-[10px] font-black text-sky-300 mt-0.5">
-                                    Combined on cashier side • same item added again
+                                    {L("Combined on cashier side • same item added again")}
                                   </p>
                                 )}
                               </div>
@@ -1447,32 +1451,32 @@ export default function CashierDashboard() {
                                 <button
                                   onClick={() => setEditTarget({ item: sourceItem })}
                                   className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
-                                  title="Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue."
+                                  title={L("Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue.")}
                                 >
-                                  ✎ Edit
+                                  {L("✎ Edit")}
                                 </button>
                               ) : null}
                               {!orderLocked && problem && sourceItem && !isItemLocked(sourceItem, t) ? (
                                 <button
                                   onClick={() => removeItem(sourceItem.id)}
                                   className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
-                                  title="Remove (unavailable)"
+                                  title={L("Remove (unavailable)")}
                                 >
-                                  Remove
+                                  {L("Remove")}
                                 </button>
                               ) : null}
                             </div>
                             );})}
-                          {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">All items removed.</p>}
+                          {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">{L("All items removed.")}</p>}
                         </div>
 
                         <div className="flex gap-2 pt-1">
                           <button
                             onClick={() => confirmAndSend(t)}
                             className="flex-1 bg-sky-600 hover:bg-sky-500 text-white text-sm font-black py-4 rounded-xl flex items-center justify-center gap-2"
-                            title="Sends this order to the kitchen/barista/buna/juice makers now. Afterwards key it into the EFD and tap ✓ PRINTED"
+                            title={L("Sends this order to the kitchen/barista/buna/juice makers now. Afterwards key it into the EFD and tap ✓ PRINTED")}
                           >
-                            <CheckCircle2 className="w-5 h-5" /> ✓ CONFIRM & SEND
+                            <CheckCircle2 className="w-5 h-5" /> {L("✓ CONFIRM & SEND")}
                           </button>
                           {!orderLocked && (
                             <button
@@ -1481,18 +1485,18 @@ export default function CashierDashboard() {
                                 problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
                               }`}
                             >
-                              <AlertTriangle className="w-4 h-4" /> Problem
+                              <AlertTriangle className="w-4 h-4" /> {L("Problem")}
                             </button>
                           )}
                         </div>
                         {!orderLocked && problem && (
                           <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
-                            <p>Use <strong>Remove</strong> on an item above if it is unavailable, or cancel the whole order:</p>
+                            <p>{Lr("Use <b>Remove</b> on an item above if it is unavailable, or cancel the whole order:", { b: (s) => <strong>{s}</strong> })}</p>
                             <button
                               onClick={() => cancelTicket(t.id)}
                               className="bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-black px-3 py-2 rounded-xl"
                             >
-                              ✗ Cancel whole order
+                              {L("✗ Cancel whole order")}
                             </button>
                           </div>
                         )}
@@ -1506,11 +1510,11 @@ export default function CashierDashboard() {
             {/* THE PRINT QUEUE — key the card into the EFD, print the order paper, tap ✓ PRINTED */}
             <section>
               <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200/80 mb-3 flex items-center gap-2">
-                <Printer className="w-4 h-4 text-[#C9A227]" /> To Print ({printQueue.length}) → key into EFD → print → tap ✓
+                <Printer className="w-4 h-4 text-[#C9A227]" /> {L("To Print ({length}) → key into EFD → print → tap ✓", { length: printQueue.length })}
               </h2>
               {printQueue.length === 0 ? (
                 <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-8 text-center text-stone-500 text-sm">
-                  Nothing to print. Orders the waiters send appear here instantly.
+                  {L("Nothing to print. Orders the waiters send appear here instantly.")}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -1550,30 +1554,30 @@ export default function CashierDashboard() {
                               )}
                             </div>
                             <p className="text-xs font-bold text-stone-300 flex items-center gap-1">
-                              <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {t.confirmedBy ? `by ${t.confirmedBy}` : `by ${t.createdBy || "waiter"}`}
+                              <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {t.confirmedBy ? L("by {confirmedBy}", { confirmedBy: t.confirmedBy }) : L("by {createdBy}", { createdBy: t.createdBy || L("waiter") })}
                             </p>
                             <p className="text-xs font-bold text-stone-300">
-                              🕒 arrived {formatClock(t.createdAt)} • waiting {waitingLabel(t.createdAt)}
+                              {L("🕒 arrived {clock} • waiting {waitingLabel}", { clock: formatClock(t.createdAt), waitingLabel: Ld(waitingLabel(t.createdAt)) })}
                             </p>
                             {t.serviceNote && <p className="text-[11px] font-bold text-sky-300">📍 {t.serviceNote}</p>}
                           </div>
                           <div className="text-right shrink-0">
                             {added ? (
                               <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-full bg-amber-400 text-black animate-pulse">
-                                ⚠ {newCount} NEW item{newCount === 1 ? "" : "s"} on existing bill • {additionSourceLabel(t)}
+                                {L(newCount === 1 ? "⚠ {newCount} NEW item on existing bill • {additionSourceLabel}" : "⚠ {newCount} NEW items on existing bill • {additionSourceLabel}", { newCount, additionSourceLabel: additionSourceLabel(t) })}
                               </span>
                             ) : (
-                              <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-full bg-amber-500 text-black">🔔 NEW ORDER</span>
+                              <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-full bg-amber-500 text-black">{L("🔔 NEW ORDER")}</span>
                             )}
                             {added ? (
                               <>
                                 <p className="font-serif font-black text-2xl text-amber-400 mt-1">{newTotal} ETB</p>
-                                <p className="text-[11px] font-bold text-stone-300">new items only • whole bill {t.totalAmount} ETB</p>
+                                <p className="text-[11px] font-bold text-stone-300">{L("new items only • whole bill {totalAmount} ETB", { totalAmount: t.totalAmount })}</p>
                               </>
                             ) : (
                               <>
                                 <p className="font-serif font-black text-2xl text-[#C9A227] mt-1">{t.totalAmount} ETB</p>
-                                <p className="text-[11px] font-bold text-stone-300">{visible.reduce((s, i) => s + i.quantity, 0)} items</p>
+                                <p className="text-[11px] font-bold text-stone-300">{L("{reduce} items", { reduce: visible.reduce((s, i) => s + i.quantity, 0) })}</p>
                               </>
                             )}
                           </div>
@@ -1581,7 +1585,9 @@ export default function CashierDashboard() {
 
                         {added && (
                           <p className="text-xs font-bold text-amber-300 bg-amber-950/40 border border-amber-700/40 rounded-xl px-3 py-2">
-                            This bill was already printed. Key ONLY the new item{newCount === 1 ? "" : "s"} below into the EFD and print receipt #2. If the waiter added more to an existing line, it stays on that same line as NEW. The crews already have them • your ✓ only records the print.
+                            {L(newCount === 1
+                              ? "This bill was already printed. Key ONLY the new item below into the EFD and print receipt #2. If the waiter added more to an existing line, it stays on that same line as NEW. The crews already have them • your ✓ only records the print."
+                              : "This bill was already printed. Key ONLY the new items below into the EFD and print receipt #2. If the waiter added more to an existing line, it stays on that same line as NEW. The crews already have them • your ✓ only records the print.")}
                           </p>
                         )}
 
@@ -1589,15 +1595,15 @@ export default function CashierDashboard() {
                           <div className="flex items-center justify-between gap-2 bg-amber-500/15 border border-amber-500/40 rounded-xl px-3 py-2">
                             <p className="text-[11px] font-black text-amber-200">
                               {t.receiptRequestedBy
-                                ? `📝 ${t.receiptRequestedBy} asked for the bill at ${formatClock(t.receiptRequestedAt)}`
-                                : `🧾 Guest asked for the bill at ${formatClock(t.receiptRequestedAt)}`}
+                                ? L("📝 {receiptRequestedBy} asked for the bill at {clock}", { receiptRequestedBy: t.receiptRequestedBy, clock: formatClock(t.receiptRequestedAt) })
+                                : L("🧾 Guest asked for the bill at {clock}", { clock: formatClock(t.receiptRequestedAt) })}
                             </p>
                             <button
                               onClick={() => clearReceiptRequest(t)}
                               className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg bg-black/30 text-emerald-200 hover:bg-black/50"
-                              title="Clear the request (bill already handed over)"
+                              title={L("Clear the request (bill already handed over)")}
                             >
-                              Clear
+                              {L("Clear")}
                             </button>
                           </div>
                         )}
@@ -1627,12 +1633,12 @@ export default function CashierDashboard() {
                                 >
                                   <div className="flex-1 min-w-0">
                                     <p className="font-bold text-amber-100 truncate">
-                                      {showFullBill && isNew ? <span className="text-amber-300 font-black">NEW • </span> : null}
+                                      {showFullBill && isNew ? <span className="text-amber-300 font-black">{L("NEW •")} </span> : null}
                                       {i.name} <span className="text-stone-300 font-bold">({i.price} ETB)</span>
                                     </p>
                                     {line.addedQuantity > 0 && (
                                       <p className="text-[11px] font-black text-amber-300 mt-0.5">
-                                        {line.wholeLineIsNew ? "NEW line" : `NEW on existing line • +${line.addedQuantity}`}
+                                        {line.wholeLineIsNew ? L("NEW line") : L("NEW on existing line • +{addedQuantity}", { addedQuantity: line.addedQuantity })}
                                       </p>
                                     )}
                                     {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {i.notes}</p>}
@@ -1644,18 +1650,18 @@ export default function CashierDashboard() {
                                     <button
                                       onClick={() => setEditTarget({ item: i })}
                                       className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
-                                      title="Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue."
+                                      title={L("Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue.")}
                                     >
-                                      ✎ Edit
+                                      {L("✎ Edit")}
                                     </button>
                                   )}
                                   {!orderLocked && problem && !i.removed && !isItemLocked(i, t) ? (
                                     <button
                                       onClick={() => removeItem(i.id)}
                                       className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
-                                      title="Remove (unavailable)"
+                                      title={L("Remove (unavailable)")}
                                     >
-                                      Remove
+                                      {L("Remove")}
                                     </button>
                                   ) : null}
                                 </div>
@@ -1673,7 +1679,7 @@ export default function CashierDashboard() {
                                   {line.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {line.notes}</p>}
                                   {line.ids.length > 1 && (
                                     <p className="text-[10px] font-black text-sky-300 mt-0.5">
-                                      Combined on cashier side • same item added again
+                                      {L("Combined on cashier side • same item added again")}
                                     </p>
                                   )}
                                 </div>
@@ -1685,24 +1691,24 @@ export default function CashierDashboard() {
                                   <button
                                     onClick={() => setEditTarget({ item: sourceItem })}
                                     className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
-                                    title="Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue."
+                                    title={L("Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue.")}
                                   >
-                                    ✎ Edit
+                                    {L("✎ Edit")}
                                   </button>
                                 ) : null}
                                 {!orderLocked && problem && sourceItem && !isItemLocked(sourceItem, t) ? (
                                   <button
                                     onClick={() => removeItem(sourceItem.id)}
                                     className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
-                                    title="Remove (unavailable)"
+                                    title={L("Remove (unavailable)")}
                                   >
-                                    Remove
+                                    {L("Remove")}
                                   </button>
                                 ) : null}
                               </div>
                               );})
                           )}
-                          {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">All items removed.</p>}
+                          {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">{L("All items removed.")}</p>}
                         </div>
 
                         {added && (
@@ -1711,8 +1717,8 @@ export default function CashierDashboard() {
                             className="w-full text-xs font-black py-2 rounded-xl bg-stone-800/80 text-amber-200 hover:bg-stone-700 flex items-center justify-center gap-1.5"
                           >
                             {showFullBill
-                              ? "▲ Show new items only"
-                              : `▾ View full bill for context (${visible.reduce((s, i) => s + i.quantity, 0)} items • ${t.totalAmount} ETB)`}
+                              ? L("▲ Show new items only")
+                              : L("▾ View full bill for context ({reduce} items • {totalAmount} ETB)", { reduce: visible.reduce((s, i) => s + i.quantity, 0), totalAmount: t.totalAmount })}
                           </button>
                         )}
 
@@ -1723,11 +1729,11 @@ export default function CashierDashboard() {
                             className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black py-4 rounded-xl flex items-center justify-center gap-2"
                             title={
                               added
-                                ? "Prints receipt #2 for the NEW items only. The crews already have them • this tap only records the EFD print"
-                                : "Records that the EFD receipt is printed. The crews received this order when it was sent"
+                                ? L("Prints receipt #2 for the NEW items only. The crews already have them • this tap only records the EFD print")
+                                : L("Records that the EFD receipt is printed. The crews received this order when it was sent")
                             }
                           >
-                            <Printer className="w-5 h-5" /> ✓ PRINTED
+                            <Printer className="w-5 h-5" /> {L("✓ PRINTED")}
                           </button>
                           {!orderLocked && (
                             <button
@@ -1736,18 +1742,18 @@ export default function CashierDashboard() {
                                 problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
                               }`}
                             >
-                              <AlertTriangle className="w-4 h-4" /> Problem
+                              <AlertTriangle className="w-4 h-4" /> {L("Problem")}
                             </button>
                           )}
                         </div>
                         {!orderLocked && problem && (
                           <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
-                            <p>Use <strong>Remove</strong> on an item above if it is unavailable, or cancel the whole order:</p>
+                            <p>{Lr("Use <b>Remove</b> on an item above if it is unavailable, or cancel the whole order:", { b: (s) => <strong>{s}</strong> })}</p>
                             <button
                               onClick={() => cancelTicket(t.id)}
                               className="bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-black px-3 py-2 rounded-xl"
                             >
-                              ✗ Cancel whole order
+                              {L("✗ Cancel whole order")}
                             </button>
                           </div>
                         )}
@@ -1766,11 +1772,11 @@ export default function CashierDashboard() {
         {/* ACTIVE TICKETS */}
         <section>
           <h2 className="text-xs font-bold uppercase tracking-widest text-amber-200/80 mb-3">
-            Active Orders ({activeTickets.length})
+            {L("Active Orders ({length})", { length: activeTickets.length })}
           </h2>
           {activeTickets.length === 0 ? (
             <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-8 text-center text-stone-500 text-sm">
-              No active orders. Tickets sent by waiters appear here instantly.
+              {L("No active orders. Tickets sent by waiters appear here instantly.")}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -1802,12 +1808,12 @@ export default function CashierDashboard() {
                           )}
                         </div>
                         <p className="text-xs font-bold text-stone-300 flex items-center gap-1">
-                          <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {t.confirmedBy ? `by ${t.confirmedBy}` : `by ${t.createdBy || "waiter"}`}
+                          <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {t.confirmedBy ? L("by {confirmedBy}", { confirmedBy: t.confirmedBy }) : L("by {createdBy}", { createdBy: t.createdBy || L("waiter") })}
                         </p>
                         {/* When the order ARRIVED and how long the table has been
                             waiting — the question staff keep asking. */}
                         <p className="text-xs font-bold text-stone-300">
-                          🕒 arrived {formatClock(t.createdAt)} • waiting {waitingLabel(t.createdAt)}
+                          {L("🕒 arrived {clock} • waiting {waitingLabel}", { clock: formatClock(t.createdAt), waitingLabel: Ld(waitingLabel(t.createdAt)) })}
                         </p>
                         {t.serviceNote && <p className="text-[11px] font-bold text-sky-300">📍 {t.serviceNote}</p>}
                       </div>
@@ -1822,14 +1828,14 @@ export default function CashierDashboard() {
                     {t.receiptRequestedAt && (
                       <div className="flex items-center justify-between gap-2 bg-emerald-500/15 border border-emerald-500/50 rounded-xl px-3 py-2">
                         <p className="text-[11px] font-black text-emerald-300">
-                          🧾 Guest asked for the bill at {formatClock(t.receiptRequestedAt)}
+                          {L("🧾 Guest asked for the bill at {clock}", { clock: formatClock(t.receiptRequestedAt) })}
                         </p>
                         <button
                           onClick={() => clearReceiptRequest(t)}
                           className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg bg-black/30 text-emerald-200 hover:bg-black/50"
-                          title="Clear the request (bill already handed over)"
+                          title={L("Clear the request (bill already handed over)")}
                         >
-                          Clear
+                          {L("Clear")}
                         </button>
                       </div>
                     )}
@@ -1850,17 +1856,17 @@ export default function CashierDashboard() {
                               <button
                                 onClick={() => removeItem(i.id)}
                                 className="ml-1 px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white"
-                                title="Remove (unavailable)"
+                                title={L("Remove (unavailable)")}
                               >
-                                Remove
+                                {L("Remove")}
                               </button>
                             </div>
                           ) : (
-                            <span className="text-[10px] font-bold text-stone-400">{i.removed ? "REMOVED" : `× ${i.quantity}`}</span>
+                            <span className="text-[10px] font-bold text-stone-400">{i.removed ? L("REMOVED") : `× ${i.quantity}`}</span>
                           )}
                         </div>
                       ))}
-                      {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">All items removed.</p>}
+                      {visible.length === 0 && <p className="p-3 text-center text-xs text-stone-500">{L("All items removed.")}</p>}
                     </div>
 
                     {/* payment info — paid or not (separate from order status).
@@ -1869,7 +1875,7 @@ export default function CashierDashboard() {
                     {(t.status === "ready_for_payment" || t.status === "completed") && (
                       <div className="bg-black/30 rounded-xl p-3 border border-stone-700 space-y-2">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-bold text-xs text-stone-200">Payment collected at the counter</span>
+                          <span className="font-bold text-xs text-stone-200">{L("Payment collected at the counter")}</span>
                           <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${paymentStatusCls(t.paymentStatus)}`}>
                             {paymentStatusLabel(t.paymentStatus)}
                           </span>
@@ -1879,10 +1885,10 @@ export default function CashierDashboard() {
                             value={t.paymentStatus && t.paymentStatus !== "unpaid" ? "paid" : "unpaid"}
                             onChange={(e) => setPaymentStatus(t.id, e.target.value)}
                             className="bg-[#2C1B17] border border-stone-700 rounded-lg px-2 py-1.5 text-[11px] font-bold text-white flex-1"
-                            title="Record whether this bill was paid (order status is separate)"
+                            title={L("Record whether this bill was paid (order status is separate)")}
                           >
-                            <option value="unpaid">Unpaid</option>
-                            <option value="paid">Paid</option>
+                            <option value="unpaid">{L("Unpaid")}</option>
+                            <option value="paid">{L("Paid")}</option>
                           </select>
                           {t.status === "completed" && (
                             <button
@@ -1894,7 +1900,7 @@ export default function CashierDashboard() {
                               }}
                               className="flex items-center gap-1 text-[11px] font-bold text-sky-300 bg-sky-900/40 px-2.5 py-1.5 rounded-lg hover:bg-sky-800 shrink-0"
                             >
-                              <ImageIcon className="w-3.5 h-3.5" /> Receipt Photo
+                              <ImageIcon className="w-3.5 h-3.5" /> {L("Receipt Photo")}
                             </button>
                           )}
                         </div>
@@ -1906,34 +1912,34 @@ export default function CashierDashboard() {
                       {t.status === "pending_waiter" && (
                         <>
                           <div className="w-full bg-violet-950/60 border border-violet-700 rounded-xl px-3 py-2 text-[11px] text-violet-200">
-                            📣 Action: tell a waiter, <strong>"Go to {t.tableName} and confirm this order"</strong>, or confirm it yourself below.
+                            {Lr("📣 Action: tell a waiter, <b>\"Go to {tableName} and confirm this order\"</b>, or confirm it yourself below.", { b: (s) => <strong>{s}</strong> }, { tableName: t.tableName })}
                           </div>
                           <button
                             onClick={() => setStatus(t.id, "confirmed")}
                             className="flex-1 bg-violet-600 hover:bg-violet-500 text-white text-xs font-black py-2.5 rounded-xl"
                           >
-                            ✓ Confirm Order (Customer Verified)
+                            {L("✓ Confirm Order (Customer Verified)")}
                           </button>
                         </>
                       )}
                       {t.status === "confirmed" && (
                         <button onClick={() => setStatus(t.id, "preparing")} className="flex-1 bg-orange-600 hover:bg-orange-500 text-white text-xs font-black py-2.5 rounded-xl">
-                          Accept → Kitchen / Barista / Pastry
+                          {L("Accept → Kitchen / Barista / Pastry")}
                         </button>
                       )}
                       {t.status === "preparing" && (
                         <span className="flex-1 text-center text-[11px] text-sky-300 bg-sky-950/60 py-2.5 rounded-xl border border-sky-800">
-                          Preparing • waiter will request payment when customer finishes
+                          {L("Preparing • waiter will request payment when customer finishes")}
                         </span>
                       )}
                       {t.status === "completed" && (
                         <button onClick={() => markPaid(t)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black py-2.5 rounded-xl flex items-center justify-center gap-2">
-                          <CheckCircle2 className="w-4 h-4" /> Mark PAID & Release Table
+                          <CheckCircle2 className="w-4 h-4" /> {L("Mark PAID & Release Table")}
                         </button>
                       )}
                       {!isOrderLocked(t) && (
                         <button onClick={() => cancelTicket(t.id)} className="px-3 py-2.5 bg-rose-900/60 text-rose-300 text-xs font-bold rounded-xl hover:bg-rose-700 hover:text-white flex items-center gap-1">
-                          <XCircle className="w-3.5 h-3.5" /> Cancel
+                          <XCircle className="w-3.5 h-3.5" /> {L("Cancel")}
                         </button>
                       )}
                     </div>
@@ -1963,27 +1969,27 @@ export default function CashierDashboard() {
                     historyDay === "today" ? "bg-emerald-600 text-white" : "bg-[#2C1B17] border border-stone-700 text-stone-300 hover:bg-white/10"
                   }`}
                 >
-                  <Printer className="w-3 h-3" /> PRINTED TODAY ({historyToday.length})
+                  <Printer className="w-3 h-3" /> {L("PRINTED TODAY ({length})", { length: historyToday.length })}
                 </button>
                 <button
                   onClick={() => setHistoryDay("yesterday")}
                   className={`text-[10px] font-black px-3 py-1.5 rounded-full flex items-center gap-1.5 transition ${
                     historyDay === "yesterday" ? "bg-emerald-600 text-white" : "bg-[#2C1B17] border border-stone-700 text-stone-300 hover:bg-white/10"
                   }`}
-                  title="Every bill printed yesterday, in case the morning needs to re-check last night's receipts"
+                  title={L("Every bill printed yesterday, in case the morning needs to re-check last night's receipts")}
                 >
-                  🕘 PRINTED YESTERDAY ({historyYesterday.length})
+                  {L("🕘 PRINTED YESTERDAY ({length})", { length: historyYesterday.length })}
                 </button>
               </>
             ) : (
               <h2 className="text-xs font-bold uppercase tracking-widest text-stone-400">
-                Recently Paid ({history.length})
+                {L("Recently Paid ({length})", { length: history.length })}
               </h2>
             )}
           </div>
           {history.length === 0 ? (
             <p className="text-xs font-bold text-stone-500">
-              {printQueueMode ? "Bills appear here the moment you tap ✓ PRINTED. Tap any card to check the whole bill against the EFD receipt." : "Paid bills will appear here after you mark them Paid."}
+              {printQueueMode ? L("Bills appear here the moment you tap ✓ PRINTED. Tap any card to check the whole bill against the EFD receipt.") : L("Paid bills will appear here after you mark them Paid.")}
             </p>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -2007,7 +2013,7 @@ export default function CashierDashboard() {
                     className={`text-left bg-[#241714] rounded-xl p-3 flex items-center justify-between gap-2 transition hover:bg-[#2e1d18] active:scale-[0.98] ${
                       waiting ? "border-2 border-amber-400 animate-pulse" : "border border-stone-800"
                     }`}
-                    title="Tap to see the full bill"
+                    title={L("Tap to see the full bill")}
                   >
                     <div className="min-w-0 space-y-0.5">
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -2020,31 +2026,31 @@ export default function CashierDashboard() {
                       </div>
                       {printQueueMode ? (
                         <p className="text-[11px] font-bold text-stone-300 truncate flex items-center gap-1">
-                          <Printer className="w-3 h-3 text-[#C9A227] shrink-0" /> printed {formatClock(t.printedAt)} • {t.printedBy || "cashier"}
+                          <Printer className="w-3 h-3 text-[#C9A227] shrink-0" /> {L("printed {clock} •", { clock: formatClock(t.printedAt) })} {t.printedBy || L("cashier")}
                         </p>
                       ) : (
-                        <p className="text-[11px] font-bold text-stone-300 flex items-center gap-1">✓ Paid</p>
+                        <p className="text-[11px] font-bold text-stone-300 flex items-center gap-1">{L("✓ Paid")}</p>
                       )}
                       {/* Group 8: table, date, time and waiter on every history card. */}
                       <p className="text-[11px] font-bold text-stone-300 truncate">🕒 {formatDateTime(printQueueMode ? (t.printedAt || t.createdAt) : (t.closedAt || t.updatedAt || t.createdAt))}</p>
-                      <p className="text-[11px] font-bold text-[#D8B93E] truncate">👤 {t.confirmedBy || t.createdBy || "staff"}</p>
+                      <p className="text-[11px] font-bold text-[#D8B93E] truncate">👤 {t.confirmedBy || t.createdBy || L("staff")}</p>
                       {t.serviceNote && <p className="text-[10px] font-bold text-sky-300 truncate">📍 {t.serviceNote}</p>}
                       {printQueueMode && (
                         cleared ? (
-                          <p className="text-[10px] font-black text-stone-400 uppercase">✓ cleared {t.closedAt ? formatClock(t.closedAt) : ""}</p>
+                          <p className="text-[10px] font-black text-stone-400 uppercase">{L("✓ cleared {value}", { value: t.closedAt ? formatClock(t.closedAt) : "" })}</p>
                         ) : waiting ? (
-                          <p className="text-[10px] font-black text-amber-300 uppercase">⚠ new item waiting</p>
+                          <p className="text-[10px] font-black text-amber-300 uppercase">{L("⚠ new item waiting")}</p>
                         ) : (
-                          <p className="text-[10px] font-black text-emerald-400 uppercase">● open</p>
+                          <p className="text-[10px] font-black text-emerald-400 uppercase">{L("● open")}</p>
                         )
                       )}
                       {printQueueMode && editedAfterPrint && (
-                        <p className="text-[10px] font-black text-sky-300 uppercase">✎ edited after print • re-key EFD</p>
+                        <p className="text-[10px] font-black text-sky-300 uppercase">{L("✎ edited after print • re-key EFD")}</p>
                       )}
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-sm font-black text-emerald-400">{t.totalAmount} ETB</p>
-                      {!printQueueMode && <span className="text-[9px] font-black text-emerald-600 uppercase">PAID</span>}
+                      {!printQueueMode && <span className="text-[9px] font-black text-emerald-600 uppercase">{L("PAID")}</span>}
                     </div>
                   </button>
                 );
@@ -2079,19 +2085,19 @@ export default function CashierDashboard() {
                 <p className="text-xs font-bold text-stone-300 mt-0.5">
                   {billModal.orderNumber ? `#${billModal.orderNumber} • ` : ""}
                   {billModal.printedAt
-                    ? `printed ${formatDateTime(billModal.printedAt)} • by ${billModal.printedBy || "cashier"}`
-                    : `arrived ${formatDateTime(billModal.createdAt)} • by ${billModal.confirmedBy || billModal.createdBy || "staff"}`}
+                    ? L("printed {dateTime} • by {printedBy}", { dateTime: formatDateTime(billModal.printedAt), printedBy: billModal.printedBy || L("cashier") })
+                    : L("arrived {dateTime} • by {confirmedBy}", { dateTime: formatDateTime(billModal.createdAt), confirmedBy: billModal.confirmedBy || billModal.createdBy || L("staff") })}
                 </p>
                 <p className="text-xs font-bold text-stone-300">
                   {billModal.status === "closed"
-                    ? `✓ cleared ${billModal.closedAt ? formatDateTime(billModal.closedAt) : ""}`
+                    ? L("✓ cleared {value}", { value: billModal.closedAt ? formatDateTime(billModal.closedAt) : "" })
                     : (billModal.unprintedSubmissions || 0) > 0
-                    ? "⚠ new items waiting for your next print"
-                    : "● open bill"}
+                    ? L("⚠ new items waiting for your next print")
+                    : L("● open bill")}
                 </p>
                 {billModal.serviceNote && <p className="text-xs font-bold text-sky-300">📍 {billModal.serviceNote}</p>}
               </div>
-              <button onClick={() => setBillModal(null)} className="p-2 rounded-lg bg-white/10 text-stone-300 hover:bg-white/20 shrink-0" title="Close">
+              <button onClick={() => setBillModal(null)} className="p-2 rounded-lg bg-white/10 text-stone-300 hover:bg-white/20 shrink-0" title={L("Close")}>
                 <XCircle className="w-5 h-5" />
               </button>
             </div>
@@ -2104,7 +2110,7 @@ export default function CashierDashboard() {
                     <div key={i.id} className={`p-3 flex items-center justify-between gap-3 ${isNew ? "bg-amber-400/15" : ""}`}>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-bold text-amber-100 truncate">
-                          {isNew && <span className="text-amber-300 font-black">NEW • </span>}
+                          {isNew && <span className="text-amber-300 font-black">{L("NEW •")} </span>}
                           {i.name}
                         </p>
                         <p className="text-xs font-semibold text-stone-300">{i.quantity} × {i.price} ETB</p>
@@ -2116,14 +2122,14 @@ export default function CashierDashboard() {
                 })}
               </div>
               <div className="bg-[#3D2314] border border-[#C9A227]/40 rounded-xl px-4 py-3 flex items-center justify-between">
-                <span className="text-sm font-black text-stone-200">Bill total</span>
+                <span className="text-sm font-black text-stone-200">{L("Bill total")}</span>
                 <span className="font-serif font-black text-2xl text-[#C9A227]">{billModal.totalAmount} ETB</span>
               </div>
               <button
                 onClick={() => setBillModal(null)}
                 className="w-full py-3 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 text-sm font-black"
               >
-                Close
+                {L("Close")}
               </button>
             </div>
           </div>
@@ -2175,7 +2181,7 @@ export default function CashierDashboard() {
       {/* receipt image modal */}
       {receiptModal && (
         <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setReceiptModal(null)}>
-          <img src={receiptModal} alt="Payment receipt" className="max-h-[85vh] max-w-full rounded-2xl border border-[#C9A227]" />
+          <img src={receiptModal} alt={L("Payment receipt")} className="max-h-[85vh] max-w-full rounded-2xl border border-[#C9A227]" />
         </div>
       )}
     </div>
@@ -2190,6 +2196,7 @@ export default function CashierDashboard() {
  * printing is the default here: there is no print path out of this dialog.)
  */
 function EditItemModal({ item, onClose, onSaved }: { item: TicketItem; onClose: () => void; onSaved: () => void }) {
+  const { t: L } = useStaffT();
   const [qty, setQty] = useState(item.quantity);
   const [notes, setNotes] = useState(item.notes || "");
   const [saving, setSaving] = useState(false);
@@ -2205,7 +2212,7 @@ function EditItemModal({ item, onClose, onSaved }: { item: TicketItem; onClose: 
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
-        alert(d?.error || "Could not update item");
+        alert(d?.error || L("Could not update item"));
         return;
       }
       onSaved();
@@ -2215,13 +2222,13 @@ function EditItemModal({ item, onClose, onSaved }: { item: TicketItem; onClose: 
   };
 
   const remove = async () => {
-    if (!confirm(`Remove "${item.name}" x${item.quantity} from the bill?\n\nThe bill total updates at once. The crew is told only if they already started it.`)) return;
+    if (!confirm(L("Remove \"{name}\" x{quantity} from the bill?\n\nThe bill total updates at once. The crew is told only if they already started it.", { name: item.name, quantity: item.quantity }))) return;
     setSaving(true);
     try {
       const r = await fetch(`/api/tickets/items?id=${item.id}`, { method: "DELETE" });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
-        alert(d?.error || "Could not remove item");
+        alert(d?.error || L("Could not remove item"));
         return;
       }
       onSaved();
@@ -2237,30 +2244,30 @@ function EditItemModal({ item, onClose, onSaved }: { item: TicketItem; onClose: 
         onClick={(e) => e.stopPropagation()}
       >
         <div>
-          <h3 className="font-serif font-black text-lg text-amber-100">✎ Fix item</h3>
-          <p className="text-xs font-bold text-stone-300 mt-0.5">{item.name} • {item.price} ETB each</p>
+          <h3 className="font-serif font-black text-lg text-amber-100">{L("✎ Fix item")}</h3>
+          <p className="text-xs font-bold text-stone-300 mt-0.5">{L("{name} • {price} ETB each", { name: item.name, price: item.price })}</p>
         </div>
         <div className="flex items-center gap-3 bg-[#3D2314] rounded-xl p-3">
-          <span className="text-xs font-bold text-stone-300 flex-1">Quantity</span>
+          <span className="text-xs font-bold text-stone-300 flex-1">{L("Quantity")}</span>
           <button onClick={() => setQty(Math.max(1, qty - 1))} className="w-9 h-9 bg-white/10 rounded-xl text-lg font-black">−</button>
           <span className="text-lg font-black text-[#C9A227] w-8 text-center">{qty}</span>
           <button onClick={() => setQty(Math.min(100, qty + 1))} className="w-9 h-9 bg-[#C9A227] text-black rounded-xl text-lg font-black">+</button>
         </div>
         <div>
-          <label className="block text-xs font-bold text-amber-200 mb-1">Note for the crew</label>
+          <label className="block text-xs font-bold text-amber-200 mb-1">{L("Note for the crew")}</label>
           <input
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="No Sugar, Extra Mayo, Less Spicy..."
+            placeholder={L("No Sugar, Extra Mayo, Less Spicy...")}
             className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
           />
         </div>
         <div className="bg-[#3D2314] border border-[#C9A227]/40 rounded-xl px-4 py-2.5 flex items-center justify-between">
-          <span className="text-xs font-black text-stone-200">Line total</span>
+          <span className="text-xs font-black text-stone-200">{L("Line total")}</span>
           <span className="font-serif font-black text-xl text-[#C9A227]">{item.price * qty} ETB</span>
         </div>
         <p className="text-[11px] font-bold text-stone-400">
-          Saving only fixes the bill • it never prints. The card stays in your queue until you tap ✓ PRINTED.
+          {L("Saving only fixes the bill • it never prints. The card stays in your queue until you tap ✓ PRINTED.")}
         </p>
         <div className="flex gap-2">
           <button
@@ -2268,14 +2275,14 @@ function EditItemModal({ item, onClose, onSaved }: { item: TicketItem; onClose: 
             disabled={saving}
             className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-black py-3 rounded-xl disabled:opacity-40"
           >
-            {saving ? "Saving..." : "✓ Save (hold • no print)"}
+            {saving ? L("Saving...") : L("✓ Save (hold • no print)")}
           </button>
           <button
             onClick={onClose}
             disabled={saving}
             className="px-4 py-3 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 text-sm font-black disabled:opacity-40"
           >
-            Cancel
+            {L("Cancel")}
           </button>
         </div>
         <button
@@ -2283,7 +2290,7 @@ function EditItemModal({ item, onClose, onSaved }: { item: TicketItem; onClose: 
           disabled={saving}
           className="w-full py-2.5 rounded-xl bg-rose-900/60 text-rose-300 text-xs font-black hover:bg-rose-700 hover:text-white disabled:opacity-40"
         >
-          ✗ Remove this item from the bill
+          {L("✗ Remove this item from the bill")}
         </button>
       </div>
     </div>

@@ -140,7 +140,7 @@ function pass(name, cond) {
 /* ── 5. Waiter screen: Table cleared is the closing action ────────────────── */
 {
   pass("clearTable sends the closed transition with the waiter's name", /clearTable/.test(waiter) && /status: "closed", closedBy: staffName/.test(waiter));
-  pass("clearing warns when the crew is still preparing items", /still preparing \$\{cooking\.length\}/.test(waiter) && /stationStatus && i\.stationStatus !== "done"/.test(waiter));
+  pass("clearing warns when the crew is still preparing items", /still preparing \{length\}[^\n]*length: cooking\.length/.test(waiter) && /stationStatus && i\.stationStatus !== "done"/.test(waiter));
   pass("payment screens are hidden in print-queue mode", /printQueueMode \?/.test(waiter) && /Table Cleared • Free Table/.test(waiter));
   pass("bill header speaks the cafe's language, not the database's", /Sent • cashier will print it in the EFD/.test(waiter) && /Printed • crew is preparing/.test(waiter));
 }
@@ -181,7 +181,7 @@ function pass(name, cond) {
   pass("the route tells the matrix which crews the bill actually involves", /stations: billStations/.test(tickets) && /crewRows\.map\(\(r\) => stationOf\(r\.stationName\)\)/.test(tickets));
   pass("the waiter's button says where the order goes", /Accept & Send → Stations & Cashier/.test(waiter));
   pass("the cashier's button says plain ✓ PRINTED (the print sends nothing — instant release)",
-    /<Printer className="w-5 h-5" \/> ✓ PRINTED/.test(cashier) && !/PRINTED & SEND/.test(cashier));
+    /<Printer className="w-5 h-5" \/> \{L\("✓ PRINTED"\)\}/.test(cashier) && !/PRINTED & SEND/.test(cashier));
   pass("cashier printing auto-clears pending buna station lines", /body\.status === "printed"/.test(tickets) && /eq\(ticketItems\.stationName, "buna"\)/.test(tickets) && /stationStatus: "done"/.test(tickets));
   pass("the buna makers' lane is read-only (no Accept or Done buttons)", /Cashier prints to clear/.test(waiter) && !/setBunaStatus/.test(waiter));
   pass("her addition card still shows ONLY the new items", /isNewUnprinted/.test(cashier) && /new items only/.test(cashier));

@@ -4,6 +4,7 @@ import { tickets, ticketItems, categories, orderSubmissions, ticketEvents, staff
 import { ensureTablesExist } from "@/db/migrate";
 import { inArray, or, gt, eq } from "drizzle-orm";
 import { requireAdmin } from "@/lib/session";
+import { isLegacyAuditNote } from "@/lib/shift-report";
 import { stationOf, STATION_NAMES, type StationName } from "@/lib/stations";
 import {
   isTodayET,
@@ -137,6 +138,15 @@ function humanTicketStatus(status: string | null | undefined): string {
   return labels[value] || value.replace(/_/g, " ");
 }
 
+/**
+ * The one-time audit backfill wrote technical notes ("Legacy print
+ * backfill"...) on old bills. The label already says what happened, so those
+ * notes are dropped instead of shown to staff.
+ */
+function auditDetail(details: string | null | undefined): string | null {
+  return details && !isLegacyAuditNote(details) ? details : null;
+}
+
 function buildAuditEvent(event: typeof ticketEvents.$inferSelect) {
   const actor = event.actorName ? ` • ${event.actorName}` : "";
   switch (event.eventType) {
@@ -154,7 +164,7 @@ function buildAuditEvent(event: typeof ticketEvents.$inferSelect) {
         details: event.details,
         createdAt: toIso(event.createdAt),
         label: "Order created",
-        detail: event.details || null,
+        detail: auditDetail(event.details),
       };
     case "submission_added":
       return {
@@ -170,7 +180,7 @@ function buildAuditEvent(event: typeof ticketEvents.$inferSelect) {
         details: event.details,
         createdAt: toIso(event.createdAt),
         label: `${event.source === "customer" ? "Guest" : event.actorRole === "cashier" ? "Cashier" : "Waiter"} added items${actor}`,
-        detail: event.details || null,
+        detail: auditDetail(event.details),
       };
     case "item_quantity_changed":
       return {
@@ -218,7 +228,7 @@ function buildAuditEvent(event: typeof ticketEvents.$inferSelect) {
         details: event.details,
         createdAt: toIso(event.createdAt),
         label: `Item removed • ${event.itemName || "item"}${actor}`,
-        detail: event.fromValue || event.details || null,
+        detail: event.fromValue || auditDetail(event.details),
       };
     case "ticket_sent":
       return {
@@ -234,7 +244,7 @@ function buildAuditEvent(event: typeof ticketEvents.$inferSelect) {
         details: event.details,
         createdAt: toIso(event.createdAt),
         label: `Sent to stations${actor}`,
-        detail: event.details || null,
+        detail: auditDetail(event.details),
       };
     case "ticket_printed":
       return {
@@ -250,7 +260,7 @@ function buildAuditEvent(event: typeof ticketEvents.$inferSelect) {
         details: event.details,
         createdAt: toIso(event.createdAt),
         label: `Printed${actor}`,
-        detail: event.details || null,
+        detail: auditDetail(event.details),
       };
     case "status_changed":
       return {
@@ -282,7 +292,7 @@ function buildAuditEvent(event: typeof ticketEvents.$inferSelect) {
         details: event.details,
         createdAt: toIso(event.createdAt),
         label: event.eventType.replace(/_/g, " "),
-        detail: event.details || null,
+        detail: auditDetail(event.details),
       };
   }
 }

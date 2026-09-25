@@ -3,12 +3,14 @@
 import { useState, useEffect } from "react";
 import { QrCode, Plus, Trash2, RefreshCw, Printer } from "lucide-react";
 import { CafeTable } from "@/types";
+import { useStaffT, tNow } from "@/lib/staff-i18n";
 
 function qrUrl(link: string, size = 220) {
   return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(link)}&color=2C1B17&bgcolor=FAF6F0&margin=10`;
 }
 
 export default function TablesQrTab() {
+  const { t: L, rich: Lr } = useStaffT();
   const [tables, setTables] = useState<CafeTable[]>([]);
   const [newName, setNewName] = useState("");
   const [baseUrl, setBaseUrl] = useState(""); // effective base for QR links
@@ -42,7 +44,7 @@ export default function TablesQrTab() {
     });
     if (r.ok) {
       setBaseUrl(customBase.trim() || window.location.origin);
-      setSavedMsg("✓ QR base URL saved • all codes updated");
+      setSavedMsg(tNow("✓ QR base URL saved • all codes updated"));
       setTimeout(() => setSavedMsg(""), 3000);
     }
   };
@@ -61,7 +63,7 @@ export default function TablesQrTab() {
   };
 
   const removeTable = async (id: number) => {
-    if (!confirm("Remove this table and its QR code?")) return;
+    if (!confirm(L("Remove this table and its QR code?"))) return;
     await fetch(`/api/tables?id=${id}`, { method: "DELETE" });
     load();
   };
@@ -75,14 +77,14 @@ export default function TablesQrTab() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-serif font-bold text-amber-100">Tables & QR Codes</h2>
-          <p className="text-xs text-stone-400">Print a QR for each table. Customers scan → digital menu opens (browse only, waiter takes the order).</p>
+          <h2 className="text-xl font-serif font-bold text-amber-100">{L("Tables & QR Codes")}</h2>
+          <p className="text-xs text-stone-400">{L("Print a QR for each table. Customers scan → digital menu opens (browse only, waiter takes the order).")}</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => window.print()} className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl flex items-center gap-1.5 text-xs font-bold" title="Print all QR codes">
-            <Printer className="w-4 h-4" /> Print
+          <button onClick={() => window.print()} className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl flex items-center gap-1.5 text-xs font-bold" title={L("Print all QR codes")}>
+            <Printer className="w-4 h-4" /> {L("Print")}
           </button>
-          <button onClick={load} className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl" title="Refresh">
+          <button onClick={load} className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl" title={L("Refresh")}>
             <RefreshCw className="w-4 h-4" />
           </button>
         </div>
@@ -92,35 +94,33 @@ export default function TablesQrTab() {
       <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/40 p-5 space-y-3">
         <div className="flex items-center gap-2">
           <QrCode className="w-4 h-4 text-[#C9A227]" />
-          <h3 className="text-sm font-bold text-amber-200">QR Domain (where scans go)</h3>
+          <h3 className="text-sm font-bold text-amber-200">{L("QR Domain (where scans go)")}</h3>
         </div>
         <p className="text-xs text-stone-400 leading-relaxed">
-          QRs currently encode: <strong className="text-[#C9A227]">{baseUrl || "..."}</strong>
-          {" "}• leave empty to auto-use the site you're currently on. For permanent printed QRs, enter your final domain
-          (e.g. <code className="text-amber-300">https://fanacafe.com</code>) and save, then print once.
+          {Lr("QRs currently encode: <b>{n}</b> • leave empty to auto-use the site you're currently on. For permanent printed QRs, enter your final domain (e.g. <c>https://fanacafe.com</c>) and save, then print once.", { b: (s) => <strong className="text-[#C9A227]">{s}</strong>, c: (s) => <code className="text-amber-300">{s}</code> }, { n: baseUrl || "..." })}
         </p>
         <div className="flex flex-col sm:flex-row gap-2">
           <input
             value={customBase}
             onChange={(e) => setCustomBase(e.target.value)}
-            placeholder="https://your-domain.com  (empty = auto)"
+            placeholder={L("https://your-domain.com  (empty = auto)")}
             className="flex-1 bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white font-mono"
           />
           <button
             onClick={saveQrBase}
             className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase px-5 py-3 rounded-xl"
           >
-            Save Base URL
+            {L("Save Base URL")}
           </button>
         </div>
         {savedMsg && <p className="text-xs text-emerald-400 font-bold">{savedMsg}</p>}
         {baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1") ? (
           <div className="bg-rose-950/60 border border-rose-600 text-rose-200 text-xs p-3 rounded-xl font-bold">
-            ⚠️ You're on localhost: customer phones CAN'T reach these QRs. Deploy to your host (e.g. Railway) first, open the live site, then print.
+            {L("⚠️ You're on localhost: customer phones CAN'T reach these QRs. Deploy to your host (e.g. Railway) first, open the live site, then print.")}
           </div>
         ) : (
           <div className="bg-emerald-950/60 border border-emerald-700 text-emerald-200 text-xs p-3 rounded-xl font-bold">
-            ✓ Live domain detected • scan any QR below with your phone to test it right now.
+            {L("✓ Live domain detected • scan any QR below with your phone to test it right now.")}
           </div>
         )}
       </div>
@@ -128,11 +128,11 @@ export default function TablesQrTab() {
       {/* Add table */}
       <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 p-5 flex flex-col sm:flex-row gap-3 sm:items-end">
         <div className="flex-1">
-          <label className="block text-xs font-bold text-amber-200 mb-1">New Table Name</label>
+          <label className="block text-xs font-bold text-amber-200 mb-1">{L("New Table Name")}</label>
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder={`e.g. Table ${tables.length + 1}, VIP Room, Terrace 1`}
+            placeholder={L("e.g. Table {n}, VIP Room, Terrace 1", { n: tables.length + 1 })}
             className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
           />
         </div>
@@ -141,7 +141,7 @@ export default function TablesQrTab() {
           disabled={!newName}
           className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase px-6 py-3 rounded-xl flex items-center gap-2 disabled:opacity-40"
         >
-          <Plus className="w-4 h-4" /> Add Table
+          <Plus className="w-4 h-4" /> {L("Add Table")}
         </button>
       </div>
 
@@ -164,7 +164,7 @@ export default function TablesQrTab() {
               onClick={() => removeTable(t.id)}
               className="w-full p-2 bg-rose-500/20 text-rose-300 hover:bg-rose-500 hover:text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5"
             >
-              <Trash2 className="w-3.5 h-3.5" /> Remove Table
+              <Trash2 className="w-3.5 h-3.5" /> {L("Remove Table")}
             </button>
           </div>
         ))}
@@ -173,8 +173,7 @@ export default function TablesQrTab() {
       <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-4 flex items-start gap-3">
         <QrCode className="w-5 h-5 text-[#C9A227] shrink-0 mt-0.5" />
         <p className="text-xs text-stone-400 leading-relaxed">
-          <strong className="text-white">Printing tip:</strong> use the Print button once your real domain (e.g. fanacafe.com) is connected,
-          so the QR codes encode your permanent URL, they never need replacing.
+          {Lr("<b>Printing tip:</b> use the Print button once your real domain (e.g. fanacafe.com) is connected, so the QR codes encode your permanent URL, they never need replacing.", { b: (s) => <strong className="text-white">{s}</strong> })}
         </p>
       </div>
     </div>

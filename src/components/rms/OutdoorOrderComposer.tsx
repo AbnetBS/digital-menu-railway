@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Minus, Plus, Search, Send, XCircle } from "lucide-react";
 import { Category, MenuItem } from "@/types";
 import { effectivePrice } from "@/lib/price";
+import { useStaffT, tNow } from "@/lib/staff-i18n";
 
 interface CartLine {
   menuItemId: number;
@@ -33,6 +34,7 @@ export default function OutdoorOrderComposer({
   onClose: () => void;
   onSent: (message: string) => void;
 }) {
+  const { t: L } = useStaffT();
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [category, setCategory] = useState("all");
@@ -149,14 +151,14 @@ export default function OutdoorOrderComposer({
       const data = await response.json().catch(() => ({}));
       alert(
         response.status === 401
-          ? "Your cashier session ended. Log in again, then resend the order."
-          : data?.error || "Could not send outdoor order"
+          ? L("Your cashier session ended. Log in again, then resend the order.")
+          : data?.error || L("Could not send outdoor order")
       );
       return;
     }
     const data = await response.json();
     reset();
-    onSent(data?.duplicate ? "Outdoor order already sent" : "✓ Outdoor order sent to stations and cashier queue");
+    onSent(data?.duplicate ? tNow("Outdoor order already sent") : tNow("✓ Outdoor order sent to stations and cashier queue"));
     onClose();
   };
 
@@ -171,8 +173,8 @@ export default function OutdoorOrderComposer({
               <ArrowLeft className="w-4 h-4" />
             </button>
             <div className="min-w-0">
-              <h2 className="font-serif font-black text-xl text-amber-100">Outdoor Order</h2>
-              <p className="text-[11px] text-stone-400">Cashier-only flow • send through the normal kitchen, barista, buna and juice routing</p>
+              <h2 className="font-serif font-black text-xl text-amber-100">{L("Outdoor Order")}</h2>
+              <p className="text-[11px] text-stone-400">{L("Cashier-only flow • send through the normal kitchen, barista, buna and juice routing")}</p>
             </div>
           </div>
           <button onClick={close} className="p-2 rounded-xl bg-rose-900/40 text-rose-300 hover:bg-rose-700 hover:text-white">
@@ -184,20 +186,20 @@ export default function OutdoorOrderComposer({
           <div className="p-4 md:p-5 space-y-4 border-b xl:border-b-0 xl:border-r border-stone-800">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
-                <label className="block text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1">Label shown on screens</label>
+                <label className="block text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1">{L("Label shown on screens")}</label>
                 <input
                   value={label}
                   onChange={(e) => setLabel(e.target.value.slice(0, 50))}
-                  placeholder="OUTDOOR • White car"
+                  placeholder={L("OUTDOOR • White car")}
                   className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl px-3 py-2.5 text-sm text-white"
                 />
               </div>
               <div>
-                <label className="block text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1">Note / delivery info</label>
+                <label className="block text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1">{L("Note / delivery info")}</label>
                 <input
                   value={serviceNote}
                   onChange={(e) => setServiceNote(e.target.value.slice(0, 500))}
-                  placeholder="Phone, car color, gate, runner note..."
+                  placeholder={L("Phone, car color, gate, runner note...")}
                   className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl px-3 py-2.5 text-sm text-white"
                 />
               </div>
@@ -208,7 +210,7 @@ export default function OutdoorOrderComposer({
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search menu items..."
+                placeholder={L("Search menu items...")}
                 className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white"
               />
             </div>
@@ -218,7 +220,7 @@ export default function OutdoorOrderComposer({
                 onClick={() => setCategory("all")}
                 className={`px-3 py-1.5 rounded-full text-[11px] font-black uppercase ${category === "all" ? "bg-[#C9A227] text-black" : "bg-white/10 text-stone-300 hover:bg-white/20"}`}
               >
-                All
+                {L("All")}
               </button>
               {categories.map((cat) => (
                 <button
@@ -251,7 +253,7 @@ export default function OutdoorOrderComposer({
                     <div className="mt-3 flex items-center justify-between gap-2">
                       <span className="text-[10px] font-bold text-stone-500 uppercase">{item.category}</span>
                       <span className="text-[10px] font-black px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300">
-                        {item.isAvailable ? "Add" : "Out"}
+                        {item.isAvailable ? L("Add") : L("Out")}
                       </span>
                     </div>
                   </button>
@@ -259,7 +261,7 @@ export default function OutdoorOrderComposer({
               })}
               {filteredMenu.length === 0 && (
                 <div className="md:col-span-2 bg-[#241714] border border-stone-800 rounded-2xl p-6 text-center text-sm text-stone-500">
-                  No menu items match that search.
+                  {L("No menu items match that search.")}
                 </div>
               )}
             </div>
@@ -267,21 +269,21 @@ export default function OutdoorOrderComposer({
 
           <div className="p-4 md:p-5 space-y-4 bg-[#16100D]">
             <div>
-              <p className="text-[11px] font-black uppercase tracking-wider text-amber-200">Order summary</p>
-              <h3 className="font-serif font-black text-2xl text-white mt-1">{label.trim() || "OUTDOOR"}</h3>
+              <p className="text-[11px] font-black uppercase tracking-wider text-amber-200">{L("Order summary")}</p>
+              <h3 className="font-serif font-black text-2xl text-white mt-1">{label.trim() || L("OUTDOOR")}</h3>
               {serviceNote && <p className="text-xs font-bold text-sky-300 mt-1">📍 {serviceNote}</p>}
             </div>
 
             <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl divide-y divide-stone-800 max-h-[50vh] overflow-y-auto">
               {cart.length === 0 ? (
-                <p className="p-5 text-center text-sm text-stone-500">Pick items on the left to build the outdoor order.</p>
+                <p className="p-5 text-center text-sm text-stone-500">{L("Pick items on the left to build the outdoor order.")}</p>
               ) : (
                 cart.map((line) => (
                   <div key={line.menuItemId} className="p-3 space-y-2">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <p className="text-sm font-black text-amber-100">{line.name}</p>
-                        <p className="text-[11px] text-stone-400">{line.price} ETB each</p>
+                        <p className="text-[11px] text-stone-400">{L("{price} ETB each", { price: line.price })}</p>
                       </div>
                       <span className="text-sm font-black text-[#C9A227]">{line.price * line.quantity} ETB</span>
                     </div>
@@ -297,7 +299,7 @@ export default function OutdoorOrderComposer({
                     <input
                       value={line.notes}
                       onChange={(e) => updateNotes(line.menuItemId, e.target.value.slice(0, 500))}
-                      placeholder="Per-item note: no sugar, extra mayo..."
+                      placeholder={L("Per-item note: no sugar, extra mayo...")}
                       className="w-full bg-black/25 border border-stone-700 rounded-xl px-3 py-2 text-xs text-white"
                     />
                   </div>
@@ -306,7 +308,7 @@ export default function OutdoorOrderComposer({
             </div>
 
             <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-4 flex items-center justify-between">
-              <span className="text-sm font-black text-stone-200">Total</span>
+              <span className="text-sm font-black text-stone-200">{L("Total")}</span>
               <span className="font-serif font-black text-2xl text-[#C9A227]">{total} ETB</span>
             </div>
 
@@ -316,7 +318,7 @@ export default function OutdoorOrderComposer({
               className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-black py-4 rounded-2xl flex items-center justify-center gap-2"
             >
               <Send className="w-4 h-4" />
-              {sending ? "Sending..." : "Send Outdoor Order"}
+              {sending ? L("Sending...") : L("Send Outdoor Order")}
             </button>
           </div>
         </div>

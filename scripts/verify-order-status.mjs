@@ -99,7 +99,7 @@ const i18n = read("src/lib/i18n.ts");
   // logging landed, and on 2026-09-16-1 when the Coffee Note table (buna_notes)
   // arrived: an existing production database only runs the migration when this
   // constant moves.
-  pass("the schema version was bumped so deployments migrate", /SCHEMA_VERSION = "2026-09-16-1"/.test(migrate));
+  pass("the schema version was bumped so deployments migrate", (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-09-16-1");
 }
 
 /* ── 3. duplicate lines merge in the DATABASE, not just on screen ─────────── */
@@ -120,19 +120,19 @@ const i18n = read("src/lib/i18n.ts");
 {
   pass("station items expose the arrival timestamp", /createdAt/.test(stationItems) && /receiptRequestedAt/.test(stationItems));
   pass("the tables grid exposes when the open bill started", /activeTicketAt/.test(tablesRoute) && /activeTicketReceiptRequestedAt/.test(tablesRoute));
-  pass("kitchen/barista cards show the arrival clock time", /Arrived \{formatClock\(t\.createdAt\)\}/.test(stationApp));
-  pass("  …and how long the crew has been waiting", /waiting \{waitingLabel\(t\.createdAt, now\)\}/.test(stationApp));
+  pass("kitchen/barista cards show the arrival clock time", /Arrived \{clock\}[\s\S]{0,800}?clock: formatClock\(t\.createdAt\)/.test(stationApp));
+  pass("  …and how long the crew has been waiting", /waiting \{waitingLabel\}[\s\S]{0,800}?waitingLabel: (?:Ld\()?waitingLabel\(t\.createdAt, now\)/.test(stationApp));
   pass("a stale order is flagged (10 min threshold)", /minutesSince\(t\.createdAt, now\) >= 10/.test(stationApp));
   pass("the waiting clock keeps ticking without a reload", /setInterval/.test(stationApp));
   pass("the crew see a table's bill request", /receiptRequestedAt/.test(stationApp) && /asked for the bill/i.test(stationApp));
   pass("each item shows its own arrival time", /formatClock\(i\.createdAt\)/.test(stationApp));
   pass("the waiter's bill header shows arrival + waiter", /formatDateTime/.test(waiterApp) && /waitingLabel/.test(waiterApp));
-  pass("the waiter's table grid shows how long each bill has been open", /since \{formatClock\(t\.activeTicketAt\)\}/.test(waiterApp));
+  pass("the waiter's table grid shows how long each bill has been open", /since \{clock\}[^\n]*clock: formatClock\(t\.activeTicketAt\)/.test(waiterApp));
   pass("the waiter sees a guest's bill request on the table AND on the bill", /activeTicketReceiptRequestedAt/.test(waiterApp) && /activeTicket\.receiptRequestedAt/.test(waiterApp));
-  pass("the cashier sees when the order arrived and how long it has waited", /arrived \{formatClock\(t\.createdAt\)\}/.test(cashier) && /waiting \{waitingLabel\(t\.createdAt\)\}/.test(cashier));
-  pass("the cashier sees a guest's bill request and can clear it", /Guest asked for the bill at \{formatClock\(t\.receiptRequestedAt\)\}/.test(cashier) && /onClick=\{\(\) => clearReceiptRequest\(t\)\}/.test(cashier) && /receiptRequested: false/.test(cashier));
+  pass("the cashier sees when the order arrived and how long it has waited", /arrived \{clock\}[^\n]*clock: formatClock\(t\.createdAt\)/.test(cashier) && /waiting \{waitingLabel\}[^\n]*waitingLabel: (?:Ld\()?waitingLabel\(t\.createdAt\)/.test(cashier));
+  pass("the cashier sees a guest's bill request and can clear it", /Guest asked for the bill at \{clock\}[^\n]*clock: formatClock\(t\.receiptRequestedAt\)/.test(cashier) && /onClick=\{\(\) => clearReceiptRequest\(t\)\}/.test(cashier) && /receiptRequested: false/.test(cashier));
   pass("paid history cards show date/time and the waiter", /formatDateTime\(printQueueMode \? \(t\.printedAt \|\| t\.createdAt\) : \(t\.closedAt \|\| t\.updatedAt \|\| t\.createdAt\)\)/.test(cashier));
-  pass("order history shows when the order ARRIVED and who took it", /arrived \{formatDateTime\(o\.createdAt\)\}/.test(history) && /by \{o\.createdBy/.test(history));
+  pass("order history shows when the order ARRIVED and who took it", /arrived \{dateTime\}[^\n]*dateTime: formatDateTime\(o\.createdAt\)/.test(history) && /• by"[^\n]*\{o\.createdBy/.test(history));
 }
 
 /* ── 1. the guest's status dock + receipt button ───────────────────────────── */
@@ -234,7 +234,7 @@ const i18n = read("src/lib/i18n.ts");
   pass("the migration adds the crew-action audit columns", /station_status_by/.test(migrate) && /station_status_at/.test(migrate));
   pass("the crew PUT stamps who pressed it and when", /stationStatusBy: String\(actorName\)/.test(stationItems) && /stationStatusAt: new Date\(\)/.test(stationItems));
   pass("the crew PUT rejects garbage statuses", /stationStatus must be pending, accepted or done/.test(stationItems));
-  pass("the station screens show who pressed it", /stationStatusBy/.test(stationApp) && /Done.*by \{i\.stationStatusBy\}/.test(stationApp));
+  pass("the station screens show who pressed it", /stationStatusBy/.test(stationApp) && /Done.*by \{stationStatusBy\}[^\n]*stationStatusBy: i\.stationStatusBy/.test(stationApp));
   pass("the shared TicketItem type carries the audit", /stationStatusBy\?: string/.test(types) && /stationStatusAt\?: string/.test(types));
 
   // A correction AFTER the EFD receipt went out must be re-keyed into the EFD:

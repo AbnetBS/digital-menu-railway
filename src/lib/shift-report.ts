@@ -124,6 +124,14 @@ export interface ShiftOrderCard {
   createdAt: string | null;
   confirmedBy: string | null;
   confirmedAt: string | null;
+  /**
+   * The waiter who CREATED and sent the order (display only). A waiter's own
+   * order is sent straight to the stations and never "accepted", so
+   * `confirmedBy` stays empty for it: the card shows "Sent by <name>" instead
+   * of a blank "Accepted by". Never used for totals, Combined or flags.
+   */
+  sentBy: string | null;
+  sentAt: string | null;
   printedBy: string | null;
   printedAt: string | null;
   closedBy: string | null;
@@ -214,6 +222,87 @@ const EVENT_TEXT: Record<string, string> = {
   item_notes_changed: "Note changed",
   item_edited: "Item edited",
 };
+
+/** Plain words for a status change that carries no note of its own. */
+const STATUS_TEXT: Record<string, string> = {
+  confirmed: "Order accepted",
+  printed: "Printed (EFD)",
+  preparing: "Preparing",
+  ready_for_payment: "Bill requested",
+  completed: "Marked paid",
+  paid: "Marked paid",
+  closed: "Table cleared",
+  cancelled: "Order cancelled",
+};
+
+/**
+ * The one-time audit BACKFILL (db/migrate.ts) stamped old bills with
+ * technical notes such as "Legacy confirmation backfill". Staff reading a
+ * timeline need plain words, so each known note maps to what happened.
+ */
+export const LEGACY_EVENT_TEXT: Record<string, string> = {
+  "Legacy bill existed before audit logging": "Order created",
+  "Legacy confirmation backfill": "Order accepted",
+  "Legacy print backfill": "Printed (EFD)",
+  "Legacy bill edit happened before detailed audit logging": "Bill edited",
+  "Legacy table-cleared backfill": "Table cleared",
+  "Legacy payment backfill": "Marked paid",
+  "Legacy cancellation backfill": "Order cancelled",
+};
+
+/** True for a note written by the old backfill (never shown as-is). */
+export function isLegacyAuditNote(details: string | null | undefined): boolean {
+  const d = String(details || "").trim();
+  return !!d && (d in LEGACY_EVENT_TEXT || (/^legacy\b/i.test(d) && /backfill|before (detailed )?audit logging/i.test(d)));
+}
+
+/** One readable timeline line for an audit event. */
+export function timelineText(e: Pick<ShiftEventRow, "eventType" | "toValue" | "details">): string {
+  const d = String(e.details || "").trim();
+  if (d && !isLegacyAuditNote(d)) return d;
+  if (d && LEGACY_EVENT_TEXT[d]) return LEGACY_EVENT_TEXT[d];
+  if (EVENT_TEXT[e.eventType]) return EVENT_TEXT[e.eventType];
+  if (e.eventType === "status_changed" && e.toValue && STATUS_TEXT[e.toValue]) return STATUS_TEXT[e.toValue];
+  const words = String(e.eventType || "").replace(/_/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Update";
+}
+
+/** Placeholder names that are not a person ("Customer (QR)", "Waiter"...). */
+const NOT_A_PERSON = /^(customer\b.*|\(.*\)|admin|waiter|cashier|staff|system|guest)$/i;
+const personName = (s: string | null | undefined) => {
+  const n = clean(s);
+  return n && !NOT_A_PERSON.test(n) ? n : "";
+};
+const stampMs = (d: Stamp) => {
+  const x = d instanceof Date ? d.getTime() : new Date(String(d)).getTime();
+  return Number.isNaN(x) ? 0 : x;
+};
+
+/**
+ * WHO SENT IT (display only): the waiter whose own order created the bill
+ * (first submission is a staff one), else whoever released it to the
+ * stations ("ticket_sent"), else the first staff submission, else a real
+ * person in `createdBy`.
+ */
+export function orderSender(
+  t: Pick<ShiftTicketRow, "createdBy" | "createdAt">,
+  submissions: ShiftSubmissionRow[],
+  events: ShiftEventRow[]
+): { name: string | null; at: string | null } {
+  const subs = submissions.slice().sort((a, b) => stampMs(a.createdAt) - stampMs(b.createdAt));
+  const first = subs[0];
+  if (first && first.source === "staff" && personName(first.waiterName)) {
+    return { name: personName(first.waiterName), at: iso(first.createdAt) };
+  }
+  const sent = events
+    .filter((e) => e.eventType === "ticket_sent" && personName(e.actorName))
+    .sort((a, b) => stampMs(a.createdAt) - stampMs(b.createdAt))[0];
+  if (sent) return { name: personName(sent.actorName), at: iso(sent.createdAt) };
+  const staffSub = subs.find((s) => s.source === "staff" && personName(s.waiterName));
+  if (staffSub) return { name: personName(staffSub.waiterName), at: iso(staffSub.createdAt) };
+  const creator = personName(t.createdBy);
+  return creator ? { name: creator, at: iso(t.createdAt) } : { name: null, at: null };
+}
 
 export function buildShiftReport(input: BuildInput): ShiftReport {
   const { role, date, dayKeys, staffRoles } = input;
@@ -371,8 +460,9 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
       at: iso(e.createdAt),
       actor: e.actorName,
       role: e.actorRole,
-      text: e.details || EVENT_TEXT[e.eventType] || e.eventType,
+      text: timelineText(e),
     }));
+    const sender = orderSender(t, subsByTicket.get(t.id) || [], events);
 
     orders[t.id] = {
       ticketId: t.id,
@@ -385,6 +475,8 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
       createdAt: iso(t.createdAt),
       confirmedBy: t.confirmedBy,
       confirmedAt: iso(t.confirmedAt),
+      sentBy: sender.name,
+      sentAt: sender.at,
       printedBy: t.printedBy,
       printedAt: iso(t.printedAt),
       closedBy: t.closedBy,

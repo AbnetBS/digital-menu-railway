@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { ticketItems, tickets } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { and, eq, notInArray, asc, desc, gte, inArray } from "drizzle-orm";
+import { and, eq, notInArray, asc, desc, gte, inArray, sql } from "drizzle-orm";
 import { requireStaffOrAdmin, readStaffSession, readAdminSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { sendPushToNamedStaff, sendPushToRoles } from "@/lib/push";
 import { stationProgressAlerts, ticketOwner } from "@/lib/alerts";
 import { stationOf, type StationName } from "@/lib/stations";
+import { allLinesFinished, isBillSent, isLineHeld, isTableReleased } from "@/lib/order-release";
 import { etStartOfToday } from "@/lib/timezone";
 
 /** The four crews that receive work (see @/lib/stations). */
@@ -42,30 +43,165 @@ export async function GET(request: Request) {
     // Anything unrecognised falls back to the kitchen lane, exactly as before.
     const station: Station = stationRole === "admin" ? stationOf(searchParams.get("station")) : stationRole;
     const historyOnly = searchParams.get("history") === "1";
+    // ── CANCELLED WORK (the crew's PROOF, owner's decision, Sept 2026) ──
+    // A cancelled order used to simply VANISH from this list, so a cook who
+    // had already started it had nothing to point at: "did it really come
+    // through? was it really cancelled?" Now every cancellation — a whole
+    // order voided by the waiter or the cashier, or a single line removed off
+    // a bill that is still open — is served here as a red record the crew
+    // reads and dismisses with Okay. It is never work: it never counts as
+    // sold, and the Done/Accept buttons are replaced by the Okay dismiss.
+    const cancelledOnly = searchParams.get("cancelled") === "1";
+    if (cancelledOnly) {
+      const since = new Date();
+      since.setDate(since.getDate() - 2);
+
+      // 1. Whole orders that were cancelled (status is terminal).
+      const cancelledTickets = await db
+        .select({
+          id: tickets.id,
+          tableName: tickets.tableName,
+          orderNumber: tickets.orderNumber,
+          orderType: tickets.orderType,
+          serviceNote: tickets.serviceNote,
+          status: tickets.status,
+          totalAmount: tickets.totalAmount,
+          createdBy: tickets.createdBy,
+          confirmedBy: tickets.confirmedBy,
+          createdAt: tickets.createdAt,
+          updatedAt: tickets.updatedAt,
+          closedAt: tickets.closedAt,
+        })
+        .from(tickets)
+        .where(and(eq(tickets.status, "cancelled"), gte(tickets.closedAt, since)))
+        .orderBy(desc(tickets.closedAt));
+
+      // 2. Lines taken off a bill that is STILL open (the guest changed their
+      //    mind on one dish). The row stays on the bill as removed, so it is
+      //    the same proof the crew needs for a whole cancellation.
+      const openRows = await db
+        .select({
+          id: tickets.id,
+          tableName: tickets.tableName,
+          orderNumber: tickets.orderNumber,
+          orderType: tickets.orderType,
+          serviceNote: tickets.serviceNote,
+          status: tickets.status,
+          totalAmount: tickets.totalAmount,
+          createdBy: tickets.createdBy,
+          confirmedBy: tickets.confirmedBy,
+          createdAt: tickets.createdAt,
+          updatedAt: tickets.updatedAt,
+          itemsEditedAt: tickets.itemsEditedAt,
+        })
+        .from(tickets)
+        .where(notInArray(tickets.status, ["paid", "cancelled", "closed", "pending_waiter"]));
+
+      const wantedIds = [...cancelledTickets.map((t) => t.id), ...openRows.map((t) => t.id)];
+      const cancelledItems = wantedIds.length === 0
+        ? []
+        : await db
+            .select()
+            .from(ticketItems)
+            .where(
+              and(
+                eq(ticketItems.stationName, station),
+                inArray(ticketItems.ticketId, wantedIds),
+                // Only work the crew could actually have received: a held
+                // guest line never reached them, so its cancellation is not
+                // their business.
+                sql`COALESCE(${ticketItems.released}, true) = true`
+              )
+            )
+            .orderBy(asc(ticketItems.id));
+
+      const byTicket = new Map<number, any[]>();
+      for (const it of cancelledItems) {
+        if (!byTicket.has(it.ticketId)) byTicket.set(it.ticketId, []);
+        byTicket.get(it.ticketId)!.push(it);
+      }
+
+      const shapeItem = (it: any) => ({
+        id: it.id,
+        name: it.name,
+        quantity: it.quantity,
+        notes: it.notes,
+        stationStatus: it.stationStatus,
+        stationStatusBy: it.stationStatusBy,
+        stationStatusAt: it.stationStatusAt,
+        createdAt: it.createdAt,
+        removed: it.removed === true,
+      });
+
+      const rows: any[] = [];
+      for (const t of cancelledTickets) {
+        const items = (byTicket.get(t.id) || []).filter((it: any) => it.removed !== true);
+        if (items.length === 0) continue;
+        rows.push({
+          id: t.id,
+          tableName: t.tableName,
+          orderNumber: t.orderNumber,
+          orderType: t.orderType,
+          serviceNote: t.serviceNote,
+          status: t.status,
+          totalAmount: t.totalAmount,
+          createdBy: t.createdBy,
+          confirmedBy: t.confirmedBy,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+          cancelledAt: t.closedAt || t.updatedAt,
+          wholeOrder: true,
+          items: items.map(shapeItem),
+        });
+      }
+      for (const t of openRows) {
+        const items = (byTicket.get(t.id) || []).filter((it: any) => it.removed === true);
+        if (items.length === 0) continue;
+        rows.push({
+          id: t.id,
+          tableName: t.tableName,
+          orderNumber: t.orderNumber,
+          orderType: t.orderType,
+          serviceNote: t.serviceNote,
+          status: t.status,
+          totalAmount: t.totalAmount,
+          createdBy: t.createdBy,
+          confirmedBy: t.confirmedBy,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+          cancelledAt: t.itemsEditedAt || t.updatedAt,
+          wholeOrder: false,
+          items: items.map(shapeItem),
+        });
+      }
+      rows.sort((a, b) => new Date(b.cancelledAt || 0).getTime() - new Date(a.cancelledAt || 0).getTime());
+      return NextResponse.json(rows, { headers: { "Cache-Control": "no-store" } });
+    }
 
     // ── THE RELEASE RULE (shared by the live list and the history) ──
-    // A bill is released the moment staff SEND it: a waiter's ✓ ACCEPT & SEND
+    // A bill is released the moment staff SEND it: a waiter's ACCEPT & SEND
     // (or a staff-sent new order, which is sent at creation), or the cashier's
-    // CONFIRM & SEND on a held QR order. From that second on, EVERY line on
-    // the bill — the original order AND anything added later by the waiter or
-    // the guest's own phone — is the crew's work immediately, exactly like the
-    // cashier and waiter see it. The cashier's print is only the EFD receipt
-    // for kitchen, barista and juice. Buna is read-only: print clears its
-    // already-visible request instead of waiting for a Done tap.
-    // The ONLY thing still held back is a HELD bill: her plain accept of a QR
-    // order only acknowledges it (alarms stop, nothing sent), so a confirmed
-    // bill with neither a confirmed_at nor a printed_at stamp releases NOTHING
-    // until she taps CONFIRM & SEND.
-    const isHeld = (confirmedAt: Date | string | null, printedAt: Date | string | null) =>
-      !confirmedAt && !printedAt;
-
+    // CONFIRM & SEND on a held QR order. From that second on, EVERY released
+    // line on the bill the original order AND anything the waiter added later
+    // is the crew's work immediately, exactly like the cashier and the waiter
+    // see it. The cashier's print is only the EFD receipt for kitchen, barista
+    // and juice. Buna is read-only: print clears its already-visible request
+    // instead of waiting for a Done tap.
+    // Two things stay invisible here:
+    //   • a HELD bill: her plain accept of a QR order only acknowledges it
+    //     (alarms stop, nothing sent), so a confirmed bill with neither a
+    //     confirmed_at nor a printed_at stamp releases NOTHING until she taps
+    //     CONFIRM & SEND;
+    //   • a guest top-up on an already-sent bill (ticket_items.released =
+    //     false): the guest's phone order never reaches a station on its own,
+    //     it waits for the cashier's or the waiter's confirmation.
     const releasedItems = (
       confirmedAt: Date | string | null,
       printedAt: Date | string | null,
       items: any[]
     ) => {
-      if (isHeld(confirmedAt, printedAt)) return [];
-      return items;
+      if (!isBillSent({ confirmedAt, printedAt })) return [];
+      return items.filter((it: any) => !isLineHeld(it));
     };
 
     // Buna makers only need a read-only work list. They do not press Accept or
@@ -127,6 +263,8 @@ export async function GET(request: Request) {
           and(
             eq(ticketItems.stationName, station),
             eq(ticketItems.removed, false),
+            // A guest top-up staff have not confirmed yet is not their work.
+            sql`COALESCE(${ticketItems.released}, true) = true`,
             inArray(ticketItems.ticketId, recentIds)
           )
         )
@@ -247,6 +385,8 @@ export async function GET(request: Request) {
         and(
           eq(ticketItems.stationName, station),
           eq(ticketItems.removed, false),
+          // A guest top-up staff have not confirmed yet is not their work.
+          sql`COALESCE(${ticketItems.released}, true) = true`,
           inArray(ticketItems.ticketId, openIds)
         )
       )
@@ -412,6 +552,39 @@ export async function PUT(request: Request) {
       }
     } catch {
       // A push hiccup must never fail the crew's tap.
+    }
+
+    // A RELEASED BILL CLOSES ITSELF (owner's decision, Sept 2026)
+    // The cashier's PRINT already cleared the table, and the waiters kept
+    // forgetting the last tap, so a finished bill used to sit "open" forever.
+    // Now: once every live line on a bill whose table was already freed is
+    // done, the bill closes itself. Nothing is lost — the EFD receipt is the
+    // money record and the bill stays in Printed Today and in the reports.
+    try {
+      const bill = await db
+        .select({
+          status: tickets.status,
+          orderType: tickets.orderType,
+          printedAt: tickets.printedAt,
+          tableName: tickets.tableName,
+        })
+        .from(tickets)
+        .where(eq(tickets.id, existing[0].ticketId))
+        .limit(1);
+      if (bill.length > 0 && isTableReleased(bill[0]) && bill[0].status !== "closed") {
+        const siblings = await db
+          .select({ stationStatus: ticketItems.stationStatus })
+          .from(ticketItems)
+          .where(and(eq(ticketItems.ticketId, existing[0].ticketId), eq(ticketItems.removed, false)));
+        if (allLinesFinished(siblings)) {
+          await db
+            .update(tickets)
+            .set({ status: "closed", closedAt: new Date(), closedBy: "cashier print", updatedAt: new Date() })
+            .where(and(eq(tickets.id, existing[0].ticketId), eq(tickets.status, bill[0].status)));
+        }
+      }
+    } catch {
+      // A cleanup hiccup must never fail the crew's Done tap.
     }
 
     publish(CHANNELS.orders);

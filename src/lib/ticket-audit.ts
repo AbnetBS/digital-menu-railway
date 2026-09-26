@@ -10,7 +10,8 @@ export type TicketEventType =
   | "status_changed"
   | "ticket_sent"
   | "ticket_printed"
-  | "bill_requested";
+  | "bill_requested"
+  | "additions_released";
 
 export interface TicketEventInput {
   ticketId: number;

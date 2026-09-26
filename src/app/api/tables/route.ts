@@ -5,6 +5,7 @@ import { ensureTablesExist } from "@/db/migrate";
 import { eq, asc, and, notInArray } from "drizzle-orm";
 import { requireAdmin, readStaffSession, readAdminSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
+import { isTableReleased } from "@/lib/order-release";
 
 // Tables joined with their live status derived from active tickets.
 //
@@ -31,7 +32,16 @@ export async function GET() {
       .where(notInArray(tickets.status, ["paid", "cancelled", "closed"]));
 
     const result = tables.map((t) => {
-      const tk = activeTickets.find((x) => x.tableId === t.id);
+      // PRINT FREES THE TABLE (owner's decision, Sept 2026): the cashier's
+      // ✓ PRINTED tap also clears the table, because the waiters kept
+      // forgetting to. A dine-in bill carrying printed_at is finished for the
+      // floor, so it never shows up as this table's open bill again — the next
+      // guest's order becomes the table's current bill (newest one wins), and
+      // a table with nothing but released bills reads as free.
+      const openBills = activeTickets
+        .filter((x) => x.tableId === t.id && !isTableReleased(x))
+        .sort((a, b) => b.id - a.id);
+      const tk = openBills[0];
       let status: "available" | "waiting" | "occupied" | "preparing" | "ready-for-payment" = "available";
       if (tk) {
         if (tk.status === "pending_waiter") status = "waiting";
@@ -113,11 +123,11 @@ export async function DELETE(request: Request) {
     // tables, so the bill would vanish from every screen while the kitchen
     // still cooks it. Close the bill first, then delete the table.
     const live = await db
-      .select({ id: tickets.id })
+      .select({ id: tickets.id, orderType: tickets.orderType, printedAt: tickets.printedAt })
       .from(tickets)
-      .where(and(eq(tickets.tableId, Number(id)), notInArray(tickets.status, ["paid", "cancelled", "closed"])))
-      .limit(1);
-    if (live.length > 0) {
+      .where(and(eq(tickets.tableId, Number(id)), notInArray(tickets.status, ["paid", "cancelled", "closed"])));
+    const stillOpen = live.filter((t) => !isTableReleased(t));
+    if (stillOpen.length > 0) {
       return NextResponse.json({ error: "This table has an open bill. Close it first, then delete the table." }, { status: 400 });
     }
     await db.delete(cafeTables).where(eq(cafeTables.id, Number(id)));

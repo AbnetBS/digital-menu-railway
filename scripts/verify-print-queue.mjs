@@ -45,8 +45,13 @@ const alerts = read("src/lib/alerts.ts");
 const admin = read("src/components/AdminPanel.tsx");
 const initialData = read("src/lib/initial-data.ts");
 const orderLines = read("src/lib/order-lines.ts");
+const orderRelease = read("src/lib/order-release.ts");
+const sendHold = read("src/lib/send-hold.ts");
+const stationsTab = read("src/components/rms/StationsTab.tsx");
 
 const failures = [];
+/** How many times `needle` appears in `hay` (plain string, no regex escaping). */
+const countOf = (hay, needle) => hay.split(needle).length - 1;
 function pass(name, cond) {
   console.log(`${cond ? "✅" : "❌"} ${name}`);
   if (!cond) failures.push(name);
@@ -59,7 +64,10 @@ function pass(name, cond) {
   pass("classic mid-flow states can also close (mode switch never traps a bill)", /preparing: \["ready_for_payment", "closed", "cancelled"\]/.test(tickets) && /ready_for_payment: \["completed", "closed", "cancelled"\]/.test(tickets));
   pass("closed stamps printed audit columns (printedAt/printedBy)", /body\.status === "printed"/.test(tickets) && /updates\.printedAt = new Date\(\)/.test(tickets) && /updates\.printedBy = /.test(tickets));
   pass("closed stamps who cleared the table (closedBy) + closedAt", /body\.status === "closed"/.test(tickets) && /updates\.closedBy = /.test(tickets) && /body\.status === "closed"\) updates\.closedAt = new Date\(\)/.test(tickets));
-  pass("closed is in the shared INACTIVE set and used by the active list + merge lookups", /INACTIVE_TICKET_STATUSES = \["paid", "cancelled", "closed"\]/.test(tickets) && (tickets.match(/notInArray\(tickets\.status, \[\.\.\.INACTIVE_TICKET_STATUSES\]\)\)/g) || []).length >= 3);
+  pass("closed is in the shared INACTIVE set and used by the active list + merge lookups", tickets.includes('INACTIVE_TICKET_STATUSES = ["paid", "cancelled", "closed"]') && countOf(tickets, "notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])") >= 3);
+  // PRINT FREES THE TABLE (owner, Sept 2026): a dine-in bill the cashier
+  // printed no longer occupies its table, so the merge lookups must skip it.
+  pass("a printed dine-in bill is not the table's open bill any more (merge lookups skip it)", (tickets.match(/or\(eq\(tickets\.orderType, "outdoor"\), isNull\(tickets\.printedAt\)\)/g) || []).length >= 2);
   pass("finished history includes closed bills (?finished=1)", /finishedOnly/.test(tickets) && /inArray\(tickets\.status, \["paid", "closed"\]\)/.test(tickets));
 }
 
@@ -90,8 +98,17 @@ function pass(name, cond) {
   pass("schema: printed_at / printed_by / closed_by columns declared", /printedAt: timestamp\("printed_at"\)/.test(schema) && /printedBy: varchar\("printed_by"/.test(schema) && /closedBy: varchar\("closed_by"/.test(schema));
   pass("migration: columns self-heal on old databases", /printed_at: \{ type: "timestamp", dropNotNull: true \}/.test(migrate) && /printed_by: \{ type: "text" \}/.test(migrate) && /closed_by: \{ type: "text" \}/.test(migrate));
   pass("migration: one-active-per-table index excludes closed (and is recreated when old)", migrate.includes("NOT IN ('paid','cancelled','closed')") && /pg_indexes/.test(migrate) && /DROP INDEX IF EXISTS tickets_one_active_per_table_idx/.test(migrate));
-  pass("migration: duplicate-active repair also treats closed as finished", (migrate.match(/WHERE status NOT IN \('paid','cancelled','closed'\)/g) || []).length >= 2);
+  // PRINT FREES THE TABLE: the index and the duplicate repair both treat a
+  // printed dine-in bill as no longer occupying its table, so the next guest's
+  // new bill can exist beside it.
+  pass("migration: the one-active index also excludes printed dine-in bills", /ON tickets \(table_id\) WHERE status NOT IN \('paid','cancelled','closed'\) AND \(order_type = 'outdoor' OR printed_at IS NULL\)/.test(migrate) && /printed_at/.test(migrate));
+  pass("migration: duplicate-active repair also treats closed as finished", countOf(migrate, "status NOT IN ('paid','cancelled','closed')") >= 2);
+  pass("migration: the repair never merges a released bill into the next guest's bill", /ACTIVE_BILL_PREDICATE/.test(migrate) && /order_type = 'outdoor' OR printed_at IS NULL/.test(migrate));
+  pass("migration: the release-gate column exists and backfills to released", /released boolean DEFAULT true/.test(migrate) && /UPDATE ticket_items SET released = true WHERE released IS NULL/.test(migrate) && /released: \{ type: "boolean", def: "true" \}/.test(migrate));
+  pass("schema: ticket_items.released defaults to released", /released: boolean\("released"\)\.default\(true\)/.test(schema));
   pass("tables board: closed bills free the table, printed shows as in-progress", /notInArray\(tickets\.status, \["paid", "cancelled", "closed"\]\)/.test(tablesApi) && /tk\.status === "preparing" \|\| tk\.status === "printed"/.test(tablesApi));
+  pass("tables board: a printed dine-in bill no longer occupies its table", /isTableReleased/.test(tablesApi) && /!isTableReleased\(x\)/.test(tablesApi));
+  pass("tables board: the newest open bill wins when a table turned over", /\.sort\(\(a, b\) => b\.id - a\.id\)/.test(tablesApi));
   pass("station lists drop closed bills (crew stops seeing cleared tables)", /notInArray\(tickets\.status, \["paid", "cancelled", "closed"/.test(stationsApi));
   pass("guest status: closed bills are not 'open' and get the thank-you window", /notInArray\(tickets\.status, \["paid", "cancelled", "closed"\]\)/.test(tableStatusApi) && /inArray\(tickets\.status, \["paid", "closed"\]\)/.test(tableStatusApi));
   pass("guest phase: a closed bill reads as finished (thank-you, not 'preparing')", /status === "paid" \|\| status === "closed"/.test(orderLines));
@@ -164,10 +181,16 @@ function pass(name, cond) {
   const putHalf = tickets.split("export async function PUT")[1] || "";
   pass("the crew sees an order as soon as it is ACCEPTED (confirmed)", /notInArray\(tickets\.status, \["paid", "cancelled", "closed", "pending_waiter"\]\)/.test(stationsApi));
   pass("orders nobody accepted yet stay off the crew's list", /"pending_waiter"/.test(stationsApi));
-  pass("RELEASE RULE: held = neither stamp (isHeld); a sent bill releases ALL lines",
-    /!confirmedAt && !printedAt/.test(stationsApi) &&
-    /if \(isHeld\(confirmedAt, printedAt\)\) return \[\];/.test(stationsApi) &&
-    /return items;/.test(stationsApi));
+  /* RELEASE GATE (owner's decision, Sept 2026): a line reaches a crew only
+   * when its bill is released (staff SENT it) AND the line itself is not a
+   * held guest addition. `released` lives in ticket_items, so a top-up the
+   * guest added to an already-sent bill stays invisible until a human taps
+   * CONFIRM TO STATIONS / Send to stations. */
+  pass("RELEASE GATE: bill-level release plus a per-line flag, shared with the API",
+    stationsApi.includes("releasedItems(") && stationsApi.includes("COALESCE(${ticketItems.released}, true) = true")
+    && stationsApi.includes("@/lib/order-release") && stationsApi.includes("isLineHeld") && orderRelease.includes("isLineHeld"));
+  pass("a bill with nothing released stays off every crew list",
+    stationsApi.includes("if (released.length === 0) continue;") && stationsApi.includes(".filter((t) => t.items.length > 0)"));
   pass("normal stations have no per-line print cutoff (additions never wait for a print)",
     !/releaseCutoff/.test(stationsApi) && !/prevStamp/.test(stationsApi) && !/prevStamp/.test(tickets));
   const releaseHelper = (stationsApi.split("const releasedItems = (")[1] || "").split("};")[0] || "";
@@ -185,8 +208,11 @@ function pass(name, cond) {
   pass("cashier printing auto-clears pending buna station lines", /body\.status === "printed"/.test(tickets) && /eq\(ticketItems\.stationName, "buna"\)/.test(tickets) && /stationStatus: "done"/.test(tickets));
   pass("the buna makers' lane is read-only (no Accept or Done buttons)", /Cashier prints to clear/.test(waiter) && !/setBunaStatus/.test(waiter));
   pass("her addition card still shows ONLY the new items", /isNewUnprinted/.test(cashier) && /new items only/.test(cashier));
-  pass("the print NEVER pushes the crews (EFD audit only — they already have the lines)",
-    !/sendPushToRoles\(stations/.test(putHalf) && !/fana-station-/.test(putHalf));
+  /* The print is EFD audit only — it never wakes a crew. The ONE station push
+   * left in the PUT is the release of guest additions somebody just confirmed. */
+  pass("the print NEVER pushes the crews; only releasing confirmed guest lines does",
+    countOf(putHalf, "fana-station-add-") === 1 && countOf(putHalf, "sendPushToRoles(releasedStations") === 1
+    && putHalf.includes("if (releasedStations.length > 0)"));
   pass("only the stations with NEW lines in the submission are rung (no idle re-ring)",
     /submissionStations/.test(postHalf) && /newStations\.length > 0/.test(postHalf));
   pass("the crew push fires only for a SENT bill (pending and held bills stay silent)",
@@ -212,7 +238,12 @@ function pass(name, cond) {
   pass("CONFIRM & SEND hits the send action with her name", /body: JSON\.stringify\(\{ id: t\.id, send: true, confirmedBy: staffName \|\| "\(cashier\)" \}\)/.test(cashier));
   pass("the route stamps the release on send but NOT on a cashier's plain accept", /const sendRequested = body\.send === true;/.test(tickets) && /holdAfterConfirm/.test(tickets) && /if \(!holdAfterConfirm\) updates\.confirmedAt = new Date\(\);/.test(tickets));
   pass("the send fires the release alerts; a held accept fires nobody", /const releasedBySend = sendRequested && !cur\.confirmedAt && !cur\.printedAt;/.test(tickets) && /alertStatus && !\(alertStatus === "confirmed" && holdAfterConfirm\)/.test(tickets));
-  pass("a held bill releases NOTHING to the crews (neither stamp → empty)", /if \(isHeld\(confirmedAt, printedAt\)\) return \[\];/.test(stationsApi));
+  pass("a guest top-up on a sent bill is inserted HELD (released = false)",
+    tickets.includes("released: !holdNewLines") && tickets.includes("const holdNewLines = isCustomer && billAlreadySent;"));
+  pass("a held top-up never folds into an already-released row (the new units stay visibly pending)",
+    tickets.includes("(row.released ?? true) === !holdNewLines"));
+  pass("waiter AND cashier can both release the held lines (PUT send:true / confirmed)",
+    tickets.includes("sendRequested") && tickets.includes("additions_released"));
   pass("staff submissions are SENT at creation (release stamp lands after the items)", /if \(!isCustomer && activeTickets\.length === 0\)/.test(tickets) && /\.set\(\{ confirmedAt: new Date\(\) \}\)/.test(tickets));
   pass("guest additions to a HELD bill tell the cashier, not the crews", /held bill is now/.test(tickets));
   pass("migration backfills pre-hold released bills so in-flight work stays visible", /QR HOLD FLOW backfill/.test(migrate) && /COALESCE\(created_by, ''\) <> 'Customer \(QR\)'/m.test(migrate));

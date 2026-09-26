@@ -198,7 +198,15 @@ function pass(name, cond) {
   pass("additions on a printed bill → cashier prints the new receipt", /fana-add-/.test(tickets) && /new items on the bill, print receipt #2/.test(tickets));
   pass("accepting an order wakes the crews + cashier together", /case "confirmed"/.test(alertsMatrix) && /crews\.map\(\(station\)/.test(alertsMatrix) && /roles: \["cashier"\]/.test(alertsMatrix));
   pass("a cancellation with unknown crews still falls back to all of them", /\[\.\.\.STATION_ROLES\]/.test(alertsMatrix));
-  pass("the print NEVER wakes the crew (instant release already rang them at the send)", !/fana-station-/.test(putHalf6) && !/sendPushToRoles\(stations/.test(putHalf6));
+  {
+      // The print branch itself is EFD audit only. The ONE station push in
+      // the PUT now belongs to the release of held guest additions, which is
+      // a different tap entirely (see verify-print-queue.mjs).
+      const printIdx = putHalf6.indexOf('if (body.status === "printed")');
+      const printBlock = printIdx === -1 ? "" : putHalf6.slice(printIdx, printIdx + 3000);
+      pass("the print NEVER wakes the crew (instant release already rang them at the send)",
+        printBlock.length > 0 && !/fana-station-/.test(printBlock));
+    }
   pass("only stations with new lines in the submission are pinged", /submissionStations/.test(postHalf6) && /newStations\.length > 0/.test(postHalf6));
   pass("bill request → the OWNING waiter + every cashier", /fana-bill-/.test(tableStatus) && /sendPushToNamedStaff\("waiter"/.test(tableStatus) && /sendPushToRoles\(\["cashier"\]/.test(tableStatus));
 
@@ -232,13 +240,15 @@ function pass(name, cond) {
     // Staff-originated sends (waiter/cashier keying items) must ring NOBODY
     // extra — every waiter push on the POST path sits directly inside an
     // isCustomer-guarded branch (nearest enclosing `if (` must name it).
-    const waiterPushes = [...postHalf.matchAll(/sendPushToRoles\(\["waiter"\]/g)];
+    // RELEASE GATE (Sept 2026): a guest top-up on an already-sent bill now wakes
+    // the waiter AND the cashier together, so count every push that names her.
+    const waiterPushes = [...postHalf.matchAll(/sendPushToRoles\(\["waiter"/g)];
     const guarded = waiterPushes.filter((m) => {
       const ifIdx = postHalf.lastIndexOf("if (", m.index);
       if (ifIdx === -1 || m.index - ifIdx > 800) return false;
       return /isCustomer/.test(postHalf.slice(ifIdx, postHalf.indexOf(")", ifIdx) + 1));
     });
-    pass("staff-originated sends never ring the waiter (all waiter pushes need isCustomer)", waiterPushes.length >= 2 && guarded.length === waiterPushes.length);
+    pass("staff-originated sends never ring the waiter (all waiter pushes need isCustomer)", waiterPushes.length >= 3 && guarded.length === waiterPushes.length);
   }
   pass("POST wakes exactly the crews with new lines (instant release, sent bills only)", /sendPushToRoles\(newStations/.test(postHalf) && /billSent/.test(postHalf) && /fana-station-add-/.test(postHalf));
   pass("waiter diffs per-ticket ITEM UNITS, not just new ticket IDs", /itemCountRef/.test(waiter) && /Number\(i\.quantity\)/.test(waiter));

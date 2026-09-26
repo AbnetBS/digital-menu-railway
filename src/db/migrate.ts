@@ -206,6 +206,9 @@ const RMS_CREATES: Array<[string, string]> = [
       removed boolean DEFAULT false,
       station_status_by text,
       station_status_at timestamp,
+      -- RELEASE GATE (owner, Sept 2026): a guest top-up on a bill that was
+      -- already sent waits here (false) until staff confirm it to the stations.
+      released boolean DEFAULT true,
       created_at timestamp DEFAULT now()
     )`,
   ],
@@ -399,6 +402,9 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     station_accepted_at: { type: "timestamp", dropNotNull: true },
     station_done_by: { type: "text" },
     station_done_at: { type: "timestamp", dropNotNull: true },
+    // Release gate: false = a guest top-up staff have not confirmed yet, so no
+    // station screen shows it (see the release rule in station-items).
+    released: { type: "boolean", def: "true" },
   },
   push_subscriptions: {
     endpoint: { type: "text" },
@@ -611,17 +617,29 @@ async function runFullMigrate(force: boolean) {
     `CREATE UNIQUE INDEX IF NOT EXISTS ticket_items_idempotency_key_key ON ticket_items (ticket_id, idempotency_key) WHERE idempotency_key IS NOT NULL`
   );
 
+  //  • RELEASE GATE backfill (owner, Sept 2026). ticket_items.released is the
+  //    per-line "have the stations been cleared to see this?" switch. New rows
+  //    default to true (released) and only a guest top-up on an already-sent
+  //    bill is written as false, so every historical line simply stays
+  //    released. The UPDATE below only matters on databases where ADD COLUMN
+  //    could not apply the default (very old Postgres): re-run safe.
+  await run(`UPDATE ticket_items SET released = true WHERE released IS NULL`);
+
   //  • GROUP 5 — one active bill per table, enforced at the DATABASE level.
   //    Before creating the partial unique index, repair any duplicate active
   //    tickets left by the old check-then-insert race: move the newer tickets'
   //    items onto the OLDEST active ticket, then delete the newer ticket rows
   //    (nothing lost — items are preserved). This makes concurrent first orders
   //    at the same table impossible to split into two bills.
+  //    PRINT FREES THE TABLE: a dine-in bill the cashier already printed no
+  //    longer occupies its table, so it is NOT a duplicate of the next guest's
+  //    new bill — the repair below must leave the pair alone.
+  const ACTIVE_BILL_PREDICATE = `status NOT IN ('paid','cancelled','closed') AND (order_type = 'outdoor' OR printed_at IS NULL)`;
   await run(`
     WITH dups AS (
       SELECT table_id, min(id) AS keep_id, array_agg(id ORDER BY id) AS ids
       FROM tickets
-      WHERE status NOT IN ('paid','cancelled','closed')
+      WHERE ${ACTIVE_BILL_PREDICATE}
       GROUP BY table_id HAVING count(*) > 1
     )
     UPDATE ticket_items ti
@@ -634,30 +652,38 @@ async function runFullMigrate(force: boolean) {
     USING (
       SELECT table_id, min(id) AS keep_id, array_agg(id ORDER BY id) AS ids
       FROM tickets
-      WHERE status NOT IN ('paid','cancelled','closed')
+      WHERE ${ACTIVE_BILL_PREDICATE}
       GROUP BY table_id HAVING count(*) > 1
     ) d
     WHERE t.table_id = d.table_id AND t.id <> d.keep_id
-      AND t.status NOT IN ('paid','cancelled','closed')
+      AND t.status NOT IN ('paid','cancelled','closed') AND (t.order_type = 'outdoor' OR t.printed_at IS NULL)
   `);
   // GROUP 9 (print-queue mode): `closed` (waiter cleared the table) is now also
   // an INACTIVE status — a closed bill must never block the next guest seated
   // at that table. `CREATE ... IF NOT EXISTS` cannot evolve an existing index
   // definition, so inspect what is on disk and recreate when it still uses the
   // old predicate (paid/cancelled only).
+  //
+  // PRINT FREES THE TABLE (owner's decision, Sept 2026): the cashier's
+  // ✓ PRINTED tap now ALSO clears the table, because the waiters kept
+  // forgetting to. A dine-in bill carrying printed_at is finished for the
+  // floor: the next guest at that table starts a NEW bill, so it must stop
+  // counting towards "one active bill per table". Outdoor/group bills are
+  // exempt — a group takes more rounds on the same bill, so their print stays
+  // a re-print, not a release.
   try {
     const idxProbe = await db.execute(
       sql`SELECT indexdef FROM pg_indexes WHERE indexname = 'tickets_one_active_per_table_idx' LIMIT 1`
     );
     const idxRows = (idxProbe as unknown as { rows?: Array<{ indexdef: string }> }).rows ?? [];
-    if (idxRows.length > 0 && !idxRows[0].indexdef.includes("'closed'")) {
+    if (idxRows.length > 0 && (!idxRows[0].indexdef.includes("'closed'") || !idxRows[0].indexdef.includes("printed_at"))) {
       await run(`DROP INDEX IF EXISTS tickets_one_active_per_table_idx`);
     }
   } catch {
     // pg_indexes unreadable → fall through, the create below still runs
   }
   await run(
-    `CREATE UNIQUE INDEX IF NOT EXISTS tickets_one_active_per_table_idx ON tickets (table_id) WHERE status NOT IN ('paid','cancelled','closed')`
+    `CREATE UNIQUE INDEX IF NOT EXISTS tickets_one_active_per_table_idx ON tickets (table_id) WHERE status NOT IN ('paid','cancelled','closed') AND (order_type = 'outdoor' OR printed_at IS NULL)`
   );
 
   //  • GROUP 3 indexes — each justified by a real query pattern:

@@ -67,6 +67,11 @@ export default function CashierDashboard() {
   // The queue line being fixed in the item editor (note / qty / remove).
   const [editTarget, setEditTarget] = useState<{ item: TicketItem } | null>(null);
   const [outdoorComposerOpen, setOutdoorComposerOpen] = useState(false);
+  // ADD TO AN ORDER THAT ALREADY WENT OUT (owner's decision, Sept 2026): the
+  // guests call back after the kitchen already has the order, so she adds the
+  // new items to the SAME outdoor bill instead of opening a second one that
+  // nobody can match up later.
+  const [addToTicket, setAddToTicket] = useState<Ticket | null>(null);
   // ── COFFEE NOTE (owner's decision, Sept 2026) ──
   // The held outdoor-buna tab. `coffeeHeld` feeds the badge on the Coffee Note
   // button (refreshed with the history cadence); the panel itself loads its
@@ -972,8 +977,20 @@ export default function CashierDashboard() {
   const waitingConfirm = tickets.filter((t) => t.status === "pending_waiter");
   const heldCards = tickets.filter((t) => t.status === "confirmed" && !t.confirmedAt && !t.printedAt);
   const toPrint = tickets.filter((t) => t.status === "confirmed" && (!!t.confirmedAt || !!t.printedAt));
-  const addedCards = tickets.filter((t) => t.status === "printed" && totalAddsOf(t) > 0);
+  // PRINT FREES THE TABLE (owner's decision, Sept 2026): a dine-in bill the
+  // cashier printed is finished for the floor, so it leaves her queue and the
+  // next guest opens a NEW bill. Only an outdoor/group bill can still receive
+  // rounds after a print, so only those can be an "ADDED" re-print card.
+  const addedCards = tickets.filter((t) => isOutdoor(t) && isAdditionCard(t));
   const printQueue = [...addedCards, ...toPrint];
+  // THE RELEASE GATE: a guest added to a bill that was already sent. Those
+  // lines are NOT on any station screen yet — they wait for her (or the
+  // waiter's) confirmation, exactly like a brand-new QR order does.
+  const heldItemLines = (t: Ticket): Array<{ item: TicketItem; quantity: number }> =>
+    (t.items || [])
+      .filter((i) => !i.removed && i.released === false)
+      .map((item) => ({ item, quantity: Number(item.quantity) || 0 }));
+  const guestAdditionCards = tickets.filter((t) => heldItemLines(t).length > 0);
   const outdoorTickets = tickets.filter((t) => isOutdoor(t));
 
   // Which archive list renders below the tables: today's prints or yesterday's.
@@ -1278,6 +1295,32 @@ export default function CashierDashboard() {
                       >
                         {L("View Bill")}
                       </button>
+                      {/* The three fixes the owner asked for: EDIT a line above,
+                          ADD the items the guests asked for on the phone, or
+                          CANCEL the order — all on the bill that is already
+                          with the stations, never a second outdoor order. */}
+                      {!orderLocked && (
+                        <button
+                          onClick={() => setAddToTicket(t)}
+                          className="flex-1 min-w-[110px] bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] text-xs font-black py-2.5 rounded-xl"
+                          title={L("The guests called back: add these items to THIS order, not a new one.")}
+                        >
+                          {L("+ Add items")}
+                        </button>
+                      )}
+                      {!orderLocked && (
+                        <button
+                          onClick={() => {
+                            if (confirm(L("Cancel this outdoor order?\n\nThe stations are told at once and it stays in red on their screens as proof."))) {
+                              cancelTicket(t.id);
+                            }
+                          }}
+                          className="flex-1 min-w-[110px] bg-rose-800 hover:bg-rose-700 text-white text-xs font-black py-2.5 rounded-xl"
+                          title={L("Void this whole order. The crews hear it and keep a red record of it.")}
+                        >
+                          {L("✗ Cancel order")}
+                        </button>
+                      )}
                       {t.status === "confirmed" && (
                         <button
                           onClick={() => markPrinted(t)}
@@ -1404,6 +1447,124 @@ export default function CashierDashboard() {
                       </button>
                     </div>
                   ))}
+                </div>
+              </section>
+            )}
+
+            {/* ═══ THE RELEASE GATE — a guest added to a bill you already sent ═══
+                The kitchen, barista, buna and juice makers do NOT have these
+                lines yet. Check them (fix a wrong dish, remove an unavailable
+                one) and confirm; only then do the stations see them. The
+                waiter's screen shows the same card, so whoever gets there
+                first releases it. */}
+            {guestAdditionCards.length > 0 && (
+              <section>
+                <h2 className="text-xs font-bold uppercase tracking-widest text-sky-300/80 mb-3 flex items-center gap-2">
+                  <BellRing className="w-4 h-4 text-sky-400" /> {L("Guest added items • waiting for your confirmation ({length})", { length: guestAdditionCards.length })}
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {guestAdditionCards.map((t) => {
+                    const held = heldItemLines(t);
+                    const heldUnits = held.reduce((s, l) => s + l.quantity, 0);
+                    const heldTotal = held.reduce((s, l) => s + l.item.price * l.quantity, 0);
+                    const problem = problemOpen.has(t.id);
+                    const orderLocked = isOrderLocked(t);
+                    return (
+                      <div key={t.id} className="bg-[#241714] border-2 border-sky-500/70 rounded-2xl p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="space-y-0.5">
+                            <p className="font-serif font-bold text-xl text-amber-100">
+                              {t.tableName}
+                              {t.orderNumber && (
+                                <span className="ml-2 align-middle text-[10px] font-black bg-stone-800 border border-[#C9A227]/40 text-[#C9A227] px-2 py-0.5 rounded-full">
+                                  #{t.orderNumber}
+                                </span>
+                              )}
+                            </p>
+                            <p className="text-xs font-bold text-stone-300 flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5 text-[#C9A227]" /> {L("arrived {clock} • waiting {waitingLabel}", { clock: formatClock(t.createdAt), waitingLabel: Ld(waitingLabel(t.createdAt)) })}
+                            </p>
+                            <p className="text-xs font-bold text-stone-300 truncate">{L("by")} {t.confirmedBy || t.createdBy || L("Customer (QR)")}</p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className="inline-block text-[11px] font-black px-2.5 py-1 rounded-full bg-sky-500 text-black">{L("⏸ NOT SENT")}</span>
+                            <p className="font-serif font-black text-2xl text-[#C9A227] mt-1">{heldTotal} ETB</p>
+                            <p className="text-[11px] font-bold text-stone-300">{L("{reduce} new item(s) • whole bill {totalAmount} ETB", { reduce: heldUnits, totalAmount: t.totalAmount })}</p>
+                          </div>
+                        </div>
+
+                        <p className="text-xs font-bold text-sky-300 bg-sky-950/40 border border-sky-700/40 rounded-xl px-3 py-2">
+                          {L("A guest added to a bill you already sent. The stations do NOT have these lines yet. Check them, then confirm.")}
+                        </p>
+
+                        <div className="bg-[#3D2314] rounded-xl divide-y divide-stone-800">
+                          {held.map((line) => {
+                            const i = line.item;
+                            return (
+                              <div key={i.id} className="p-2.5 text-xs flex items-center justify-between gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-bold text-amber-100 truncate">
+                                    {i.name} <span className="text-stone-300 font-bold">({i.price} ETB)</span>
+                                  </p>
+                                  {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {i.notes}</p>}
+                                </div>
+                                <span className="font-extrabold text-amber-100 shrink-0">× {i.quantity}</span>
+                                {!isItemLocked(i, t) && (
+                                  <button
+                                    onClick={() => setEditTarget({ item: i })}
+                                    className="px-2 py-1 bg-[#C9A227]/15 text-[#C9A227] border border-[#C9A227]/40 rounded text-[10px] font-black hover:bg-[#C9A227] hover:text-black shrink-0"
+                                    title={L("Fix this item's note or quantity, or remove it. Saving never prints • the card stays in your queue.")}
+                                  >
+                                    {L("✎ Edit")}
+                                  </button>
+                                )}
+                                {!orderLocked && problem && !isItemLocked(i, t) && (
+                                  <button
+                                    onClick={() => removeItem(i.id)}
+                                    className="px-2 py-1 bg-rose-900/60 text-rose-300 rounded text-[10px] font-bold hover:bg-rose-700 hover:text-white shrink-0"
+                                    title={L("Remove (unavailable)")}
+                                  >
+                                    {L("Remove")}
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            onClick={() => confirmAndSend(t)}
+                            className="flex-1 bg-sky-600 hover:bg-sky-500 text-white text-sm font-black py-4 rounded-xl flex items-center justify-center gap-2"
+                            title={L("Sends only the new lines to the kitchen/barista/buna/juice makers. The rest of the bill is already with them.")}
+                          >
+                            <CheckCircle2 className="w-5 h-5" /> {L("✓ CONFIRM TO STATIONS")}
+                          </button>
+                          {!orderLocked && (
+                            <button
+                              onClick={() => toggleProblem(t.id)}
+                              className={`px-4 py-4 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 ${
+                                problem ? "bg-rose-600 text-white" : "bg-rose-900/60 text-rose-300 hover:bg-rose-700 hover:text-white"
+                              }`}
+                            >
+                              <AlertTriangle className="w-4 h-4" /> {L("Problem")}
+                            </button>
+                          )}
+                        </div>
+                        {!orderLocked && problem && (
+                          <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
+                            <p>{Lr("Use <b>Remove</b> on an item above if it is unavailable, or cancel the whole order:", { b: (s) => <strong>{s}</strong> })}</p>
+                            <button
+                              onClick={() => cancelTicket(t.id)}
+                              className="bg-rose-700 hover:bg-rose-600 text-white text-[11px] font-black px-3 py-2 rounded-xl"
+                            >
+                              {L("✗ Cancel whole order")}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
             )}
@@ -1758,7 +1919,7 @@ export default function CashierDashboard() {
                             title={
                               added
                                 ? L("Prints receipt #2 for the NEW items only. The crews already have them • this tap only records the EFD print")
-                                : L("Records that the EFD receipt is printed. The crews received this order when it was sent")
+                                : L("Records the EFD print and clears the table for the next guests")
                             }
                           >
                             <Printer className="w-5 h-5" /> {L("✓ PRINTED")}
@@ -2184,6 +2345,24 @@ export default function CashierDashboard() {
         onClose={() => setOutdoorComposerOpen(false)}
         onSent={(message) => {
           showToast(message);
+          loadAll();
+          loadHistory();
+        }}
+      />
+
+      {/* ADD TO AN EXISTING OUTDOOR ORDER: the guests called back after the
+          order is already with the stations, so the new items join the SAME
+          bill (targetTicketId) — the crews get only the new lines, and the
+          cashier keeps ONE order per table instead of a pile she has to match
+          up by hand. */}
+      <OutdoorOrderComposer
+        open={!!addToTicket}
+        cashierName={staffName}
+        targetTicket={addToTicket ? { id: addToTicket.id, label: addToTicket.tableName } : null}
+        onClose={() => setAddToTicket(null)}
+        onSent={(message) => {
+          showToast(message);
+          setAddToTicket(null);
           loadAll();
           loadHistory();
         }}

@@ -29,12 +29,20 @@ export default function OutdoorOrderComposer({
   onClose,
   onSent,
   makerMode = false,
+  targetTicket = null,
 }: {
   open: boolean;
   cashierName: string;
   onClose: () => void;
   onSent: (message: string) => void;
   makerMode?: boolean;
+  /**
+   * ADD TO AN ORDER THAT ALREADY WENT OUT (owner's decision, Sept 2026): when
+   * the guests call back after the order is with the stations, the cashier or
+   * the buna maker adds the new items to the SAME bill instead of opening a
+   * second outdoor order nobody can match up later.
+   */
+  targetTicket?: { id: number; label: string } | null;
 }) {
   const { t: L } = useStaffT();
   const [menu, setMenu] = useState<MenuItem[]>([]);
@@ -137,6 +145,8 @@ export default function OutdoorOrderComposer({
         orderType: "outdoor",
         outdoorLabel: label,
         serviceNote,
+        // Same bill as the order that already went out (see targetTicket).
+        ...(targetTicket ? { targetTicketId: targetTicket.id } : {}),
         idempotencyKey: pendingKeyRef.current,
         items: cart.map((line) => ({
           menuItemId: line.menuItemId,
@@ -160,7 +170,13 @@ export default function OutdoorOrderComposer({
     }
     const data = await response.json();
     reset();
-    onSent(data?.duplicate ? tNow("Outdoor order already sent") : tNow("✓ Outdoor order sent to stations and cashier queue"));
+    onSent(
+      targetTicket
+        ? tNow("✓ Added to {label} • the stations have the new items", { label: targetTicket.label })
+        : data?.duplicate
+        ? tNow("Outdoor order already sent")
+        : tNow("✓ Outdoor order sent to stations and cashier queue")
+    );
     onClose();
   };
 
@@ -175,8 +191,16 @@ export default function OutdoorOrderComposer({
               <ArrowLeft className="w-4 h-4" />
             </button>
             <div className="min-w-0">
-              <h2 className="font-serif font-black text-xl text-amber-100">{L("Outdoor Order")}</h2>
-              <p className="text-[11px] text-stone-400">{makerMode ? L("Outdoor order • sends items to their stations and cashier") : L("Cashier-only flow • send through the normal kitchen, barista, buna and juice routing")}</p>
+              <h2 className="font-serif font-black text-xl text-amber-100">
+                {targetTicket ? L("Add to {label}", { label: targetTicket.label }) : L("Outdoor Order")}
+              </h2>
+              <p className="text-[11px] text-stone-400">
+                {targetTicket
+                  ? L("Adding to an order the stations already have. The new items join the SAME bill • no second order.")
+                  : makerMode
+                  ? L("Outdoor order • sends items to their stations and cashier")
+                  : L("Cashier-only flow • send through the normal kitchen, barista, buna and juice routing")}
+              </p>
             </div>
           </div>
           <button onClick={close} className="p-2 rounded-xl bg-rose-900/40 text-rose-300 hover:bg-rose-700 hover:text-white">
@@ -186,26 +210,31 @@ export default function OutdoorOrderComposer({
 
         <div className="grid grid-cols-1 xl:grid-cols-[1.4fr_0.9fr] gap-0">
           <div className="p-4 md:p-5 space-y-4 border-b xl:border-b-0 xl:border-r border-stone-800">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1">{L("Label shown on screens")}</label>
-                <input
-                  value={label}
-                  onChange={(e) => setLabel(e.target.value.slice(0, 50))}
-                  placeholder={L("OUTDOOR • White car")}
-                  className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl px-3 py-2.5 text-sm text-white"
-                />
+            {/* The label and the delivery note belong to the order that is
+                already with the stations: adding a round must never rename it
+                or overwrite where it is going. */}
+            {!targetTicket && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1">{L("Label shown on screens")}</label>
+                  <input
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value.slice(0, 50))}
+                    placeholder={L("OUTDOOR • White car")}
+                    className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl px-3 py-2.5 text-sm text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1">{L("Note / delivery info")}</label>
+                  <input
+                    value={serviceNote}
+                    onChange={(e) => setServiceNote(e.target.value.slice(0, 500))}
+                    placeholder={L("Phone, car color, gate, runner note...")}
+                    className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl px-3 py-2.5 text-sm text-white"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-[11px] font-black uppercase tracking-wider text-amber-200 mb-1">{L("Note / delivery info")}</label>
-                <input
-                  value={serviceNote}
-                  onChange={(e) => setServiceNote(e.target.value.slice(0, 500))}
-                  placeholder={L("Phone, car color, gate, runner note...")}
-                  className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl px-3 py-2.5 text-sm text-white"
-                />
-              </div>
-            </div>
+            )}
 
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-stone-500" />
@@ -278,8 +307,10 @@ export default function OutdoorOrderComposer({
           <div className="p-4 md:p-5 space-y-4 bg-[#16100D]">
             <div>
               <p className="text-[11px] font-black uppercase tracking-wider text-amber-200">{L("Order summary")}</p>
-              <h3 className="font-serif font-black text-2xl text-white mt-1">{label.trim() || L("OUTDOOR")}</h3>
-              {serviceNote && <p className="text-xs font-bold text-sky-300 mt-1">📍 {serviceNote}</p>}
+              <h3 className="font-serif font-black text-2xl text-white mt-1">
+                {targetTicket ? targetTicket.label : label.trim() || L("OUTDOOR")}
+              </h3>
+              {!targetTicket && serviceNote && <p className="text-xs font-bold text-sky-300 mt-1">📍 {serviceNote}</p>}
             </div>
 
             <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl divide-y divide-stone-800 max-h-[50vh] overflow-y-auto">
@@ -326,7 +357,7 @@ export default function OutdoorOrderComposer({
               className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-black py-4 rounded-2xl flex items-center justify-center gap-2"
             >
               <Send className="w-4 h-4" />
-              {sending ? L("Sending...") : L("Send Outdoor Order")}
+              {sending ? L("Sending...") : targetTicket ? L("✓ Add to this order") : L("Send Outdoor Order")}
             </button>
           </div>
         </div>

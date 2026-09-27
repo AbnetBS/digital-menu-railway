@@ -40,6 +40,10 @@ const waiter = read("src/components/rms/WaiterApp.tsx");
 const cashier = read("src/components/rms/CashierDashboard.tsx");
 const stationsTab = read("src/components/rms/StationsTab.tsx");
 const sendHold = read("src/lib/send-hold.ts");
+const deferredApi = read("src/app/api/tickets/deferred/route.ts");
+const deferredWorker = read("src/lib/deferred-ticket-worker.ts");
+const deferredAuth = read("src/lib/deferred-ticket-auth.ts");
+const instrumentation = read("src/instrumentation.ts");
 const orderRelease = read("src/lib/order-release.ts");
 const orderLinesLib = read("src/lib/order-lines.ts");
 const tableStatusApi = read("src/app/api/table-status/route.ts");
@@ -65,28 +69,52 @@ function pass(name, cond) {
   pass("the waiter app renders that clock in the hold panel",
     countOf(waiter, "formatHoldClock") >= 2);
 
-  // The hold is client-side in the waiter app: a timer, then the real POST.
-  pass("her send starts a hold instead of posting straight away",
-    waiter.includes("startSendHold") && /holdDeadline/.test(waiter) && /holdLeft/.test(waiter));
-  pass("the hold counts down on the phone (a ticking timer, not a sleep)",
-    /setInterval/.test(waiter) && /holdLeft/.test(waiter));
-  pass('a "Send now" button releases the order immediately',
-    waiter.includes("Send now") && /sendOrder/.test(waiter));
-  pass("Cancel puts the cart back the way it was",
-    waiter.includes("cancelSendHold") && waiter.includes("holdDeadline"));
-  pass("the cart sheet (and its edit buttons) stays open while it counts down",
-    countOf(waiter, "setCart(") >= 3 && waiter.includes("{holdDeadline !== null ? ("));
-  pass("the hold auto-releases at zero (the order still goes out)",
-    /holdLeft <= 0/.test(waiter) || /holdLeft < 1/.test(waiter) || /setHoldDeadline\(null\)/.test(waiter));
-  pass("emptying the cart cancels the hold (nothing is sent by accident)",
-    /cart\.length === 0/.test(waiter) && /cancelSendHold/.test(waiter));
+  // The queued send is independent of the currently open menu/table.
+  pass("a send snapshots its table, items, waiter and idempotency key",
+    waiter.includes("interface PendingWaiterSend") && waiter.includes("items: cart.map((item) => ({ ...item }))")
+    && waiter.includes("tableId: selectedTable.id") && waiter.includes("idempotencyKey"));
+  pass("pending sends persist in local storage and are restored after reload",
+    waiter.includes("fana_waiter_pending_sends_v1") && /localStorage\.getItem\(PENDING_SENDS_STORAGE_KEY\)/.test(waiter)
+    && /localStorage\.setItem\(PENDING_SENDS_STORAGE_KEY/.test(waiter));
+  pass("the scheduled order is also saved durably on the server with its due time",
+    /deferred_ticket_sends/.test(schema) && /CREATE TABLE IF NOT EXISTS deferred_ticket_sends/.test(migrate)
+    && /dueAt: timestamp\("due_at"\)/.test(schema) && /waiterSendHoldSeconds/.test(deferredApi));
+  pass("the authenticated server worker releases due orders even when the phone is closed",
+    /requireStaff/.test(deferredApi) && /startDeferredTicketWorker/.test(instrumentation)
+    && /lte\(deferredTicketSends\.dueAt, now\)/.test(deferredWorker) && /createTicket\(new Request/.test(deferredWorker));
+  pass("worker claims are safe across multiple app instances and survive restarts",
+    /skipLocked: true/.test(deferredWorker) && /__fanaDeferredTicketWorkerStarted/.test(deferredWorker)
+    && /processDueOrders\(\)/.test(deferredWorker));
+  pass("only the in-process worker can use the server-side ticket authorization bypass",
+    /randomBytes\(32\)/.test(deferredAuth) && /isDeferredWorkerRequest/.test(deferredAuth)
+    && /deferredWorker\)/.test(tickets));
+  pass("the waiter can update or cancel a scheduled hold before it is due",
+    /export async function PATCH/.test(deferredApi) && /export async function DELETE/.test(deferredApi)
+    && /method: "PATCH"/.test(waiter) && /method: "DELETE"/.test(waiter));
+  pass("leaving the table clears the cart but keeps the queued send alive",
+    /const onGoBack = \(\) => \{[\s\S]*?setActiveHold\(null\);[\s\S]*?setCart\(\[\]\)/.test(waiter)
+    && /replacePendingSends\(pendingSendsRef\.current\.filter/.test(waiter));
+  pass("the countdown keeps running across views and sends the saved order at zero",
+    /send\.dueAt <= now/.test(waiter) && /sendPendingOrderRef\.current\(send\.idempotencyKey, false\)/.test(waiter)
+    && /window\.setInterval\(tick, 1000\)/.test(waiter));
+  pass('a "Send now" button releases the saved order immediately from any view',
+    waiter.includes("Send now") && /sendPendingOrderRef\.current\(send\.idempotencyKey, true\)/.test(waiter)
+    && /sendPendingOrderRef\.current\(activeHoldKey, true\)/.test(waiter));
+  pass("a queued order shows its own table and Send now control outside the order screen",
+    /pendingSends\.filter\(\(send\) => view !== "order"/.test(waiter)
+    && waiter.includes('L("Order for {tableName}", { tableName: send.tableName })'));
+  pass("edits during the hold update its saved payload; leaving prevents another cart overwriting it",
+    /items: cart\.map\(\(item\) => \({ \.\.\.item }\)\)/.test(waiter)
+    && /activeHoldKeyRef\.current = key/.test(waiter));
+  pass("Cancel removes the pending send and emptying the cart does not send it",
+    waiter.includes("cancelSendHold") && /cart\.length === 0/.test(waiter));
 
   // SCOPE (the owner was explicit): her OWN phone only.
   // SCOPE (the owner was explicit): her OWN phone only.
   const confirmOrderBody = (waiter.split("const confirmOrder = async () => {")[1] || "").split("\n  };")[0] || "";
   pass("accept-and-sending a customer's QR order is NEVER held (it PUTs straight away)",
     confirmOrderBody.includes('status: "confirmed"') && confirmOrderBody.includes("/api/tickets")
-    && !confirmOrderBody.includes("startSendHold") && !confirmOrderBody.includes("setHoldDeadline"));
+    && !confirmOrderBody.includes("startSendHold"));
   pass("only her own SEND button starts a hold (one call site, one definition)",
     countOf(waiter, "startSendHold") === 2 && waiter.includes("onClick={startSendHold}"));
 }

@@ -44,6 +44,23 @@ interface CartEntry {
   notes: string;
 }
 
+/** A send-hold is a saved submission, not a timer owned by the open table view. */
+interface PendingWaiterSend {
+  idempotencyKey: string;
+  dueAt: number;
+  tableId: number;
+  tableName: string;
+  groupRound: boolean;
+  targetTicketId?: number;
+  waiterName: string;
+  items: CartEntry[];
+  serverScheduled?: boolean;
+  /** Allows a retry after an edit to use a fresh idempotency key. */
+  lastSubmittedSignature?: string;
+  nextAttemptAt?: number;
+  lastError?: string;
+}
+
 type View = "login" | "tables" | "order" | "bill" | "payment";
 
 /** One traditional-buna line waiting for (or being made by) the buna makers. */
@@ -173,18 +190,36 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
 
-  // ── THE SEND HOLD (owner's decision, Sept 2026) ──
-  // The kitchen kept receiving an order and a correction a minute later, so a
-  // waiter's OWN send now waits a short while before it is released: she can
-  // still fix a dish, a quantity or a note, and a "Send now" button sits
-  // beside the countdown for the small orders that should not wait at all.
-  // The hold lives on her phone (the cart is hers) and its length is the
-  // owner's setting, so the room can tune it as the service gets busier.
+  // ── THE SEND HOLD ──
+  // Pending sends are saved independently of the selected table/cart so a
+  // waiter can leave this menu, open another table, or reload the app without
+  // cancelling the countdown. The same idempotency key is reused for retries.
   const [holdSeconds, setHoldSeconds] = useState(WAITER_SEND_HOLD_DEFAULT_SECONDS);
-  /** Epoch ms when the running hold releases the order; null = no hold. */
-  const [holdDeadline, setHoldDeadline] = useState<number | null>(null);
-  /** Seconds left, only used to repaint the countdown once a second. */
+  const [pendingSends, setPendingSends] = useState<PendingWaiterSend[]>([]);
+  const pendingSendsRef = useRef<PendingWaiterSend[]>([]);
+  const pendingStorageLoadedRef = useRef(false);
+  const [storageReady, setStorageReady] = useState(false);
+  const [activeHoldKey, setActiveHoldKey] = useState<string | null>(null);
+  const activeHoldKeyRef = useRef<string | null>(null);
   const [holdLeft, setHoldLeft] = useState(0);
+  const [clockNow, setClockNow] = useState(0);
+  const [sendingPendingKeys, setSendingPendingKeys] = useState<string[]>([]);
+  const sendingPendingRef = useRef<Set<string>>(new Set());
+  const sendPendingOrderRef = useRef<(key: string, manual?: boolean) => void>(() => {});
+  const PENDING_SENDS_STORAGE_KEY = "fana_waiter_pending_sends_v1";
+
+  const replacePendingSends = (next: PendingWaiterSend[]) => {
+    pendingSendsRef.current = next;
+    setPendingSends(next);
+    if (pendingStorageLoadedRef.current) {
+      try { localStorage.setItem(PENDING_SENDS_STORAGE_KEY, JSON.stringify(next)); } catch { /* keep the in-memory queue alive */ }
+    }
+  };
+
+  const setActiveHold = (key: string | null) => {
+    activeHoldKeyRef.current = key;
+    setActiveHoldKey(key);
+  };
 
   // ── BILL EDITOR (owner, Sept 2026): a wrong dish, a wrong qty or a forgotten
   // note is fixed right on the bill — no walk to the cashier, no
@@ -198,22 +233,52 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   const [editNotes, setEditNotes] = useState("");
   const [editSaving, setEditSaving] = useState(false);
 
-  // ── IDEMPOTENCY (Group 1): one key per order submission, reused on retries so a
-  //    double-tap / WiFi retry can NEVER duplicate items on the table bill.
-  const pendingKeyRef = useRef("");
-  const lastCartSigRef = useRef("");
-
-  useEffect(() => {
-    const sig = JSON.stringify(cart);
-    if (pendingKeyRef.current && lastCartSigRef.current && sig !== lastCartSigRef.current) {
-      pendingKeyRef.current = ""; // cart edited after a failure → new submission
-    }
-  }, [cart]);
-
+  // One idempotency key per queued send; retries reuse it so the server cannot
+  // create duplicate items if a phone briefly loses its connection.
   const newSubmissionKey = () =>
     typeof crypto !== "undefined" && crypto.randomUUID
       ? crypto.randomUUID()
       : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  useEffect(() => {
+    let initial: PendingWaiterSend[] = [];
+    try {
+      const raw = localStorage.getItem(PENDING_SENDS_STORAGE_KEY);
+      const saved: unknown = raw ? JSON.parse(raw) : [];
+      initial = Array.isArray(saved)
+        ? saved.filter((send): send is PendingWaiterSend =>
+            !!send && typeof send.idempotencyKey === "string" && Number.isFinite(send.dueAt)
+            && Number.isFinite(send.tableId) && Array.isArray(send.items) && send.items.length > 0
+          )
+        : [];
+    } catch { /* no pending local orders */ }
+    queueMicrotask(() => {
+      pendingSendsRef.current = initial;
+      setPendingSends(initial);
+      pendingStorageLoadedRef.current = true;
+      setStorageReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!storageReady) return;
+    try { localStorage.setItem(PENDING_SENDS_STORAGE_KEY, JSON.stringify(pendingSends)); } catch { /* keep the in-memory queue alive */ }
+  }, [pendingSends, storageReady]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const syncFromOtherTab = (event: StorageEvent) => {
+      if (event.key !== PENDING_SENDS_STORAGE_KEY || !event.newValue) return;
+      try {
+        const saved: unknown = JSON.parse(event.newValue);
+        if (!Array.isArray(saved)) return;
+        pendingSendsRef.current = saved as PendingWaiterSend[];
+        setPendingSends(saved as PendingWaiterSend[]);
+      } catch { /* ignore a malformed storage event */ }
+    };
+    window.addEventListener("storage", syncFromOtherTab);
+    return () => window.removeEventListener("storage", syncFromOtherTab);
+  }, []);
 
   // Payment (full mode only — print-queue mode hides these screens entirely).
   // The owner removed payment-method options: the EFD receipt is the proof of
@@ -1022,142 +1087,266 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   const cartTotal = cart.reduce((s, c) => s + c.price * c.quantity, 0);
 
+  const deferredTicketPayload = (send: PendingWaiterSend) => ({
+    ...(send.groupRound
+      ? { source: "staff", orderType: "outdoor", groupOrder: true, targetTicketId: send.targetTicketId }
+      : { tableId: send.tableId }),
+    waiterName: send.waiterName,
+    idempotencyKey: send.idempotencyKey,
+    items: send.items.map((item) => ({
+      menuItemId: item.menuItemId,
+      name: item.name,
+      category: item.category,
+      price: item.price,
+      quantity: item.quantity,
+      notes: item.notes,
+    })),
+  });
+
+  const registerDeferredSend = async (send: PendingWaiterSend) => {
+    try {
+      const response = await fetch("/api/tickets/deferred", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idempotencyKey: send.idempotencyKey, order: deferredTicketPayload(send) }),
+      });
+      if (!response.ok) throw new Error("schedule failed");
+      const result = await response.json();
+      const stillQueued = pendingSendsRef.current.find((item) => item.idempotencyKey === send.idempotencyKey);
+      if (!stillQueued) {
+        void fetch(`/api/tickets/deferred?idempotencyKey=${encodeURIComponent(send.idempotencyKey)}`, { method: "DELETE" }).catch(() => {});
+        return;
+      }
+      const dueAt = new Date(result.dueAt).getTime();
+      const updated = { ...stillQueued, serverScheduled: true, ...(Number.isFinite(dueAt) ? { dueAt } : {}), lastError: undefined };
+      replacePendingSends(pendingSendsRef.current.map((item) => item.idempotencyKey === send.idempotencyKey ? updated : item));
+      if (JSON.stringify(updated.items) !== JSON.stringify(send.items)) {
+        void fetch("/api/tickets/deferred", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idempotencyKey: send.idempotencyKey, items: updated.items }),
+        });
+      }
+    } catch {
+      void fetch(`/api/tickets/deferred?idempotencyKey=${encodeURIComponent(send.idempotencyKey)}`, { method: "DELETE" }).catch(() => {});
+      replacePendingSends(pendingSendsRef.current.map((item) => item.idempotencyKey === send.idempotencyKey
+        ? { ...item, lastError: "Server schedule unavailable. Keep the waiter app open." }
+        : item));
+      showToast(tNow("Could not schedule the order. Keep the waiter app open."));
+    }
+  };
+
+  const updateDeferredItems = async (key: string, items: CartEntry[]) => {
+    try {
+      const response = await fetch("/api/tickets/deferred", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idempotencyKey: key, items }),
+      });
+      if (!response.ok) showToast(tNow("Could not save the order changes. Try again."));
+    } catch {
+      showToast(tNow("Could not save the order changes. Try again."));
+    }
+  };
+
   /**
-   * THE SEND HOLD: tapping SEND does not send yet. It starts the countdown the
-   * owner asked for, so the waiter has a moment to check the dishes, the
-   * quantities and the notes with the guest still at the table. The order is
-   * released when the countdown runs out, or immediately when she taps
-   * "Send now". An empty cart (everything removed while she checked) cancels
-   * the hold instead of sending nothing.
+   * Start a saved countdown for this exact table/order. The queued copy is
+   * edited along with the cart until the waiter leaves the order screen; from
+   * then on, navigation cannot discard or change the scheduled submission.
    */
   const startSendHold = () => {
-    if (cart.length === 0 || !selectedTable || sending) return;
-    if (holdDeadline !== null) return; // already counting down
-    const ms = Math.max(1, holdSeconds) * 1000;
-    setHoldDeadline(Date.now() + ms);
-    setHoldLeft(Math.max(1, holdSeconds));
+    if (cart.length === 0 || !selectedTable || sending || activeHoldKeyRef.current) return;
+    const dueAt = Date.now() + Math.max(1, holdSeconds) * 1000;
+    const idempotencyKey = newSubmissionKey();
+    const groupRound = selectedTable.isGroup === true && !!selectedTable.activeTicketId;
+    const queued: PendingWaiterSend = {
+      idempotencyKey,
+      dueAt,
+      tableId: selectedTable.id,
+      tableName: selectedTable.name,
+      groupRound,
+      ...(groupRound ? { targetTicketId: selectedTable.activeTicketId ?? undefined } : {}),
+      waiterName: staffName,
+      items: cart.map((item) => ({ ...item })),
+    };
+    replacePendingSends([...pendingSendsRef.current, queued]);
+    void registerDeferredSend(queued);
+    setActiveHold(idempotencyKey);
+    setHoldLeft(Math.max(1, Math.ceil((dueAt - Date.now()) / 1000)));
   };
 
-  const cancelSendHold = () => {
-    setHoldDeadline(null);
+  const cancelSendHold = async () => {
+    const key = activeHoldKeyRef.current;
+    if (!key) return;
+    const send = pendingSendsRef.current.find((item) => item.idempotencyKey === key);
+    try {
+      const response = await fetch(`/api/tickets/deferred?idempotencyKey=${encodeURIComponent(key)}`, { method: "DELETE" });
+      if (!response.ok) {
+        showToast(tNow("Could not cancel the scheduled order. Try again."));
+        return;
+      }
+      const result = await response.json().catch(() => ({}));
+      if (send?.serverScheduled && !result.cancelled) {
+        showToast(tNow("This order is already being sent."));
+        return;
+      }
+    } catch {
+      showToast(tNow("Could not cancel the scheduled order. Try again."));
+      return;
+    }
+    replacePendingSends(pendingSendsRef.current.filter((item) => item.idempotencyKey !== key));
+    setActiveHold(null);
     setHoldLeft(0);
+    showToast(tNow("Scheduled order cancelled."));
   };
 
-  /** Back to the table grid — used by every screen's back arrow. Declared
-   *  before sendOrder because a successful send navigates away with it. */
+  /**
+   * Keep the saved payload editable during the original countdown. Once the
+   * waiter backs out, activeHoldKey is cleared before the cart is reset, so a
+   * different table's cart can never overwrite the first table's queued order.
+   */
+  useEffect(() => {
+    const key = activeHoldKeyRef.current;
+    if (!key || !pendingStorageLoadedRef.current) return;
+    if (cart.length === 0) {
+      replacePendingSends(pendingSendsRef.current.filter((send) => send.idempotencyKey !== key));
+      setActiveHold(null);
+      return;
+    }
+    const signature = JSON.stringify(cart);
+    let currentKey = key;
+    const updated = pendingSendsRef.current.map((send) => {
+      if (send.idempotencyKey !== key) return send;
+      const editedAfterAttempt = !!send.lastSubmittedSignature && send.lastSubmittedSignature !== signature;
+      currentKey = editedAfterAttempt ? newSubmissionKey() : send.idempotencyKey;
+      return {
+        ...send,
+        idempotencyKey: currentKey,
+        items: cart.map((item) => ({ ...item })),
+        ...(editedAfterAttempt ? { lastSubmittedSignature: undefined, nextAttemptAt: undefined, lastError: undefined } : {}),
+      };
+    });
+    replacePendingSends(updated);
+    const updatedSend = updated.find((send) => send.idempotencyKey === currentKey);
+    if (updatedSend?.serverScheduled) {
+      void updateDeferredItems(currentKey, updatedSend.items);
+    }
+    if (currentKey !== key) setActiveHold(currentKey);
+  }, [cart]);
+
+  /** Back to the table grid — leaving the menu preserves any queued send. */
   const onGoBack = () => {
+    setActiveHold(null);
     setSelectedTable(null);
     setActiveTicket(null);
     setCart([]);
     setView("tables");
   };
 
-  const sendOrder = async () => {
-    if (cart.length === 0 || !selectedTable || sending) return;
-    if (!pendingKeyRef.current) pendingKeyRef.current = newSubmissionKey();
-    lastCartSigRef.current = JSON.stringify(cart);
-    setSending(true);
-    // GROUP ORDERS: adding items from a GROUP card rides the group round
-    // flow — the same bill (targetTicketId), the label stays the
-    // server-stamped "GROUP n", and the stations are released at once.
-    const groupRound = selectedTable.isGroup === true && !!selectedTable.activeTicketId;
-    // A SEND that never reaches the server used to leave the button disabled
-    // forever (setSending stayed true) with no message at all. The idempotency
-    // key is kept, so pressing SEND again cannot duplicate the order.
-    const r = await fetch("/api/tickets", {
+  const sendPendingOrder = async (key: string, manual = false) => {
+    const queued = pendingSendsRef.current.find((send) => send.idempotencyKey === key);
+    if (!queued || sendingPendingRef.current.has(key) || !staffName) return;
+    if (!manual && queued.nextAttemptAt && queued.nextAttemptAt > Date.now()) return;
+
+    sendingPendingRef.current.add(key);
+    setSendingPendingKeys((current) => [...current, key]);
+    const signature = JSON.stringify(queued.items);
+    const attempted = { ...queued, lastSubmittedSignature: signature, nextAttemptAt: undefined, lastError: undefined };
+    replacePendingSends(pendingSendsRef.current.map((send) => send.idempotencyKey === key ? attempted : send));
+
+    const response = await fetch("/api/tickets", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...(groupRound
-          ? { source: "staff", orderType: "outdoor", groupOrder: true, targetTicketId: selectedTable.activeTicketId }
-          : { tableId: selectedTable.id }),
-        waiterName: staffName,
-        idempotencyKey: pendingKeyRef.current,
-        items: cart.map((c) => ({
-          menuItemId: c.menuItemId,
-          name: c.name,
-          category: c.category,
-          price: c.price,
-          quantity: c.quantity,
-          notes: c.notes,
-        })),
-      }),
+      body: JSON.stringify(deferredTicketPayload(queued)),
     }).catch(() => null);
-    setSending(false);
-    if (!r) {
-      showToast(tNow("Network error. Try again."));
+
+    sendingPendingRef.current.delete(key);
+    setSendingPendingKeys((current) => current.filter((sendingKey) => sendingKey !== key));
+
+    if (!response) {
+      replacePendingSends(pendingSendsRef.current.map((send) => send.idempotencyKey === key
+        ? { ...send, nextAttemptAt: Date.now() + 5000, lastError: "Network error" }
+        : send));
+      if (manual) showToast(tNow("Network error. Try again."));
       return;
     }
-    if (r.ok) {
-      const d = await r.json();
-      pendingKeyRef.current = "";
-      // Suppression credit: these units are MINE, not the guest's — the next
-      // refresh carries them, and the addition detector credits them back so
-      // my own keying never rings my phone. Accumulated in case two sends land
-      // before a refresh runs.
-      const unitsSent = cart.reduce((s, c) => s + (Number(c.quantity) || 0), 0);
-      const sentTicketId = (d as { id?: unknown })?.id;
-      if (typeof sentTicketId === "number" && unitsSent > 0) {
-        ownAddRef.current = {
-          ticketId: sentTicketId,
-          units: (ownAddRef.current?.ticketId === sentTicketId ? ownAddRef.current.units : 0) + unitsSent,
-        };
-      }
-      setCart([]);
-      showToast(
-        d.duplicate
-          ? tNow("✓ Already sent • not sent twice")
-          : groupRound && d.merged
-          ? tNow("✓ Items added to {tableName}", { tableName: String(d.tableName || tNow("the group bill")) })
-          : d.merged
-          ? tNow("✓ Items added to the table bill")
-          : activeTicket && isTableReleased(activeTicket)
-          ? tNow("✓ New order started for {tableName} • the printed bill stays as it is", {
-              tableName: String(d.tableName || selectedTable?.name || tNow("the table")),
-            })
-          : tNow("✓ Order sent to cashier")
-      );
-      await loadTables();
-      onGoBack();
-    } else if (r.status === 401) {
+    if (response.status === 401) {
+      replacePendingSends(pendingSendsRef.current.map((send) => send.idempotencyKey === key
+        ? { ...send, nextAttemptAt: Date.now() + 60_000, lastError: "Sign in again to send this order" }
+        : send));
       expireSession();
-    } else {
-      showToast(tNow("Failed to send order. Press Send again, it will not duplicate."));
+      return;
     }
+    if (!response.ok) {
+      const d = await response.json().catch(() => ({}));
+      replacePendingSends(pendingSendsRef.current.map((send) => send.idempotencyKey === key
+        ? { ...send, nextAttemptAt: Date.now() + 10_000, lastError: String(d?.error || "Could not send") }
+        : send));
+      if (manual) showToast(tNow("Failed to send order. Press Send again, it will not duplicate."));
+      return;
+    }
+
+    const d = await response.json().catch(() => ({}));
+    replacePendingSends(pendingSendsRef.current.filter((send) => send.idempotencyKey !== key));
+    void fetch(`/api/tickets/deferred?idempotencyKey=${encodeURIComponent(key)}`, { method: "DELETE" }).catch(() => {});
+    const sentTicketId = (d as { id?: unknown })?.id;
+    const unitsSent = queued.items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+    if (typeof sentTicketId === "number" && unitsSent > 0) {
+      ownAddRef.current = {
+        ticketId: sentTicketId,
+        units: (ownAddRef.current?.ticketId === sentTicketId ? ownAddRef.current.units : 0) + unitsSent,
+      };
+    }
+    showToast(
+      d.duplicate
+        ? tNow("✓ Already sent • not sent twice")
+        : queued.groupRound && d.merged
+        ? tNow("✓ Items added to {tableName}", { tableName: String(d.tableName || queued.tableName) })
+        : d.merged
+        ? tNow("✓ Items added to the table bill")
+        : tNow("✓ Order sent to cashier")
+    );
+
+    // Only navigate away if this is still the order screen that created the
+    // hold. A send expiring in the background must not interrupt another table.
+    if (activeHoldKeyRef.current === key) {
+      setActiveHold(null);
+      setSelectedTable(null);
+      setActiveTicket(null);
+      setCart([]);
+      setView("tables");
+    }
+    await loadTables();
   };
 
-  // THE COUNTDOWN ITSELF: one repaint per second, and the release the moment it
-  // reaches zero (even if the waiter walked away to check something). It sits
-  // AFTER sendOrder on purpose: the release calls it directly.
-  const holdReleasedRef = useRef(false);
   useEffect(() => {
-    if (holdDeadline === null) {
-      holdReleasedRef.current = false;
-      return;
-    }
+    sendPendingOrderRef.current = sendPendingOrder;
+  });
+
+  // A ticking deadline belongs to every saved send, not to the visible menu.
+  // It also catches up immediately when a background tab becomes active again.
+  useEffect(() => {
+    if (!storageReady || !staffName) return;
     const tick = () => {
-      const left = Math.max(0, Math.ceil((holdDeadline - Date.now()) / 1000));
-      setHoldLeft(left);
-      if (left <= 0 && !holdReleasedRef.current) {
-        holdReleasedRef.current = true;
-        setHoldDeadline(null);
-        void sendOrder();
+      const now = Date.now();
+      setClockNow(now);
+      const active = pendingSendsRef.current.find((send) => send.idempotencyKey === activeHoldKeyRef.current);
+      setHoldLeft(active ? Math.max(0, Math.ceil((active.dueAt - now) / 1000)) : 0);
+      for (const send of pendingSendsRef.current) {
+        if (send.dueAt <= now && (!send.nextAttemptAt || send.nextAttemptAt <= now)) {
+          void sendPendingOrderRef.current(send.idempotencyKey, false);
+        }
       }
     };
     tick();
-    const id = setInterval(tick, 250);
-    return () => clearInterval(id);
-    // The deadline is the only trigger: a re-created sendOrder must not restart it.
-  }, [holdDeadline]);
-
-  // A cart emptied while the hold was running has nothing to send.
-  useEffect(() => {
-    if (holdDeadline === null || cart.length > 0) return;
-    // A task, not a bare call: the hold is dropped on the next tick so the
-    // emptying of the cart is never interrupted by a second render.
-    const id = setTimeout(() => cancelSendHold(), 0);
-    return () => clearTimeout(id);
-  }, [cart.length, holdDeadline]);
+    const id = window.setInterval(tick, 1000);
+    const onVisible = () => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [storageReady, staffName]);
 
   const refreshTicket = async () => {
     if (!activeTicket) return;
@@ -1586,6 +1775,31 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           </button>
         </div>
       </div>
+
+      {/* A queued order stays visible and actionable even after leaving its table/menu. */}
+      {pendingSends.filter((send) => view !== "order" || send.idempotencyKey !== activeHoldKey).map((send) => {
+        const left = Math.max(0, Math.ceil((send.dueAt - clockNow) / 1000));
+        const isSending = sendingPendingKeys.includes(send.idempotencyKey);
+        return (
+          <div key={send.idempotencyKey} className="max-w-3xl mx-auto px-4 pt-3">
+            <div className="bg-[#3D2314] border-2 border-[#C9A227]/70 rounded-xl p-3 flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-black text-amber-200">{L("Order for {tableName}", { tableName: send.tableName })} • {isSending ? L("Sending...") : formatHoldClock(left)}</p>
+                <p className="text-[10px] text-stone-300">{send.lastError === "Server schedule unavailable. Keep the waiter app open."
+                  ? L("Server schedule unavailable. Keep the waiter app open.")
+                  : send.lastError || L("It will send automatically, even while you work at another table.")}</p>
+              </div>
+              <button
+                onClick={() => sendPendingOrderRef.current(send.idempotencyKey, true)}
+                disabled={isSending}
+                className="shrink-0 bg-[#C9A227] text-[#2C1B17] font-black text-xs px-3 py-2.5 rounded-lg disabled:opacity-50"
+              >
+                <span className="flex items-center gap-1.5"><Send className="w-3.5 h-3.5" />{isSending ? L("Sending...") : L("Send now")}</span>
+              </button>
+            </div>
+          </div>
+        );
+      })}
 
       {/* Full-screen guest alert (new order / added items / bill request) */}
       <UrgentAlertOverlay alert={urgent} onClose={closeUrgent} />
@@ -2113,7 +2327,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   </div>
                 ))}
               </div>
-              {holdDeadline !== null ? (
+              {activeHoldKey !== null ? (
                 /* THE SEND HOLD: the countdown the owner asked for, with the
                    "Send now" release beside it for the small orders that should
                    not wait. The cart above stays fully editable while it runs,
@@ -2135,16 +2349,16 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   </div>
                   <div className="flex gap-2">
                     <button
-                      onClick={sendOrder}
-                      disabled={sending}
+                      onClick={() => sendPendingOrderRef.current(activeHoldKey, true)}
+                      disabled={sendingPendingKeys.includes(activeHoldKey)}
                       className="flex-1 bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-sm uppercase py-3 rounded-xl flex items-center justify-center gap-2 shadow-xl disabled:opacity-50"
                     >
                       <Send className="w-4 h-4" />
-                      {sending ? L("Sending...") : L("Send now")}
+                      {sendingPendingKeys.includes(activeHoldKey) ? L("Sending...") : L("Send now")}
                     </button>
                     <button
                       onClick={cancelSendHold}
-                      disabled={sending}
+                      disabled={sendingPendingKeys.includes(activeHoldKey)}
                       className="px-4 bg-white/10 text-stone-200 text-xs font-bold py-3 rounded-xl disabled:opacity-40"
                     >
                       {L("Cancel")}

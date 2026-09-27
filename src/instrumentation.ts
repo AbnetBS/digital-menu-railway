@@ -1,22 +1,16 @@
 /**
  * Next.js server-startup hook.
  *
- * Starts the automatic receipt-photo retention job: every 24 hours, receipt
- * photos on bills that were paid more than 30 days ago are cleared (the order
- * record is kept). This keeps the database from growing indefinitely with old
- * receipt blobs on a free/paid Postgres plan — no manual button required.
+ * The waiter send-hold queue is durable in Postgres and processed here by a
+ * small worker. If Railway replaces the process, the next process picks up any
+ * due rows from the database instead of losing the in-memory countdown.
  *
- * Single-instance safe: the scheduler is registered via a globalThis guard so
- * it starts exactly once per Node process (Railway runs `next start` as one
- * persistent process).
- */
-
-/**
- * Deliberately does not start a timer here. Coolify/VPSDime can restart or
- * replace the container at any time, which would reset an in-process timer.
- * Schedule POST /api/tickets/cleanup from a Coolify scheduled task instead.
+ * Receipt cleanup remains an external scheduled task; its daily schedule is
+ * intentionally not implemented with an in-process timer.
  */
 export async function register() {
-  // Keep the instrumentation hook valid for Next.js without starting a
-  // best-effort scheduler that cannot survive container restarts.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { startDeferredTicketWorker } = await import("@/lib/deferred-ticket-worker");
+    startDeferredTicketWorker();
+  }
 }

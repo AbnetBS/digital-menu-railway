@@ -170,6 +170,19 @@ export const tickets = pgTable("tickets", {
   itemsEditedAt: timestamp("items_edited_at"),
 });
 
+/** Durable waiter send holds, so due orders are released by the server even when the phone leaves the app. */
+export const deferredTicketSends = pgTable("deferred_ticket_sends", {
+  idempotencyKey: varchar("idempotency_key", { length: 64 }).primaryKey(),
+  payload: text("payload").notNull(),
+  dueAt: timestamp("due_at").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  createdBy: varchar("created_by", { length: 100 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 /**
  * One row per ACCEPTED order submission (Group 8).
  *

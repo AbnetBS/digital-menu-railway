@@ -1,9 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Coffee, CookingPot, CupSoda, RefreshCw, Save, CheckCircle2 } from "lucide-react";
+import { Coffee, CookingPot, CupSoda, RefreshCw, Save, CheckCircle2, Timer, Minus, Plus } from "lucide-react";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
+import {
+  WAITER_SEND_HOLD_DEFAULT_SECONDS,
+  WAITER_SEND_HOLD_MAX_SECONDS,
+  WAITER_SEND_HOLD_MIN_SECONDS,
+  waiterSendHoldSeconds,
+} from "@/lib/send-hold";
 
 type Station = "barista" | "kitchen" | "juice";
 
@@ -11,6 +17,10 @@ export default function StationsTab() {
   const { t: L, rich: Lr } = useStaffT();
   const [categories, setCategories] = useState<Array<{ id: number; name: string; slug: string }>>([]);
   const [routing, setRouting] = useState<Record<string, Station>>(DEFAULT_CATEGORY_ROUTING);
+  // THE WAITER'S SEND HOLD (owner, Sept 2026): how long a waiter's own order
+  // waits before it is released to the stations. She can still edit it while
+  // it counts down, and a "Send now" button releases it immediately.
+  const [holdSeconds, setHoldSeconds] = useState(WAITER_SEND_HOLD_DEFAULT_SECONDS);
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
 
@@ -27,6 +37,7 @@ export default function StationsTab() {
           setRouting((prev) => ({ ...prev, ...JSON.parse(s.category_routing) }));
         } catch {}
       }
+      setHoldSeconds(waiterSendHoldSeconds(s.waiter_send_hold_seconds));
     }
   };
 
@@ -39,12 +50,15 @@ export default function StationsTab() {
     const res = await fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category_routing: JSON.stringify(routing) }),
+      body: JSON.stringify({
+        category_routing: JSON.stringify(routing),
+        waiter_send_hold_seconds: String(holdSeconds),
+      }),
     }).catch(() => null);
     setSaving(false);
     if (!res) return alert(L("Network error. Try again."));
     if (res.ok) {
-      setSavedMsg(tNow("✓ Stations routing saved • all new orders will split correctly by station"));
+      setSavedMsg(tNow("✓ Stations routing and send hold saved • new orders will split correctly by station"));
       setTimeout(() => setSavedMsg(""), 3500);
     } else alert(L("Failed to save routing."));
   };
@@ -129,6 +143,62 @@ export default function StationsTab() {
             <p className="py-6 text-center text-xs text-stone-500">{L("No categories yet. Add them under the Menu tab.")}</p>
           )}
         </div>
+      </div>
+
+      {/* ── THE WAITER'S SEND HOLD (owner, Sept 2026) ──
+          The kitchen kept receiving an order and a correction a minute later,
+          so a waiter's OWN send now waits this long before it is released: she
+          can still fix a dish, a quantity or a note, and a "Send now" button
+          sits beside the countdown for the small orders that should not wait.
+          Tune it here as the room gets busier or quieter. */}
+      <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 p-5 space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1">
+            <h3 className="text-sm font-bold text-amber-200 flex items-center gap-2">
+              <Timer className="w-4 h-4 text-[#C9A227]" /> {L("Waiter Send Hold (seconds)")}
+            </h3>
+            <p className="text-[11px] text-stone-400 mt-1">
+              {L("How long a waiter's own order waits before it is released to the stations. She can still edit it during the hold, and a \"Send now\" button releases it immediately.")}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setHoldSeconds((s) => Math.max(WAITER_SEND_HOLD_MIN_SECONDS, s - 15))}
+              className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center"
+              title={L("15 seconds less")}
+              aria-label={L("15 seconds less")}
+            >
+              <Minus className="w-4 h-4" />
+            </button>
+            <span className="font-serif font-black text-2xl text-[#C9A227] w-16 text-center tabular-nums">{holdSeconds}</span>
+            <button
+              onClick={() => setHoldSeconds((s) => Math.min(WAITER_SEND_HOLD_MAX_SECONDS, s + 15))}
+              className="w-9 h-9 rounded-xl bg-[#C9A227] text-black hover:bg-amber-400 flex items-center justify-center"
+              title={L("15 seconds more")}
+              aria-label={L("15 seconds more")}
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {[30, 60, 120, 180].map((preset) => (
+            <button
+              key={preset}
+              onClick={() => setHoldSeconds(preset)}
+              className={`px-3 py-2 rounded-xl text-[11px] font-black border transition ${
+                holdSeconds === preset
+                  ? "bg-[#C9A227] text-black border-[#C9A227]"
+                  : "bg-black/30 text-stone-300 border-stone-700 hover:border-[#C9A227]/60"
+              }`}
+            >
+              {preset === 30 ? L("30 sec") : preset === 60 ? L("1 min") : preset === 120 ? L("2 min") : L("3 min")}
+            </button>
+          ))}
+        </div>
+        <p className="text-[11px] text-stone-500">
+          {L("A guest's QR order is never affected: it always waits for a human confirmation.")}
+        </p>
       </div>
 
       <div className="bg-[#2C1B17]/70 border border-stone-800 rounded-xl p-4 text-xs text-stone-400 space-y-1.5">

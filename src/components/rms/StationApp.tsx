@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Coffee, CookingPot, CupSoda, RefreshCw, LogOut, CheckCircle2, BellRing, Clock, History, X } from "lucide-react";
 import { unlockAudio, playAlarm, playDing, setStationBell } from "@/lib/sound";
 import { formatClock, formatDayMonthYear, minutesSince, waitingLabel } from "@/lib/order-lines";
@@ -46,6 +46,42 @@ interface StationItem {
   stationStatusAt?: string | null;
   /** When THIS line arrived — a later "2 Tea" is newer work than the first one. */
   createdAt?: string | null;
+}
+
+/**
+ * ONE CANCELLED RECORD (owner's decision, Sept 2026).
+ *
+ * A cancelled order used to vanish from this list, so a cook who had already
+ * started it had nothing to point at. The server now serves every
+ * cancellation — a whole order voided by the waiter or the cashier, or a line
+ * removed off a bill that is still open — as a red record the crew reads and
+ * dismisses with Okay. It is never work: it never counts as sold.
+ */
+interface CancelledItem {
+  id: number;
+  name: string;
+  quantity: number;
+  notes?: string | null;
+  stationStatus: "pending" | "accepted" | "done";
+  stationStatusBy?: string | null;
+  stationStatusAt?: string | null;
+  createdAt?: string | null;
+  removed?: boolean;
+}
+
+interface CancelledRow {
+  id: number;
+  tableName: string;
+  orderNumber?: string | null;
+  orderType?: string | null;
+  status: string;
+  createdBy?: string | null;
+  confirmedBy?: string | null;
+  createdAt?: string | null;
+  cancelledAt?: string | null;
+  /** true = the WHOLE order was cancelled · false = single lines were removed. */
+  wholeOrder: boolean;
+  items: CancelledItem[];
 }
 
 interface StationTicket {
@@ -214,6 +250,69 @@ export default function StationApp({ station }: { station: Station }) {
   const [newPendingBadges, setNewPendingBadges] = useState<Record<number, number>>({});
   const initRef = useRef(false);
 
+  // ── CANCELLED WORK: the crew's PROOF ──
+  // Every cancellation is served by ?cancelled=1 and shown in red with an
+  // Okay button where Accept/Done used to be. Okay only clears it from THIS
+  // device (the record stays on the server, so a second tablet still sees it),
+  // and it is remembered in localStorage so a refresh does not resurrect it.
+  const cancelledOkKey = `fana_cancelled_ok_${station}`;
+  /** Stable key per dismissible record: a whole order, or one removed line. */
+  const cancelledKeyOf = (row: CancelledRow, item?: CancelledItem) =>
+    row.wholeOrder || !item ? `o:${row.id}` : `i:${item.id}`;
+
+  const [cancelledRows, setCancelledRows] = useState<CancelledRow[]>([]);
+  // The Okay taps this tablet already made are read ONCE, during the first
+  // render (a lazy initializer, not an effect): a refresh must not resurrect a
+  // record the cook already read, and it must never cost an extra render.
+  const [cancelledOk, setCancelledOk] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem(cancelledOkKey);
+      const list: unknown = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const cancelledOkRef = useRef<Set<string>>(new Set());
+  const cancelledSeenRef = useRef<Set<string>>(new Set());
+  // Keep the ref in step from an effect (never during render): the Okay handler
+  // reads it, the render reads the state.
+  useEffect(() => {
+    cancelledOkRef.current = new Set(cancelledOk);
+  }, [cancelledOk]);
+
+  /** Okay: hide these records on this device and remember the choice. */
+  const dismissCancelled = (keys: string[]) => {
+    const next = [...new Set([...cancelledOkRef.current, ...keys])].slice(-300);
+    cancelledOkRef.current = new Set(next);
+    setCancelledOk(next);
+    try {
+      localStorage.setItem(cancelledOkKey, JSON.stringify(next));
+    } catch {
+      /* storage blocked: the dismissal lasts for this page only */
+    }
+  };
+
+  /**
+   * What is left to show: a whole cancelled order disappears with one Okay,
+   * and a removed line disappears with its own Okay (so a second removal on
+   * the same bill is still news). Dismissals live on THIS device only — the
+   * server keeps the record for every other tablet.
+   */
+  const cancelledVisible = useMemo(() => {
+    const hidden = new Set(cancelledOk);
+    const rows: Array<{ row: CancelledRow; items: CancelledItem[] }> = [];
+    for (const row of cancelledRows) {
+      if (row.wholeOrder) {
+        if (!hidden.has(`o:${row.id}`)) rows.push({ row, items: row.items });
+        continue;
+      }
+      const items = row.items.filter((i) => !hidden.has(`i:${i.id}`));
+      if (items.length > 0) rows.push({ row, items });
+    }
+    return rows;
+  }, [cancelledRows, cancelledOk]);
+
   useEffect(() => {
     const ticker = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(ticker);
@@ -293,6 +392,23 @@ export default function StationApp({ station }: { station: Station }) {
     // GROUP 10 FIX: used to skip while the tab was hidden — but the kitchen
     // tablet dims its screen! SSE messages only arrive on change, so always
     // process them: the alarm rings even with a dimmed screen.
+    //
+    // CANCELLED PROOF (owner's decision, Sept 2026): read the cancellation
+    // feed FIRST. A whole cancelled order also leaves the live list below, and
+    // the vanish detector used to be the only thing that noticed — with no
+    // record left on screen to prove it. Now the feed is the proof (red rows
+    // with an Okay button) and the vanish detector stays quiet for it, so one
+    // cancellation rings exactly once.
+    let cancelledFeed: CancelledRow[] = [];
+    try {
+      const cr = await fetch(`/api/station-items?station=${station}&cancelled=1`, { cache: "no-store" });
+      if (cr.status === 401) return expireSession();
+      if (cr.ok) cancelledFeed = (await cr.json()) as CancelledRow[];
+    } catch {
+      /* the live list below must still load */
+    }
+    const cancelledTicketIds = new Set(cancelledFeed.filter((c) => c.wholeOrder).map((c) => c.id));
+
     const r = await fetch(`/api/station-items?station=${station}`);
     if (r.status === 401) return expireSession();
     if (!r.ok) return;
@@ -372,6 +488,9 @@ export default function StationApp({ station }: { station: Station }) {
       if (nowTicketIds.has(id)) continue;
       ticketNameRef.current.delete(id);
       if (!initRef.current) continue;
+      // A whole cancelled order is reported by the cancelled feed instead:
+      // it rings there, with a red record the crew can read and dismiss.
+      if (cancelledTicketIds.has(id)) continue;
       // Only a ticket with work still on the fire is worth an alarm.
       if ((prevOpenWork.get(id) || 0) > 0) gone.push(name);
       else closedQuiet.push(name);
@@ -407,6 +526,41 @@ export default function StationApp({ station }: { station: Station }) {
     ) {
       const tableName = closedQuiet[0];
       showToast(tNow("✓ {tableName}: bill closed • all your items were done", { tableName }));
+    }
+
+    // ── THE CANCELLATION ALARM ──
+    // A cancellation is the one event the crew must HEAR: the pan is already
+    // on the fire and the food must not be served. Every brand-new record
+    // (whole order or single removed line) rings the loud alarm once, says
+    // what it was, and stays on screen in red until Okay.
+    const newCancelled: CancelledRow[] = [];
+    for (const row of cancelledFeed) {
+      const keys = row.wholeOrder ? [`o:${row.id}`] : row.items.map((i) => `i:${i.id}`);
+      for (const k of keys) {
+        if (!cancelledSeenRef.current.has(k)) {
+          cancelledSeenRef.current.add(k);
+          if (initRef.current) newCancelled.push(row);
+        }
+      }
+    }
+    if (newCancelled.length > 0) {
+      // Publish the proof from a microtask: the live list and the red record
+      // then paint together, once, instead of one render per list.
+      queueMicrotask(() => setCancelledRows(cancelledFeed));
+      if (alertsOnRef.current) {
+        playAlarm();
+        const first = newCancelled[0];
+        const firstItem = first.items[0];
+        const message = first.wholeOrder
+          ? tNow("⛔ {tableName}: order CANCELLED • stop preparing", { tableName: first.tableName })
+          : tNow("✗ {tableName}: {name} was REMOVED, do not prepare it", { tableName: first.tableName, name: firstItem?.name || "" });
+        triggerDesktopNotification({
+          title: tNow("Fana Cafe • {label} update", { label: tNow(meta.label) }),
+          message,
+          tag: `fana-station-cancelled-${Date.now()}`,
+        });
+        showToast(message);
+      }
     }
 
     if (initRef.current && alertsOnRef.current && fresh.length > 0) {
@@ -663,6 +817,79 @@ export default function StationApp({ station }: { station: Station }) {
           <p className="text-[9px] font-extrabold uppercase text-stone-400">{L("Today • tap to open")}</p>
         </button>
       </div>
+
+      {/* ── CANCELLED WORK: the crew's PROOF (owner's decision, Sept 2026) ──
+          A cancelled order used to disappear from this list, so a cook who had
+          already started it had nothing to point at. Now it stays here in red,
+          in the place Accept/Done used to sit, until they tap Okay. It is
+          never work: it is never counted as sold, and Okay only clears it from
+          this device. */}
+      {cancelledVisible.length > 0 && (
+        <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5 space-y-3">
+          <h2 className="font-serif font-black text-sm text-rose-300 uppercase tracking-wide">
+            {L("⛔ Cancelled • proof for you")}
+          </h2>
+          {cancelledVisible.map(({ row, items }: { row: CancelledRow; items: CancelledItem[] }) => (
+            <div key={`c-${row.id}-${row.wholeOrder ? "all" : "lines"}`} className="bg-rose-950/50 border-2 border-rose-600/70 rounded-2xl p-4 space-y-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-serif font-bold text-lg text-rose-200 line-through">{row.tableName}</p>
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-rose-700 text-white">
+                      {L("⛔ CANCELLED")}
+                    </span>
+                    {row.orderNumber && (
+                      <span className="text-[10px] font-black text-rose-300">#{row.orderNumber}</span>
+                    )}
+                  </div>
+                  <p className="text-[11px] font-black text-rose-400 mt-0.5">
+                    {L("Cancelled at {clock}", { clock: formatClock(row.cancelledAt) })}
+                  </p>
+                  {row.wholeOrder ? (
+                    <p className="text-[11px] font-bold text-rose-300 mt-1">
+                      {L("Whole order cancelled • do not prepare or serve any of it")}
+                    </p>
+                  ) : (
+                    <p className="text-[11px] font-bold text-rose-300 mt-1">
+                      {L("Removed from the bill • do not prepare it")}
+                    </p>
+                  )}
+                </div>
+                {row.wholeOrder && (
+                  <button
+                    onClick={() => dismissCancelled([`o:${row.id}`])}
+                    className="shrink-0 px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-600 text-white text-xs font-black uppercase transition"
+                    title={L("Seen it • clear it from my screen")}
+                  >
+                    {L("Okay")}
+                  </button>
+                )}
+              </div>
+              <div className="space-y-1.5 divide-y divide-rose-900/60">
+                {items.map((i) => (
+                  <div key={i.id} className="pt-1.5 flex items-center justify-between gap-3 text-xs">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-rose-300 line-through">
+                        {i.name} <span className="text-rose-400">x{i.quantity}</span>
+                      </p>
+                      {i.notes && <p className="text-[11px] font-semibold text-rose-400/80 italic mt-0.5">📝 {i.notes}</p>}
+                    </div>
+                    {!row.wholeOrder && (
+                      <button
+                        onClick={() => dismissCancelled([`i:${i.id}`])}
+                        className="shrink-0 px-4 py-2 rounded-xl bg-rose-800 hover:bg-rose-700 text-white text-[11px] font-black uppercase transition"
+                        title={L("Seen it • clear this line from my screen")}
+                      >
+                        {L("Okay")}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* tickets cards */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5 space-y-4">

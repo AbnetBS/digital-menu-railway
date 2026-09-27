@@ -5,7 +5,7 @@ import { tickets, ticketItems, cafeTables, menuItems, announcements, orderSubmis
 import { ensureTablesExist } from "@/db/migrate";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { effectivePrice } from "@/lib/price";
-import { eq, asc, desc, and, notInArray, inArray, sql, gt, gte, lt, isNotNull } from "drizzle-orm";
+import { eq, asc, desc, and, notInArray, inArray, sql, gt, gte, lt, isNotNull, isNull, or } from "drizzle-orm";
 import { deleteOrphanedCdnImages, persistImageRef } from "@/lib/image-store";
 import { requireStaffOrAdmin, requireAdmin, readStaffSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
@@ -16,6 +16,7 @@ import { recordTicketEvent, summarizeSubmissionLines } from "@/lib/ticket-audit"
 import { sendPushToRoles, CUSTOMER_ALERT_RING } from "@/lib/push";
 import { ticketStatusAlerts, withoutActor } from "@/lib/alerts";
 import { stationForOrder, stationOf, type StationName } from "@/lib/stations";
+import { isBillSent } from "@/lib/order-release";
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
 import { nextGroupNumberToday, nextGroupNumberInTx, groupLabel } from "@/lib/group-orders";
 
@@ -176,6 +177,25 @@ export async function GET(request: Request) {
     // prediction only.
     if (searchParams.get("nextGroup") === "1") {
       return NextResponse.json({ nextGroup: await nextGroupNumberToday() });
+    }
+
+    // ONE BILL BY ID (owner, Sept 2026): a released bill — a dine-in bill the
+    // cashier printed, or a table that turned over — is deliberately absent
+    // from ?active=1, yet staff still have to OPEN it: the waiter confirms the
+    // lines a guest added to a bill she already sent, the cashier confirms the
+    // same lines on her screen, and the waiter keeps serving a table whose
+    // bill was printed minutes ago. ?id=<ticket> returns exactly that bill
+    // with its items, whatever its release state.
+    const oneTicketId = Number(searchParams.get("id") || 0);
+    if (oneTicketId > 0) {
+      const rows = await db.select().from(tickets).where(eq(tickets.id, oneTicketId)).limit(1);
+      if (rows.length === 0) return NextResponse.json({ error: "Ticket not found" }, { status: 404 });
+      const oneItems = await db.select().from(ticketItems).where(eq(ticketItems.ticketId, oneTicketId)).orderBy(asc(ticketItems.id));
+      const one = { ...rows[0] } as Record<string, unknown>;
+      delete one.receiptImage;
+      return NextResponse.json([
+        { ...one, receiptImage: null, unprintedSubmissions: 0, unprintedCustomerSubmissions: 0, unprintedStaffSubmissions: 0, items: oneItems },
+      ]);
     }
 
     let list;
@@ -430,6 +450,13 @@ export async function POST(request: Request) {
     // the same group's bill instead of printing a new one per round. The
     // target must itself be outdoor and still active; anything else simply
     // falls through to a fresh ticket.
+    //
+    // PRINT FREES THE TABLE (owner's decision, Sept 2026): a dine-in bill the
+    // cashier already printed is finished for the floor, so it is NOT the
+    // table's open bill any more: the next guest (or the waiter keying at the
+    // table) opens a brand new bill instead of adding to a printed one. That is
+    // the whole point of the cashier's tap clearing the table, because once the
+    // EFD receipt went out nobody can tell which bill a late item belongs to.
     const targetTicketId = Number(body?.targetTicketId) || 0;
     const activeTickets = orderType === "outdoor"
       ? targetTicketId > 0
@@ -447,7 +474,14 @@ export async function POST(request: Request) {
       : await tx
           .select()
           .from(tickets)
-          .where(and(eq(tickets.tableId, tableIdNum), notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])));
+          .where(
+            and(
+              eq(tickets.tableId, tableIdNum),
+              notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES]),
+              // A printed dine-in bill no longer occupies its table.
+              or(eq(tickets.orderType, "outdoor"), isNull(tickets.printedAt))
+            )
+          );
 
     let ticketId: number;
     const actorName = waiterName || (isCustomer ? "Customer (QR)" : "Waiter");
@@ -504,7 +538,14 @@ export async function POST(request: Request) {
           const existing = await tx
             .select()
             .from(tickets)
-            .where(and(eq(tickets.tableId, tableIdNum), notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES])))
+            .where(
+              and(
+                eq(tickets.tableId, tableIdNum),
+                notInArray(tickets.status, [...INACTIVE_TICKET_STATUSES]),
+                // A printed dine-in bill no longer occupies its table.
+                or(eq(tickets.orderType, "outdoor"), isNull(tickets.printedAt))
+              )
+            )
             .limit(1);
           if (existing.length > 0) {
             ticketId = existing[0].id;
@@ -674,6 +715,15 @@ export async function POST(request: Request) {
     // added to the existing row instead (canMergeLines is the single rule, and it
     // keeps Daily Board offer lines, removed lines and already-accepted/done lines
     // separate on purpose).
+    //
+    // RELEASE GATE (owner's decision, Sept 2026): a line may only ever fold into
+    // a row with the SAME release state. A guest top-up on a bill that was
+    // already sent must NOT silently grow a line the kitchen already has: the
+    // new units wait for staff confirmation, so they get their own held row
+    // (and a held top-up folds into the earlier held one). Staff keying stays
+    // instant, so it folds into released rows exactly like before.
+    const billAlreadySent = activeTickets.length > 0 && isBillSent(activeTickets[0]);
+    const holdNewLines = isCustomer && billAlreadySent;
     const mergeCandidates =
       activeTickets.length > 0
         ? await tx
@@ -724,6 +774,9 @@ export async function POST(request: Request) {
 
         const target = mergeCandidates.find(
           (row) =>
+            // Only fold into a row in the same release state (see above): a
+            // held top-up never hides inside a line the crew already has.
+            (row.released ?? true) === !holdNewLines &&
             canMergeLines(row, incoming) &&
             (Number(row.quantity) || 0) + it.quantity <= MAX_MERGED_LINE_QUANTITY
         );
@@ -752,6 +805,9 @@ export async function POST(request: Request) {
             notes: it.notes || "",
             stationName,
             stationStatus: "pending",
+            // A guest top-up on an already-sent bill waits for the cashier's or
+            // the waiter's confirmation before any station screen shows it.
+            released: !holdNewLines,
             idempotencyKey: idemKey ? `${idemKey}#${idx}` : null,
           })
           .returning();
@@ -825,7 +881,15 @@ export async function POST(request: Request) {
     }
 
     const finalTicket = await tx.select().from(tickets).where(eq(tickets.id, ticketId));
-    return { ticket: finalTicket[0], total, merged: activeTickets.length > 0, submissionStations: [...submissionStations] as StationName[] };
+    return {
+      ticket: finalTicket[0],
+      total,
+      merged: activeTickets.length > 0,
+      // True when this submission added lines that are HELD from the stations
+      // until staff confirm them (a guest top-up on an already-sent bill).
+      held: holdNewLines,
+      submissionStations: [...submissionStations] as StationName[],
+    };
       });
 
     // Outdoor retry: two outdoor tickets drawing the same synthetic table id
@@ -867,13 +931,16 @@ export async function POST(request: Request) {
     // that are CLOSED. Fire-and-forget by design: a push outage must never
     // delay or fail an order.
     // RELEASE RULE (owner's decision, Sept 2026): the SEND releases the food,
-    // never the print. A staff-sent new order is sent at creation, and food
-    // added later to a SENT bill lands on the crew's list the same second —
-    // the cashier, the waiter and every crew with new lines in this submission
-    // are all rung at once. Only two bills keep the crews quiet: a bill nobody
-    // accepted yet (pending_waiter — the waiter's job to confirm) and a HELD
-    // bill (the cashier accepted the QR order but has not sent it — the guest
-    // may still add more, and the crews see none of it until CONFIRM & SEND).
+    // never the print. A staff-sent new order is sent at creation, and food a
+    // WAITER adds later to a SENT bill lands on the crew's list the same
+    // second — the cashier, the waiter and every crew with new lines in this
+    // submission are all rung at once. Only three bills keep the crews quiet:
+    // a bill nobody accepted yet (pending_waiter — the waiter's job to
+    // confirm), a HELD bill (the cashier accepted the QR order but has not
+    // sent it — the guest may still add more, and the crews see none of it
+    // until CONFIRM & SEND), and a guest top-up on an already-sent bill (the
+    // new lines are HELD until the cashier or the waiter confirms them — see
+    // ticket_items.released).
     //
     // WAITER TOP-UP ALARMS: a guest ordering from their phone hears nothing
     // from staff, so EVERY customer submission must ring the waiter — not just
@@ -890,20 +957,38 @@ export async function POST(request: Request) {
     {
       const pushed = transactionResult.ticket;
       const merged = transactionResult.merged;
+      // Are this submission's lines held back from the stations?
+      const holdNewLines = transactionResult.held === true;
       // One tag per submission: the idempotency key is unique per order submit
       // (legacy clients without one fall back to a timestamp, still unique).
       const additionTag = `fana-qr-add-${pushed.id}-${idemKey || Date.now()}`;
       if (isCustomer && pushed.status === "pending_waiter") {
-        // Brand-new QR order AND top-ups on a still-pending bill: the WAITER's
-        // job only — the cashier cannot print what nobody confirmed yet, so she
-        // keeps the silence she always had here. Merges use the per-submission
-        // tag so each top-up rings as its own notification.
-        void sendPushToRoles(["waiter"], {
+        // Brand-new QR order AND top-ups on a still-pending bill: nobody has
+        // confirmed them yet, so BOTH the waiter (who walks to the table) and
+        // the cashier (who coordinates the room) must hear it — a guest's
+        // order never reaches a station without a human confirmation. Merges
+        // use the per-submission tag so each top-up rings as its own
+        // notification.
+        void sendPushToRoles(["waiter", "cashier"], {
           title: merged ? "🍽 Guest added items" : "🍽 New QR order",
           body: `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`,
           tag: merged ? additionTag : `fana-qr-${pushed.id}`,
           // A GUEST just acted: 3 second alarm burst, hard vibration, and a
           // Confirm button right on the lock screen.
+          ...CUSTOMER_ALERT_RING,
+          ticketId: pushed.id,
+          action: "confirm",
+        }).catch(() => {});
+      } else if (isCustomer && holdNewLines) {
+        // A guest added to a bill that was ALREADY sent: the new lines wait on
+        // the cashier's and the waiter's screens until one of them confirms
+        // them to the stations (see ticket_items.released). The crews are NOT
+        // rung here — there is nothing new on their lists yet, and the
+        // confirmation below is what wakes them.
+        void sendPushToRoles(["waiter", "cashier"], {
+          title: "🍽 Guest added items",
+          body: `${pushed.tableName} • confirm before the stations get them`,
+          tag: additionTag,
           ...CUSTOMER_ALERT_RING,
           ticketId: pushed.id,
           action: "confirm",
@@ -966,12 +1051,15 @@ export async function POST(request: Request) {
       // The lines of THIS submission are already on the crew's lists. Ring
       // exactly the crews that received new work — a drinks-only top-up never
       // wakes the kitchen, and a held or still-pending bill rings nobody here
-      // (there is nothing on their lists yet). One tag per submission, so each
-      // addition rings as its own event instead of replacing the last one.
+      // (there is nothing on their lists yet). A guest top-up on an
+      // already-sent bill rings nobody either: it is HELD until staff confirm
+      // it, and that confirmation is what wakes the crews. One tag per
+      // submission, so each addition rings as its own event instead of
+      // replacing the last one.
       try {
         const billSent = !!(pushed.confirmedAt || pushed.printedAt);
         const newStations = (transactionResult.submissionStations || []) as StationName[];
-        if (billSent && pushed.status !== "pending_waiter" && newStations.length > 0) {
+        if (!holdNewLines && billSent && pushed.status !== "pending_waiter" && newStations.length > 0) {
           const single = newStations.length === 1 ? newStations[0] : null;
           const title =
             single === "buna" ? "🫖 New buna"
@@ -1144,9 +1232,27 @@ export async function PUT(request: Request) {
       // Sending an order nobody had accepted yet also accepts it.
       if (!updates.status && cur.status === "pending_waiter") updates.status = "confirmed";
     }
+    // ── THE RELEASE GATE (owner's decision, Sept 2026) ──
+    // A guest top-up on an already-sent bill is born HELD (ticket_items
+    // .released = false): it waits on the cashier's and the waiter's screens
+    // until one of them confirms it. THIS is that confirmation — the release
+    // of a whole bill (a waiter's ✓ ACCEPT & SEND, or the cashier's
+    // CONFIRM & SEND) also releases every held line on it, so the crews see
+    // the complete bill in one go instead of half of it.
+    const releasesTheBill =
+      (body.status === "confirmed" && !holdAfterConfirm) || sendRequested;
     // GROUP 9 (print-queue): the cashier keyed the bill into the EFD/POS and
     // printed the order paper. Re-printing after additions simply refreshes the
     // stamp (same transition printed → printed is an idempotent no-op above).
+    //
+    // PRINT FREES THE TABLE (owner's decision, Sept 2026): for a DINE-IN bill
+    // this tap is also the "table cleared" the waiters kept forgetting — the
+    // floor boards show the table as free and the next guest opens a NEW bill,
+    // so a late item can never land on a receipt that already went out. The
+    // crews keep the bill on their lists until every line is finished (the
+    // print is EFD audit only), and the bill closes itself once they are done.
+    // Outdoor/group bills are exempt: a group takes more rounds on the same
+    // bill, so their print stays a re-print.
     if (body.status === "printed") {
       updates.printedAt = new Date();
       updates.printedBy = body.printedBy ? String(body.printedBy).slice(0, 100) : cur.printedBy || "(cashier)";
@@ -1177,6 +1283,8 @@ export async function PUT(request: Request) {
       updates.verifiedAt = new Date();
     }
 
+    // Crews whose held lines this tap released (filled inside the transaction).
+    let releasedStations: StationName[] = [];
     const updated = await db.transaction(async (tx) => {
       if (body.status === "cancelled" && __auth.session.kind === "staff" && actorRole === "cashier") {
         const [ticket] = await tx.select().from(tickets).where(eq(tickets.id, cur.id)).for("update");
@@ -1189,6 +1297,21 @@ export async function PUT(request: Request) {
           ? and(eq(tickets.id, body.id), eq(tickets.status, cur.status))
           : eq(tickets.id, body.id)
       ).returning();
+
+      // RELEASE THE HELD LINES (owner's decision, Sept 2026)
+      // This tap released the bill (a waiter's ACCEPT & SEND, or the cashier's
+      // CONFIRM & SEND), so every line a guest added while it was waiting is
+      // released with it: the station screens pick the rows up on their next
+      // refresh, exactly like the rest of the bill. Only rows still held are
+      // touched, so this is safe to repeat.
+      if (rows[0] && releasesTheBill) {
+        const releasedRows = await tx
+          .update(ticketItems)
+          .set({ released: true })
+          .where(and(eq(ticketItems.ticketId, rows[0].id), eq(ticketItems.released, false)))
+          .returning({ stationName: ticketItems.stationName });
+        releasedStations = [...new Set(releasedRows.map((r) => stationOf(r.stationName)))];
+      }
 
       // Buna makers use their lane as a read-only request list. They do not tap
       // Accept or Done; once the cashier prints the EFD/order paper, the buna
@@ -1264,7 +1387,19 @@ export async function PUT(request: Request) {
               ? "Cashier printed the outdoor order receipt"
               : cur.printedAt
               ? "Cashier re-printed the bill"
-              : "Cashier printed the bill",
+              : "Cashier printed the bill and cleared the table",
+        });
+      }
+      if (releasedStations.length > 0) {
+        await recordTicketEvent(db, {
+          ticketId: updated[0].id,
+          eventType: "additions_released",
+          actorName,
+          actorRole,
+          source: "staff",
+          fromValue: "held",
+          toValue: "released",
+          details: `Guest additions confirmed to the stations: ${releasedStations.join(", ")}`,
         });
       }
       if (body.receiptRequested === true) {
@@ -1336,6 +1471,33 @@ export async function PUT(request: Request) {
         }
       } catch {
         // An alert hiccup must never fail a status change.
+      }
+    }
+
+    // GUEST ADDITIONS RELEASED (owner's decision, Sept 2026): staff just
+    // confirmed the lines a guest added to an already-sent bill, so those
+    // lines are on the crews' lists NOW. Ring exactly the crews that received
+    // new work — a drinks-only top-up never wakes the kitchen. The status
+    // alerts above already cover a whole-bill release, so this only fires for
+    // the additions-only confirmation.
+    if (releasedStations.length > 0) {
+      try {
+        const single = releasedStations.length === 1 ? releasedStations[0] : null;
+        const title =
+          single === "buna" ? "\u{1FAD6} New buna"
+          : single === "juice" ? "\u{1F9C3} New juices"
+          : single === "barista" ? "\u2615 New drinks"
+          : single === "kitchen" ? "\u{1F468}\u200D\u{1F373} New items to cook"
+          : "\u{1F468}\u200D\u{1F373} New items";
+        void sendPushToRoles(releasedStations, {
+          title,
+          body: `${updated[0].tableName} • guest added items • check your station list`,
+          tag: `fana-station-add-${updated[0].id}-${Date.now()}`,
+          urgent: true,
+          repeat: 0,
+        }).catch(() => {});
+      } catch {
+        // A push hiccup must never fail a confirmation.
       }
     }
 

@@ -22,6 +22,12 @@ import { triggerDesktopNotification } from "@/lib/notifications";
 import { useRef } from "react";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
+import {
+  formatHoldClock,
+  waiterSendHoldSeconds,
+  WAITER_SEND_HOLD_DEFAULT_SECONDS,
+} from "@/lib/send-hold";
+import { heldLines, heldUnits, isTableReleased } from "@/lib/order-release";
 
 interface StaffLite {
   id: number;
@@ -50,6 +56,34 @@ interface BunaLine {
   notes?: string | null;
   stationStatus: "pending" | "accepted" | "done";
   createdAt?: string | null;
+}
+
+/**
+ * ONE CANCELLED RECORD for the buna makers (owner's decision, Sept 2026).
+ * A cancelled buna order used to vanish from "My Buna", so the maker who had
+ * already put the pot on had nothing to point at. The server serves every
+ * cancellation as a red record with an Okay button, exactly like the kitchen,
+ * barista and juice screens get (see StationApp).
+ */
+interface BunaCancelledItem {
+  id: number;
+  name: string;
+  quantity: number;
+  notes?: string | null;
+  stationStatus: "pending" | "accepted" | "done";
+  createdAt?: string | null;
+}
+
+interface BunaCancelledRow {
+  id: number;
+  tableName: string;
+  orderNumber?: string | null;
+  orderType?: string | null;
+  status: string;
+  cancelledAt?: string | null;
+  /** true = the WHOLE order was cancelled · false = single lines were removed. */
+  wholeOrder: boolean;
+  items: BunaCancelledItem[];
 }
 
 export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna" }) {
@@ -85,6 +119,26 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   // Nothing here rings on its own — the push from the server does that, so the
   // phone in a pocket and the strip on screen stay in step.
   const [bunaLines, setBunaLines] = useState<BunaLine[]>([]);
+  // CANCELLED PROOF (owner's decision, Sept 2026): a cancelled buna order used
+  // to vanish from this lane, so the maker who had already put the pot on had
+  // nothing to point at. The server serves every cancellation as a red record
+  // with an Okay button — the same proof the kitchen, barista and juice get.
+  const [bunaCancelled, setBunaCancelled] = useState<BunaCancelledRow[]>([]);
+  // Read ONCE on the first render (a lazy initializer, not an effect): a refresh
+  // must not resurrect a cancelled record this phone already read.
+  const [bunaCancelledOk, setBunaCancelledOk] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("fana_cancelled_ok_buna");
+      const list: unknown = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list.filter((x): x is string => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const bunaCancelledOkRef = useRef<Set<string>>(new Set());
+  const bunaCancelledSeenRef = useRef<Set<string>>(new Set());
+  /** The first read only builds the baseline: it must never ring. */
+  const bunaAnnouncedRef = useRef(false);
 
   // UI
   const [view, setView] = useState<View>("login");
@@ -93,6 +147,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   // bill. Always available, from the top corner of the tables view.
   const [groupComposerOpen, setGroupComposerOpen] = useState(false);
   const [outdoorComposerOpen, setOutdoorComposerOpen] = useState(false);
+  /** Which open outdoor bill "+ Add to an outdoor order" is adding to. */
+  const [outdoorPickerOpen, setOutdoorPickerOpen] = useState(false);
+  const [outdoorAddTarget, setOutdoorAddTarget] = useState<{ id: number; label: string } | null>(null);
   const [bunaStats, setBunaStats] = useState<{requested:number;cancelled:number;printed:number;outdoor:number;pending:number} | null>(null);
   const loadBunaStats = async () => {
     try { const r = await fetch("/api/buna-stats", { cache: "no-store" }); if (r.ok) setBunaStats(await r.json()); } catch { /* keep the last totals */ }
@@ -104,6 +161,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
    * table view already loads — no extra endpoint.
    */
   const [groupTickets, setGroupTickets] = useState<Ticket[]>([]);
+  // Every OPEN outdoor bill (the maker's own runs and anyone else's). Used by
+  // "+ Add to an outdoor order": the guests call back after the order is with
+  // the stations, so the new items join the SAME bill instead of a second
+  // order nobody can match up later (owner's decision, Sept 2026).
+  const [outdoorTickets, setOutdoorTickets] = useState<Ticket[]>([]);
   const [selectedTable, setSelectedTable] = useState<CafeTable | null>(null);
   const [cart, setCart] = useState<CartEntry[]>([]);
   const [category, setCategory] = useState("all");
@@ -111,9 +173,26 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState("");
 
+  // ── THE SEND HOLD (owner's decision, Sept 2026) ──
+  // The kitchen kept receiving an order and a correction a minute later, so a
+  // waiter's OWN send now waits a short while before it is released: she can
+  // still fix a dish, a quantity or a note, and a "Send now" button sits
+  // beside the countdown for the small orders that should not wait at all.
+  // The hold lives on her phone (the cart is hers) and its length is the
+  // owner's setting, so the room can tune it as the service gets busier.
+  const [holdSeconds, setHoldSeconds] = useState(WAITER_SEND_HOLD_DEFAULT_SECONDS);
+  /** Epoch ms when the running hold releases the order; null = no hold. */
+  const [holdDeadline, setHoldDeadline] = useState<number | null>(null);
+  /** Seconds left, only used to repaint the countdown once a second. */
+  const [holdLeft, setHoldLeft] = useState(0);
+
   // ── BILL EDITOR (owner, Sept 2026): a wrong dish, a wrong qty or a forgotten
   // note is fixed right on the bill — no walk to the cashier, no
   // cancel-and-start-again. Only dishes the crew has NOT started yet.
+  // RELEASE GATE (owner, Sept 2026): a guest added to a bill that was already
+  // sent. Those lines wait here (and on the cashier's screen) until staff
+  // confirm them, so the stations never get a phone order on its own.
+  const [releasing, setReleasing] = useState(false);
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [editQty, setEditQty] = useState(1);
   const [editNotes, setEditNotes] = useState("");
@@ -235,6 +314,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       .then((s) => {
         setReceiptEnabled(String(s.receipt_enabled ?? "true") !== "false");
         setPrintQueueMode(String(s.cashier_mode ?? "print-queue") !== "full");
+        // How long a waiter's own order waits before it is released (owner
+        // setting, admin Stations tab). Missing/garbage keeps the default.
+        setHoldSeconds(waiterSendHoldSeconds(s.waiter_send_hold_seconds));
       })
       .catch(() => {});
   }, []);
@@ -350,10 +432,14 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   /** Jump straight to a table's bill (used by the full-screen guest alert). */
   const openTicketById = async (ticketId: number) => {
-    const r = await fetch("/api/tickets?active=1");
+    // A released bill is not on the active list any more (the cashier printed
+    // it, or the table turned over), but she still has to open it to confirm
+    // the lines a guest just added, so fall back to ?id=.
+    const r = await fetch(`/api/tickets?id=${ticketId}`);
+    if (r.status === 401) return expireSession();
     if (!r.ok) return;
-    const all: Ticket[] = await r.json();
-    const tk = all.find((x) => x.id === ticketId);
+    const one: Ticket[] = await r.json();
+    const tk = one[0];
     if (!tk) return;
     setSelectedTable(tablesRef.current.find((t) => t.activeTicketId === ticketId) || null);
     setCart([]);
@@ -412,6 +498,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       const all: Ticket[] = await tkRes.json();
       // GROUP ORDERS: open groups become table-like cards in the grid.
       setGroupTickets(all.filter((t) => t.orderType === "outdoor" && /^GROUP \d+$/i.test(String(t.tableName || ""))));
+      setOutdoorTickets(all.filter((t) => t.orderType === "outdoor"));
       const pending = all.filter((t) => t.status === "pending_waiter");
       const fresh = pending.filter((t) => !seenPendingRef.current.has(t.id));
       fresh.forEach((t) => seenPendingRef.current.add(t.id));
@@ -632,7 +719,74 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
    * the release rule — nothing shows before the bill is accepted/printed — is
    * inherited from the server, not re-implemented here).
    */
+  /**
+   * CANCELLED PROOF for the buna makers: every cancelled buna order (whole or
+   * single lines) comes back as a red record. A brand-new one rings the phone
+   * exactly like new work does, because the pot may already be on.
+   */
+  const loadBunaCancelled = async () => {
+    try {
+      const r = await fetch("/api/station-items?station=buna&cancelled=1", { cache: "no-store" });
+      if (r.status === 401) return expireSession();
+      if (!r.ok) return;
+      const rows = (await r.json()) as BunaCancelledRow[];
+      const fresh: BunaCancelledRow[] = [];
+      for (const row of rows) {
+        const keys = row.wholeOrder ? [`o:${row.id}`] : row.items.map((i) => `i:${i.id}`);
+        for (const k of keys) {
+          if (bunaCancelledSeenRef.current.has(k)) continue;
+          bunaCancelledSeenRef.current.add(k);
+          fresh.push(row);
+        }
+      }
+      setBunaCancelled(rows);
+      if (fresh.length > 0 && bunaAnnouncedRef.current) {
+        const first = fresh[0];
+        const firstName = first.items[0]?.name || "";
+        const message = first.wholeOrder
+          ? tNow("⛔ {tableName}: order CANCELLED • stop preparing", { tableName: first.tableName })
+          : tNow("✗ {tableName}: {name} was REMOVED, do not prepare it", { tableName: first.tableName, name: firstName });
+        playAlarm();
+        triggerDesktopNotification({
+          title: tNow("Fana Cafe • {label} update", { label: tNow("Buna Maker") }),
+          message,
+          tag: `fana-buna-cancelled-${Date.now()}`,
+        });
+        showToast(message);
+      }
+      bunaAnnouncedRef.current = true;
+    } catch {
+      /* the lane is a convenience view; never break the screen over it */
+    }
+  };
+
+  /** Okay on a cancelled record: clear it from this phone only. */
+  const dismissBunaCancelled = (keys: string[]) => {
+    const next = [...new Set([...bunaCancelledOkRef.current, ...keys])].slice(-300);
+    bunaCancelledOkRef.current = new Set(next);
+    setBunaCancelledOk(next);
+    try {
+      localStorage.setItem(`fana_cancelled_ok_buna`, JSON.stringify(next));
+    } catch {
+      /* storage blocked: the dismissal lasts for this page only */
+    }
+  };
+
+  /** What is left to show after this phone's Okay taps (state, not a ref). */
+  const bunaCancelledHidden = useMemo(() => new Set(bunaCancelledOk), [bunaCancelledOk]);
+  const bunaCancelledVisible = bunaCancelled
+    .map((row) => ({
+      row,
+      items: row.wholeOrder ? row.items : row.items.filter((i) => !bunaCancelledHidden.has(`i:${i.id}`)),
+    }))
+    .filter((entry) =>
+      entry.row.wholeOrder
+        ? !bunaCancelledHidden.has(`o:${entry.row.id}`)
+        : entry.items.length > 0
+    );
+
   const loadBunaLane = async () => {
+    void loadBunaCancelled();
     try {
       const r = await fetch("/api/station-items?station=buna");
       if (r.status === 401) return expireSession();
@@ -786,12 +940,15 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       // table and NOTHING happened. Now she at least lands on a working screen
       // and hears why the open bill could not be loaded.
       try {
-        const r = await fetch("/api/tickets?active=1");
+        // ?id= first: the table's bill may be RELEASED (the cashier printed it,
+        // or the table turned over) and therefore absent from ?active=1, yet
+        // she still opens it to serve it and to confirm guest additions.
+        const r = await fetch(`/api/tickets?id=${t.activeTicketId}`);
+        if (r.status === 401) return expireSession();
         if (r.ok) {
-          const all: Ticket[] = await r.json();
-          const tk = all.find((x) => x.id === t.activeTicketId);
-          if (tk) {
-            setActiveTicket(tk);
+          const one: Ticket[] = await r.json();
+          if (one[0]) {
+            setActiveTicket(one[0]);
             setView("bill");
             return;
           }
@@ -865,6 +1022,36 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   const cartTotal = cart.reduce((s, c) => s + c.price * c.quantity, 0);
 
+  /**
+   * THE SEND HOLD: tapping SEND does not send yet. It starts the countdown the
+   * owner asked for, so the waiter has a moment to check the dishes, the
+   * quantities and the notes with the guest still at the table. The order is
+   * released when the countdown runs out, or immediately when she taps
+   * "Send now". An empty cart (everything removed while she checked) cancels
+   * the hold instead of sending nothing.
+   */
+  const startSendHold = () => {
+    if (cart.length === 0 || !selectedTable || sending) return;
+    if (holdDeadline !== null) return; // already counting down
+    const ms = Math.max(1, holdSeconds) * 1000;
+    setHoldDeadline(Date.now() + ms);
+    setHoldLeft(Math.max(1, holdSeconds));
+  };
+
+  const cancelSendHold = () => {
+    setHoldDeadline(null);
+    setHoldLeft(0);
+  };
+
+  /** Back to the table grid — used by every screen's back arrow. Declared
+   *  before sendOrder because a successful send navigates away with it. */
+  const onGoBack = () => {
+    setSelectedTable(null);
+    setActiveTicket(null);
+    setCart([]);
+    setView("tables");
+  };
+
   const sendOrder = async () => {
     if (cart.length === 0 || !selectedTable || sending) return;
     if (!pendingKeyRef.current) pendingKeyRef.current = newSubmissionKey();
@@ -924,6 +1111,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           ? tNow("✓ Items added to {tableName}", { tableName: String(d.tableName || tNow("the group bill")) })
           : d.merged
           ? tNow("✓ Items added to the table bill")
+          : activeTicket && isTableReleased(activeTicket)
+          ? tNow("✓ New order started for {tableName} • the printed bill stays as it is", {
+              tableName: String(d.tableName || selectedTable?.name || tNow("the table")),
+            })
           : tNow("✓ Order sent to cashier")
       );
       await loadTables();
@@ -935,13 +1126,48 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     }
   };
 
+  // THE COUNTDOWN ITSELF: one repaint per second, and the release the moment it
+  // reaches zero (even if the waiter walked away to check something). It sits
+  // AFTER sendOrder on purpose: the release calls it directly.
+  const holdReleasedRef = useRef(false);
+  useEffect(() => {
+    if (holdDeadline === null) {
+      holdReleasedRef.current = false;
+      return;
+    }
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((holdDeadline - Date.now()) / 1000));
+      setHoldLeft(left);
+      if (left <= 0 && !holdReleasedRef.current) {
+        holdReleasedRef.current = true;
+        setHoldDeadline(null);
+        void sendOrder();
+      }
+    };
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+    // The deadline is the only trigger: a re-created sendOrder must not restart it.
+  }, [holdDeadline]);
+
+  // A cart emptied while the hold was running has nothing to send.
+  useEffect(() => {
+    if (holdDeadline === null || cart.length > 0) return;
+    // A task, not a bare call: the hold is dropped on the next tick so the
+    // emptying of the cart is never interrupted by a second render.
+    const id = setTimeout(() => cancelSendHold(), 0);
+    return () => clearTimeout(id);
+  }, [cart.length, holdDeadline]);
+
   const refreshTicket = async () => {
     if (!activeTicket) return;
-    const r = await fetch("/api/tickets?active=1");
+    // ?id= (not ?active=1): the bill she is looking at may already be released
+    // — printed, or the table turned over — and it must stay on her screen.
+    const r = await fetch(`/api/tickets?id=${activeTicket.id}`);
+    if (r.status === 401) return expireSession();
     if (r.ok) {
-      const all: Ticket[] = await r.json();
-      const tk = all.find((x) => x.id === activeTicket.id);
-      if (tk) setActiveTicket(tk);
+      const one: Ticket[] = await r.json();
+      if (one[0]) setActiveTicket(one[0]);
     }
   };
 
@@ -1019,6 +1245,48 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     }
   };
 
+  /**
+   * CANCEL AN OUTDOOR / GROUP BILL (owner's decision, Sept 2026).
+   *
+   * The guests call back and change their mind after the order is already with
+   * the stations, and the only way out used to be leaving it to rot. Now the
+   * maker or waiter voids the bill from the bill itself: the stations are told
+   * at once and keep a red CANCELLED record with an Okay button, so the cook
+   * who already started has proof instead of a dish that silently vanished.
+   * A TABLE bill is never cancelled here — that is the cashier's call, and the
+   * waiter frees a table with "Table cleared".
+   */
+  const cancelOutdoorOrder = async () => {
+    if (!activeTicket) return;
+    if (activeTicket.orderType !== "outdoor") return;
+    if (
+      !confirm(
+        L("Cancel this outdoor order?\n\nThe stations are told at once and it stays in red on their screens as proof.")
+      )
+    ) {
+      return;
+    }
+    const r = await fetch("/api/tickets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: activeTicket.id, status: "cancelled" }),
+    }).catch(() => null);
+    if (r === null) {
+      showToast(tNow("Network error. Try again."));
+      return;
+    }
+    if (r.status === 401) return expireSession();
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      showToast(d?.error || tNow("Could not cancel this order. Try again."));
+      loadTables();
+      return;
+    }
+    showToast(tNow("✓ Order cancelled • the stations were told"));
+    setActiveTicket(null);
+    loadTables();
+  };
+
   const requestPayment = async () => {
     if (!activeTicket) return;
     const r = await fetch("/api/tickets", {
@@ -1075,13 +1343,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     loadTables();
   };
 
-  const onGoBack = () => {
-    setSelectedTable(null);
-    setActiveTicket(null);
-    setCart([]);
-    setView("tables");
-  };
-
   // ── GROUP 9 (print-queue): the waiter's closing action. The guest paid at the
   // counter (EFD/POS), the guests left, and she has PHYSICALLY cleared the
   // table — one tap closes the bill and frees the table for the next guests.
@@ -1135,6 +1396,34 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   const billItems = (activeTicket?.items || []).filter((i) => !i.removed);
   const billTotal = billItems.reduce((s, i) => s + i.price * i.quantity, 0);
+  /** Lines a guest added that nobody has released to the stations yet. */
+  const heldBillItems = billItems.filter((i) => i.released === false);
+  const heldBillUnits = heldBillItems.reduce((s, i) => s + (Number(i.quantity) || 0), 0);
+
+  /** Confirm the guest's additions to the stations (waiter or cashier). */
+  const releaseAdditions = async () => {
+    if (!activeTicket || releasing) return;
+    setReleasing(true);
+    const r = await fetch("/api/tickets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: activeTicket.id, send: true, confirmedBy: staffName }),
+    }).catch(() => null);
+    setReleasing(false);
+    if (!r) {
+      showToast(tNow("Network error. Try again."));
+      return;
+    }
+    if (r.status === 401) return expireSession();
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      showToast(d?.error || tNow("Could not send these items. Try again."));
+      return;
+    }
+    showToast(tNow("✓ Sent to the stations"));
+    await refreshTicket();
+    loadTables();
+  };
 
   // Group 9: plain-language status for the bill header, per workflow mode.
   const ticketStatusLabel = (s: string) =>
@@ -1318,6 +1607,66 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
         onSent={(message) => { showToast(message); void loadBunaLane(); void loadBunaStats(); loadTables(); }}
       />}
 
+      {/* ADD TO AN ORDER THAT ALREADY WENT OUT (owner, Sept 2026): the guests
+          call back after the stations already have the order. The maker picks
+          the outdoor bill and the new items join it — one bill per run, not a
+          pile of separate orders she has to match up by hand. */}
+      {isBuna && <OutdoorOrderComposer
+        open={!!outdoorAddTarget}
+        cashierName={staffName}
+        makerMode
+        targetTicket={outdoorAddTarget}
+        onClose={() => setOutdoorAddTarget(null)}
+        onSent={(message) => {
+          showToast(message);
+          setOutdoorAddTarget(null);
+          void loadBunaLane();
+          void loadBunaStats();
+          loadTables();
+        }}
+      />}
+
+      {isBuna && outdoorPickerOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm p-4 overflow-y-auto" onClick={() => setOutdoorPickerOpen(false)}>
+          <div className="max-w-md mx-auto bg-[#1C120F] border border-[#C9A227]/40 rounded-3xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-stone-800 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="font-serif font-black text-lg text-amber-100">{L("Pick the outdoor order")}</h2>
+                <p className="text-[11px] text-stone-400">{L("Adding to an order the stations already have. The new items join the SAME bill • no second order.")}</p>
+              </div>
+              <button onClick={() => setOutdoorPickerOpen(false)} className="p-2 rounded-xl bg-white/10 text-stone-200">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-3 space-y-2">
+              {outdoorTickets.length === 0 ? (
+                <p className="p-4 text-center text-xs text-stone-500">{L("No open outdoor orders right now.")}</p>
+              ) : (
+                outdoorTickets.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => {
+                      setOutdoorAddTarget({ id: t.id, label: t.tableName });
+                      setOutdoorPickerOpen(false);
+                    }}
+                    className="w-full text-left bg-[#241714] border border-stone-800 hover:border-[#C9A227]/60 rounded-2xl p-3"
+                  >
+                    <p className="font-bold text-amber-100 text-sm">{t.tableName}</p>
+                    <p className="text-[11px] font-bold text-stone-400">
+                      {L("{value}{reduce} item(s) • {totalAmount} ETB", {
+                        value: t.orderNumber ? `#${t.orderNumber} • ` : "",
+                        reduce: (t.items || []).filter((i) => !i.removed).reduce((sum, i) => sum + i.quantity, 0),
+                        totalAmount: t.totalAmount,
+                      })}
+                    </p>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast */}
       {toast && (
         <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl">
@@ -1337,8 +1686,82 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
               ["Requested cups", bunaStats?.requested], ["Cancelled cups", bunaStats?.cancelled], ["Printed cups", bunaStats?.printed], ["Outdoor cups", bunaStats?.outdoor]
             ] as const).map(([label, value]) => <div key={label} className="bg-black/30 rounded-xl p-2"><p className="text-stone-400">{L(label)}</p><p className="font-black text-xl text-white">{value ?? "…"}</p></div>)}</div>
             <p className="text-[11px] text-stone-400">{L("Today’s table and outdoor requests. Printed cups are a receipt-based estimate, not an individual maker’s Done count.")} {bunaStats ? L("{n} cup(s) not printed or cancelled yet.", { n: bunaStats.pending }) : ""}</p>
-            <button onClick={() => setOutdoorComposerOpen(true)} className="w-full rounded-xl bg-orange-700 text-white font-black py-3">{L("+ New Outdoor Order")}</button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button onClick={() => setOutdoorComposerOpen(true)} className="w-full rounded-xl bg-orange-700 text-white font-black py-3">{L("+ New Outdoor Order")}</button>
+              <button
+                onClick={() => { void loadTables(); setOutdoorPickerOpen(true); }}
+                className="w-full rounded-xl bg-[#C9A227] text-[#2C1B17] font-black py-3"
+                title={L("The guests called back: add these items to THIS order, not a new one.")}
+              >
+                {L("+ Add to an outdoor order")}
+              </button>
+            </div>
           </div>}
+          {/* ── CANCELLED BUNA: the maker's PROOF (owner, Sept 2026) ──
+              A cancelled buna order used to vanish from this lane, so the
+              maker who had already put the pot on had nothing to point at. It
+              stays here in red, with Okay where nothing used to sit, until
+              they read it. It is never counted as sold. */}
+          {isBuna && bunaCancelledVisible.length > 0 && (
+            <div className="bg-rose-950/50 border-2 border-rose-600/70 rounded-2xl p-4 space-y-3">
+              <h2 className="font-serif font-black text-sm text-rose-300 uppercase tracking-wide">
+                {L("⛔ Cancelled • proof for you")}
+              </h2>
+              {bunaCancelledVisible.map(({ row, items }) => (
+                <div key={`bc-${row.id}-${row.wholeOrder ? "all" : "lines"}`} className="space-y-1.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-serif font-bold text-rose-200 line-through">{row.tableName}</p>
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-rose-700 text-white">
+                          {L("⛔ CANCELLED")}
+                        </span>
+                      </div>
+                      <p className="text-[11px] font-black text-rose-400 mt-0.5">
+                        {L("Cancelled at {clock}", { clock: formatClock(row.cancelledAt) })}
+                      </p>
+                      <p className="text-[11px] font-bold text-rose-300 mt-0.5">
+                        {row.wholeOrder
+                          ? L("Whole order cancelled • do not prepare or serve any of it")
+                          : L("Removed from the bill • do not prepare it")}
+                      </p>
+                    </div>
+                    {row.wholeOrder && (
+                      <button
+                        onClick={() => dismissBunaCancelled([`o:${row.id}`])}
+                        className="shrink-0 px-5 py-2.5 rounded-xl bg-rose-700 hover:bg-rose-600 text-white text-xs font-black uppercase"
+                        title={L("Seen it • clear it from my screen")}
+                      >
+                        {L("Okay")}
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    {items.map((i) => (
+                      <div key={i.id} className="flex items-center justify-between gap-3 text-xs">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-rose-300 line-through">
+                            {i.name} <span className="text-rose-400">x{i.quantity}</span>
+                          </p>
+                          {i.notes && <p className="text-[11px] font-semibold text-rose-400/80 italic">📝 {i.notes}</p>}
+                        </div>
+                        {!row.wholeOrder && (
+                          <button
+                            onClick={() => dismissBunaCancelled([`i:${i.id}`])}
+                            className="shrink-0 px-4 py-2 rounded-xl bg-rose-800 hover:bg-rose-700 text-white text-[11px] font-black uppercase"
+                            title={L("Seen it • clear this line from my screen")}
+                          >
+                            {L("Okay")}
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {isBuna && (
             <div className="bg-[#2C1B17] border-2 border-rose-500/40 rounded-2xl p-4">
               <div className="flex items-center justify-between mb-3">
@@ -1690,14 +2113,54 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   </div>
                 ))}
               </div>
-              <button
-                onClick={sendOrder}
-                disabled={sending}
-                className="w-full bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-sm uppercase py-3.5 rounded-xl flex items-center justify-center gap-2 shadow-xl"
-              >
-                <Send className="w-4 h-4" />
-                {sending ? L("Sending...") : L("Send Order • {cartTotal} ETB", { cartTotal })}
-              </button>
+              {holdDeadline !== null ? (
+                /* THE SEND HOLD: the countdown the owner asked for, with the
+                   "Send now" release beside it for the small orders that should
+                   not wait. The cart above stays fully editable while it runs,
+                   so a wrong dish, quantity or note is fixed before anything
+                   reaches the kitchen. */
+                <div className="bg-[#3D2314] border-2 border-[#C9A227]/60 rounded-xl p-3 space-y-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-black text-amber-200 uppercase tracking-wide">
+                        {L("Sending in {clock}", { clock: formatHoldClock(holdLeft) })}
+                      </p>
+                      <p className="text-[10px] font-bold text-stone-400">
+                        {L("Check the items above • you can still edit, add notes or remove")}
+                      </p>
+                    </div>
+                    <span className="font-serif font-black text-3xl text-[#C9A227] tabular-nums shrink-0">
+                      {formatHoldClock(holdLeft)}
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={sendOrder}
+                      disabled={sending}
+                      className="flex-1 bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-sm uppercase py-3 rounded-xl flex items-center justify-center gap-2 shadow-xl disabled:opacity-50"
+                    >
+                      <Send className="w-4 h-4" />
+                      {sending ? L("Sending...") : L("Send now")}
+                    </button>
+                    <button
+                      onClick={cancelSendHold}
+                      disabled={sending}
+                      className="px-4 bg-white/10 text-stone-200 text-xs font-bold py-3 rounded-xl disabled:opacity-40"
+                    >
+                      {L("Cancel")}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={startSendHold}
+                  disabled={sending}
+                  className="w-full bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-sm uppercase py-3.5 rounded-xl flex items-center justify-center gap-2 shadow-xl"
+                >
+                  <Send className="w-4 h-4" />
+                  {sending ? L("Sending...") : L("Send Order • {cartTotal} ETB", { cartTotal })}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1722,11 +2185,25 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 </p>
               )}
             </div>
-            {activeTicket.status !== "ready_for_payment" && (
-              <button onClick={() => setView("order")} className="text-xs bg-[#C9A227] text-[#2C1B17] px-3 py-2 rounded-lg font-bold flex items-center gap-1">
-                <Plus className="w-3.5 h-3.5" /> {L("Add Items")}
-              </button>
-            )}
+            <div className="flex flex-col items-end gap-2 shrink-0">
+              {activeTicket.status !== "ready_for_payment" && (
+                <button onClick={() => setView("order")} className="text-xs bg-[#C9A227] text-[#2C1B17] px-3 py-2 rounded-lg font-bold flex items-center gap-1">
+                  <Plus className="w-3.5 h-3.5" /> {L("Add Items")}
+                </button>
+              )}
+              {/* Outdoor / group bills only: void the bill the guests changed
+                  their mind about. The crews hear it and keep the red proof. */}
+              {activeTicket.orderType === "outdoor" &&
+                !["paid", "cancelled", "closed"].includes(activeTicket.status) && (
+                  <button
+                    onClick={() => void cancelOutdoorOrder()}
+                    className="text-xs bg-rose-800 hover:bg-rose-700 text-white px-3 py-2 rounded-lg font-bold flex items-center gap-1"
+                    title={L("Void this whole order. The crews hear it and keep a red record of it.")}
+                  >
+                    {L("✗ Cancel order")}
+                  </button>
+                )}
+            </div>
           </div>
 
           <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 divide-y divide-stone-800">
@@ -1737,6 +2214,13 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   <span className="font-extrabold text-[#C9A227] shrink-0">{i.price * i.quantity} ETB</span>
                 </div>
                 {i.notes && <p className="text-[11px] text-amber-300 italic">📝 {i.notes}</p>}
+                {/* A guest added this line after the bill was already sent:
+                    nobody in the kitchen has it until it is confirmed below. */}
+                {i.released === false && (
+                  <p className="text-[11px] font-black text-sky-300">
+                    {L("NEW • not sent to the stations yet")}
+                  </p>
+                )}
                 {/* BILL EDITOR: a wrong dish, a wrong qty or a forgotten note is
                     fixed HERE — no walk to the cashier, no cancel-and-start-again.
                     Only dishes the crew has not started yet; once they are in the
@@ -1809,6 +2293,31 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             <span className="text-sm font-bold text-stone-300">{L("Total Bill")}</span>
             <span className="font-serif font-black text-2xl text-[#C9A227]">{billTotal} ETB</span>
           </div>
+
+          {/* RELEASE GATE: the guest added to a bill that was already sent. The
+              kitchen, barista, buna and juice makers do NOT have these lines
+              yet — this tap (or the cashier's) is what releases them. */}
+          {heldBillItems.length > 0 && (
+            <div className="bg-[#2C1B17] rounded-2xl border-2 border-sky-500/60 p-4 space-y-3">
+              <div>
+                <p className="text-sm font-black text-sky-200">
+                  {heldBillUnits === 1
+                    ? L("Guest added 1 item • confirm before the stations get them")
+                    : L("Guest added {units} items • confirm before the stations get them", { units: heldBillUnits })}
+                </p>
+                <p className="text-[11px] font-bold text-stone-400 mt-1">
+                  {L("The kitchen, barista, buna and juice makers do NOT have these lines yet.")}
+                </p>
+              </div>
+              <button
+                onClick={releaseAdditions}
+                disabled={releasing}
+                className="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white font-black text-sm uppercase py-4 rounded-xl flex items-center justify-center gap-2"
+              >
+                <Send className="w-4 h-4" /> {releasing ? L("Sending...") : L("✓ Send to stations")}
+              </button>
+            </div>
+          )}
 
           {activeTicket.status === "pending_waiter" && (
             <button

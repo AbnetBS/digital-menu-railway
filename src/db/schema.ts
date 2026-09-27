@@ -234,6 +234,14 @@ export const ticketItems = pgTable("ticket_items", {
   stationAcceptedAt: timestamp("station_accepted_at"),
   stationDoneBy: varchar("station_done_by", { length: 100 }),
   stationDoneAt: timestamp("station_done_at"),
+  // RELEASE GATE (owner's decision, Sept 2026): a line a GUEST added to a bill
+  // that was already sent to the crews is born with released = false. It sits
+  // on the cashier's and the waiter's screens as "guest added items, confirm
+  // before the stations get them" until one of them confirms — the stations
+  // never see it first. Everything else (a waiter's own keying, the original
+  // order, a released bill) is true, which is what the DEFAULT keeps for every
+  // row written before this column existed.
+  released: boolean("released").default(true),
   createdAt: timestamp("created_at").defaultNow(),
   // Shared by all rows of one order submission (see tickets.idempotencyKey).
   idempotencyKey: varchar("idempotency_key", { length: 64 }),

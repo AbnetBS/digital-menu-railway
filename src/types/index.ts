@@ -215,6 +215,14 @@ export interface TicketItem {
   stationName?: string | null;
   /** Crew progress: pending → accepted → done. */
   stationStatus?: string | null;
+  /**
+   * RELEASE GATE (owner's decision, Sept 2026): false on a line a GUEST added
+   * to a bill that was already sent. It waits on the cashier's and the
+   * waiter's screens until one of them confirms it, and no station screen
+   * shows it before that. True (the default, and every historical row) means
+   * the stations may see it as soon as the bill itself is released.
+   */
+  released?: boolean | null;
   /** WHO last pressed Accept/Done on this line (crew-action audit). */
   stationStatusBy?: string | null;
   /** WHEN they pressed it (crew-action audit). */

@@ -1209,6 +1209,14 @@ export const STAFF_AM = {
   "Buna makers who send or accept table and outdoor orders appear here alongside waiters. Bill totals may overlap when two people handle one bill; open the order to cross-check its actions and items.": "የጠረጴዛና የውጪ ትዕዛዞችን የሚልኩ ወይም የሚቀበሉ ቡና አፍዮች ከአስተናጋጆች ጋር እዚህ ይታያሉ። ሁለት ሰዎች አንድ ሂሳብ ሲያስተናግዱ ድምሮቹ ሊደጋገሙ ይችላሉ፤ ተግባራትንና እቃዎችን ለማረጋገጥ ትዕዛዙን ይክፈቱ።",
   /* ─── THE WAITER'S SEND HOLD (owner, Sept 2026) ─── */
   "Sending in {clock}": "በ{clock} ውስጥ ይላካል",
+  "Order for {tableName}": "የ{tableName} ትዕዛዝ",
+  "It will send automatically, even while you work at another table.": "ሌላ ጠረጴዛ ላይ እየሰሩ ቢሆንም በራስ-ሰር ይላካል።",
+  "Could not schedule the order. Keep the waiter app open.": "ትዕዛዙን መርሐግብር ማስያዝ አልተቻለም። የአስተናጋጁን መተግበሪያ ክፍት ያቆዩ።",
+  "Could not save the order changes. Try again.": "የትዕዛዙን ለውጦች ማስቀመጥ አልተቻለም። እንደገና ይሞክሩ።",
+  "Could not cancel the scheduled order. Try again.": "የተመረጠውን ትዕዛዝ መሰረዝ አልተቻለም። እንደገና ይሞክሩ።",
+  "This order is already being sent.": "ይህ ትዕዛዝ አስቀድሞ እየተላከ ነው።",
+  "Scheduled order cancelled.": "የተመረጠው ትዕዛዝ ተሰርዟል።",
+  "Server schedule unavailable. Keep the waiter app open.": "የአገልጋይ መርሐግብር አልተሳካም። የአስተናጋጁን መተግበሪያ ክፍት ያቆዩ።",
   "Check the items above • you can still edit, add notes or remove": "ከላይ ያሉትን እቃዎች ይመልከቱ • ማስተካከል፣ ማስታወሻ መጨመር ወይም ማስወግድ ይችላሉ",
   "Send now": "አሁን ላክ",
   /* ─── THE RELEASE GATE: a guest's own order waits for a human ─── */

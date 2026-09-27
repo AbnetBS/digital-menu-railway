@@ -19,6 +19,7 @@ import { stationForOrder, stationOf, type StationName } from "@/lib/stations";
 import { isBillSent } from "@/lib/order-release";
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
 import { nextGroupNumberToday, nextGroupNumberInTx, groupLabel } from "@/lib/group-orders";
+import { isDeferredWorkerRequest } from "@/lib/deferred-ticket-auth";
 
 /**
  * Customer order limits are TWO-TIER (per table + per venue) because every guest
@@ -333,6 +334,7 @@ export async function POST(request: Request) {
     // submitting as "confirmed") is a staff action and requires an authenticated
     // staff/admin session — so a public request cannot impersonate a waiter.
     const isCustomer = source === "customer";
+    const deferredWorker = isDeferredWorkerRequest(request);
     if (isCustomer) {
       const rl = checkSharedIpRateLimit("customer-order", request, Number(tableId) || 0, VENUE_POLICIES.customerOrder);
       if (!rl.allowed) {
@@ -342,7 +344,7 @@ export async function POST(request: Request) {
         );
       }
     }
-    if (!isCustomer) {
+    if (!isCustomer && !deferredWorker) {
       const __auth = await requireStaffOrAdmin();
       if (!__auth.ok) return __auth.response;
     }
@@ -353,7 +355,7 @@ export async function POST(request: Request) {
     // audit role — a WAITER sending a group order must be recorded as the
     // waiter (the old guess said "cashier" for every outdoor order, which was
     // only true for the cashier's own outdoor composer).
-    const senderSession = !isCustomer ? await readStaffSession() : null;
+    const senderSession = !isCustomer && !deferredWorker ? await readStaffSession() : null;
     // GROUP ORDERS (owner's decision, Sept 2026): chairs get dragged around,
     // different peoples share one table, some sit with no table at all. The
     // billing unit is the GROUP OF PEOPLE: the waiter's composer sends
@@ -485,7 +487,10 @@ export async function POST(request: Request) {
 
     let ticketId: number;
     const actorName = waiterName || (isCustomer ? "Customer (QR)" : "Waiter");
-    const actorRole = senderSession?.role || actorRoleOf(String(source || ""), orderType);
+    const deferredActorRole = deferredWorker && ["waiter", "buna", "cashier", "admin"].includes(String(body?._deferredActorRole))
+      ? String(body._deferredActorRole)
+      : null;
+    const actorRole = senderSession?.role || deferredActorRole || actorRoleOf(String(source || ""), orderType);
 
     if (activeTickets.length > 0) {
       ticketId = activeTickets[0].id;
@@ -875,7 +880,7 @@ export async function POST(request: Request) {
         toValue: orderType === "outdoor" ? "outdoor_sent" : "confirmed",
         details:
           orderType === "outdoor"
-            ? `${senderSession?.role === "waiter" ? "Waiter" : "Cashier"} sent a new outdoor order to the stations`
+            ? `${(senderSession?.role || deferredActorRole) === "waiter" ? "Waiter" : "Cashier"} sent a new outdoor order to the stations`
             : "Waiter sent a new order to the stations",
       });
     }

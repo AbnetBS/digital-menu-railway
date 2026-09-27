@@ -79,11 +79,11 @@ const pass = (name, ok) => {
   );
   pass(
     "a staff POST resolves the sender's real session",
-    /const senderSession = !isCustomer \? await readStaffSession\(\) : null;/.test(route),
+    /const senderSession = !isCustomer && !deferredWorker \? await readStaffSession\(\) : null;/.test(route),
   );
   pass(
     "actorRole prefers the session role (waiter-sent group orders audit as waiter)",
-    /const actorRole = senderSession\?\.role \|\| actorRoleOf\(/.test(route),
+    /const actorRole = senderSession\?\.role \|\| deferredActorRole \|\| actorRoleOf\(/.test(route),
   );
   pass(
     "the group flag is detected exactly as the composer sends it",
@@ -111,7 +111,7 @@ const pass = (name, ok) => {
   );
   pass(
     "the ticket_sent audit names the real sender role for outdoor orders",
-    /senderSession\?\.role === "waiter" \? "Waiter" : "Cashier"[\s\S]{0,80}sent a new outdoor order to the stations/.test(route),
+    /\(senderSession\?\.role \|\| deferredActorRole\) === "waiter" \? "Waiter" : "Cashier"[\s\S]{0,80}sent a new outdoor order to the stations/.test(route),
   );
   pass(
     "GET answers ?nextGroup=1 for the composer's display prediction",
@@ -224,15 +224,16 @@ const pass = (name, ok) => {
   pass(
     "Add Items on a group bill rides the group round flow (same bill, server label)",
     /const groupRound = selectedTable\.isGroup === true && !!selectedTable\.activeTicketId;/.test(waiter) &&
-      /groupRound[\s\S]{0,200}\? \{ source: "staff", orderType: "outdoor", groupOrder: true, targetTicketId: selectedTable\.activeTicketId \}/.test(waiter),
+      /const queued: PendingWaiterSend = \{[\s\S]{0,500}groupRound,[\s\S]{0,100}targetTicketId: selectedTable\.activeTicketId/.test(waiter) &&
+      /send\.groupRound[\s\S]{0,150}\? \{ source: "staff", orderType: "outdoor", groupOrder: true, targetTicketId: send\.targetTicketId \}/.test(waiter),
   );
   pass(
     "a table order is still sent the table way (no group flag leaks into normal tables)",
-    /: \{ tableId: selectedTable\.id \}/.test(waiter),
+    /: \{ tableId: send\.tableId \}/.test(waiter),
   );
   pass(
     "the round toast names the group bill",
-    /"✓ Items added to \{tableName\}", \{ tableName: String\(d\.tableName \|\| tNow\("the group bill"\)\) \}/.test(waiter),
+    /"✓ Items added to \{tableName\}", \{ tableName: String\(d\.tableName \|\| queued\.tableName\) \}/.test(waiter),
   );
   pass(
     "settling says Group Settled on a group bill, Table Cleared on a table",

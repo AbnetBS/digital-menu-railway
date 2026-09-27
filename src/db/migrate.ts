@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-09-24-1";
+const SCHEMA_VERSION = "2026-09-27-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -224,6 +224,22 @@ const RMS_CREATES: Array<[string, string]> = [
       promotion_items text,
       priority integer DEFAULT 0,
       created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    // Durable waiter send holds: the server releases due orders even when the
+    // waiter leaves the app or closes the phone browser.
+    "deferred_ticket_sends",
+    `CREATE TABLE IF NOT EXISTS deferred_ticket_sends (
+      idempotency_key varchar(64) PRIMARY KEY,
+      payload text NOT NULL,
+      due_at timestamp NOT NULL,
+      status varchar(20) NOT NULL DEFAULT 'pending',
+      attempts integer NOT NULL DEFAULT 0,
+      last_error text,
+      created_by varchar(100) NOT NULL,
+      created_at timestamp DEFAULT now(),
+      updated_at timestamp DEFAULT now()
     )`,
   ],
   [

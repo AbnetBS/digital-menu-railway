@@ -242,6 +242,11 @@ export default function StationApp({ station }: { station: Station }) {
   >(new Map());
   /** Ticket id -> table name, so a vanished order can still be named. */
   const ticketNameRef = useRef<Map<number, string>>(new Map());
+  // THE DONE TAP FREES THE BOARD (owner's decision, Sept 2026): ticket id ->
+  // how many OPEN lines (pending / accepted) it still had on the last load.
+  // When that number hits zero the card leaves the dashboard, announced once
+  // with a quiet ✓ instead of an alarm.
+  const boardOpenRef = useRef<Map<number, number>>(new Map());
   // NEW marker on a row that already existed: when a waiter adds more of the
   // same pending line, the DB folds it into that line and only the quantity
   // grows. Keep the +N here until the crew accepts it, so they can see "this
@@ -409,6 +414,23 @@ export default function StationApp({ station }: { station: Station }) {
     }
     const cancelledTicketIds = new Set(cancelledFeed.filter((c) => c.wholeOrder).map((c) => c.id));
 
+    // ── PRINT-CLEARED (owner's decision, Sept 2026) ──
+    // The cashier's ✓ PRINTED tap means the order is done and served: the
+    // bill's lines leave the live list below the same second. A card that
+    // vanishes for THAT reason is good news — NOT the "stop preparing"
+    // alarm. This feed names the bills she printed in the last 15 minutes
+    // (that carried this crew's lines), so the detectors below can tell a
+    // print-clear apart from a cancellation or a removal.
+    let printClearedFeed: Array<{ id: number; tableName: string }> = [];
+    try {
+      const pr = await fetch(`/api/station-items?station=${station}&printCleared=1`, { cache: "no-store" });
+      if (pr.status === 401) return expireSession();
+      if (pr.ok) printClearedFeed = (await pr.json()) as Array<{ id: number; tableName: string }>;
+    } catch {
+      /* the live list below must still load */
+    }
+    const printClearedIds = new Set(printClearedFeed.map((p) => p.id));
+
     const r = await fetch(`/api/station-items?station=${station}`);
     if (r.status === 401) return expireSession();
     if (!r.ok) return;
@@ -479,11 +501,16 @@ export default function StationApp({ station }: { station: Station }) {
       itemSigRef.current.delete(id);
       delete nextNewPendingBadges[id];
       // The line disappeared while its bill is still open => it was removed.
-      // (A bill that left the list entirely is reported once, below.)
-      if (initRef.current && nowTicketIds.has(seen.ticketId)) {
+      // (A bill that left the list entirely is reported once, below.) The ONE
+      // exception: the cashier just printed the bill — the receipt SERVED the
+      // line, so it leaving is good news, not a removal.
+      if (initRef.current && nowTicketIds.has(seen.ticketId) && !printClearedIds.has(seen.ticketId)) {
         removed.push({ tableName: seen.tableName, name: seen.name });
       }
     }
+    // A print-cleared bill that still has OTHER live lines (a brand-new
+    // addition) is named once, quietly, below.
+    const printClearedQuiet: string[] = [];
     for (const [id, name] of [...ticketNameRef.current.entries()]) {
       if (nowTicketIds.has(id)) continue;
       ticketNameRef.current.delete(id);
@@ -491,6 +518,12 @@ export default function StationApp({ station }: { station: Station }) {
       // A whole cancelled order is reported by the cancelled feed instead:
       // it rings there, with a red record the crew can read and dismiss.
       if (cancelledTicketIds.has(id)) continue;
+      // The cashier printed it: the food is served and it leaves the boards —
+      // good news, said quietly with a ✓ instead of the stop-work alarm.
+      if (printClearedIds.has(id)) {
+        printClearedQuiet.push(name);
+        continue;
+      }
       // Only a ticket with work still on the fire is worth an alarm.
       if ((prevOpenWork.get(id) || 0) > 0) gone.push(name);
       else closedQuiet.push(name);
@@ -522,10 +555,54 @@ export default function StationApp({ station }: { station: Station }) {
       closedQuiet.length > 0 &&
       removed.length === 0 &&
       gone.length === 0 &&
-      changed.length === 0
+      changed.length === 0 &&
+      printClearedQuiet.length === 0
     ) {
       const tableName = closedQuiet[0];
       showToast(tNow("✓ {tableName}: bill closed • all your items were done", { tableName }));
+    }
+
+    // THE PRINT SERVES THE FOOD: a card that left because the cashier printed
+    // the bill is answered with a quiet ✓, never the alarm — the food is done
+    // and served, there is nothing to stop preparing.
+    if (
+      initRef.current &&
+      printClearedQuiet.length > 0 &&
+      removed.length === 0 &&
+      gone.length === 0 &&
+      changed.length === 0
+    ) {
+      const tableName = printClearedQuiet[0];
+      showToast(tNow("✓ {tableName}: printed & served • cleared from your list", { tableName }));
+    }
+
+    // THE DONE TAP FREES THE BOARD (owner's decision, Sept 2026): an item the
+    // crew marks Done leaves the dashboard at once — it used to linger
+    // crossed-out until the bill was printed or cleared, so finished work
+    // piled up on the screen all day (that is exactly what the owner kept
+    // seeing). When a table's LAST open line is finished, the whole card
+    // leaves the board; say it once, quietly.
+    const justFinishedAll: string[] = [];
+    for (const t of data) {
+      const open = t.items.filter((i) => i.stationStatus !== "done").length;
+      const prevOpen = boardOpenRef.current.get(t.id) ?? 0;
+      boardOpenRef.current.set(t.id, open);
+      if (initRef.current && prevOpen > 0 && open === 0) justFinishedAll.push(t.tableName);
+    }
+    for (const id of [...boardOpenRef.current.keys()]) {
+      if (!nowTicketIds.has(id)) boardOpenRef.current.delete(id);
+    }
+    if (
+      initRef.current &&
+      justFinishedAll.length > 0 &&
+      removed.length === 0 &&
+      gone.length === 0 &&
+      changed.length === 0 &&
+      printClearedQuiet.length === 0 &&
+      closedQuiet.length === 0
+    ) {
+      const tableName = justFinishedAll[0];
+      showToast(tNow("✓ {tableName}: all your items are done", { tableName }));
     }
 
     // ── THE CANCELLATION ALARM ──
@@ -736,6 +813,19 @@ export default function StationApp({ station }: { station: Station }) {
 
   const pendingCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "pending").length, 0);
   const acceptedCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "accepted").length, 0);
+  /**
+   * THE DONE TAP FREES THE BOARD (owner's decision, Sept 2026): the moment the
+   * crew marks an item Done it LEAVES this dashboard — it used to linger
+   * crossed-out until the bill was printed or cleared, so finished work piled
+   * up on the screen all day and the owner kept finding old orders still on
+   * the boards. Only OPEN work (pending / started) is rendered; a table whose
+   * every line is finished simply leaves the board (announced once, quietly,
+   * in the load above). The alarms still watch the FULL server list, so a
+   * real removal or a cancellation can never hide behind this filter.
+   */
+  const boardTickets = tickets
+    .map((t) => ({ ...t, boardItems: t.items.filter((i) => i.stationStatus !== "done") }))
+    .filter((t) => t.boardItems.length > 0);
   /** The pile the crew is looking at right now (accepted / done / combined). */
   const salesPile: StationSalesPile | null = sales?.modes?.[salesMode] ?? null;
 
@@ -893,12 +983,12 @@ export default function StationApp({ station }: { station: Station }) {
 
       {/* tickets cards */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5 space-y-4">
-        {tickets.length === 0 ? (
+        {boardTickets.length === 0 ? (
           <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
             {L("All clear • no incoming items for the {label} right now. New orders and added items appear here instantly when they are sent.", { label: L(meta.label) })}
           </div>
         ) : (
-          tickets.map((t) => (
+          boardTickets.map((t) => (
             <div key={t.id} className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
@@ -942,12 +1032,12 @@ export default function StationApp({ station }: { station: Station }) {
                   )}
                 </div>
                 <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-[#C9A227]/20 text-[#C9A227]">
-                  {L("{length} item(s) for you", { length: t.items.length })}
+                  {L("{length} item(s) for you", { length: t.boardItems.length })}
                 </span>
               </div>
 
               <div className="space-y-2 divide-y divide-stone-800">
-                {t.items.map((i) => (
+                {t.boardItems.map((i) => (
                   <div
                     key={i.id}
                     className={`pt-2 flex items-center justify-between gap-3 text-xs ${

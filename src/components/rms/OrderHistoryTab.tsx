@@ -26,6 +26,41 @@ export default function OrderHistoryTab() {
       .split(" • ")
       .map((part) => part.split(" → ").map((piece) => Ld(piece)).join(" → "))
       .join(" • ");
+
+  /**
+   * THE CREW'S DONE TAP, VISIBLE TO THE OWNER (owner's request, Sept 2026).
+   * The cashier's ✓ PRINTED clears served food from the station dashboards,
+   * but the owner must still see in this report WHICH dishes the crew
+   * actually clicked Done on and which left the boards only because the
+   * receipt went out. Three honest answers per line:
+   *   ✓ Done by <name> — the crew's own Done tap (kept even when the bill was
+   *     printed afterwards; their name and stamp are never overwritten);
+   *   🖨 cleared by cashier print • crew did not click Done — the line was
+   *     finished by the receipt itself (station_done_by reads "cashier print",
+   *     the same marker the migration sweep writes; the buna lane is
+   *     read-only, so its done lines are always print-clears);
+   *   ⚠ crew never clicked Done — the line was still pending or started when
+   *     the bill ended (cleared early, or cancelled).
+   */
+  const DONE_BY_PRINT = "cashier print";
+  const doneBadgeOf = (o: Ticket, ids: number[]): { cls: string; text: string } | null => {
+    const rows = (o.items || []).filter((r) => ids.includes(r.id) && !r.removed);
+    if (rows.length === 0) return null;
+    const open = rows.filter((r) => r.stationStatus !== "done");
+    // A crew tap keeps the crew member's name. The buna lane never taps
+    // (read-only), and legacy rows without a stamp are old crew taps.
+    const crewDone = rows.filter(
+      (r) => r.stationStatus === "done" && r.stationName !== "buna" && (!r.stationDoneBy || r.stationDoneBy !== DONE_BY_PRINT)
+    );
+    if (open.length > 0) return { cls: "bg-rose-500/15 text-rose-300 border-rose-500/40", text: L("⚠ crew never clicked Done") };
+    const byPrint = rows.filter((r) => r.stationStatus === "done" && !crewDone.includes(r));
+    if (byPrint.length > 0) return { cls: "bg-amber-500/15 text-amber-300 border-amber-500/40", text: L("🖨 cleared by cashier print • crew did not click Done") };
+    const names = [...new Set(crewDone.map((r) => String(r.stationDoneBy || "").trim()).filter(Boolean))];
+    return {
+      cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40",
+      text: names.length > 0 ? L("✓ Done by {name}", { name: names.join(" + ") }) : L("✓ Done"),
+    };
+  };
   const [orders, setOrders] = useState<Ticket[]>([]);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -240,17 +275,27 @@ export default function OrderHistoryTab() {
 
               {/* items */}
               <div className="bg-[#3D2314] rounded-xl p-3 space-y-1.5">
-                {displayItems(o).map((i) => (
+                {displayItems(o).map((i) => {
+                  // Was this dish actually clicked Done by the crew, or did it
+                  // leave the station boards only because the cashier printed?
+                  const badge = doneBadgeOf(o, i.ids);
+                  return (
                   <div key={i.ids.join("-")} className={`text-xs flex justify-between gap-2 ${i.removed ? "opacity-40 line-through" : ""}`}>
                     <div className="flex-1 min-w-0">
                       <span className="text-stone-200">
                         {i.name} <span className="text-stone-500">x{i.quantity}</span>
                       </span>
+                      {badge && (
+                        <span className={`ml-2 inline-block text-[9px] font-black px-2 py-0.5 rounded-full border align-middle ${badge.cls}`}>
+                          {badge.text}
+                        </span>
+                      )}
                       {i.notes && <p className="text-[10px] text-amber-300/80 italic">📝 {i.notes}</p>}
                     </div>
                     <span className="font-bold text-amber-200 shrink-0">{Number(i.price ?? 0) * i.quantity} ETB</span>
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               {(o.historyChangeSummary || (o.auditTrail || []).length > 0) && (

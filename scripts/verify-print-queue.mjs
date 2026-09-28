@@ -22,6 +22,12 @@
  *   7. INSTANT RELEASE (owner's decision, Sept 2026): the SEND releases the
  *      food, never the print. A waiter's order AND anything added later land
  *      on the crew's lists the same second; the print is EFD audit only.
+ *   8. THE PRINT SERVES THE FOOD (owner's decision, Sept 2026): the ✓ PRINTED
+ *      tap means the order is done and served, so it finishes every released
+ *      line on the bill and those lines leave every station dashboard the
+ *      same second (it used to be buna only; kitchen/barista/juice items
+ *      lingered on the boards overnight whenever nobody tapped Done). Held
+ *      guest additions are untouched — they are real work when confirmed.
  *
  * Run with: node scripts/verify-print-queue.mjs  (wired into `npm test`)
  */
@@ -191,13 +197,20 @@ function pass(name, cond) {
     && stationsApi.includes("@/lib/order-release") && stationsApi.includes("isLineHeld") && orderRelease.includes("isLineHeld"));
   pass("a bill with nothing released stays off every crew list",
     stationsApi.includes("if (released.length === 0) continue;") && stationsApi.includes(".filter((t) => t.items.length > 0)"));
-  pass("normal stations have no per-line print cutoff (additions never wait for a print)",
+  pass("no stray per-line send cutoff (the release gate is bill-level, named helpers only)",
     !/releaseCutoff/.test(stationsApi) && !/prevStamp/.test(stationsApi) && !/prevStamp/.test(tickets));
   const releaseHelper = (stationsApi.split("const releasedItems = (")[1] || "").split("};")[0] || "";
-  pass("the shared release gate is bill-level; the buna print-clear filter is separate",
+  pass("the shared release gate is bill-level; the print-served filter is separate",
     !/createdAt/.test(releaseHelper) && /liveItemsForStation/.test(stationsApi));
-  pass("buna live requests clear from the makers' dashboard after the cashier prints",
-    /station !== "buna"/.test(stationsApi) && /it\.stationStatus === "done"/.test(stationsApi) && /createdMs > printedMs/.test(stationsApi));
+  /* THE PRINT SERVES THE FOOD (owner's decision, Sept 2026): the cashier's
+   * ✓ PRINTED tap means the order is done and served, so every line finished
+   * on or before the print leaves EVERY crew's live list (kitchen, barista,
+   * juice and buna alike — it used to be buna only, and the other crews'
+   * items lingered on their dashboards overnight). The shared pure rule is
+   * isLineServedByPrint in @/lib/order-release. */
+  pass("every station's live list drops lines served by the cashier's print",
+    /isLineServedByPrint/.test(stationsApi) && /isLineServedByPrint/.test(orderRelease)
+    && /station === "buna" && it\.stationStatus === "done"/.test(stationsApi));
   pass("the acceptance stamp is written and self-heals on old databases", /updates\.confirmedAt = new Date\(\)/.test(tickets) && /confirmedAt: timestamp\("confirmed_at"\)/.test(schema) && /confirmed_at: \{ type: "timestamp", dropNotNull: true \}/.test(migrate));
   pass("a ticket with zero released items disappears from the station list", /\.filter\(\(t\) => t\.items\.length > 0\)/.test(stationsApi));
   pass("accepting rings ONLY the crews with items on the bill, plus the cashier", /case "confirmed"/.test(alerts) && /t\.stations/.test(alerts) && /fana-cook-\$\{t\.id\}-\$\{station\}/.test(alerts) && /New order to cook/.test(alerts));
@@ -205,7 +218,13 @@ function pass(name, cond) {
   pass("the waiter's button says where the order goes", /Accept & Send → Stations & Cashier/.test(waiter));
   pass("the cashier's button says plain ✓ PRINTED (the print sends nothing — instant release)",
     /<Printer className="w-5 h-5" \/> \{L\("✓ PRINTED"\)\}/.test(cashier) && !/PRINTED & SEND/.test(cashier));
-  pass("cashier printing auto-clears pending buna station lines", /body\.status === "printed"/.test(tickets) && /eq\(ticketItems\.stationName, "buna"\)/.test(tickets) && /stationStatus: "done"/.test(tickets));
+  /* Same owner decision, write side: the print stamps every RELEASED,
+   * unfinished line on the bill done (all four stations — the eq(stationName,
+   * "buna") filter is gone), while HELD guest additions are skipped because
+   * the crews never received them. */
+  pass("cashier printing finishes every released line on the bill (all stations, held lines untouched)",
+    /body\.status === "printed"/.test(tickets) && !/eq\(ticketItems\.stationName, "buna"\)/.test(tickets)
+    && /stationStatus: "done"/.test(tickets) && /COALESCE\(\$\{ticketItems\.released\}, true\) = true/.test(tickets));
   pass("the buna makers' lane is read-only (no Accept or Done buttons)", /Cashier prints to clear/.test(waiter) && !/setBunaStatus/.test(waiter));
   pass("her addition card still shows ONLY the new items", /isNewUnprinted/.test(cashier) && /new items only/.test(cashier));
   /* The print is EFD audit only — it never wakes a crew. The ONE station push

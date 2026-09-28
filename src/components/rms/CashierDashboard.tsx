@@ -211,23 +211,24 @@ export default function CashierDashboard() {
   const outdoorBadge = (t: Ticket) => (isGroup(t) ? L("👥 Group") : L("Outdoor"));
   /**
    * An outdoor order is ready when every live line that needs crew completion is
-   * done. Buna is the exception: the buna makers use a read-only request list,
-   * so the cashier's ✓ PRINTED tap clears their line instead of waiting for a
-   * station Done tap. This lets a buna-only outdoor order show Mark Delivered
-   * as soon as it is printed, and mixed orders wait only for the other crews.
+   * done. THE PRINT SERVES THE FOOD (owner's decision, Sept 2026): a line that
+   * was on the printed receipt is served — the cashier's ✓ PRINTED tap stamps
+   * it done for every crew (this also covers bills printed before that rule
+   * existed), so the order can show Mark Delivered the moment it is printed
+   * even if nobody tapped Done. A HELD guest addition is the exception: the
+   * crews never received it, so it is ready only when it is genuinely done.
    */
   const outdoorReady = (t: Ticket) => {
     const live = (t.items || []).filter((item) => !item.removed);
     if (live.length === 0) return false;
+    const printedMs = t.printedAt ? new Date(t.printedAt).getTime() || 0 : 0;
     return live.every((item) => {
-      if (item.stationName === "buna") {
-        if (item.stationStatus === "done") return true;
-        if (!t.printedAt) return false;
-        const printedMs = new Date(t.printedAt).getTime() || 0;
-        const createdMs = item.createdAt ? new Date(item.createdAt).getTime() || 0 : 0;
-        return printedMs > 0 && createdMs <= printedMs;
-      }
-      return item.stationStatus === "done";
+      if (item.stationStatus === "done") return true;
+      // Held = the stations have not been told about this line yet.
+      if (item.released === false) return false;
+      if (!printedMs) return false;
+      const createdMs = item.createdAt ? new Date(item.createdAt).getTime() || 0 : 0;
+      return createdMs <= printedMs;
     });
   };
   const isGuestTopUp = (t: Ticket) =>

@@ -16,7 +16,7 @@ import { recordTicketEvent, summarizeSubmissionLines } from "@/lib/ticket-audit"
 import { sendPushToRoles, CUSTOMER_ALERT_RING } from "@/lib/push";
 import { ticketStatusAlerts, withoutActor } from "@/lib/alerts";
 import { stationForOrder, stationOf, type StationName } from "@/lib/stations";
-import { isBillSent } from "@/lib/order-release";
+import { isBillSent, isTableReleased, allLinesFinished } from "@/lib/order-release";
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
 import { nextGroupNumberToday, nextGroupNumberInTx, groupLabel } from "@/lib/group-orders";
 import { isDeferredWorkerRequest } from "@/lib/deferred-ticket-auth";
@@ -1253,11 +1253,20 @@ export async function PUT(request: Request) {
     // PRINT FREES THE TABLE (owner's decision, Sept 2026): for a DINE-IN bill
     // this tap is also the "table cleared" the waiters kept forgetting — the
     // floor boards show the table as free and the next guest opens a NEW bill,
-    // so a late item can never land on a receipt that already went out. The
-    // crews keep the bill on their lists until every line is finished (the
-    // print is EFD audit only), and the bill closes itself once they are done.
+    // so a late item can never land on a receipt that already went out.
     // Outdoor/group bills are exempt: a group takes more rounds on the same
     // bill, so their print stays a re-print.
+    //
+    // THE PRINT SERVES THE FOOD (owner's decision, Sept 2026): the ✓ PRINTED
+    // tap means the order is done and served, so it also finishes every line
+    // the crews could see at that moment — the items leave the kitchen /
+    // barista / juice / buna dashboards the same second instead of lingering
+    // until somebody remembers to tap Done (they used to sit there overnight).
+    // HELD guest additions (ticket_items.released = false) are deliberately
+    // NOT finished: the crews never received them, so when the staff confirm
+    // them later that is real new work and it stays on the boards until the
+    // next print. The bill then closes itself below when everything on it is
+    // finished, exactly like the crew's own last Done tap used to close it.
     if (body.status === "printed") {
       updates.printedAt = new Date();
       updates.printedBy = body.printedBy ? String(body.printedBy).slice(0, 100) : cur.printedBy || "(cashier)";
@@ -1318,29 +1327,73 @@ export async function PUT(request: Request) {
         releasedStations = [...new Set(releasedRows.map((r) => stationOf(r.stationName)))];
       }
 
-      // Buna makers use their lane as a read-only request list. They do not tap
-      // Accept or Done; once the cashier prints the EFD/order paper, the buna
-      // request is considered cleared and leaves their dashboard. New buna
-      // additions after a print are separate pending rows and clear on the next
-      // print.
+      // THE PRINT SERVES THE FOOD (owner's decision, Sept 2026). Every line
+      // the crews could see on this bill right now is done and served with the
+      // receipt: stamp it done so it leaves the kitchen / barista / juice /
+      // buna dashboards on their next refresh (the live list hides lines
+      // finished on or before the print — see station-items GET). Held guest
+      // additions are skipped on purpose (the crews never received them; they
+      // become real work when the staff confirm them) and so are lines the
+      // crews already finished themselves (their own Done stamp and audit
+      // trail are kept). Re-prints simply repeat this safely.
+      //
+      // "cashier print" is deliberately NOT a person's name — it is the marker
+      // the admin report reads to say "this line left the boards because the
+      // receipt went out: the crew never clicked Done" (the same marker the
+      // migration sweep writes). WHICH cashier printed stays on the bill
+      // (printedBy) and in the audit trail (the ticket_printed event below),
+      // and the crew's own taps keep their real names.
       if (rows[0] && body.status === "printed") {
+        const finishedAt = new Date();
         await tx
           .update(ticketItems)
           .set({
             stationStatus: "done",
-            stationStatusBy: String(updates.printedBy || actorName || "(cashier)").slice(0, 100),
-            stationStatusAt: new Date(),
-            stationDoneBy: String(updates.printedBy || actorName || "(cashier)").slice(0, 100),
-            stationDoneAt: new Date(),
+            stationStatusBy: "cashier print",
+            stationStatusAt: finishedAt,
+            stationDoneBy: "cashier print",
+            stationDoneAt: finishedAt,
           })
           .where(
             and(
               eq(ticketItems.ticketId, rows[0].id),
-              eq(ticketItems.stationName, "buna"),
               eq(ticketItems.removed, false),
+              // A held guest addition is NOT served by this receipt — the
+              // crews have not even seen it yet.
+              sql`COALESCE(${ticketItems.released}, true) = true`,
               sql`COALESCE(${ticketItems.stationStatus}, '') <> 'done'`
             )
           );
+
+        // A RELEASED BILL CLOSES ITSELF (same rule as the crews' last Done tap
+        // in station-items PUT): the print already freed the table, and now
+        // every line on the bill is finished, so nobody needs to remember the
+        // final "Table cleared". Outdoor/group bills keep taking rounds on the
+        // same bill, so they stay open for their "Mark delivered" step. A bill
+        // with a still-held guest addition also stays open — that line is
+        // unfinished work.
+        try {
+          const after = await tx
+            .select({
+              removed: ticketItems.removed,
+              stationStatus: ticketItems.stationStatus,
+            })
+            .from(ticketItems)
+            .where(eq(ticketItems.ticketId, rows[0].id));
+          if (isTableReleased(rows[0]) && allLinesFinished(after)) {
+            await tx
+              .update(tickets)
+              .set({
+                status: "closed",
+                closedAt: new Date(),
+                closedBy: String(updates.printedBy || actorName || "(cashier)").slice(0, 100),
+                updatedAt: new Date(),
+              })
+              .where(and(eq(tickets.id, rows[0].id), eq(tickets.status, "printed")));
+          }
+        } catch {
+          // A self-close hiccup must never fail the cashier's print.
+        }
       }
       return rows;
     });
@@ -1392,7 +1445,7 @@ export async function PUT(request: Request) {
               ? "Cashier printed the outdoor order receipt"
               : cur.printedAt
               ? "Cashier re-printed the bill"
-              : "Cashier printed the bill and cleared the table",
+              : "Cashier printed the bill, served the food and cleared the table",
         });
       }
       if (releasedStations.length > 0) {

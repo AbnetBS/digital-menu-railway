@@ -2,7 +2,7 @@
  * THE RELEASE RULES — one file, so the API routes, the staff screens and the
  * regression tests can never disagree about WHEN the stations may see a line.
  *
- * Three decisions the owner made in Sept 2026 live here:
+ * Four decisions the owner made in Sept 2026 live here:
  *
  * 1. PRINT FREES THE TABLE. The cashier's ✓ PRINTED tap also clears the table,
  *    because the waiters kept forgetting to. A DINE-IN bill carrying
@@ -26,6 +26,14 @@
  *    forgotten "Table cleared" can never leave a stack of half-dead bills
  *    behind (see station-items PUT).
  *
+ * 4. THE PRINT SERVES THE FOOD. The cashier's ✓ PRINTED tap means the order is
+ *    done and served, so every line that was on the printed receipt leaves the
+ *    crews' dashboards the same second (the print stamps those lines done —
+ *    see the PUT in tickets/route.ts). Nothing lingers overnight any more.
+ *    Lines that become work only AFTER the print are untouched: a guest top-up
+ *    the staff confirm later is NEW work the receipt never covered, and a line
+ *    finished after the print stays visible until receipt #2 goes out.
+ *
  * This module is deliberately PURE: no database, no Next.js, no React.
  */
 
@@ -46,6 +54,10 @@ export interface ReleaseLine {
   released?: boolean | null;
   stationStatus?: string | null;
   stationName?: string | null;
+  /** WHEN the crew (or the cashier's print) last stamped this line. */
+  stationStatusAt?: string | Date | null;
+  /** WHEN this line was permanently finished (the "done" stamp). */
+  stationDoneAt?: string | Date | null;
 }
 
 /**
@@ -86,6 +98,41 @@ export function isLineHeld(line: ReleaseLine | null | undefined): boolean {
   if (!line) return false;
   // Rows written before the release gate existed read as released.
   return line.released === false;
+}
+
+/**
+ * THE PRINT SERVES THE FOOD (owner's decision, Sept 2026) — was this line
+ * already served with a printed receipt, so it must NOT sit on a station
+ * dashboard any more?
+ *
+ * True when the cashier printed the bill AND this line was finished on or
+ * before that print — by the crew's own Done tap, or by the print itself
+ * (the print stamps every released, unfinished line done; see the PUT in
+ * tickets/route.ts). False for:
+ *   • a line still pending/accepted — that is live work. If it was released
+ *     only AFTER the print (a guest top-up the staff just confirmed), the
+ *     receipt never covered it and the crews must still make it;
+ *   • a line finished AFTER the print — an addition the crew already made but
+ *     receipt #2 has not gone out for yet, so it stays on the board as a
+ *     crossed-out reminder until the cashier prints again;
+ *   • a line on a bill that was never printed.
+ */
+export function isLineServedByPrint(
+  line: ReleaseLine | null | undefined,
+  ticket: ReleaseTicket | null | undefined
+): boolean {
+  if (!line || !ticket) return false;
+  if (String(line.stationStatus || "") !== "done") return false;
+  const printedMs = ticket.printedAt ? new Date(ticket.printedAt).getTime() || 0 : 0;
+  if (!printedMs) return false;
+  const doneMs = line.stationDoneAt
+    ? new Date(line.stationDoneAt).getTime() || 0
+    : line.stationStatusAt
+      ? new Date(line.stationStatusAt).getTime() || 0
+      : 0;
+  // No stamp at all = an old "done" row from before the audit columns existed:
+  // it predates the print for sure, so the receipt covered it.
+  return doneMs <= printedMs;
 }
 
 /** May the crew of `station` see this line of this bill right now? */

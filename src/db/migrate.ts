@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-09-27-1";
+const SCHEMA_VERSION = "2026-09-28-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -640,6 +640,33 @@ async function runFullMigrate(force: boolean) {
   //    released. The UPDATE below only matters on databases where ADD COLUMN
   //    could not apply the default (very old Postgres): re-run safe.
   await run(`UPDATE ticket_items SET released = true WHERE released IS NULL`);
+
+  //  • PRINT SERVES THE FOOD backfill (owner's decision, Sept 2026). The
+  //    cashier's ✓ PRINTED tap means the order is done and served, so from now
+  //    on the print itself stamps every released line of the bill done (see
+  //    the PUT in tickets/route.ts) and the station live list hides it. Bills
+  //    printed BEFORE that rule existed never got that stamp, so their items
+  //    kept sitting on the kitchen / barista / juice / buna dashboards for
+  //    days. This one-time sweep finishes exactly those lines — released (the
+  //    crews had received them), not removed, not done yet, and created on or
+  //    before the print (so a still-unprinted addition stays live work) —
+  //    stamped as finished by the print itself. Re-run safe: done rows are
+  //    skipped.
+  await run(`
+    UPDATE ticket_items ti
+    SET station_status = 'done',
+        station_status_by = 'cashier print',
+        station_status_at = COALESCE(t.printed_at, now()),
+        station_done_by = 'cashier print',
+        station_done_at = COALESCE(t.printed_at, now())
+    FROM tickets t
+    WHERE t.id = ti.ticket_id
+      AND t.printed_at IS NOT NULL
+      AND COALESCE(ti.released, true) = true
+      AND COALESCE(ti.removed, false) = false
+      AND COALESCE(ti.station_status, 'pending') <> 'done'
+      AND ti.created_at <= t.printed_at
+  `);
 
   //  • GROUP 5 — one active bill per table, enforced at the DATABASE level.
   //    Before creating the partial unique index, repair any duplicate active

@@ -1080,6 +1080,7 @@ export const STAFF_AM = {
   "✎ {tableName}: {name} quantity {from} to {to}": "✎ {tableName}፦ {name} ብዛት ከ{from} ወደ {to}",
   "Fana Cafe • {label} update": "ፋና ካፌ • የ{label} ማሻሻያ",
   "✓ {tableName}: bill closed • all your items were done": "✓ {tableName}፦ ሂሳቡ ተዘግቷል • ሁሉም እቃዎችዎ ተጠናቀዋል",
+  "✓ {tableName}: printed & served • cleared from your list": "✓ {tableName}፦ ተተርኳል እና ተሰርዟል • ከዝርዝርዎ ተወግዷል",
   "Fana Cafe • {label} Alert": "ፋና ካፌ • የ{label} ማንቂያ",
   "New item at {tableName}: {name} x{quantity}{value}": "አዲስ እቃ በ{tableName}፦ {name} x{quantity}{value}",
   "✓ Stations routing saved • all new orders will split correctly by station": "✓ የዝግጅት ክፍሎች መስመር ተቀምጧል • ሁሉም አዲስ ትዕዛዞች በዝግጅት ክፍል በትክክል ይከፈላሉ",

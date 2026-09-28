@@ -153,6 +153,10 @@ export const tickets = pgTable("tickets", {
   verifiedAt: timestamp("verified_at"),
   // Print-queue mode: the cashier keyed this bill into the government EFD/POS
   // and printed the order paper. Re-printed (updated) whenever additions arrive.
+  // THE PRINT SERVES THE FOOD (owner's decision, Sept 2026): this tap means
+  // the order is done and served, so it also finishes every released line on
+  // the bill — the items leave the kitchen/barista/juice/buna dashboards the
+  // same second instead of lingering until somebody taps Done.
   printedAt: timestamp("printed_at"),
   printedBy: varchar("printed_by", { length: 100 }),
   // Print-queue mode: the waiter physically cleared the table, closing the

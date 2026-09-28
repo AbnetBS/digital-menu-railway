@@ -2,13 +2,13 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { ticketItems, tickets } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { and, eq, notInArray, asc, desc, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, notInArray, asc, desc, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { requireStaffOrAdmin, readStaffSession, readAdminSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { sendPushToNamedStaff, sendPushToRoles } from "@/lib/push";
 import { stationProgressAlerts, ticketOwner } from "@/lib/alerts";
 import { stationOf, type StationName } from "@/lib/stations";
-import { allLinesFinished, isBillSent, isLineHeld, isTableReleased } from "@/lib/order-release";
+import { allLinesFinished, isBillSent, isLineHeld, isLineServedByPrint, isTableReleased } from "@/lib/order-release";
 import { etStartOfToday } from "@/lib/timezone";
 
 /** The four crews that receive work (see @/lib/stations). */
@@ -31,6 +31,11 @@ async function authorizedStation(): Promise<Station | "admin" | null> {
  * paper stack they used to keep), open or already closed, with each line's
  * progress. Same release rule as the live list, so a held bill never shows up
  * as work they already did.
+ *
+ * ?printCleared=1 → the bills the cashier printed in the last 15 minutes that
+ * carried this crew's lines. The print SERVES the food (owner's decision,
+ * Sept 2026), so those lines left the live list — this feed lets the station
+ * screen tell a print-clear apart from a cancellation and stay quiet about it.
  */
 export async function GET(request: Request) {
   const __auth = await requireStaffOrAdmin();
@@ -52,6 +57,43 @@ export async function GET(request: Request) {
     // reads and dismisses with Okay. It is never work: it never counts as
     // sold, and the Done/Accept buttons are replaced by the Okay dismiss.
     const cancelledOnly = searchParams.get("cancelled") === "1";
+    // ── PRINT-CLEARED FEED (owner's decision, Sept 2026) ──
+    // The cashier's ✓ PRINTED tap means the order is done and served, so the
+    // bill's lines leave the live list below the same second. A card that
+    // vanishes for THAT reason is good news, not the "stop preparing" alarm —
+    // this feed names the bills she printed in the last 15 minutes (that had
+    // this crew's lines), so the station screen can tell a print-clear apart
+    // from a cancellation and show a quiet ✓ toast instead of ringing.
+    const printClearedOnly = searchParams.get("printCleared") === "1";
+    if (!cancelledOnly && printClearedOnly) {
+      const since = new Date(Date.now() - 15 * 60 * 1000);
+      const printedBills = await db
+        .select({ id: tickets.id, tableName: tickets.tableName, orderNumber: tickets.orderNumber, printedAt: tickets.printedAt })
+        .from(tickets)
+        .where(and(isNotNull(tickets.printedAt), gte(tickets.printedAt, since), notInArray(tickets.status, ["cancelled"])))
+        .orderBy(desc(tickets.printedAt));
+      if (printedBills.length === 0) return NextResponse.json([], { headers: { "Cache-Control": "no-store" } });
+      const mine = await db
+        .select({ id: ticketItems.id, ticketId: ticketItems.ticketId })
+        .from(ticketItems)
+        .where(
+          and(
+            eq(ticketItems.stationName, station),
+            eq(ticketItems.removed, false),
+            // Held lines never reached this crew, so they are not "cleared
+            // from their board" either.
+            sql`COALESCE(${ticketItems.released}, true) = true`,
+            inArray(ticketItems.ticketId, printedBills.map((p) => p.id))
+          )
+        );
+      const withMine = new Set(mine.map((m) => m.ticketId));
+      return NextResponse.json(
+        printedBills
+          .filter((p) => withMine.has(p.id))
+          .map((p) => ({ id: p.id, tableName: p.tableName, orderNumber: p.orderNumber, printedAt: p.printedAt })),
+        { headers: { "Cache-Control": "no-store" } }
+      );
+    }
     if (cancelledOnly) {
       const since = new Date();
       since.setDate(since.getDate() - 2);
@@ -184,10 +226,7 @@ export async function GET(request: Request) {
     // CONFIRM & SEND on a held QR order. From that second on, EVERY released
     // line on the bill the original order AND anything the waiter added later
     // is the crew's work immediately, exactly like the cashier and the waiter
-    // see it. The cashier's print is only the EFD receipt for kitchen, barista
-    // and juice. Buna is read-only: print clears its already-visible request
-    // instead of waiting for a Done tap.
-    // Two things stay invisible here:
+    // see it. Two things stay invisible here:
     //   • a HELD bill: her plain accept of a QR order only acknowledges it
     //     (alarms stop, nothing sent), so a confirmed bill with neither a
     //     confirmed_at nor a printed_at stamp releases NOTHING until she taps
@@ -204,24 +243,30 @@ export async function GET(request: Request) {
       return items.filter((it: any) => !isLineHeld(it));
     };
 
-    // Buna makers only need a read-only work list. They do not press Accept or
-    // Done; the cashier's EFD print clears the buna request. Future prints mark
-    // the lines done, and this cutoff also hides any older pending buna rows
-    // that were printed before this rule existed. Additions created after the
-    // last print still appear until the cashier prints receipt #2.
+    // THE PRINT SERVES THE FOOD (owner's decision, Sept 2026). The cashier's
+    // ✓ PRINTED tap means the order is done and served, so every line that was
+    // on the printed receipt leaves this dashboard at once — the print itself
+    // stamps those lines done (see the PUT in tickets/route.ts), which is why
+    // "finished on or before the last print" is exactly "served with a
+    // receipt". That is the rule for ALL four crews now (it used to be buna
+    // only, and kitchen/barista/juice items lingered on the boards overnight
+    // whenever nobody tapped Done). What still shows on a printed bill:
+    //   • a pending/accepted line — live work. If it was released only AFTER
+    //     the print (a guest top-up the staff just confirmed), the receipt
+    //     never covered it and the crews must still make it;
+    //   • a line finished AFTER the print — receipt #2 is still pending, so it
+    //     stays as a crossed-out reminder until the cashier prints again;
+    //   • the buna lane stays read-only as before: its DONE lines never show.
     const liveItemsForStation = (
       confirmedAt: Date | string | null,
       printedAt: Date | string | null,
       items: any[]
     ) => {
       const released = releasedItems(confirmedAt, printedAt, items);
-      if (station !== "buna") return released;
-      const printedMs = printedAt ? new Date(printedAt).getTime() || 0 : 0;
+      const printedTicket = { printedAt };
       return released.filter((it: any) => {
-        if (it.stationStatus === "done") return false;
-        if (!printedMs) return true;
-        const createdMs = it.createdAt ? new Date(it.createdAt).getTime() || 0 : 0;
-        return createdMs > printedMs;
+        if (station === "buna" && it.stationStatus === "done") return false;
+        return !isLineServedByPrint(it, printedTicket);
       });
     };
 

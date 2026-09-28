@@ -409,6 +409,23 @@ export default function StationApp({ station }: { station: Station }) {
     }
     const cancelledTicketIds = new Set(cancelledFeed.filter((c) => c.wholeOrder).map((c) => c.id));
 
+    // ── PRINT-CLEARED (owner's decision, Sept 2026) ──
+    // The cashier's ✓ PRINTED tap means the order is done and served: the
+    // bill's lines leave the live list below the same second. A card that
+    // vanishes for THAT reason is good news — NOT the "stop preparing"
+    // alarm. This feed names the bills she printed in the last 15 minutes
+    // (that carried this crew's lines), so the detectors below can tell a
+    // print-clear apart from a cancellation or a removal.
+    let printClearedFeed: Array<{ id: number; tableName: string }> = [];
+    try {
+      const pr = await fetch(`/api/station-items?station=${station}&printCleared=1`, { cache: "no-store" });
+      if (pr.status === 401) return expireSession();
+      if (pr.ok) printClearedFeed = (await pr.json()) as Array<{ id: number; tableName: string }>;
+    } catch {
+      /* the live list below must still load */
+    }
+    const printClearedIds = new Set(printClearedFeed.map((p) => p.id));
+
     const r = await fetch(`/api/station-items?station=${station}`);
     if (r.status === 401) return expireSession();
     if (!r.ok) return;
@@ -479,11 +496,16 @@ export default function StationApp({ station }: { station: Station }) {
       itemSigRef.current.delete(id);
       delete nextNewPendingBadges[id];
       // The line disappeared while its bill is still open => it was removed.
-      // (A bill that left the list entirely is reported once, below.)
-      if (initRef.current && nowTicketIds.has(seen.ticketId)) {
+      // (A bill that left the list entirely is reported once, below.) The ONE
+      // exception: the cashier just printed the bill — the receipt SERVED the
+      // line, so it leaving is good news, not a removal.
+      if (initRef.current && nowTicketIds.has(seen.ticketId) && !printClearedIds.has(seen.ticketId)) {
         removed.push({ tableName: seen.tableName, name: seen.name });
       }
     }
+    // A print-cleared bill that still has OTHER live lines (a brand-new
+    // addition) is named once, quietly, below.
+    const printClearedQuiet: string[] = [];
     for (const [id, name] of [...ticketNameRef.current.entries()]) {
       if (nowTicketIds.has(id)) continue;
       ticketNameRef.current.delete(id);
@@ -491,6 +513,12 @@ export default function StationApp({ station }: { station: Station }) {
       // A whole cancelled order is reported by the cancelled feed instead:
       // it rings there, with a red record the crew can read and dismiss.
       if (cancelledTicketIds.has(id)) continue;
+      // The cashier printed it: the food is served and it leaves the boards —
+      // good news, said quietly with a ✓ instead of the stop-work alarm.
+      if (printClearedIds.has(id)) {
+        printClearedQuiet.push(name);
+        continue;
+      }
       // Only a ticket with work still on the fire is worth an alarm.
       if ((prevOpenWork.get(id) || 0) > 0) gone.push(name);
       else closedQuiet.push(name);
@@ -522,10 +550,25 @@ export default function StationApp({ station }: { station: Station }) {
       closedQuiet.length > 0 &&
       removed.length === 0 &&
       gone.length === 0 &&
-      changed.length === 0
+      changed.length === 0 &&
+      printClearedQuiet.length === 0
     ) {
       const tableName = closedQuiet[0];
       showToast(tNow("✓ {tableName}: bill closed • all your items were done", { tableName }));
+    }
+
+    // THE PRINT SERVES THE FOOD: a card that left because the cashier printed
+    // the bill is answered with a quiet ✓, never the alarm — the food is done
+    // and served, there is nothing to stop preparing.
+    if (
+      initRef.current &&
+      printClearedQuiet.length > 0 &&
+      removed.length === 0 &&
+      gone.length === 0 &&
+      changed.length === 0
+    ) {
+      const tableName = printClearedQuiet[0];
+      showToast(tNow("✓ {tableName}: printed & served • cleared from your list", { tableName }));
     }
 
     // ── THE CANCELLATION ALARM ──

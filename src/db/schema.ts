@@ -264,6 +264,29 @@ export const ticketItems = pgTable("ticket_items", {
   idempotencyKey: varchar("idempotency_key", { length: 64 }),
 });
 
+// ─── THE BARISTA HAND-OVER (owner's decision, Sept 2026) ────────────────────
+// One row per registered SHIFT OWNER on a station lane, per Ethiopian day.
+// A barista becomes the morning (or afternoon) owner the moment he presses
+// ACCEPT on his first line of that shift — logging in alone registers
+// nothing, so a mistaken login never blocks the real barista. The unique
+// (station, day_key, shift) index makes the registration race-safe: two
+// baristas accepting in the same second can never both own the afternoon.
+// The admin shift report reads these rows so its barista morning/afternoon
+// buckets follow the OWNER (not the raw clock) and match the crew's own
+// Items-sold tab one to one. See @/lib/shift-handover.
+export const stationShiftClaims = pgTable("station_shift_claims", {
+  id: serial("id").primaryKey(),
+  /** Today only "barista"; the column keeps the door open for other crews. */
+  station: varchar("station", { length: 20 }).notNull(),
+  /** EAT calendar day ("2026-09-28") — claims reset every morning. */
+  dayKey: varchar("day_key", { length: 10 }).notNull(),
+  /** morning | afternoon */
+  shiftName: varchar("shift_name", { length: 10 }).notNull(),
+  staffName: varchar("staff_name", { length: 100 }).notNull(),
+  /** The first accept stamp — when this person registered as the owner. */
+  claimedAt: timestamp("claimed_at").defaultNow(),
+});
+
 // ─── COFFEE NOTE (owner's decision, Sept 2026) ──────────────────────────────
 // The buna makers also sell traditional coffee OUTDOOR (gate, parking, the
 // offices next door) and they do not watch their phones, so those sales must

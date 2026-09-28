@@ -264,6 +264,21 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
       ]
     : [];
 
+  // BARISTA HAND-OVER (owner, Sept 2026): the registered owners of the days
+  // in view, named right under the shift title — "Morning Shift • before
+  // 14:00 • Abel". The first accepted drink of the shift is who registered,
+  // and their per-line figures match the barista's own Items-sold tab.
+  const claimOwners = (key: "morning" | "afternoon"): string => {
+    if (role !== "barista" || !data?.shiftClaims?.length) return "";
+    const keys = new Set(data.dayKeys || []);
+    const names = [...new Set(data.shiftClaims.filter((c) => c.shift === key && keys.has(c.dayKey)).map((c) => c.staffName))];
+    return names.join(", ");
+  };
+  const ownerSuffix = (key: "morning" | "afternoon") => {
+    const names = claimOwners(key);
+    return names ? ` • ${names}` : "";
+  };
+
   const pill = (active: boolean) =>
     `px-3 py-2 rounded-xl text-xs font-black uppercase tracking-wide transition active:scale-95 ${
       active ? "bg-[#C9A227] text-[#2C1B17]" : "bg-black/30 border border-stone-700 text-stone-300 hover:border-[#C9A227]/60"
@@ -379,7 +394,7 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
                   <ShiftSection
                     icon={<Sun className="w-4 h-4 text-amber-300" />}
                     title={t("Morning Shift")}
-                    subtitle={t("before {time}", { time: pad(split) })}
+                    subtitle={t("before {time}", { time: pad(split) }) + ownerSuffix("morning")}
                     rows={data.morning}
                     prefix="m"
                     open={open}
@@ -396,7 +411,7 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
                   <ShiftSection
                     icon={<Sunset className="w-4 h-4 text-orange-400" />}
                     title={t("Afternoon Shift")}
-                    subtitle={t("from {time}", { time: pad(split) })}
+                    subtitle={t("from {time}", { time: pad(split) }) + ownerSuffix("afternoon")}
                     rows={data.afternoon}
                     prefix="a"
                     open={open}

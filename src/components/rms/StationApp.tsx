@@ -46,6 +46,35 @@ interface StationItem {
   stationStatusAt?: string | null;
   /** When THIS line arrived — a later "2 Tea" is newer work than the first one. */
   createdAt?: string | null;
+  /**
+   * BARISTA HAND-OVER (shadow line): another barista owns this line now.
+   * The server keeps it in the payload so this screen can follow it SILENTLY
+   * (a line walking off to its owner is never the "removed, stop preparing"
+   * alarm), but the board, the counters and the buttons never show it.
+   */
+  taken?: boolean;
+}
+
+/**
+ * BARISTA HAND-OVER meta (owner, Sept 2026): the server tells the barista's
+ * screen where the day stands — who owns which shift (the first ACCEPTED
+ * drink of the shift registers the owner, a bare login registers nothing),
+ * whether this pair of eyes may still see and accept pending drinks, and the
+ * exact end of the 20-minute hand-over window for the countdown. Other lanes
+ * get no such block (their board stays shared, untouched).
+ */
+interface ShiftMeta {
+  phase: "open" | "handover" | "after";
+  splitHour: number;
+  windowStart: string;
+  windowEnd: string;
+  seesPending: boolean;
+  canAcceptPending: boolean;
+  myShift: "morning" | "afternoon" | null;
+  owners: {
+    morning: { name: string; at: string | null } | null;
+    afternoon: { name: string; at: string | null } | null;
+  };
 }
 
 /**
@@ -117,6 +146,13 @@ export default function StationApp({ station }: { station: Station }) {
   const [pin, setPin] = useState("");
   const [loginError, setLoginError] = useState("");
   const [tickets, setTickets] = useState<StationTicket[]>([]);
+  // BARISTA HAND-OVER: where my shift stands (null for the kitchen/juice
+  // lanes — no envelope, no change). The server clock offset keeps the
+  // 20-minute countdown honest even when the tablet's own clock is wrong.
+  const [shiftMeta, setShiftMeta] = useState<ShiftMeta | null>(null);
+  const serverOffsetRef = useRef(0);
+  const [handoverLeftMs, setHandoverLeftMs] = useState<number | null>(null);
+  const handoverEndFiredRef = useRef(false);
   const [alertsOn, setAlertsOn] = useState(false);
   // STALE-CLOSURE FIX: the SSE handler is created once (deps [staffName]) and
   // captured whatever `alertsOn` was then. Enabling alerts afterwards never
@@ -434,7 +470,31 @@ export default function StationApp({ station }: { station: Station }) {
     const r = await fetch(`/api/station-items?station=${station}`);
     if (r.status === 401) return expireSession();
     if (!r.ok) return;
-    const data: StationTicket[] = await r.json();
+    // BARISTA HAND-OVER: the barista lane answers with an envelope
+    // ({tickets, serverTime, shift}); the other lanes (and the UI self-test)
+    // still answer with the plain array. Both are read here.
+    const raw = await r.json();
+    const data: StationTicket[] = (Array.isArray(raw) ? raw : Array.isArray(raw?.tickets) ? raw.tickets : []) as StationTicket[];
+    const shiftInfo: ShiftMeta | null = !Array.isArray(raw) && raw?.shift ? (raw.shift as ShiftMeta) : null;
+    if (!Array.isArray(raw) && raw?.serverTime) {
+      const parsed = Date.parse(String(raw.serverTime));
+      if (Number.isFinite(parsed)) serverOffsetRef.current = parsed - Date.now();
+    }
+    setShiftMeta(shiftInfo);
+
+    // HARD STOP (owner, Sept 2026): the moment the hand-over ends, every
+    // still-pending line leaves the morning barista's payload at once. Those
+    // lines were never his: forget them silently BEFORE the change detectors
+    // run, or the board would scream "removed, stop preparing" for drinks
+    // that simply moved to the afternoon shift.
+    if (shiftInfo && !shiftInfo.seesPending) {
+      for (const [id, seen] of [...itemSigRef.current.entries()]) {
+        if (seen.stationStatus === "pending") {
+          itemSigRef.current.delete(id);
+          delete newPendingBadgesRef.current[id];
+        }
+      }
+    }
 
     const nowPendingIds = new Set<number>();
     for (const t of data) for (const i of t.items) if (i.stationStatus === "pending") nowPendingIds.add(i.id);
@@ -472,6 +532,13 @@ export default function StationApp({ station }: { station: Station }) {
     for (const t of data) {
       ticketNameRef.current.set(t.id, t.tableName);
       for (const i of t.items) {
+        if (i.taken) {
+          // A shadow: the other barista accepted or finished this line. It is
+          // never mine to watch — forget it silently so it can never raise
+          // the "removed, stop preparing" alarm on MY screen.
+          itemSigRef.current.delete(i.id);
+          continue;
+        }
         liveIds.add(i.id);
         const prev = itemSigRef.current.get(i.id);
         itemSigRef.current.set(i.id, {
@@ -584,7 +651,9 @@ export default function StationApp({ station }: { station: Station }) {
     // leaves the board; say it once, quietly.
     const justFinishedAll: string[] = [];
     for (const t of data) {
-      const open = t.items.filter((i) => i.stationStatus !== "done").length;
+      // Shadow lines (the other barista's) are not MY open work: the board
+      // frees when the last of MY lines is done.
+      const open = t.items.filter((i) => i.stationStatus !== "done" && !i.taken).length;
       const prevOpen = boardOpenRef.current.get(t.id) ?? 0;
       boardOpenRef.current.set(t.id, open);
       if (initRef.current && prevOpen > 0 && open === 0) justFinishedAll.push(t.tableName);
@@ -666,6 +735,47 @@ export default function StationApp({ station }: { station: Station }) {
     todayUnitsLoadRef.current = refreshTodayUnits;
   });
 
+  // THE 20-MINUTE HAND-OVER COUNTDOWN (owner, Sept 2026): a medium counter
+  // both barista screens watch during the shift-change window. It ticks
+  // against the SERVER clock (a tablet's own clock is often wrong), and the
+  // moment it reaches zero the board reloads once — the hard stop (morning
+  // can no longer accept) lands on time, not whenever the next order arrives.
+  useEffect(() => {
+    if (!shiftMeta || shiftMeta.phase !== "handover") {
+      handoverEndFiredRef.current = false;
+      // handoverLeftMs may go stale here on purpose: the banner also gates on
+      // the phase, so a stale number can never paint, and the next window's
+      // first tick replaces it.
+      return;
+    }
+    const end = Date.parse(shiftMeta.windowEnd);
+    if (!Number.isFinite(end)) return;
+    handoverEndFiredRef.current = false;
+    const tick = () => {
+      const left = Math.max(0, end - (Date.now() + serverOffsetRef.current));
+      setHandoverLeftMs(left);
+      if (left === 0 && !handoverEndFiredRef.current) {
+        handoverEndFiredRef.current = true;
+        loadRef.current();
+      }
+    };
+    // All ticks run through timers: setState stays out of the synchronous
+    // effect body (react-hooks/set-state-in-effect).
+    const first = setTimeout(tick, 0);
+    const iv = setInterval(tick, 1000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(iv);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shiftMeta?.phase, shiftMeta?.windowEnd]);
+
+  const handoverClock = (() => {
+    if (handoverLeftMs === null) return null;
+    const total = Math.ceil(handoverLeftMs / 1000);
+    return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  })();
+
   // POCKET MODE: keeps this tablet/phone subscribed (self-healing) and rings
   // the loud alarm the moment a push lands, even if SSE was frozen.
   const pocket = usePocketAlerts({
@@ -675,6 +785,10 @@ export default function StationApp({ station }: { station: Station }) {
 
   useEffect(() => {
     if (staffName) {
+      // Both loaders are async to their core — every setState inside them
+      // sits behind a fetch. The lint rule cannot see through the function
+      // boundary, so the false positive here gets a one-line pardon.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       load();
       // The "Items sold" tile shows today's own figures the moment the crew
       // logs in, so the number is already there before anyone opens the tab.
@@ -811,8 +925,9 @@ export default function StationApp({ station }: { station: Station }) {
     );
   }
 
-  const pendingCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "pending").length, 0);
-  const acceptedCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "accepted").length, 0);
+  // Shadow lines (taken) belong to the other barista: never counted, never shown.
+  const pendingCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "pending" && !i.taken).length, 0);
+  const acceptedCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "accepted" && !i.taken).length, 0);
   /**
    * THE DONE TAP FREES THE BOARD (owner's decision, Sept 2026): the moment the
    * crew marks an item Done it LEAVES this dashboard — it used to linger
@@ -822,10 +937,22 @@ export default function StationApp({ station }: { station: Station }) {
    * every line is finished simply leaves the board (announced once, quietly,
    * in the load above). The alarms still watch the FULL server list, so a
    * real removal or a cancellation can never hide behind this filter.
+   * BARISTA HAND-OVER: shadow lines (taken by the other barista) never render
+   * either — the hand-over stole nothing from the board, it is still "one
+   * line, one pair of hands".
    */
   const boardTickets = tickets
-    .map((t) => ({ ...t, boardItems: t.items.filter((i) => i.stationStatus !== "done") }))
+    .map((t) => ({ ...t, boardItems: t.items.filter((i) => i.stationStatus !== "done" && !i.taken) }))
     .filter((t) => t.boardItems.length > 0);
+  /**
+   * STANDBY (barista hand-over): my board is empty because the shift is
+   * someone else's today — the owner's name goes on the empty screen, so a
+   * second barista knows at a glance why he sees no orders (and who to call).
+   * The morning owner after the hard stop instead reads that his day of
+   * orders is finished and his numbers live under Items sold.
+   */
+  const standbyOwner =
+    shiftMeta && !shiftMeta.myShift ? (shiftMeta.phase === "open" ? shiftMeta.owners.morning : shiftMeta.owners.afternoon) : null;
   /** The pile the crew is looking at right now (accepted / done / combined). */
   const salesPile: StationSalesPile | null = sales?.modes?.[salesMode] ?? null;
 
@@ -839,7 +966,16 @@ export default function StationApp({ station }: { station: Station }) {
           </div>
           <div>
             <h1 className="font-serif font-bold text-amber-100 leading-none">{L("Fana Cafe • {label}", { label: L(meta.label) })}</h1>
-            <p className="text-[10px] text-stone-400">{L(meta.desc)} • {staffName}</p>
+            <p className="text-[10px] text-stone-400">
+              {L(meta.desc)} • {staffName}
+              {/* THE SHIFT CHIP: your first accepted drink registered you —
+                  everyone can see whose board this is. */}
+              {shiftMeta?.myShift && (
+                <span className="ml-1.5 inline-block text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-600/25 border border-emerald-600/60 text-emerald-300 align-middle">
+                  {shiftMeta.myShift === "morning" ? L("Morning") : L("Afternoon")}
+                </span>
+              )}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -907,6 +1043,28 @@ export default function StationApp({ station }: { station: Station }) {
           <p className="text-[9px] font-extrabold uppercase text-stone-400">{L("Today • tap to open")}</p>
         </button>
       </div>
+
+      {/* ── THE 20-MINUTE HAND-OVER COUNTDOWN (owner, Sept 2026) ──
+          At the shift-change hour this medium counter runs on BOTH barista
+          screens. The morning man finishes what he accepted; the first drink
+          the afternoon man accepts registers him. Both see the SAME
+          still-pending lines, and the moment one accepts a line it leaves
+          the other's screen. Only participants see this banner. */}
+      {shiftMeta && shiftMeta.phase === "handover" && (shiftMeta.myShift !== null || shiftMeta.seesPending) && handoverClock && (
+        <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5">
+          <div className="bg-amber-950/70 border-2 border-[#C9A227] rounded-2xl p-4 text-center space-y-1.5 shadow-2xl">
+            <p className="text-[11px] font-black uppercase tracking-widest text-amber-300">{L("Shift hand-over")}</p>
+            <p className="font-serif font-black text-4xl md:text-5xl text-white tabular-nums leading-none">{handoverClock}</p>
+            <p className="text-[11px] font-bold text-amber-200/90 max-w-md mx-auto">
+              {shiftMeta.myShift === "morning"
+                ? L("Morning shift: finish what you accepted. When the counter ends, new orders move to the afternoon barista.")
+                : shiftMeta.myShift === "afternoon"
+                  ? L("You are the afternoon shift. Shared drinks below belong to whoever accepts them first.")
+                  : L("Accept your first drink to register as the afternoon shift.")}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── CANCELLED WORK: the crew's PROOF (owner's decision, Sept 2026) ──
           A cancelled order used to disappear from this list, so a cook who had
@@ -984,9 +1142,34 @@ export default function StationApp({ station }: { station: Station }) {
       {/* tickets cards */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5 space-y-4">
         {boardTickets.length === 0 ? (
-          <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
-            {L("All clear • no incoming items for the {label} right now. New orders and added items appear here instantly when they are sent.", { label: L(meta.label) })}
-          </div>
+          shiftMeta && !shiftMeta.seesPending ? (
+            <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-10 text-center space-y-2">
+              {shiftMeta.myShift === "morning" ? (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
+                  <p className="text-stone-400 text-xs">
+                    {L("The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.")}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("Waiting for your shift")}</p>
+                  <p className="text-stone-400 text-xs">
+                    {standbyOwner
+                      ? L("{name} is the {shift} shift today. Orders show only on their screen.", {
+                          name: standbyOwner.name,
+                          shift: shiftMeta.phase === "open" ? L("Morning") : L("Afternoon"),
+                        })
+                      : L("Orders show only on the shift owner's screen.")}
+                  </p>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
+              {L("All clear • no incoming items for the {label} right now. New orders and added items appear here instantly when they are sent.", { label: L(meta.label) })}
+            </div>
+          )
         ) : (
           boardTickets.map((t) => (
             <div key={t.id} className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 space-y-3">

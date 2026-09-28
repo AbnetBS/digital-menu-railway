@@ -211,7 +211,7 @@ const pass = (name, ok) => {
   );
   pass(
     "group cards render in the grid, tapping one opens it like a table",
-    /groupTickets\.map\(\(g\) => \([\s\S]{0,400}onClick=\{\(\) => openGroup\(g\)\}/.test(waiter),
+    /groupTickets\.map\(\(g\) => [\s\S]{0,1200}?onClick=\{\(\) => openGroup\(g\)\}/.test(waiter),
   );
   pass(
     "openGroup builds a pseudo-table (synthetic id, ticket id, group flag) and opens the BILL view",

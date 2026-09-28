@@ -31,6 +31,14 @@
  *   6. ONE-TIME BACKFILL (migrate.ts): bills printed BEFORE this rule existed
  *      get their printed lines stamped done at deploy time, so yesterday's
  *      stuck orders leave the dashboards without anyone tapping anything.
+ *   7. THE DONE TAP FREES THE BOARD (owner's request, Sept 2026): an item the
+ *      crew marks Done leaves the dashboard at once (it used to linger
+ *      crossed-out all day); the alarms still watch the full server list.
+ *   8. THE ADMIN REPORT KEEPS THE TRUTH (owner's request, Sept 2026): every
+ *      dish in the admin order history is badged — "Done by <crew name>",
+ *      "cleared by cashier print • crew did not click Done", or "crew never
+ *      clicked Done" — because the print clears the boards but must never
+ *      hide WHO actually finished the food.
  *
  * Run with: node scripts/verify-print-clears-stations.mjs  (wired into `npm test`)
  */
@@ -62,7 +70,7 @@ function pass(name, cond) {
     "the print stamps every released, unfinished line done (all four stations)",
     printHalf.includes('body.status === "printed"') &&
       !printHalf.includes('eq(ticketItems.stationName, "buna")') &&
-      printHalf.includes("stationDoneBy: finishedBy") &&
+      printHalf.includes('stationDoneBy: "cashier print"') &&
       printHalf.includes("stationDoneAt: finishedAt")
   );
   pass(
@@ -72,6 +80,10 @@ function pass(name, cond) {
   pass(
     "the crew's own Done stamps are preserved (already-done lines are skipped)",
     printHalf.includes("COALESCE(${ticketItems.stationStatus}, '') <> 'done'")
+  );
+  pass(
+    "the print marker is NOT a person's name, so the admin report can tell a crew Done tap from a print-clear",
+    printHalf.includes('stationStatusBy: "cashier print"') && printHalf.includes("cashier print")
   );
 }
 
@@ -191,6 +203,55 @@ function pass(name, cond) {
   pass(
     "the print still publishes the orders channel (stations refresh instantly)",
     putHalf.includes("publish(CHANNELS.orders)")
+  );
+}
+
+/* ── 8. THE DONE TAP FREES THE BOARD (owner's request, Sept 2026) ─────────── */
+{
+  pass(
+    "an item the crew marks Done leaves the station dashboard at once (render keeps only open work)",
+    stationApp.includes('boardItems: t.items.filter((i) => i.stationStatus !== "done")') &&
+      stationApp.includes(".filter((t) => t.boardItems.length > 0)")
+  );
+  pass(
+    "the alarms still watch the FULL server list, so a real removal can never hide behind the board filter",
+    stationApp.includes("itemSigRef.current.get(i.id)") && stationApp.includes("nowTicketIds.has(seen.ticketId)")
+  );
+  pass(
+    "a table whose last open line is finished leaves the board with a quiet ✓ toast",
+    stationApp.includes("justFinishedAll") && stationApp.includes("✓ {tableName}: all your items are done")
+  );
+}
+
+/* ── 9. THE ADMIN REPORT SHOWS WHAT THE CREW ACTUALLY CLICKED ────────────── */
+{
+  const historyTab = read("src/components/rms/OrderHistoryTab.tsx");
+  const types = read("src/types/index.ts");
+  const dictionary = read("src/lib/staff-dictionary.ts");
+  pass(
+    "the admin order history badges each dish: crew Done tap vs cashier print vs never clicked",
+    historyTab.includes("doneBadgeOf") &&
+      historyTab.includes('const DONE_BY_PRINT = "cashier print"') &&
+      historyTab.includes("crew never clicked Done") &&
+      historyTab.includes("crew did not click Done")
+  );
+  pass(
+    "a crew Done tap keeps the crew member's name even after the bill is printed",
+    historyTab.includes("✓ Done by {name}") && !historyTab.includes("overwrite")
+  );
+  pass(
+    "the buna lane counts as print-cleared (its crews cannot tap Done)",
+    historyTab.includes('r.stationName !== "buna"')
+  );
+  pass(
+    "the per-line audit fields are typed for the admin screen",
+    types.includes("stationDoneBy?: string | null") && types.includes("stationDoneAt?: string | null")
+  );
+  pass(
+    "the new badges and the board toast are translated for the staff screens",
+    dictionary.includes('"🖨 cleared by cashier print • crew did not click Done"') &&
+      dictionary.includes('"⚠ crew never clicked Done"') &&
+      dictionary.includes('"✓ {tableName}: all your items are done"')
   );
 }
 

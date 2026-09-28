@@ -1329,23 +1329,29 @@ export async function PUT(request: Request) {
 
       // THE PRINT SERVES THE FOOD (owner's decision, Sept 2026). Every line
       // the crews could see on this bill right now is done and served with the
-      // receipt: stamp it done in the cashier's name so it leaves the kitchen /
-      // barista / juice / buna dashboards on their next refresh (the live list
-      // hides lines finished on or before the print — see station-items GET).
-      // Held guest additions are skipped on purpose (the crews never received
-      // them; they become real work when the staff confirm them) and so are
-      // lines the crews already finished themselves (their own Done stamp and
-      // audit trail are kept). Re-prints simply repeat this safely.
+      // receipt: stamp it done so it leaves the kitchen / barista / juice /
+      // buna dashboards on their next refresh (the live list hides lines
+      // finished on or before the print — see station-items GET). Held guest
+      // additions are skipped on purpose (the crews never received them; they
+      // become real work when the staff confirm them) and so are lines the
+      // crews already finished themselves (their own Done stamp and audit
+      // trail are kept). Re-prints simply repeat this safely.
+      //
+      // "cashier print" is deliberately NOT a person's name — it is the marker
+      // the admin report reads to say "this line left the boards because the
+      // receipt went out: the crew never clicked Done" (the same marker the
+      // migration sweep writes). WHICH cashier printed stays on the bill
+      // (printedBy) and in the audit trail (the ticket_printed event below),
+      // and the crew's own taps keep their real names.
       if (rows[0] && body.status === "printed") {
-        const finishedBy = String(updates.printedBy || actorName || "(cashier)").slice(0, 100);
         const finishedAt = new Date();
         await tx
           .update(ticketItems)
           .set({
             stationStatus: "done",
-            stationStatusBy: finishedBy,
+            stationStatusBy: "cashier print",
             stationStatusAt: finishedAt,
-            stationDoneBy: finishedBy,
+            stationDoneBy: "cashier print",
             stationDoneAt: finishedAt,
           })
           .where(
@@ -1380,7 +1386,7 @@ export async function PUT(request: Request) {
               .set({
                 status: "closed",
                 closedAt: new Date(),
-                closedBy: finishedBy,
+                closedBy: String(updates.printedBy || actorName || "(cashier)").slice(0, 100),
                 updatedAt: new Date(),
               })
               .where(and(eq(tickets.id, rows[0].id), eq(tickets.status, "printed")));

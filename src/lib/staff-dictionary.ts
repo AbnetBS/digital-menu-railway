@@ -676,6 +676,20 @@ export const STAFF_AM = {
   "▶ Started": "▶ ተጀምሯል",
   "by {stationStatusBy}{value}": "ያደረገው፦ {stationStatusBy}{value}",
   "Accept ✓": "ተቀበል ✓",
+
+  /* StationApp — the barista hand-over (owner, Sept 2026): one owner per
+     shift, the first accepted drink registers, 20-minute countdown at the
+     shift change, hard stop for the morning man afterwards */
+  "Shift hand-over": "የፈረቃ ርክክብ",
+  "Morning shift: finish what you accepted. When the counter ends, new orders move to the afternoon barista.": "የጠዋት ፈረቃ፦ የተቀበሏቸውን መጠጦች ይጨርሱ። ቆጣሪው ሲያልቅ አዲስ ትዕዛዞች ለከሰዓት ባሪስታ ይሆናሉ።",
+  "You are the afternoon shift. Shared drinks below belong to whoever accepts them first.": "የከሰዓት ፈረቃ እርስዎ ነዎት። ከታች ያሉት የጋራ መጠጦች መጀመሪያ የሚቀበለውን ሰው ይሆናሉ።",
+  "Accept your first drink to register as the afternoon shift.": "የመጀመሪያዎን መጠጥ ይቀበሉ እና የከሰዓት ፈረቃ መሆንዎን ይመዝገቡ።",
+  "☀ Hand-over complete": "☀ ርክክቡ ተጠናቋል",
+  "The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.": "ቆጣሪው አልቋል። አዲስ ትዕዛዞች ለከሰዓት ባሪስታ ናቸው። ዕለትዎን ለማየት የተሸጡ እቃዎች የሚለውን ይንኩ።",
+  "Waiting for your shift": "ፈረቃዎን በመጠበቅ ላይ",
+  "{name} is the {shift} shift today. Orders show only on their screen.": "{name} ዛሬ የ{shift} ፈረቃ ነው። ትዕዛዞች በእሱ ስክሪን ብቻ ይታያሉ።",
+  "Orders show only on the shift owner's screen.": "ትዕዛዞች በፈረቃው ባለቤት ስክሪን ብቻ ይታያሉ።",
+
   "Back to the live list": "ወደ ቀጥታ ዝርዝሩ ተመለስ",
   "Today’s History • {label}": "የዛሬ ታሪክ • {label}",
   "Orders today": "የዛሬ ትዕዛዞች",
@@ -1223,6 +1237,13 @@ export const STAFF_AM = {
   "Server schedule unavailable. Keep the waiter app open.": "የአገልጋይ መርሐግብር አልተሳካም። የአስተናጋጁን መተግበሪያ ክፍት ያቆዩ።",
   "Check the items above • you can still edit, add notes or remove": "ከላይ ያሉትን እቃዎች ይመልከቱ • ማስተካከል፣ ማስታወሻ መጨመር ወይም ማስወግድ ይችላሉ",
   "Send now": "አሁን ላክ",
+  /* ─── THE HOLD ON THE TILE (owner, Sept 2026): the countdown lives on the
+     violet table tile and at the bottom of the reopened editor, never on a
+     top banner. ─── */
+  "Waiting to send": "ወደ መላክ በመጠባበቅ ላይ",
+  "View order": "ትዕዛዙን አሳይ",
+  "⏳ {units} item(s) • sends in {clock}": "⏳ {units} እቃ(ዎች) • በ{clock} ውስጥ ይላካል",
+  "✓ Saved • sends in {clock}. Tap the violet table to change it before then.": "✓ ተቀምጧል • በ{clock} ውስጥ ይላካል። ከዚያ በፊት ለመቀየር ሐምራዊውን ጠረጴዛ ይጫኑ።",
   /* ─── THE RELEASE GATE: a guest's own order waits for a human ─── */
   "NEW • not sent to the stations yet": "አዲስ • ገና ወደ ዝግጅት ክፍሎቹ አልተላከም",
   "Guest added 1 item • confirm before the stations get them": "እንግዳ 1 እቃ ጨምሯል • ወደ ዝግጅት ክፍሎቹ ከመላኩ በፊት ያረጋግጡ",

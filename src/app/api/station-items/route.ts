@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { ticketItems, tickets } from "@/db/schema";
+import { siteSettings, stationShiftClaims, ticketItems, tickets } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { and, eq, notInArray, asc, desc, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { requireStaffOrAdmin, readStaffSession, readAdminSession } from "@/lib/session";
@@ -10,9 +10,67 @@ import { stationProgressAlerts, ticketOwner } from "@/lib/alerts";
 import { stationOf, type StationName } from "@/lib/stations";
 import { allLinesFinished, isBillSent, isLineHeld, isLineServedByPrint, isTableReleased } from "@/lib/order-release";
 import { etStartOfToday } from "@/lib/timezone";
+import {
+  baristaViewer,
+  canRegisterClaim,
+  claimShiftFor,
+  filterBaristaLive,
+  handoverPhase,
+  lineAcceptedOwner,
+  lineDoneOwner,
+  type HandoverClaim,
+  type HandoverShift,
+} from "@/lib/shift-handover";
 
 /** The four crews that receive work (see @/lib/stations). */
 type Station = StationName;
+
+/**
+ * THE BARISTA HAND-OVER (owner, Sept 2026) — the only lane with a registered
+ * owner per shift. Kitchen, juice and buna keep the old open board: everyone
+ * logged in sees the same work. See @/lib/shift-handover for the rules.
+ */
+const HANDOVER_STATION: Station = "barista";
+const SPLIT_KEY = "shift_split_hour";
+const DEFAULT_SPLIT_HOUR = 14;
+
+async function readSplitHour(): Promise<number> {
+  try {
+    const rows = await db.select().from(siteSettings).where(eq(siteSettings.key, SPLIT_KEY));
+    const n = Number(rows[0]?.value);
+    return Number.isInteger(n) && n >= 1 && n <= 23 ? n : DEFAULT_SPLIT_HOUR;
+  } catch {
+    return DEFAULT_SPLIT_HOUR;
+  }
+}
+
+/** Today's two barista owners (null while nobody has accepted a drink yet). */
+async function readBaristaClaims(dayKey: string | null): Promise<{ morning: HandoverClaim | null; afternoon: HandoverClaim | null }> {
+  const owners = { morning: null as HandoverClaim | null, afternoon: null as HandoverClaim | null };
+  if (!dayKey) return owners;
+  try {
+    const rows = await db
+      .select()
+      .from(stationShiftClaims)
+      .where(and(eq(stationShiftClaims.station, HANDOVER_STATION), eq(stationShiftClaims.dayKey, dayKey)));
+    for (const r of rows) {
+      const claim: HandoverClaim = { shift: r.shiftName as HandoverShift, staffName: String(r.staffName || "").trim(), claimedAt: r.claimedAt };
+      if (claim.shift === "morning") owners.morning = claim;
+      else if (claim.shift === "afternoon") owners.afternoon = claim;
+    }
+  } catch {
+    /* a claims hiccup must never blank the crew's board */
+  }
+  return owners;
+}
+
+/** The whole hand-over picture for one moment (and it IS one moment: now). */
+async function baristaHandoverNow() {
+  const splitHour = await readSplitHour();
+  const info = handoverPhase(new Date(), splitHour);
+  const owners = await readBaristaClaims(info.dayKey);
+  return { info, owners };
+}
 
 async function authorizedStation(): Promise<Station | "admin" | null> {
   if (await readAdminSession()) return "admin";
@@ -468,6 +526,51 @@ export async function GET(request: Request) {
       })
       .filter((t) => t.items.length > 0);
 
+    // ── THE BARISTA HAND-OVER (owner, Sept 2026) ──
+    // A logged-in BARISTA gets the live list cut for his own pair of eyes:
+    // pending lines only while his shift may still accept them, his own
+    // accepted lines until they are done or printed, and every other barista's
+    // lines only as silent shadows (`taken`) so his alarms stay honest. The
+    // kitchen, juice and buna lanes (and any admin looking over a shoulder)
+    // keep the full open board exactly as before. The `shift` block feeds the
+    // 20-minute hand-over countdown and the standby screen on the tablet.
+    if (station === HANDOVER_STATION && stationRole === HANDOVER_STATION) {
+      const session = await readStaffSession();
+      const viewerName = String(session?.name || "").trim();
+      const { info, owners } = await baristaHandoverNow();
+      const rule = baristaViewer({
+        name: viewerName,
+        phase: info.phase,
+        morningOwner: owners.morning?.staffName || null,
+        afternoonOwner: owners.afternoon?.staffName || null,
+      });
+      const view = filterBaristaLive(payload, { name: viewerName, seesPending: rule.seesPending });
+      return NextResponse.json(
+        {
+          tickets: view,
+          serverTime: new Date().toISOString(),
+          shift: {
+            phase: info.phase,
+            splitHour: info.splitHour,
+            windowStart: info.windowStart.toISOString(),
+            windowEnd: info.windowEnd.toISOString(),
+            seesPending: rule.seesPending,
+            canAcceptPending: rule.canAcceptPending,
+            myShift: rule.myShift,
+            owners: {
+              morning: owners.morning
+                ? { name: owners.morning.staffName, at: owners.morning.claimedAt ? new Date(owners.morning.claimedAt).toISOString() : null }
+                : null,
+              afternoon: owners.afternoon
+                ? { name: owners.afternoon.staffName, at: owners.afternoon.claimedAt ? new Date(owners.afternoon.claimedAt).toISOString() : null }
+                : null,
+            },
+          },
+        },
+        { headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
     return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[station-items error]", error);
@@ -500,6 +603,11 @@ export async function PUT(request: Request) {
         ticketId: ticketItems.ticketId,
         name: ticketItems.name,
         quantity: ticketItems.quantity,
+        // Hand-over reads (barista lane): who already owns this line?
+        stationStatus: ticketItems.stationStatus,
+        stationStatusBy: ticketItems.stationStatusBy,
+        stationAcceptedBy: ticketItems.stationAcceptedBy,
+        stationDoneBy: ticketItems.stationDoneBy,
       })
       .from(ticketItems)
       .where(eq(ticketItems.id, Number(body.itemId)))
@@ -509,12 +617,113 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: "Item belongs to another station" }, { status: 403 });
     }
 
+    // ── THE BARISTA HAND-OVER (owner, Sept 2026) ──
+    // Barista lane only, staff taps only (an admin acting for the crew keeps
+    // the old free hand): every accepted line belongs to ONE pair of hands,
+    // and the first accept of a shift REGISTERS the acceptor as that shift's
+    // owner for the day. Who accepted a drink is the one who finishes it.
+    if (stationRole === HANDOVER_STATION) {
+      const session = await readStaffSession();
+      const viewerName = String(session?.name || "").trim();
+      const line = existing[0];
+      const acceptedBy = lineAcceptedOwner(line);
+      const doneBy = lineDoneOwner(line);
+
+      if (nextStatus === "accepted") {
+        // A line already taken stays with its owner — the second tapper hears
+        // a name, never a silent overwrite (this is where the "missed item"
+        // arguments used to start).
+        if (acceptedBy && acceptedBy !== viewerName) {
+          return NextResponse.json({ error: `Already accepted • ${acceptedBy} is on it` }, { status: 409 });
+        }
+        const { info, owners } = await baristaHandoverNow();
+        const rule = baristaViewer({
+          name: viewerName,
+          phase: info.phase,
+          morningOwner: owners.morning?.staffName || null,
+          afternoonOwner: owners.afternoon?.staffName || null,
+        });
+        if (!acceptedBy && !rule.canAcceptPending) {
+          if (rule.myShift === "morning") {
+            return NextResponse.json(
+              { error: "Your hand-over window has ended • finish the drinks you accepted" },
+              { status: 403 }
+            );
+          }
+          const holder = info.phase === "open" ? owners.morning : owners.afternoon;
+          const holderShift = info.phase === "open" ? "morning" : "afternoon";
+          return NextResponse.json(
+            { error: holder ? `${holder.staffName} is the ${holderShift} shift today • new orders are only on their screen` : "New orders are not yours to take right now" },
+            { status: 403 }
+          );
+        }
+        // THE FIRST DRINK REGISTERS YOU: not holding any claim yet, this
+        // accept makes the shift yours. The unique (station, day, shift)
+        // index decides a same-second race; the loser hears who won.
+        if (!rule.myShift && info.dayKey) {
+          const intended = claimShiftFor(new Date(), info.splitHour);
+          const gate = canRegisterClaim({
+            name: viewerName,
+            claimShift: intended,
+            morningOwner: owners.morning?.staffName || null,
+            afternoonOwner: owners.afternoon?.staffName || null,
+          });
+          if (!gate.ok) {
+            return NextResponse.json(
+              {
+                error:
+                  gate.reason === "double-shift"
+                    ? "You already hold the morning shift today • one person can not hold both shifts"
+                    : `${gate.holder} registered as the ${intended} shift first`,
+              },
+              { status: 409 }
+            );
+          }
+          const inserted = await db
+            .insert(stationShiftClaims)
+            .values({ station: HANDOVER_STATION, dayKey: info.dayKey, shiftName: intended, staffName: viewerName })
+            .onConflictDoNothing()
+            .returning({ id: stationShiftClaims.id });
+          if (inserted.length === 0 && owners.morning?.staffName !== viewerName && owners.afternoon?.staffName !== viewerName) {
+            // Lost the race between our read and our write: read who won.
+            const fresh = await readBaristaClaims(info.dayKey);
+            const winner = intended === "morning" ? fresh.morning : fresh.afternoon;
+            if (winner && winner.staffName !== viewerName) {
+              return NextResponse.json({ error: `${winner.staffName} registered as the ${intended} shift first` }, { status: 409 });
+            }
+          }
+        }
+      } else if (nextStatus === "done") {
+        // WHO ACCEPTS, FINISHES (owner's rule: the accepter clicks Done).
+        // Unowned legacy lines (accepted before this rule) stay finishable.
+        const owner = acceptedBy || doneBy;
+        if (owner && owner !== viewerName) {
+          return NextResponse.json({ error: `Only ${owner} can finish this drink • they accepted it` }, { status: 403 });
+        }
+      } else {
+        // nextStatus === "pending" (un-accept): only the owner hands it back.
+        if (acceptedBy && acceptedBy !== viewerName) {
+          return NextResponse.json({ error: `Only ${acceptedBy} can hand this drink back` }, { status: 403 });
+        }
+      }
+    }
+
     // CREW-ACTION AUDIT: stamp WHO pressed it and WHEN, so a "done" nobody
     // remembers pressing can always be traced to a person and a minute. An
     // admin acting on a crew's behalf is stamped as admin, never as the crew.
     const actorName =
       stationRole === "admin" ? "admin" : (await readStaffSession())?.name || stationRole;
     const stampAt = new Date();
+    // BARISTA HAND-OVER: the accept writes ownership, so it must also WIN
+    // ownership atomically — during the 20-minute window two baristas can tap
+    // the same pending line in the same second. The WHERE clause lets the
+    // write land only while the line is still unowned (or already mine): the
+    // loser gets 0 rows back and hears the winner's name, never a silent
+    // steal. (The checks above answer fast; this covers the last millisecond.)
+    const baristaAcceptGuard =
+      stationRole === HANDOVER_STATION && nextStatus === "accepted"
+        ? sql`(${ticketItems.stationAcceptedBy} IS NULL OR ${ticketItems.stationAcceptedBy} = '' OR ${ticketItems.stationAcceptedBy} = ${String(actorName).slice(0, 100)})`
+        : null;
     const updated = await db
       .update(ticketItems)
       .set({
@@ -528,8 +737,17 @@ export async function PUT(request: Request) {
             ? { stationDoneBy: String(actorName).slice(0, 100), stationDoneAt: stampAt }
             : { stationDoneBy: null, stationDoneAt: null }),
       })
-      .where(eq(ticketItems.id, Number(body.itemId)))
+      .where(baristaAcceptGuard ? and(eq(ticketItems.id, Number(body.itemId)), baristaAcceptGuard) : eq(ticketItems.id, Number(body.itemId)))
       .returning();
+    if (updated.length === 0 && baristaAcceptGuard) {
+      const nowOwned = await db
+        .select({ stationAcceptedBy: ticketItems.stationAcceptedBy })
+        .from(ticketItems)
+        .where(eq(ticketItems.id, Number(body.itemId)))
+        .limit(1);
+      const owner = String(nowOwned[0]?.stationAcceptedBy || "").trim();
+      return NextResponse.json({ error: `Already accepted • ${owner || "another barista"} is on it` }, { status: 409 });
+    }
 
     // ── THE ALERT THAT WAS MISSING COMPLETELY ──
     // The crew finishing a dish rang nobody, so food sat on the pass until a

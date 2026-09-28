@@ -320,6 +320,22 @@ const RMS_CREATES: Array<[string, string]> = [
       ticket_id integer
     )`,
   ],
+  [
+    // THE BARISTA HAND-OVER (owner's decision, Sept 2026): one row per
+    // registered shift owner per station per Ethiopian day. A barista's FIRST
+    // accept of the shift writes it (logging in alone registers nothing);
+    // the unique index in the migration body makes the first-accept race
+    // safe. See @/lib/shift-handover and the station-items route.
+    "station_shift_claims",
+    `CREATE TABLE IF NOT EXISTS station_shift_claims (
+      id serial PRIMARY KEY,
+      station varchar(20) NOT NULL,
+      day_key varchar(10) NOT NULL,
+      shift_name varchar(10) NOT NULL,
+      staff_name varchar(100) NOT NULL,
+      claimed_at timestamp DEFAULT now()
+    )`,
+  ],
 ];
 
 const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
@@ -768,6 +784,13 @@ async function runFullMigrate(force: boolean) {
   // Group 10 (pocket-mode alerts): one row per device — re-subscribing the same
   // device replaces its row instead of duplicating it.
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint_key ON push_subscriptions (endpoint)`);
+
+  //   12. station_shift_claims(station, day_key, shift_name): ONE registered
+  //       owner per shift per station per day — the barista hand-over (owner,
+  //       Sept 2026). The first accept of the shift inserts the row; a second
+  //       barista racing the same shift loses on this index, never silently.
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS station_shift_claims_owner_key ON station_shift_claims (station, day_key, shift_name)`);
+  await run(`CREATE INDEX IF NOT EXISTS station_shift_claims_station_day_idx ON station_shift_claims (station, day_key)`);
 
   //  • payment_status backfill: existing paid/completed bills get a concrete
   //    status derived from their stored method so reports/history stay correct

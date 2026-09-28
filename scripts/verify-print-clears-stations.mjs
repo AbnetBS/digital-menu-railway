@@ -210,7 +210,7 @@ function pass(name, cond) {
 {
   pass(
     "an item the crew marks Done leaves the station dashboard at once (render keeps only open work)",
-    stationApp.includes('boardItems: t.items.filter((i) => i.stationStatus !== "done")') &&
+    stationApp.includes('boardItems: t.items.filter((i) => i.stationStatus !== "done" && !i.taken)') &&
       stationApp.includes(".filter((t) => t.boardItems.length > 0)")
   );
   pass(

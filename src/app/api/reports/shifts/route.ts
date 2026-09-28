@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { tickets, ticketItems, orderSubmissions, ticketEvents, staffUsers, siteSettings } from "@/db/schema";
+import { tickets, ticketItems, orderSubmissions, ticketEvents, staffUsers, siteSettings, stationShiftClaims } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { inArray, or, gt, eq } from "drizzle-orm";
+import { and, inArray, or, gt, eq } from "drizzle-orm";
 import { requireAdmin } from "@/lib/session";
 import { etDayKeyDaysAgo, etStartOfDaysAgo } from "@/lib/timezone";
 import {
@@ -68,11 +68,20 @@ export async function GET(request: Request) {
         )
       );
     const ids = ticketRows.map((t) => t.id);
-    const [items, events, submissions, staff] = await Promise.all([
+    const [items, events, submissions, staff, claims] = await Promise.all([
       ids.length ? db.select().from(ticketItems).where(inArray(ticketItems.ticketId, ids)) : Promise.resolve([]),
       ids.length ? db.select().from(ticketEvents).where(inArray(ticketEvents.ticketId, ids)) : Promise.resolve([]),
       ids.length ? db.select().from(orderSubmissions).where(inArray(orderSubmissions.ticketId, ids)) : Promise.resolve([]),
       db.select({ name: staffUsers.name, role: staffUsers.role }).from(staffUsers),
+      // BARISTA HAND-OVER (owner, Sept 2026): the registered owners of the
+      // days in this window, so the barista buckets follow the OWNER and the
+      // per-line figures match the barista's own Items-sold tab exactly.
+      role === "barista" && dayKeys.length
+        ? db
+            .select()
+            .from(stationShiftClaims)
+            .where(and(eq(stationShiftClaims.station, "barista"), inArray(stationShiftClaims.dayKey, dayKeys)))
+        : Promise.resolve([]),
     ]);
     const staffRoles: Record<string, string> = {};
     for (const s of staff) if (s.name) staffRoles[String(s.name).trim()] = s.role;
@@ -87,6 +96,12 @@ export async function GET(request: Request) {
       events,
       submissions,
       staffRoles,
+      shiftClaims: claims.map((c) => ({
+        dayKey: c.dayKey,
+        shift: c.shiftName === "afternoon" ? ("afternoon" as const) : ("morning" as const),
+        staffName: c.staffName,
+        claimedAt: c.claimedAt,
+      })),
     });
     return NextResponse.json(
       { ...report, dayKeys, staff: staff.filter((s) => s.role === role || (role === "waiter" && s.role === "buna")).map((s) => s.name) },

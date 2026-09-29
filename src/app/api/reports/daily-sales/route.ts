@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { siteSettings, tickets } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { and, desc, eq, gt, isNotNull, sql } from "drizzle-orm";
+import { and, desc, gt, isNotNull, sql } from "drizzle-orm";
 import { readAdminSession, readStaffSession, requireStaffOrAdmin } from "@/lib/session";
 import { sendPushToRoles } from "@/lib/push";
 import { etDayKey, etHour, etStartOfDaysAgo } from "@/lib/timezone";

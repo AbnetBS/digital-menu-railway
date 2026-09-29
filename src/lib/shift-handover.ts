@@ -29,11 +29,13 @@
  *     person in both shifts. The ONE door to a full day is explicit: the
  *     morning owner, after the window, when nobody took the afternoon, taps
  *     "I will continue as afternoon shift" (see canContinueAfternoon).
- *   • THE MORNING CAN BE TAKEN (owner's rule, Sept 2026). A second barista who
- *     logs in while somebody else holds the (still live) morning shift may tap
- *     "no, this is my shift, add me": the claim and every drink the other man
- *     had already accepted move to him. The AFTERNOON is never taken this way;
- *     it changes hands only by the morning owner continuing.
+ * Whether it is the MORNING or the AFTERNOON, the shift is locked the moment
+ * somebody registers it: every other barista reads "this is not your shift"
+ * with the owner's name (and, before the shift change, that is where he stays
+ * until the 20-minute window opens — the morning can NOT be taken from him).
+ * The one and only way a barista works a full day is the morning owner
+ * continuing into the afternoon when nobody else registered it
+ * (see canContinueAfternoon).
  *
  * The ADMIN shift report for the barista role reads the same claims and the
  * same per-line attribution, so the cross-checker's paper and the barista's
@@ -108,12 +110,6 @@ export interface BaristaViewerRule {
    */
   blockedBy: { name: string; shift: HandoverShift } | null;
   /**
-   * MORNING ONLY: today's morning shift is held by somebody else and the
-   * morning is still live, so he may take it with "no, this is my shift, add
-   * me". The afternoon is never taken this way (owner's rule).
-   */
-  canTakeOverMorning: boolean;
-  /**
    * The morning owner, window closed, and NOBODY holds the afternoon: he may
    * tap "I will continue as afternoon shift" and keep working all day.
    */
@@ -160,7 +156,7 @@ export function baristaViewer(input: {
   const blockedBy = holderName && holderName !== name ? { name: holderName, shift: holderShift } : null;
   if (isAfternoon) {
     // Already registered (or continued): his board is live until the day ends.
-    return { seesPending: true, canAcceptPending: true, myShift, alsoMorning: isMorning, blockedBy: null, canTakeOverMorning: false, canContinueAfternoon: false };
+    return { seesPending: true, canAcceptPending: true, myShift, alsoMorning: isMorning, blockedBy: null, canContinueAfternoon: false };
   }
   if (isMorning) {
     // Hard stop: after the window his Accept dies; his own lines stay until
@@ -173,27 +169,14 @@ export function baristaViewer(input: {
       myShift,
       alsoMorning: false,
       blockedBy,
-      canTakeOverMorning: false,
       canContinueAfternoon: input.phase === "after" && !afternoonOwner,
     };
   }
   // A candidate: nobody owns the relevant shift yet, so he may accept the
-  // first drink and take it. Otherwise he waits on the standby screen.
-  if (input.phase === "open") {
-    const open = !morningOwner;
-    return {
-      seesPending: open,
-      canAcceptPending: open,
-      myShift,
-      alsoMorning: false,
-      blockedBy,
-      // The morning is still live and somebody else holds it: he may take it.
-      canTakeOverMorning: open === false,
-      canContinueAfternoon: false,
-    };
-  }
-  const open = !afternoonOwner;
-  return { seesPending: open, canAcceptPending: open, myShift, alsoMorning: false, blockedBy, canTakeOverMorning: false, canContinueAfternoon: false };
+  // first drink and take it. Otherwise he waits on the standby screen — a
+  // registered shift is LOCKED, morning and afternoon alike.
+  const open = input.phase === "open" ? !morningOwner : !afternoonOwner;
+  return { seesPending: open, canAcceptPending: open, myShift, alsoMorning: false, blockedBy, canContinueAfternoon: false };
 }
 
 /**

@@ -178,103 +178,71 @@ function pass(name, cond) {
   pass("private VAPID key never leaks through /api/settings", /vapid_private/.test(settingsRoute) && /SECRET_KEYS/.test(settingsRoute));
   pass("subscriptions table exists (schema + migration)", /pushSubscriptions = pgTable/.test(schema) && /push_subscriptions/.test(migrate));
   pass("one row per device (unique endpoint index)", /push_subscriptions_endpoint_key/.test(migrate));
-  pass("role comes from the SESSION, not the client body", /requireStaff\(\)/.test(subscribe) && !/body\?\.role/.test(subscribe));
+  pass("the role comes from the SESSION (staff device) or is the owner's admin device",
+    /readStaffSession\(\)/.test(subscribe) && /readAdminSession\(\)/.test(subscribe) && !/body\?\.role/.test(subscribe));
   pass("public-key route is staff-only", /requireStaffOrAdmin/.test(publicKeyRoute));
   pass("resubscribe route also trusts the session only", /requireStaff\(\)/.test(resubscribe));
   pass("dead endpoints are pruned (404/410)", /410/.test(pushServer) && /404/.test(pushServer));
   pass("push never blocks or fails an order", /sendPushToRoles/.test(pushServer) && /must never/i.test(pushServer));
 }
 
-/* ── 6. Who gets woken, for which event ───────────────────────────────────── */
+/* ── 6. WHO GETS WOKEN: NOBODY'S PHONE (owner, 29 Sept 2026) ─────────────── */
 {
-  // INSTANT RELEASE (owner's decision, Sept 2026): the order POST wakes the
-  // CASHIER (or the waiters for a QR order) AND — when the bill is sent —
-  // exactly the crews with new lines in that submission. The print NEVER
-  // wakes anyone: it is EFD audit only.
-  const postHalf6 = tickets.split("export async function PUT")[0] || "";
-  const putHalf6 = tickets.split("export async function PUT")[1] || "";
-  pass("QR order → waiters only (crew waits for the accept/send)", /fana-qr-/.test(tickets) && /\["waiter"\]/.test(tickets));
-  pass("waiter order → cashier to print AND the crews with new lines (instant release)", /fana-print-/.test(postHalf6) && /fana-station-add-/.test(postHalf6));
-  pass("additions on a printed bill → cashier prints the new receipt", /fana-add-/.test(tickets) && /new items on the bill, print receipt #2/.test(tickets));
-  pass("accepting an order wakes the crews + cashier together", /case "confirmed"/.test(alertsMatrix) && /crews\.map\(\(station\)/.test(alertsMatrix) && /roles: \["cashier"\]/.test(alertsMatrix));
-  pass("a cancellation with unknown crews still falls back to all of them", /\[\.\.\.STATION_ROLES\]/.test(alertsMatrix));
-  {
-      // The print branch itself is EFD audit only. The ONE station push in
-      // the PUT now belongs to the release of held guest additions, which is
-      // a different tap entirely (see verify-print-queue.mjs).
-      const printIdx = putHalf6.indexOf('if (body.status === "printed")');
-      const printBlock = printIdx === -1 ? "" : putHalf6.slice(printIdx, printIdx + 3000);
-      pass("the print NEVER wakes the crew (instant release already rang them at the send)",
-        printBlock.length > 0 && !/fana-station-/.test(printBlock));
-    }
-  pass("only stations with new lines in the submission are pinged", /submissionStations/.test(postHalf6) && /newStations\.length > 0/.test(postHalf6));
-  pass("bill request → the OWNING waiter + every cashier", /fana-bill-/.test(tableStatus) && /sendPushToNamedStaff\("waiter"/.test(tableStatus) && /sendPushToRoles\(\["cashier"\]/.test(tableStatus));
+  // The owner removed EVERY staff phone notification: the crews and the
+  // waiters read their moments on the screens that are always open (the loud
+  // alarm, the sound, the spoken ready call, the in-system cards). The ONE
+  // notification left in the cafe is his own: today's total sale, sent when
+  // the cashier closes the day (POST /api/reports/daily-sales, role "admin").
+  const itemsRoute = read("src/app/api/tickets/items/route.ts");
+  const stationRoute = read("src/app/api/station-items/route.ts");
+  const dayCloseRoute = read("src/app/api/reports/daily-sales/route.ts");
+  const dayCloseLib = read("src/lib/daily-sales.ts");
 
-  /* ── 6b. EVERY customer top-up rings the waiter, not just the first order ──
-   * A guest adding dishes to an existing bill (pending, confirmed, printed)
-   * used to ring NOBODY on the waiter side: in-page detection watched ticket
-   * IDs (unchanged by additions) and the server only pushed waiters for fresh
-   * pending_waiter tickets — reusing one tag, so even that could silently
-   * replace the previous notification. */
-  const postHalf = tickets.split("export async function PUT")[0] || "";
-  pass("guest top-up merged into any bill rings the waiter", /fana-qr-add-/.test(postHalf) && /sendPushToRoles\(\["waiter"\]/.test(postHalf));
-  pass("top-up waiter push fires on customer merges (pending/confirmed/printed)", /isCustomer && merged/.test(postHalf));
-  pass("each top-up is its own notification (distinct tag per submission)", /fana-qr-add-\$\{pushed\.id\}-\$\{idemKey/.test(postHalf));
-  {
-    // Still-pending bills are the WAITER's job only: the cashier cannot print
-    // what nobody confirmed yet, so the pending branch must never wake her.
-    const anchor = postHalf.indexOf('if (isCustomer && pushed.status === "pending_waiter")');
-    let depth = 0, branch = "";
-    for (let i = postHalf.indexOf("{", anchor); i < postHalf.length; i++) {
-      const ch = postHalf[i];
-      if (ch === "{") depth++;
-      if (ch === "}") depth--;
-      branch += ch;
-      if (depth === 0) break;
-    }
-    pass("pending bills (new + top-ups) never push the cashier", anchor !== -1 && !/\["cashier"\]/.test(branch));
-  }
-  pass("cashier keeps her printed-bill ADDED push exactly as-is", /fana-add-/.test(postHalf) && /new items on the bill, print receipt #2/.test(postHalf));
-  pass("cashier keeps her To-print push exactly as-is", /fana-print-/.test(postHalf) && /To print/.test(postHalf));
-  {
-    // Staff-originated sends (waiter/cashier keying items) must ring NOBODY
-    // extra — every waiter push on the POST path sits directly inside an
-    // isCustomer-guarded branch (nearest enclosing `if (` must name it).
-    // RELEASE GATE (Sept 2026): a guest top-up on an already-sent bill now wakes
-    // the waiter AND the cashier together, so count every push that names her.
-    const waiterPushes = [...postHalf.matchAll(/sendPushToRoles\(\["waiter"/g)];
-    const guarded = waiterPushes.filter((m) => {
-      const ifIdx = postHalf.lastIndexOf("if (", m.index);
-      if (ifIdx === -1 || m.index - ifIdx > 800) return false;
-      return /isCustomer/.test(postHalf.slice(ifIdx, postHalf.indexOf(")", ifIdx) + 1));
-    });
-    pass("staff-originated sends never ring the waiter (all waiter pushes need isCustomer)", waiterPushes.length >= 3 && guarded.length === waiterPushes.length);
-  }
-  pass("POST wakes exactly the crews with new lines (instant release, sent bills only)", /sendPushToRoles\(newStations/.test(postHalf) && /billSent/.test(postHalf) && /fana-station-add-/.test(postHalf));
+  pass("the ticket route pushes nobody (new orders, top-ups, prints and cancels are silent)",
+    !/sendPushTo/.test(tickets) && !/CUSTOMER_ALERT_RING/.test(tickets));
+  pass("the items route pushes nobody (removals, quantities, notes, EFD re-keys)", !/sendPushTo/.test(itemsRoute));
+  pass("the table-status route pushes nobody (a bill request stays an in-system card)",
+    !/sendPushTo/.test(tableStatus) && !/CUSTOMER_ALERT_RING/.test(tableStatus));
+  pass("the station route pushes nobody (a finished dish no longer rings a phone)", !/sendPushTo/.test(stationRoute));
+  pass("the owner's day-close total is the ONE push left, and it goes to role admin",
+    /sendPushToRoles\(\["admin"\]/.test(dayCloseRoute) && /dayClosePush\(/.test(dayCloseRoute) &&
+    /Today's total sale/.test(dayCloseLib) && /\/admin\?tab=sales/.test(dayCloseLib));
+  pass("the guest burst constant survives in push.ts (one ~3s alarm, never repeats)",
+    /export const CUSTOMER_ALERT_RING/.test(pushServer) && /repeat: 3/.test(pushServer));
+  pass("…but no route fires it any more",
+    !/CUSTOMER_ALERT_RING/.test(tickets) && !/CUSTOMER_ALERT_RING/.test(tableStatus));
+
+  // The IN-APP side is untouched: the waiter's screen still SEES a guest
+  // top-up (per-unit diffs, own-send credit, the full-screen card) — it simply
+  // never wakes her pocket.
   pass("waiter diffs per-ticket ITEM UNITS, not just new ticket IDs", /itemCountRef/.test(waiter) && /Number\(i\.quantity\)/.test(waiter));
   pass("waiter's own keying never alarms her (own-send credit)", /ownAddRef/.test(waiter));
   pass("top-up alert names the table and says what to do", /guest added items/.test(waiter) && /go confirm!/.test(waiter) && /check the bill!/.test(waiter));
-  pass("in-page top-up notification never replaces the previous one", /fana-waiter-add-/.test(waiter));
-  pass("login (the one gesture browsers need) arms everything", /enablePocketAlerts\(\)/.test(waiter) && /enablePocketAlerts\(\)/.test(cashier) && /enablePocketAlerts\(\)/.test(station));
+  pass("in-page top-up card never replaces the previous one", /fana-waiter-add-/.test(waiter));
 }
 
-/* ── 6c. ROUND 2: the pocket bugs that survived the first fix ─────────────── */
+/* ── 6c. The pocket machinery that remains (the owner's phone) ────────────── */
 {
   // Stale closures: the SSE handler is created once per login and captured the
   // `alertsOn` state of that moment. Every alert check must read a ref.
   for (const [name, src] of [["waiter", waiter], ["cashier", cashier], ["station", station]]) {
     pass(`${name} alarm check reads a live ref, not a captured state`, /alertsOnRef\.current/.test(src) && !/&& alertsOn &&/.test(src));
-    pass(`${name} re-arms pocket alerts through the shared hook`, /usePocketAlerts\(/.test(src));
     pass(`${name} rebuilds a dead SSE stream (watchdog)`, /readyState === 2/.test(src));
-    pass(`${name} shows whether the phone is really armed`, /PocketAlertsChip/.test(src));
     pass(`${name} treats a restored session as on-shift (alerts default ON)`, /!!saved/.test(src));
+    pass(`${name} no longer arms or advertises pocket alerts (staff phones are silent)`,
+      !/usePocketAlerts\(/.test(src) && !/PocketAlertsChip/.test(src) && !/enablePocketAlerts\(\)/.test(src));
   }
+  pass("the staff login tap still unlocks the loud in-app alarm", /unlockAudio\(\)/.test(waiter) && /unlockAudio\(\)/.test(cashier));
 
-  // The hook is the anti-"it worked yesterday" machinery.
-  pass("pocket alerts re-arm on mount, visibility, online and a timer", /visibilitychange/.test(hook) && /"online"/.test(hook) && /setInterval\(heal/.test(hook));
+  // The arming machinery (hook + push client + chip) is KEPT for the owner's
+  // Daily Sales page: that page's button subscribes his device to the day-close
+  // total. Nothing on the staff screens touches it any more.
+  pass("the owner's Daily Sales page arms this device itself",
+    /enablePocketAlerts\(\)/.test(read("src/components/rms/DailySalesTab.tsx")));
+  pass("pocket alerts re-arm on mount, visibility, online and a timer",
+    /visibilitychange/.test(hook) && /"online"/.test(hook) && /setInterval\(heal/.test(hook));
   pass("a push received while the page is open rings the in-app alarm", /onPushAlert\(/.test(hook) && /playAlarm\(\)/.test(hook));
-  pass("food-ready pushes skip the in-app bell so the waiter can speak instead",
-    /fana-ready-/.test(hook) && /foodReady/.test(hook) && /if \(!foodReady\)/.test(hook));
+  pass("the food-ready voice-over skip logic is kept in the hook", /fana-ready-/.test(hook) && /foodReady/.test(hook) && /if \(!foodReady\)/.test(hook));
   const readyPhraseSrc = read("src/lib/ready-phrase.ts");
   pass("the waiter speaks 'Table X is ready' (loud, twice) instead of the bell",
     /export function speakTableReady/.test(sound) && /export function readyPhrase/.test(readyPhraseSrc) &&
@@ -284,9 +252,12 @@ function pass(name, cond) {
   pass("the first tap on any staff screen unlocks the audio", /armAudioOnFirstGesture\(\)/.test(hook));
 
   // A REAL end-to-end test (server to push service to phone), not a local popup.
-  pass("staff can test pocket mode for real, with a delay to lock the phone", /\/api\/push\/test/.test(pushClient) && /delaySeconds/.test(testRoute));
-  pass("the test push route is staff-only and uses the session role", /requireStaff\(\)/.test(testRoute) && /staff\.role/.test(testRoute));
-  pass("the test button is reachable from the staff screens", /Test ring/.test(chip));
+  pass("the owner can test his phone for real, with a delay to lock it",
+    /\/api\/push\/test/.test(pushClient) && /delaySeconds/.test(testRoute));
+  pass("the test push route serves the owner's admin session (staff devices still work)",
+    /readAdminSession\(\)/.test(testRoute) && /requireStaff\(\)/.test(testRoute));
+  pass("the test buttons live on the owner's Daily Sales page",
+    /Test ring/.test(read("src/components/rms/DailySalesTab.tsx")));
   pass("alerts are delivered with high urgency (wakes a dozing phone)", /urgency: "high"/.test(pushServer) && /TTL/.test(pushServer));
 }
 
@@ -294,9 +265,11 @@ function pass(name, cond) {
 {
   // The three things a guest can do that staff cannot predict.
   pass("there is one shared 'guest event' ring setting", /export const CUSTOMER_ALERT_RING/.test(pushServer) && /gapMs: 1100/.test(pushServer) && /repeat: 3/.test(pushServer));
-  pass("a new QR order uses the guest ring", /CUSTOMER_ALERT_RING/.test(tickets) && /New QR order/.test(tickets));
-  pass("a guest adding items uses the guest ring", (tickets.match(/CUSTOMER_ALERT_RING/g) || []).length >= 3);
-  pass("a bill request uses the guest ring", /CUSTOMER_ALERT_RING/.test(tableStatus));
+  // Every staff ring is gone, so the guest burst is fired by nobody. The
+  // constant is kept as the one "customer event" ring the owner may bring back
+  // for a future phone alert; nothing calls it today.
+  pass("the guest burst is fired by nobody (all staff rings removed)",
+    !/CUSTOMER_ALERT_RING/.test(tickets) && !/CUSTOMER_ALERT_RING/.test(tableStatus));
   pass("the guest burst rings close together (~1.1s apart) so it is ONE alarm", /Number\(data\.gapMs\) \|\| 7000/.test(sw) && /await sleep\(gap\)/.test(sw));
   pass("a guest event vibrates for about 3 seconds", /const CUSTOMER_VIBRATE = \[800, 150, 800, 150, 800, 150, 800\]/.test(sw) && /isCustomer \? CUSTOMER_VIBRATE : DEFAULT_VIBRATE/.test(sw));
   pass("the notification itself carries a CONFIRM button", /action: "confirm", title: "✓ Confirm"/.test(sw));
@@ -341,14 +314,13 @@ if (failures.length > 0) {
 }
 console.log("\n✅ Pocket-alerts regression test PASSED");
 console.log("   • screen off / tab hidden → the alarm still rings (hidden-guard removed)");
-console.log("   • browser closed → system notification via Web Push (Android automatic,");
-console.log("     iPhone via Add to Home Screen, with an in-app instruction banner)");
 console.log("   • loud: 6-pair alarm, low-octave layer, limiter near full scale + vibration");
-console.log("   • armed automatically at staff login — no separate button to forget");
-console.log("   • every customer top-up (pending/confirmed/printed) rings the waiter on");
-console.log("     its own tag; staff keying never rings the waiter extra; the crews");
-console.log("     ring at the SEND for their own new lines — the print never re-rings");
-console.log("   • a push is NEVER swallowed because a window looked 'focused' (the bug");
-console.log("     that kept pocketed phones silent), the worker updates itself, and the");
-console.log("     subscription self-heals on mount/visibility/reconnect/timer");
-console.log("   • staff can prove it: 'Test ring in 10s', lock the phone, hear it");
+console.log("   • NO STAFF PHONE RINGS (owner, 29 Sept 2026): every staff screen reads its");
+console.log("     moments on screen — alarm, sound, spoken ready call, in-system cards —");
+console.log("     and no route pushes a waiter, cashier, kitchen, barista, buna or juice");
+console.log("     phone any more");
+console.log("   • the ONE phone notification left is the OWNER's: the cashier's day-close");
+console.log("     total (role \"admin\", /admin?tab=sales, armed from the Daily Sales page)");
+console.log("   • the Web Push machinery is kept whole for that owner device: the worker");
+console.log("     never swallows a push, updates itself, and the subscription self-heals");
+console.log("   • the owner can prove it: 'Test ring in 10s', lock the phone, hear it");

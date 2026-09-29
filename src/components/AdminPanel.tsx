@@ -1,13 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Settings, Utensils, Star, Lock, Plus, Trash2, Edit3, CheckCircle2, Save, LogOut, RefreshCw,
-  Eye, EyeOff, Upload, Image as ImageIcon, Camera, TrendingUp, Users, QrCode, CreditCard, Monitor,
+  Eye, EyeOff, Upload, Image as ImageIcon, Camera, TrendingUp, Users, QrCode, CreditCard, Monitor, Wallet,
 } from "lucide-react";
 import { MenuItem, SiteSettings, Review, Category, GalleryItem } from "@/types";
 import { compressImage } from "@/lib/image-utils";
 import ReportsTab from "@/components/rms/ReportsTab";
+import DailySalesTab from "@/components/rms/DailySalesTab";
 import StaffTab from "@/components/rms/StaffTab";
 import TablesQrTab from "@/components/rms/TablesQrTab";
 import OrderHistoryTab from "@/components/rms/OrderHistoryTab";
@@ -26,7 +27,24 @@ interface AdminPanelProps {
   onLogout: () => void;
 }
 
-type Tab = "reports" | "menu" | "board" | "stations" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
+type Tab = "reports" | "sales" | "menu" | "board" | "stations" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
+
+const TAB_KEYS: Tab[] = ["reports", "sales", "menu", "board", "stations", "tables", "staff", "gallery", "reviews", "history", "settings", "security"];
+
+/**
+ * ?tab=sales is the URL the day-close notification opens. Reading it here is
+ * what makes "tap the notification → the sales page" work; an unknown value
+ * simply falls back to the default tab.
+ */
+function readTabFromUrl(): Tab | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    return wanted && (TAB_KEYS as string[]).includes(wanted) ? (wanted as Tab) : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function AdminPanel({
   settings,
@@ -38,7 +56,32 @@ export default function AdminPanel({
   onLogout,
 }: AdminPanelProps) {
   const { t: L, rich: Lr, td: Ld } = useStaffT();
-  const [activeTab, setActiveTab] = useState<Tab>("reports");
+  // The daily-sales notification opens /admin?tab=sales, so the tab is read
+  // from the URL first (the reports tab stays the default for a bare /admin).
+  const [activeTab, setActiveTab] = useState<Tab>(() => readTabFromUrl() || "reports");
+  useEffect(() => {
+    const onPop = () => setActiveTab(readTabFromUrl() || "reports");
+    window.addEventListener("popstate", onPop);
+    // TAPPING THE DAY-CLOSE NOTIFICATION ON AN OPEN DASHBOARD: the service
+    // worker re-uses the window instead of reloading it and only hands the
+    // page the URL the notification carried ("fana-push-opened"), so the tab
+    // is read from that message — otherwise the owner would land on Reports.
+    const onWorkerMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; url?: string } | null;
+      if (data?.type !== "fana-push-opened" || typeof data.url !== "string") return;
+      const wanted = new URLSearchParams(data.url.split("?")[1] || "").get("tab");
+      if (wanted && (TAB_KEYS as string[]).includes(wanted)) setActiveTab(wanted as Tab);
+    };
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener("message", onWorkerMessage);
+    }
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+        navigator.serviceWorker.removeEventListener("message", onWorkerMessage);
+      }
+    };
+  }, []);
 
   const [settingsForm, setSettingsForm] = useState({
     cafe_name: settings.cafe_name || "Fana Cafe & Restaurant",
@@ -229,6 +272,7 @@ export default function AdminPanel({
 
   const tabs: Array<{ key: Tab; label: string; icon: React.ReactNode }> = [
     { key: "reports", label: L("Reports"), icon: <TrendingUp className="w-4 h-4" /> },
+    { key: "sales", label: L("Daily Sales"), icon: <Wallet className="w-4 h-4" /> },
     { key: "menu", label: L("Menu ({length})", { length: menuItems.length }), icon: <Utensils className="w-4 h-4" /> },
     { key: "board", label: L("Daily Board"), icon: <TrendingUp className="w-4 h-4" /> },
     { key: "stations", label: L("Stations"), icon: <Users className="w-4 h-4" /> },
@@ -287,6 +331,9 @@ export default function AdminPanel({
       <div className="max-w-7xl mx-auto">
         {/* REPORTS */}
         {activeTab === "reports" && <ReportsTab />}
+
+        {/* DAILY SALES — where the day-close notification lands */}
+        {activeTab === "sales" && <DailySalesTab />}
 
         {/* DAILY BOARD */}
         {activeTab === "board" && <DailyBoardTab />}

@@ -83,18 +83,16 @@ const day = etDayKey(at("10:00"))!;
     myShift: null,
     alsoMorning: false,
     blockedBy: null,
-    canTakeOverMorning: false,
     canContinueAfternoon: false,
   });
-  // The morning owner works alone: a second login waits on the standby screen
-  // with the owner's NAME and the one-tap morning takeover.
+  // The morning owner works alone: a second login waits on the lock screen,
+  // which only NAMES the holder. A registered shift can not be taken.
   assert.deepEqual(baristaViewer({ name: "Biniam", phase: "open", morningOwner: "Abel", afternoonOwner: null }), {
     seesPending: false,
     canAcceptPending: false,
     myShift: null,
     alsoMorning: false,
     blockedBy: { name: "Abel", shift: "morning" },
-    canTakeOverMorning: true,
     canContinueAfternoon: false,
   });
   // During the window BOTH work: the morning man keeps accepting (the
@@ -116,27 +114,35 @@ const day = etDayKey(at("10:00"))!;
   // a third barista only reads "today's afternoon shift is Biniam".
   const chalaAfter = baristaViewer({ name: "Chala", phase: "after", morningOwner: "Abel", afternoonOwner: "Biniam" });
   assert.equal(chalaAfter.seesPending, false);
-  assert.equal(chalaAfter.canTakeOverMorning, false);
   assert.deepEqual(chalaAfter.blockedBy, { name: "Biniam", shift: "afternoon" });
   console.log("✅ one owner per screen, both hands during the window, hard stop after");
 }
 
-/* ── 2b. TAKING THE MORNING OVER + CONTINUING INTO THE AFTERNOON ─────────── */
+/* ── 2b. A REGISTERED SHIFT IS LOCKED + CONTINUING INTO THE AFTERNOON ────── */
 {
-  // BEFORE the shift change the morning is still live: a second barista may
-  // take it with "no, this is my shift, add me" (the server moves the claim
-  // AND the drinks the previous man had already accepted).
-  const taker = baristaViewer({ name: "Chala", phase: "open", morningOwner: "Abel", afternoonOwner: null });
-  assert.equal(taker.canTakeOverMorning, true);
-  assert.equal(taker.canContinueAfternoon, false);
-  // The morning owner himself never sees the takeover button.
-  assert.equal(baristaViewer({ name: "Abel", phase: "open", morningOwner: "Abel", afternoonOwner: null }).canTakeOverMorning, false);
+  // OWNER'S RULE (29 Sept 2026): exactly like the afternoon, a registered
+  // MORNING shift can not be taken. A second barista only ever reads the lock
+  // screen with the owner's name: there is no takeover button, in any phase,
+  // and nothing in the envelope offers one.
+  // The morning is still live and locked: he only reads the holder's name.
+  const lockedMorning = baristaViewer({ name: "Chala", phase: "open", morningOwner: "Abel", afternoonOwner: null });
+  assert.equal(lockedMorning.seesPending, false);
+  assert.equal(lockedMorning.canAcceptPending, false);
+  assert.equal(lockedMorning.myShift, null);
+  assert.deepEqual(lockedMorning.blockedBy, { name: "Abel", shift: "morning" });
+  // During/after the window nobody holds the afternoon yet, so his first drink
+  // is still his door in (that is how an afternoon barista registers).
+  assert.equal(baristaViewer({ name: "Chala", phase: "handover", morningOwner: "Abel", afternoonOwner: null }).seesPending, true);
+  assert.equal(baristaViewer({ name: "Chala", phase: "after", morningOwner: "Abel", afternoonOwner: null }).seesPending, true);
+  // Once the afternoon is held, a third barista is locked out for good.
+  for (const phase of ["handover", "after"] as const) {
+    const locked = baristaViewer({ name: "Chala", phase, morningOwner: "Abel", afternoonOwner: "Biniam" });
+    assert.equal(locked.seesPending, false, `locked out during ${phase}`);
+    assert.equal(locked.canAcceptPending, false, `no accepts during ${phase}`);
+    assert.deepEqual(locked.blockedBy, { name: "Biniam", shift: "afternoon" });
+  }
   // Nobody registered: there is nothing to take, just accept your first drink.
-  assert.equal(baristaViewer({ name: "Chala", phase: "open", morningOwner: null, afternoonOwner: null }).canTakeOverMorning, false);
-  // DURING the window the board is shared, so the morning is no longer taken.
-  assert.equal(baristaViewer({ name: "Chala", phase: "handover", morningOwner: "Abel", afternoonOwner: null }).canTakeOverMorning, false);
-  // AFTER the window a finished morning shift can not be taken either.
-  assert.equal(baristaViewer({ name: "Chala", phase: "after", morningOwner: "Abel", afternoonOwner: null }).canTakeOverMorning, false);
+  assert.equal(baristaViewer({ name: "Chala", phase: "open", morningOwner: null, afternoonOwner: null }).seesPending, true);
 
   // CONTINUE: the morning owner, window closed, nobody holds the afternoon.
   const alone = baristaViewer({ name: "Abel", phase: "after", morningOwner: "Abel", afternoonOwner: null });
@@ -154,12 +160,11 @@ const day = etDayKey(at("10:00"))!;
     myShift: "afternoon",
     alsoMorning: true,
     blockedBy: null,
-    canTakeOverMorning: false,
     canContinueAfternoon: false,
   });
   // A third barista is still held back by a full-day owner.
   assert.deepEqual(baristaViewer({ name: "Chala", phase: "after", morningOwner: "Abel", afternoonOwner: "Abel" }).blockedBy, { name: "Abel", shift: "afternoon" });
-  console.log("✅ the morning can be taken while it is live; the afternoon only by continuing");
+  console.log("✅ a registered shift is locked (morning and afternoon); continuing is the only road to a full day");
 }
 
 /* ── 3. THE FIRST DRINK REGISTERS (and never a double shift) ─────────────── */
@@ -364,17 +369,16 @@ const day = etDayKey(at("10:00"))!;
   assert.ok(staffPos > -1 && adminPos > -1 && staffPos < adminPos, "authorizedStation must read the staff session before the admin session");
 
   // The GET must carry the lock-screen data the screen renders.
-  for (const field of ["blockedBy: rule.blockedBy", "canTakeOverMorning: rule.canTakeOverMorning", "canContinueAfternoon: rule.canContinueAfternoon", "alsoMorning: rule.alsoMorning"]) {
+  for (const field of ["blockedBy: rule.blockedBy", "canContinueAfternoon: rule.canContinueAfternoon", "alsoMorning: rule.alsoMorning"]) {
     assert.ok(route.includes(field), `the barista envelope must carry ${field}`);
   }
 
-  // THE TAKEOVER moves the claim AND the drinks the other man had accepted.
+  // A REGISTERED SHIFT IS LOCKED (owner, 29 Sept 2026): the morning takeover
+  // is gone for good, and the only shift action left is continuing.
   const post = route.slice(route.indexOf("export async function POST"));
-  assert.ok(post.includes('action === "take-morning"') && post.includes('action === "continue-afternoon"'), "both shift actions must exist");
-  const takeBlock = post.slice(post.indexOf('action === "take-morning"'), post.indexOf('action === "continue-afternoon"'));
-  assert.ok(takeBlock.includes("update(stationShiftClaims)"), "the takeover must move the claim row");
-  assert.ok(takeBlock.includes("update(ticketItems)") && takeBlock.includes("stationAcceptedBy: viewerName"), "the takeover must move the accepted drinks too");
-  assert.ok(takeBlock.includes('info.phase !== "open"'), "the morning can only be taken while it is still live");
+  assert.ok(!/take-morning|takeOverMorning/.test(route), "the morning takeover must not come back");
+  assert.ok(!/No, this is my shift/.test(screen), "the takeover button must not come back");
+  assert.ok(post.includes('action === "continue-afternoon"'), "the continue action must exist");
   const continueBlock = post.slice(post.indexOf('action === "continue-afternoon"'));
   assert.ok(continueBlock.includes('info.phase !== "after"'), "continuing into the afternoon waits for the window to close");
   assert.ok(continueBlock.includes("owners.morning.staffName !== viewerName"), "only the morning owner may continue");
@@ -383,11 +387,12 @@ const day = etDayKey(at("10:00"))!;
   // THE SCREEN: the owner's exact words must be on the standby screen, with
   // the two buttons wired to the two actions.
   assert.ok(screen.includes('L("Barista morning shift is taken by {name}"'), "the standby screen names the morning shift holder");
-  assert.ok(screen.includes('L("No, this is my shift • add me")') && screen.includes('runShiftAction("take-morning")'), "the takeover button must exist");
+  assert.ok(screen.includes('L("Today\'s afternoon shift is {name}"'), "the standby screen names the afternoon shift holder");
+  assert.ok(screen.includes('L("You are not in this shift. Orders show only on {name}\'s screen."'), "the lock screen says it is not his shift");
   assert.ok(screen.includes('L("I will continue as afternoon shift")') && screen.includes('runShiftAction("continue-afternoon")'), "the continue button must exist");
   assert.ok(screen.includes("lockScreen"), "the empty board must pick a lock screen (standby / continue / shift over)");
 
-  console.log("✅ the wiring holds: staff session first, both shift buttons, the lock screens");
+  console.log("✅ the wiring holds: staff session first, the locked shifts, the continue button");
 }
 
 console.log("\n🎉 THE BARISTA HAND-OVER: all guards green");

@@ -5,8 +5,6 @@ import { ensureTablesExist } from "@/db/migrate";
 import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import { checkRateLimit, checkSharedIpRateLimit, getClientIp, VENUE_POLICIES } from "@/lib/rate-limit";
 import { publish, CHANNELS } from "@/lib/realtime";
-import { sendPushToNamedStaff, sendPushToRoles, CUSTOMER_ALERT_RING } from "@/lib/push";
-import { ticketOwner } from "@/lib/alerts";
 import { stationOf, type StationName } from "@/lib/stations";
 import {
   customerOrderPhase,
@@ -264,28 +262,11 @@ export async function POST(request: Request) {
         .where(and(eq(tickets.id, open[0].id), isNull(tickets.receiptRequestedAt)));
       publish(CHANNELS.orders);
 
-      // GROUP 10 (pocket mode): the guest asked for the bill — ring the waiter
-      // AND the cashier (she prints the final EFD receipt). Fire-and-forget.
-      // OWNER-ONLY (owner's decision, Sept 2026): the waiter half rings just
-      // the waiter who accepted/sent this table, not the whole team. The
-      // cashier half still rings every cashier on duty.
-      const owner = ticketOwner(open[0].confirmedBy, open[0].createdBy);
-      const billPayload = {
-        title: "🧾 Bill requested",
-        body: `${open[0].tableName} • the guest asked for the bill`,
-        tag: `fana-bill-${open[0].id}`,
-        // A guest sitting and waiting is an ACT NOW event: keep it on the lock
-        // screen and ring the full 3 second guest alarm so it is heard over a
-        // busy room, from a pocket, with the phone locked.
-        ...CUSTOMER_ALERT_RING,
-        ticketId: open[0].id,
-      };
-      if (owner) {
-        void sendPushToNamedStaff("waiter", owner, billPayload).catch(() => {});
-      } else {
-        void sendPushToRoles(["waiter"], billPayload).catch(() => {});
-      }
-      void sendPushToRoles(["cashier"], billPayload).catch(() => {});
+      // PHONE NOTIFICATIONS ARE GONE (owner's decision, 29 Sept 2026): the
+      // guest asking for the bill used to ring the waiter's and the cashier's
+      // phones. It stays exactly where the owner wants it: the IN-SYSTEM card
+      // ("the guest asked for the bill") on their screens, which the realtime
+      // channel above pushes out this same second, with its own alarm + voice.
     }
 
     return NextResponse.json(await buildPayload(tableId), { headers: NO_STORE });

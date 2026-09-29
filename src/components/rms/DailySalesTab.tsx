@@ -1,0 +1,311 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Printer, RefreshCw, BellRing, BellOff, CheckCircle2 } from "lucide-react";
+import PrintLetterhead from "@/components/rms/PrintLetterhead";
+import { useStaffT, tNow, staffEtb } from "@/lib/staff-i18n";
+import { dayKeyLabel, formatEtb, type DayCloseRecord } from "@/lib/daily-sales";
+import { formatClock } from "@/lib/order-lines";
+import { enablePocketAlerts, pocketAlertsStatus, pushSupported, sendTestPush, type PocketAlertsStatus } from "@/lib/push-client";
+
+/**
+ * DAILY SALES — the owner's page (owner's decision, 29 Sept 2026).
+ *
+ * WHAT HE ASKED FOR: when the restaurant is about to close he wants today's
+ * total so he can check it against the money in the drawer and the system
+ * printer (EFD) receipts, and he wants the same list for the days before it:
+ *
+ *   29 Sep 2026 .................. 12,450 ETB
+ *   28 Sep 2026 ................... 9,800 ETB
+ *
+ * A line counts when the cashier PRINTED the bill (the EFD receipt moment);
+ * cancelled bills never count. The cashier's "Today's shift end" button sends
+ * the total to HIS phone, and this page is where that notification lands.
+ *
+ * This page also holds the ONLY phone-alert switch left in the cafe: every
+ * staff phone notification was removed, so arming this device is how the owner
+ * hears "Today's total sale".
+ */
+
+interface DailySalesDay {
+  dayKey: string;
+  total: number;
+  bills: number;
+  closed: DayCloseRecord | null;
+}
+
+interface DailySalesData {
+  serverTime: string;
+  splitHour: number;
+  cutoffHour: number;
+  currentHour: number;
+  canClose: boolean;
+  todayKey: string;
+  today: { total: number; bills: number; closed: DayCloseRecord | null };
+  days: DailySalesDay[];
+}
+
+export default function DailySalesTab() {
+  const { t: L, td: Ld } = useStaffT();
+  const [data, setData] = useState<DailySalesData | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState("");
+  const [pushStatus, setPushStatus] = useState<PocketAlertsStatus | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  const loadRef = useRef<() => void>(() => {});
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 4000);
+  };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/reports/daily-sales", { cache: "no-store" });
+      if (r.status === 401) {
+        setError(tNow("Your admin session ended. Reload the page and log in again to see fresh figures."));
+        return;
+      }
+      if (!r.ok) throw new Error(String(r.status));
+      setData((await r.json()) as DailySalesData);
+      setError("");
+    } catch {
+      setError(tNow("Could not load the daily sales. Tap refresh to try again."));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    loadRef.current = load;
+  });
+  useEffect(() => {
+    // The loader is async to its core (every setState sits behind a fetch) and
+    // the lint rule cannot see through the function boundary.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
+  }, [load]);
+
+  const refreshPushStatus = useCallback(async () => {
+    try {
+      setPushStatus(await pocketAlertsStatus());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  useEffect(() => {
+    const t = setTimeout(() => void refreshPushStatus(), 0);
+    return () => clearTimeout(t);
+  }, [refreshPushStatus]);
+
+  /**
+   * ARM THIS DEVICE. Only the owner receives notifications now, and this page
+   * is where his device registers: permission, subscription and the server row
+   * are all taken care of by the shared push client (a staff session is not
+   * needed; the admin session is enough).
+   */
+  const armPhone = async () => {
+    if (!pushSupported()) {
+      showToast(tNow("This browser cannot show phone alerts. Use Chrome on Android."));
+      return;
+    }
+    setPushBusy(true);
+    const res = await enablePocketAlerts();
+    await refreshPushStatus();
+    setPushBusy(false);
+    if (res === "denied") showToast(tNow("Notifications are blocked. Allow them in your browser settings."));
+    else if (res === "unsupported") showToast(tNow("This browser cannot show phone alerts. Use Chrome on Android."));
+    else if (res === "error") showToast(tNow("Could not arm phone alerts. Check the internet connection and try again."));
+    else showToast(tNow("✓ Phone alerts armed on this device"));
+  };
+
+  const testPhone = async (delaySeconds: number) => {
+    setPushBusy(true);
+    const res = await sendTestPush(delaySeconds);
+    await refreshPushStatus();
+    setPushBusy(false);
+    if (!res.ok) showToast(Ld(res.error) || tNow("The test could not be sent."));
+    else if (delaySeconds > 0) showToast(tNow("Test sent • lock the phone now, it rings in {seconds} seconds", { seconds: delaySeconds }));
+    else showToast(tNow("Test sent • this device should ring now"));
+  };
+
+  const days = data?.days ?? [];
+  const armed = !!pushStatus?.armed;
+  const todayRow = data?.today;
+
+  return (
+    <div id="fana-daily-sales" className="space-y-6">
+      {/* PRINT STYLES: the owner prints this page on the office computer. The
+          dark cafe theme flattens to black-on-white, controls hide. */}
+      <style>{`
+        .print-only { display: none; }
+        @media print {
+          @page { margin: 12mm; }
+          body { background: #fff !important; }
+          #fana-admin { background: #fff !important; padding: 0 !important; }
+          .no-print { display: none !important; }
+          .print-only { display: block !important; }
+          #fana-daily-sales, #fana-daily-sales * {
+            background-color: #fff !important;
+            background-image: none !important;
+            color: #000 !important;
+            border-color: #888 !important;
+            box-shadow: none !important;
+            text-shadow: none !important;
+          }
+        }
+      `}</style>
+
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-2xl max-w-[90vw] text-center no-print">
+          {toast}
+        </div>
+      )}
+
+      {error && (
+        <div className="bg-rose-900/60 border border-rose-500 text-rose-200 text-xs p-3 rounded-xl font-bold no-print">{error}</div>
+      )}
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-serif font-bold text-amber-100">{L("Daily Sales")}</h2>
+          <p className="text-xs text-stone-400 max-w-2xl">
+            {L("Every bill the cashier printed, day by day. Match these totals with the money in the drawer and the system printer (EFD) receipts.")}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 no-print">
+          <button
+            onClick={() => window.print()}
+            className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase px-4 py-2.5 rounded-xl flex items-center gap-2"
+            title={L("Print this sales list")}
+          >
+            <Printer className="w-4 h-4" /> {L("Print")}
+          </button>
+          <button onClick={() => void load()} className="p-2.5 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl" title={L("Refresh")}>
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+      </div>
+
+      {/* OFFICIAL LETTERHEAD, print only */}
+      <div className="print-only mb-4">
+        <PrintLetterhead />
+      </div>
+
+      {/* THE OWNER'S PHONE — the ONLY notification left in the cafe */}
+      <section className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-4 space-y-3 no-print">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            {armed ? <BellRing className="w-4 h-4 text-emerald-400" /> : <BellOff className="w-4 h-4 text-amber-300" />}
+            <div>
+              <p className="text-xs font-black uppercase tracking-wider text-amber-200">{L("My phone alerts")}</p>
+              <p className="text-[11px] text-stone-400">
+                {armed
+                  ? L("Armed on this device. The cashier's day-close total will ring here.")
+                  : L("Arm this device to receive the daily total when the cashier closes the day.")}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => void armPhone()}
+              disabled={pushBusy}
+              className={`text-[11px] font-black uppercase px-4 py-2.5 rounded-xl disabled:opacity-50 ${armed ? "bg-emerald-700 hover:bg-emerald-600 text-white" : "bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17]"}`}
+            >
+              {armed ? L("✓ Phone alerts on") : L("🔔 Arm my phone")}
+            </button>
+            <button
+              onClick={() => void testPhone(0)}
+              disabled={pushBusy}
+              className="text-[11px] font-black uppercase px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-amber-200 disabled:opacity-50"
+            >
+              {L("Test ring now")}
+            </button>
+            <button
+              onClick={() => void testPhone(10)}
+              disabled={pushBusy}
+              className="text-[11px] font-black uppercase px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-amber-200 disabled:opacity-50"
+            >
+              {L("Test ring in 10s (lock your phone)")}
+            </button>
+          </div>
+        </div>
+        <p className="text-[11px] text-stone-500">
+          {L("Android rings with the screen off. iPhone must be added to the Home Screen first (Share → Add to Home Screen).")}
+        </p>
+      </section>
+
+      {/* TODAY + THE CLOSING HOUR */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-gradient-to-br from-[#C9A227] to-[#8C6D18] rounded-2xl p-4 text-[#2C1B17] sm:col-span-2">
+          <p className="text-[10px] font-extrabold uppercase tracking-wider opacity-80">
+            {L("Today • {day}", { day: todayRow ? dayKeyLabel(data?.todayKey || "") : "…" })}
+          </p>
+          <p className="font-serif font-black text-3xl">{todayRow ? formatEtb(todayRow.total) : "…"}</p>
+          <p className="text-[11px] font-bold">
+            {todayRow ? L("{bills} printed bill(s)", { bills: todayRow.bills }) : ""}
+            {todayRow?.closed ? ` • ${L("closed {clock} by {name}", { clock: formatClock(todayRow.closed.at), name: todayRow.closed.by })}` : ""}
+          </p>
+        </div>
+        <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-4">
+          <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400">{L("Today's shift end")}</p>
+          <p className="text-xs font-bold text-amber-100 mt-1">
+            {data
+              ? data.canClose
+                ? L("Open • the cashier can close the day now")
+                : L("Opens at {hour}:00", { hour: String(data.cutoffHour).padStart(2, "0") })
+              : "…"}
+          </p>
+          <p className="text-[11px] text-stone-500 mt-1">
+            {L("The cashier taps it to send today's total to your phone.")}
+          </p>
+        </div>
+      </div>
+
+      {/* THE LIST — one line per date, newest first */}
+      <section className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-4 space-y-3">
+        <h3 className="text-xs font-black uppercase tracking-wider text-amber-200">{L("Total sales by date")}</h3>
+        {!data ? (
+          <p className="text-xs text-stone-500 py-6 text-center">{L("Loading daily sales...")}</p>
+        ) : days.length === 0 ? (
+          <p className="text-xs text-stone-500 py-6 text-center">{L("No printed sales yet. They appear here the moment the cashier prints a bill.")}</p>
+        ) : (
+          <div className="divide-y divide-stone-800">
+            {days.map((d) => (
+              <div key={d.dayKey} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-sm font-black text-amber-100">
+                    {dayKeyLabel(d.dayKey)}
+                    {d.dayKey === data.todayKey && (
+                      <span className="ml-2 text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-600/25 border border-emerald-600/60 text-emerald-300">
+                        {L("Today")}
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-[11px] text-stone-400">
+                    {L("{bills} printed bill(s)", { bills: d.bills })}
+                    {d.closed && (
+                      <span className="inline-flex items-center gap-1 ml-2">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                        {L("closed {clock} by {name}", { clock: formatClock(d.closed.at), name: d.closed.by })}
+                        {d.closed.total !== d.total ? ` • ${L("sent {value}", { value: staffEtb(d.closed.total) })}` : ""}
+                      </span>
+                    )}
+                  </p>
+                </div>
+                <p className="font-serif font-black text-lg text-white tabular-nums">{formatEtb(d.total)}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {data && days.length > 0 && (
+        <p className="text-[11px] text-stone-500">
+          {L("A sale is counted the moment the cashier prints the bill (the EFD receipt). Cancelled orders are never counted.")}
+        </p>
+      )}
+    </div>
+  );
+}

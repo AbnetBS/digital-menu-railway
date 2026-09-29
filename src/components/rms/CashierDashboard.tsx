@@ -10,16 +10,14 @@ import { Ticket, TicketItem, CafeTable } from "@/types";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { formatClock, formatDateTime, groupOrderLines, type OrderLine, waitingLabel } from "@/lib/order-lines";
 import { unlockAudio, playDing, playAlarm } from "@/lib/sound";
-import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
-import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
-import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+
 import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
 import CoffeeNotePanel from "@/components/rms/CoffeeNotePanel";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import BillNotificationCard, { BillNotification } from "@/components/rms/BillNotificationCard";
-import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
+import DayCloseButton from "@/components/rms/DayCloseButton";
 
 interface StaffLite {
   id: number;
@@ -187,14 +185,10 @@ export default function CashierDashboard() {
     localStorage.setItem("fana_alerts", "1");
     setAlertsOn(true);
     alertsOnRef.current = true;
-    // (Re)arm pocket alerts too, then ring a sample so she KNOWS the device is
-    // armed instead of guessing.
-    if (pushSupported()) {
-      await enablePocketAlerts();
-      void pocket.refreshStatus();
-    }
+    // Staff phones are no longer notified (owner's decision, 29 Sept 2026):
+    // this button just unlocks the audio engine and proves the alarm works.
     playAlarm();
-    triggerDesktopNotification({ title: tNow("Fana Cafe • Cashier"), message: tNow("🔔 Ring bell + desktop + pocket alerts are now ON for this device!") });
+    triggerDesktopNotification({ title: tNow("Fana Cafe • Cashier"), message: tNow("🔔 Ring bell + desktop alerts are now ON for this device!") });
   };
 
   const customerAddsOf = (t: Ticket) => t.unprintedCustomerSubmissions || 0;
@@ -557,16 +551,6 @@ export default function CashierDashboard() {
     loadHistoryRef.current = loadHistory;
   });
 
-  // POCKET MODE: keeps this device subscribed (self-healing) and rings the
-  // alarm the moment a push lands, even if the SSE stream was frozen.
-  const pocket = usePocketAlerts({
-    active: !!staffName,
-    onAlert: () => {
-      loadAllRef.current();
-      loadHistoryRef.current();
-    },
-  });
-
   useEffect(() => {
     if (staffName) {
       loadAll();
@@ -640,19 +624,12 @@ export default function CashierDashboard() {
     if (r.ok && d?.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem("fana_cashier", JSON.stringify(d.staff));
-      // GROUP 10: the login tap unlocks audio AND arms pocket notifications —
-      // the cashier's phone/tablet rings even when the browser is closed.
+      // The login tap unlocks the audio engine, so the alarm rings loudly on
+      // this device (staff phones are no longer notified).
       unlockAudio();
       localStorage.setItem("fana_alerts", "1");
       setAlertsOn(true);
       alertsOnRef.current = true;
-      void enablePocketAlerts().then((res) => {
-        void pocket.refreshStatus();
-        if (res === "denied") {
-          // notifications blocked in the browser — the in-app alarm still works
-          console.warn("Pocket notifications blocked by the browser settings");
-        }
-      });
     } else {
       setLoginError(tNow("Wrong name or PIN. Ask admin for your PIN."));
     }
@@ -1089,15 +1066,8 @@ export default function CashierDashboard() {
               <span className="text-[9px] text-stone-500 mt-0.5">{L("last updated {lastUpdated}", { lastUpdated })}</span>
             )}
           </div>
-          <PocketAlertsChip
-            status={pocket.status}
-            busy={pocket.busy}
-            onArm={pocket.arm}
-            onTest={pocket.test}
-            onToast={showToast}
-            notificationsEnabled={pocket.notificationsEnabled}
-            onSetNotificationsEnabled={pocket.setNotificationsEnabled}
-          />
+          {/* TODAY'S SHIFT END — sends today's total to the owner's phone */}
+          <DayCloseButton onToast={showToast} />
           {/* RING BELL enable button — click once on each cashier device */}
           <button
             onClick={enableAlerts}
@@ -1195,9 +1165,6 @@ export default function CashierDashboard() {
       )}
 
       <div className="max-w-[1700px] mx-auto p-4 md:p-6 space-y-8">
-        {/* iPhone pocket-mode instruction (Android needs nothing) */}
-        <PocketAlertsHint />
-
         <section className="bg-[#2C1B17] border border-violet-500/30 rounded-3xl p-4 md:p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

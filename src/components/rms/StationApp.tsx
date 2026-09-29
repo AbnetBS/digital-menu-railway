@@ -5,10 +5,6 @@ import { Coffee, CookingPot, CupSoda, RefreshCw, LogOut, CheckCircle2, BellRing,
 import { unlockAudio, playAlarm, playDing, setStationBell } from "@/lib/sound";
 import { formatClock, formatDayMonthYear, minutesSince, waitingLabel } from "@/lib/order-lines";
 import { triggerDesktopNotification } from "@/lib/notifications";
-import { enablePocketAlerts } from "@/lib/push-client";
-import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
-import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
-import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import Link from "next/link";
 import { phrase, useStaffT, tNow, staffEtb } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
@@ -75,12 +71,11 @@ interface ShiftMeta {
   alsoMorning: boolean;
   /**
    * Who holds the board away from me right now (null = nothing does). The
-   * standby screen names this person, and after the hard stop the morning man
-   * reads "your shift is over now, {name} will take the afternoon".
+   * standby screen names this person: "Barista morning shift is taken by
+   * Eyob" (afternoon: "Today's afternoon shift is Ermias"). A registered
+   * shift is locked, morning and afternoon alike, so there is no button here.
    */
   blockedBy: { name: string; shift: "morning" | "afternoon" } | null;
-  /** Morning only: I may take the live morning shift with one tap. */
-  canTakeOverMorning: boolean;
   /** I am the morning owner, the window closed and nobody took the afternoon. */
   canContinueAfternoon: boolean;
   owners: {
@@ -165,12 +160,9 @@ export default function StationApp({ station }: { station: Station }) {
   const serverOffsetRef = useRef(0);
   const [handoverLeftMs, setHandoverLeftMs] = useState<number | null>(null);
   const handoverEndFiredRef = useRef(false);
-  // THE SHIFT BUTTONS (owner, 29 Sept 2026): "no, this is my shift, add me"
-  // and "I will continue as afternoon shift". One at a time, so a double tap
-  // can never register twice.
+  // THE SHIFT BUTTON (owner, 29 Sept 2026): "I will continue as afternoon
+  // shift". One tap at a time, so a double tap can never register twice.
   const [shiftBusy, setShiftBusy] = useState(false);
-  /** What my own session was the last time this screen looked (taken-shift news). */
-  const prevMyShiftRef = useRef<"morning" | "afternoon" | null>(null);
   const [alertsOn, setAlertsOn] = useState(false);
   // STALE-CLOSURE FIX: the SSE handler is created once (deps [staffName]) and
   // captured whatever `alertsOn` was then. Enabling alerts afterwards never
@@ -416,13 +408,11 @@ export default function StationApp({ station }: { station: Station }) {
     if (r.ok && d?.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem(`fana_${station}`, JSON.stringify(d.staff));
-      // GROUP 10: the login tap is the gesture browsers need — unlock the loud
-      // alarm AND arm pocket notifications for this crew tablet/phone.
+      // The login tap is the gesture browsers need to unlock the loud alarm.
       unlockAudio();
       localStorage.setItem(`fana_alerts_${station}`, "1");
       setAlertsOn(true);
       alertsOnRef.current = true;
-      void enablePocketAlerts().then(() => pocket.refreshStatus());
     } else {
       setLoginError(tNow("Wrong name or PIN. Ask admin for your {label} PIN.", { label: tNow(meta.label) }));
     }
@@ -433,9 +423,8 @@ export default function StationApp({ station }: { station: Station }) {
     fetch("/api/staff/login", { method: "DELETE" }).catch(() => {});
     setStaffName("");
     setPin("");
-    // A different person is coming: the next login must never read the
-    // previous barista's shift as "mine".
-    prevMyShiftRef.current = null;
+    // A different person is coming: the next login must never show the
+    // previous barista's shift envelope.
     setShiftMeta(null);
   };
 
@@ -449,7 +438,6 @@ export default function StationApp({ station }: { station: Station }) {
     setPin("");
     setLoginError(tNow("Your session ended. Log in again to keep receiving orders."));
     setStaffName("");
-    prevMyShiftRef.current = null;
     setShiftMeta(null);
   };
 
@@ -505,22 +493,6 @@ export default function StationApp({ station }: { station: Station }) {
       if (Number.isFinite(parsed)) serverOffsetRef.current = parsed - Date.now();
     }
     setShiftMeta(shiftInfo);
-    // THE SHIFT WAS TAKEN FROM ME (owner's rule, Sept 2026): another barista
-    // tapped "no, this is my shift, add me". My board empties and the standby
-    // screen names him; say it once, out loud, so nobody wonders where the
-    // orders went.
-    if (shiftInfo) {
-      const prev = prevMyShiftRef.current;
-      prevMyShiftRef.current = shiftInfo.myShift;
-      if (
-        initRef.current &&
-        prev === "morning" &&
-        shiftInfo.myShift === null &&
-        shiftInfo.blockedBy?.shift === "morning"
-      ) {
-        showToast(tNow("✗ {name} took the morning shift • you are on standby now", { name: shiftInfo.blockedBy.name }));
-      }
-    }
 
     // HARD STOP (owner, Sept 2026): the moment the hand-over ends, every
     // still-pending line leaves the morning barista's payload at once. Those
@@ -816,13 +788,6 @@ export default function StationApp({ station }: { station: Station }) {
     return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
   })();
 
-  // POCKET MODE: keeps this tablet/phone subscribed (self-healing) and rings
-  // the loud alarm the moment a push lands, even if SSE was frozen.
-  const pocket = usePocketAlerts({
-    active: !!staffName,
-    onAlert: () => loadRef.current(),
-  });
-
   useEffect(() => {
     if (staffName) {
       // Both loaders are async to their core — every setState inside them
@@ -881,15 +846,19 @@ export default function StationApp({ station }: { station: Station }) {
     }
   }, [staffName]);
 
+  /**
+   * THE ALARM SWITCH (owner's decision, 29 Sept 2026: "only the alarm is
+   * enough"). Staff phones are no longer notified, so this button no longer
+   * arms pocket alerts: it unlocks the audio engine (browsers demand a tap),
+   * allows the desktop pop-up on this device and rings a sample so the crew
+   * knows the alarm really works.
+   */
   const enableAlerts = async () => {
     unlockAudio();
     if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
     localStorage.setItem(`fana_alerts_${station}`, "1");
     setAlertsOn(true);
     alertsOnRef.current = true;
-    // (Re)arm pocket alerts + a sample ring so the crew knows it works.
-    await enablePocketAlerts();
-    void pocket.refreshStatus();
     playAlarm();
   };
 
@@ -917,14 +886,13 @@ export default function StationApp({ station }: { station: Station }) {
   };
 
   /**
-   * THE SHIFT BUTTONS (owner, 29 Sept 2026). Each one is a single POST and
-   * then a reload, so every tablet reflects the new owner in the same second:
-   *   • take-morning       → "no, this is my shift, add me"
-   *   • continue-afternoon → "I will continue as afternoon shift"
-   * The server answers with the reason when it refuses (the shift moved on, or
-   * somebody else registered first), and that reason is what the crew reads.
+   * THE SHIFT BUTTON (owner, 29 Sept 2026): "I will continue as afternoon
+   * shift". A single POST and then a reload, so every tablet reflects the new
+   * owner in the same second. The server answers with the reason when it
+   * refuses (somebody else registered first, or the window is still running),
+   * and that reason is what the crew reads.
    */
-  const runShiftAction = async (action: "take-morning" | "continue-afternoon") => {
+  const runShiftAction = async (action: "continue-afternoon") => {
     if (shiftBusy) return;
     setShiftBusy(true);
     let expired = false;
@@ -1072,15 +1040,6 @@ export default function StationApp({ station }: { station: Station }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <PocketAlertsChip
-            status={pocket.status}
-            busy={pocket.busy}
-            onArm={pocket.arm}
-            onTest={pocket.test}
-            onToast={showToast}
-            notificationsEnabled={pocket.notificationsEnabled}
-            onSetNotificationsEnabled={pocket.setNotificationsEnabled}
-          />
           <button
             onClick={enableAlerts}
             className={`text-[10px] font-black px-3 py-1.5 rounded-full flex items-center gap-1.5 transition ${
@@ -1106,11 +1065,6 @@ export default function StationApp({ station }: { station: Station }) {
           {toast}
         </div>
       )}
-
-      {/* iPhone pocket-mode instruction (Android needs nothing) */}
-      <div className="max-w-4xl mx-auto px-4 md:px-6 pt-4">
-        <PocketAlertsHint />
-      </div>
 
       {/* counters + the crew's own "Items sold" tab (owner's decision, Sept
           2026: the crew asked what they SOLD, not how many tables were open).
@@ -1299,15 +1253,6 @@ export default function StationApp({ station }: { station: Station }) {
                   <p className="text-stone-400 text-xs max-w-md mx-auto">
                     {L("You are not in this shift. Orders show only on {name}'s screen.", { name: blockedBy.name })}
                   </p>
-                  {shiftMeta.canTakeOverMorning && (
-                    <button
-                      onClick={() => runShiftAction("take-morning")}
-                      disabled={shiftBusy}
-                      className="mx-auto block px-5 py-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black uppercase disabled:opacity-50"
-                    >
-                      {L("No, this is my shift • add me")}
-                    </button>
-                  )}
                 </>
               ) : (
                 <>

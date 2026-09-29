@@ -6,18 +6,15 @@ import {
   Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing, Receipt, PencilLine,
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable, TableStatus } from "@/types";
-import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
-import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import GroupComposer from "@/components/rms/GroupComposer";
 import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
-import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
 import { ticketOwner } from "@/lib/alerts";
 import { unlockAudio, playAlarm, playDing, speakTableReady } from "@/lib/sound";
-import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { useRef } from "react";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
@@ -457,17 +454,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     localStorage.setItem(alertsKey, "1");
     setAlertsOn(true);
     alertsOnRef.current = true;
-    // Also (re)subscribe this phone to pocket alerts and ring a sample so the
-    // waiter KNOWS the device is armed, then refresh the status chip.
-    if (pushSupported()) {
-      const res = await enablePocketAlerts();
-      void pocket.refreshStatus();
-      if (res === "denied") {
-        showToast(tNow("Notifications are blocked. Allow them in your browser settings."));
-      }
-    }
+    // Staff phones are no longer notified (owner's decision, 29 Sept 2026):
+    // this button only unlocks the audio engine, allows the desktop pop-up and
+    // rings a sample so the waiter knows the alarm really works.
     playAlarm();
-    showToast(tNow("🔔 Alerts ON • pocket notifications armed"));
+    showToast(tNow("🔔 Alerts ON • the alarm is ready"));
   };
 
   /** Plain-language line for a status somebody else moved the ticket to. */
@@ -893,14 +884,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     loadTablesRef.current = loadTables;
   });
 
-  // POCKET MODE: keeps this phone subscribed (self-healing, no login needed),
-  // and turns every push that lands while the app is open into the loud in-app
-  // alarm plus an instant refresh, even if the SSE stream was frozen.
-  const pocket = usePocketAlerts({
-    active: !!staffName,
-    onAlert: () => loadTablesRef.current(),
-  });
-
   const login = async () => {
     setLoginError("");
     // A LOGIN tap with no answer at all (offline, server restarting) used to do
@@ -919,19 +902,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       setStaffName(d.staff.name);
       sessionStorage.setItem(sessionKey, JSON.stringify(d.staff));
       setView("tables");
-      // GROUP 10: the login tap is the ONE user gesture browsers demand —
-      // unlock the loud alarm AND arm pocket notifications right here, so the
-      // waiter never has to find a separate "enable" button.
+      // The login tap is the gesture browsers demand, so the loud alarm is
+      // unlocked right here (staff phones are no longer notified).
       unlockAudio();
       localStorage.setItem(alertsKey, "1");
       setAlertsOn(true);
       alertsOnRef.current = true;
-      void enablePocketAlerts().then((res) => {
-        void pocket.refreshStatus();
-        if (res === "denied") {
-          showToast(tNow("Notifications blocked. Allow them in the browser to hear pocket alerts."));
-        }
-      });
     } else {
       setLoginError(tNow("Wrong name or PIN. Ask admin for your PIN."));
     }
@@ -1807,15 +1783,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <PocketAlertsChip
-            status={pocket.status}
-            busy={pocket.busy}
-            onArm={pocket.arm}
-            onTest={pocket.test}
-            onToast={showToast}
-            notificationsEnabled={pocket.notificationsEnabled}
-            onSetNotificationsEnabled={pocket.setNotificationsEnabled}
-          />
           <button
             onClick={enableAlerts}
             className={`p-2 rounded-xl transition ${alertsOn ? "bg-emerald-600 text-white" : "bg-[#C9A227] text-[#2C1B17] animate-pulse"}`}
@@ -1928,8 +1895,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       {/* ── TABLES VIEW ── */}
       {view === "tables" && (
         <div className="p-4 space-y-4 max-w-3xl mx-auto">
-          <PocketAlertsHint />
-
           {/* ── MY BUNA ── the makers' own work, above the table grid ── */}
           {isBuna && <div className="bg-[#2C1B17] border border-amber-700/50 rounded-2xl p-4 space-y-3">
             <div className="flex justify-between items-center gap-2"><h2 className="text-amber-200 font-black">{L("🫖 Buna today • all makers")}</h2><button onClick={() => { void loadBunaStats(); void loadBunaLane(); }} aria-label={L("Refresh buna totals")} className="text-amber-200"><RefreshCw className="w-4 h-4" /></button></div>

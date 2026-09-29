@@ -13,8 +13,6 @@ import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
 import { recordTicketEvent, summarizeSubmissionLines } from "@/lib/ticket-audit";
-import { sendPushToRoles, CUSTOMER_ALERT_RING } from "@/lib/push";
-import { ticketStatusAlerts, withoutActor } from "@/lib/alerts";
 import { stationForOrder, stationOf, type StationName } from "@/lib/stations";
 import { isBillSent, isTableReleased, allLinesFinished } from "@/lib/order-release";
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
@@ -937,157 +935,14 @@ export async function POST(request: Request) {
     // delay or fail an order.
     // RELEASE RULE (owner's decision, Sept 2026): the SEND releases the food,
     // never the print. A staff-sent new order is sent at creation, and food a
-    // WAITER adds later to a SENT bill lands on the crew's list the same
-    // second — the cashier, the waiter and every crew with new lines in this
-    // submission are all rung at once. Only three bills keep the crews quiet:
-    // a bill nobody accepted yet (pending_waiter — the waiter's job to
-    // confirm), a HELD bill (the cashier accepted the QR order but has not
-    // sent it — the guest may still add more, and the crews see none of it
-    // until CONFIRM & SEND), and a guest top-up on an already-sent bill (the
-    // new lines are HELD until the cashier or the waiter confirms them — see
-    // ticket_items.released).
-    //
-    // WAITER TOP-UP ALARMS: a guest ordering from their phone hears nothing
-    // from staff, so EVERY customer submission must ring the waiter — not just
-    // the first one. A submission that merges into an existing bill (pending,
-    // confirmed, printed, ...) rings the waiter on a DISTINCT per-event tag
-    // (fana-qr-add-<ticket>-<submission>), because reusing the original
-    // fana-qr-<id> tag would silently REPLACE the previous notification instead
-    // of ringing as a new event. The cashier pushes below are UNCHANGED — she
-    // keeps exactly the signals she already had. Staff-originated sends
-    // (isCustomer false) ring nobody extra on the waiter side: the waiter
-    // keying items herself already knows what she did — but the CREWS with new
-    // lines are still rung, because a waiter keying a juice cannot shout it
-    // across the room to the juice maker's tablet.
-    {
-      const pushed = transactionResult.ticket;
-      const merged = transactionResult.merged;
-      // Are this submission's lines held back from the stations?
-      const holdNewLines = transactionResult.held === true;
-      // One tag per submission: the idempotency key is unique per order submit
-      // (legacy clients without one fall back to a timestamp, still unique).
-      const additionTag = `fana-qr-add-${pushed.id}-${idemKey || Date.now()}`;
-      if (isCustomer && pushed.status === "pending_waiter") {
-        // Brand-new QR order AND top-ups on a still-pending bill: nobody has
-        // confirmed them yet, so BOTH the waiter (who walks to the table) and
-        // the cashier (who coordinates the room) must hear it — a guest's
-        // order never reaches a station without a human confirmation. Merges
-        // use the per-submission tag so each top-up rings as its own
-        // notification.
-        void sendPushToRoles(["waiter", "cashier"], {
-          title: merged ? "🍽 Guest added items" : "🍽 New QR order",
-          body: `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`,
-          tag: merged ? additionTag : `fana-qr-${pushed.id}`,
-          // A GUEST just acted: 3 second alarm burst, hard vibration, and a
-          // Confirm button right on the lock screen.
-          ...CUSTOMER_ALERT_RING,
-          ticketId: pushed.id,
-          action: "confirm",
-        }).catch(() => {});
-      } else if (isCustomer && holdNewLines) {
-        // A guest added to a bill that was ALREADY sent: the new lines wait on
-        // the cashier's and the waiter's screens until one of them confirms
-        // them to the stations (see ticket_items.released). The crews are NOT
-        // rung here — there is nothing new on their lists yet, and the
-        // confirmation below is what wakes them.
-        void sendPushToRoles(["waiter", "cashier"], {
-          title: "🍽 Guest added items",
-          body: `${pushed.tableName} • confirm before the stations get them`,
-          tag: additionTag,
-          ...CUSTOMER_ALERT_RING,
-          ticketId: pushed.id,
-          action: "confirm",
-        }).catch(() => {});
-      } else {
-        // INSTANT RELEASE: the crews already have these lines on their lists
-        // (see station-items) — the cashier's card shows the new items only so
-        // she keys just those into the EFD for receipt #2, but she is NOT the
-        // gate for the kitchen anymore.
-        if (pushed.status === "printed") {
-          // Additions landed on a bill the cashier already keyed into the EFD —
-          // she prints the second receipt for the NEW items only (her queue
-          // card shows exactly those, never the whole bill again). The crews
-          // were already rung for them below.
-          void sendPushToRoles(["cashier"], {
-            title: "⚠ Items ADDED",
-            body: `${pushed.tableName} • new items on the bill, print receipt #2`,
-            tag: `fana-add-${pushed.id}`,
-            ...(isCustomer ? CUSTOMER_ALERT_RING : {}),
-            ticketId: pushed.id,
-          }).catch(() => {});
-        } else if (pushed.status === "confirmed" && !pushed.confirmedAt && !pushed.printedAt) {
-          // The bill is HELD: the cashier accepted the guest's QR order but has
-          // not sent it yet. The guest adding more just grows the pile she will
-          // release ONCE — nothing to print yet, and the crews still see none
-          // of it, so only she is told.
-          void sendPushToRoles(["cashier"], {
-            title: "🍽 Guest added items",
-            body: `${pushed.tableName} • held bill is now ${transactionResult.total} ETB • CONFIRM & SEND when they finish`,
-            tag: `fana-hold-add-${pushed.id}`,
-            ...(isCustomer ? CUSTOMER_ALERT_RING : {}),
-            ticketId: pushed.id,
-          }).catch(() => {});
-        } else {
-          void sendPushToRoles(["cashier"], {
-            title: "🧾 To print",
-            body: `${pushed.tableName} • ${transactionResult.total} ETB`,
-            tag: `fana-print-${pushed.id}`,
-          }).catch(() => {});
-        }
-        // Customer top-up merged into an existing bill → the waiter must hear
-        // it too. Still-pending bill: her job is to go confirm. Confirmed or
-        // printed bill: her job is to check the updated bill.
-        if (isCustomer && merged) {
-          void sendPushToRoles(["waiter"], {
-            title: "🍽 Guest added items",
-            body:
-              pushed.status === "pending_waiter"
-                ? `${pushed.tableName} • ${transactionResult.total} ETB • tap to confirm`
-                : `${pushed.tableName} • guest added items • ${transactionResult.total} ETB`,
-            tag: additionTag,
-            // Same guest-grade alarm: she cannot predict a top-up either.
-            ...CUSTOMER_ALERT_RING,
-            ticketId: pushed.id,
-            action: pushed.status === "pending_waiter" ? "confirm" : null,
-          }).catch(() => {});
-        }
-      }
-      // ── INSTANT-RELEASE CREW PUSH ──
-      // The lines of THIS submission are already on the crew's lists. Ring
-      // exactly the crews that received new work — a drinks-only top-up never
-      // wakes the kitchen, and a held or still-pending bill rings nobody here
-      // (there is nothing on their lists yet). A guest top-up on an
-      // already-sent bill rings nobody either: it is HELD until staff confirm
-      // it, and that confirmation is what wakes the crews. One tag per
-      // submission, so each addition rings as its own event instead of
-      // replacing the last one.
-      try {
-        const billSent = !!(pushed.confirmedAt || pushed.printedAt);
-        const newStations = (transactionResult.submissionStations || []) as StationName[];
-        if (!holdNewLines && billSent && pushed.status !== "pending_waiter" && newStations.length > 0) {
-          const single = newStations.length === 1 ? newStations[0] : null;
-          const title =
-            single === "buna" ? "🫖 New buna"
-            : single === "juice" ? "🧃 New juices"
-            : single === "barista" ? "☕ New drinks"
-            : single === "kitchen" ? "👨‍🍳 New items to cook"
-            : "👨‍🍳 New items";
-          void sendPushToRoles(newStations, {
-            title,
-            body: merged
-              ? `${pushed.tableName} • added to the order • check your station list`
-              : `${pushed.tableName} • new order • start now`,
-            tag: `fana-station-add-${pushed.id}-${idemKey || Date.now()}`,
-            urgent: true,
-            // One ring per event: no route may pass a repeat above 0.
-            repeat: 0,
-          }).catch(() => {});
-        }
-      } catch {
-        // A push hiccup must never fail an order submission.
-      }
-    }
-
+    // PHONE NOTIFICATIONS ARE GONE (owner's decision, 29 Sept 2026). This block
+    // used to ring the waiter, the cashier and every crew with a new line on
+    // their phones ("New QR order", "To print", "New drinks" ...). The owner
+    // called those useless: the screens are always open in the cafe, and each
+    // of those moments already rings LOUDLY there — the alarm, the voice and
+    // the sound (driven by the realtime stream), plus the in-system cards such
+    // as the bill request. Only ONE phone still rings: the owner's, for the
+    // daily total (see /api/reports/day-close).
     return NextResponse.json({ ...transactionResult.ticket, totalAmount: transactionResult.total, merged: transactionResult.merged });
   } catch (error) {
     // CONCURRENCY BACKSTOP (Group 8): two identical submissions raced and the
@@ -1480,84 +1335,15 @@ export async function PUT(request: Request) {
     // they already have on their lists. The matrix below keeps printed and
     // preparing silent on purpose — the screens still update everywhere.
 
-    // ── EVERY STATUS CHANGE RINGS THE ROLES THAT MUST REACT ──
-    // Before, only the print/preparing moment pushed anyone, so a waiter with
-    // her phone in a pocket never learned that a bill was confirmed, that the
-    // guest was ready to pay, or that an order had been CANCELLED while the
-    // kitchen was still cooking it. The matrix in @/lib/alerts covers the whole
-    // workflow; the actor's own role is skipped so nobody rings themselves.
-    //
-    // QR HOLD FLOW: the SEND tap rings exactly the roles an acceptance used to
-    // ring (the crews with lines on the bill, the cashier, the waiter). A HELD
-    // accept rings NOBODY — there is nothing for anyone to do yet; every screen
-    // updates and the guest alarm stops because the pending event is answered.
-    const releasedBySend = sendRequested && !cur.confirmedAt && !cur.printedAt;
-    const alertStatus = statusChanged ? String(body.status) : releasedBySend ? "confirmed" : null;
-    if (alertStatus && !(alertStatus === "confirmed" && holdAfterConfirm)) {
-      try {
-        // WHICH CREWS DOES THIS BILL ACTUALLY INVOLVE? Accepting used to wake
-        // every crew at once, so the kitchen was woken for a drinks-only table
-        // and the buna makers for every macchiato. The release alert is now
-        // built per crew that really has a line on the ticket — and so is the
-        // cancellation alarm (a voided juice must not ring the kitchen).
-        let billStations: StationName[] = [];
-        if (alertStatus === "confirmed" || alertStatus === "cancelled") {
-          const crewRows = await db
-            .select({ stationName: ticketItems.stationName })
-            .from(ticketItems)
-            .where(and(eq(ticketItems.ticketId, updated[0].id), eq(ticketItems.removed, false)));
-          billStations = [...new Set(crewRows.map((r) => stationOf(r.stationName)))];
-        }
-        const alerts = withoutActor(
-          ticketStatusAlerts(alertStatus, {
-            id: updated[0].id,
-            tableName: updated[0].tableName,
-            totalAmount: updated[0].totalAmount,
-            orderNumber: updated[0].orderNumber,
-            stations: billStations,
-          }),
-          actor?.role
-        );
-        for (const alert of alerts) {
-          void sendPushToRoles(alert.roles, {
-            title: alert.title,
-            body: alert.body,
-            tag: alert.tag,
-            urgent: alert.urgent,
-            repeat: alert.repeat,
-          }).catch(() => {});
-        }
-      } catch {
-        // An alert hiccup must never fail a status change.
-      }
-    }
-
-    // GUEST ADDITIONS RELEASED (owner's decision, Sept 2026): staff just
-    // confirmed the lines a guest added to an already-sent bill, so those
-    // lines are on the crews' lists NOW. Ring exactly the crews that received
-    // new work — a drinks-only top-up never wakes the kitchen. The status
-    // alerts above already cover a whole-bill release, so this only fires for
-    // the additions-only confirmation.
-    if (releasedStations.length > 0) {
-      try {
-        const single = releasedStations.length === 1 ? releasedStations[0] : null;
-        const title =
-          single === "buna" ? "\u{1FAD6} New buna"
-          : single === "juice" ? "\u{1F9C3} New juices"
-          : single === "barista" ? "\u2615 New drinks"
-          : single === "kitchen" ? "\u{1F468}\u200D\u{1F373} New items to cook"
-          : "\u{1F468}\u200D\u{1F373} New items";
-        void sendPushToRoles(releasedStations, {
-          title,
-          body: `${updated[0].tableName} • guest added items • check your station list`,
-          tag: `fana-station-add-${updated[0].id}-${Date.now()}`,
-          urgent: true,
-          repeat: 0,
-        }).catch(() => {});
-      } catch {
-        // A push hiccup must never fail a confirmation.
-      }
-    }
+    // ── PHONE NOTIFICATIONS ARE GONE (owner's decision, 29 Sept 2026) ──
+    // Every status change used to ring a phone through the @/lib/alerts matrix
+    // ("Order accepted", "To print", "Order cancelled" ...). The owner called
+    // those useless: the alarm, the voice and the sound on the screens that are
+    // always open already say it, and the in-system cards cover the rest. What
+    // still reaches a phone is the OWNER's daily total (see
+    // /api/reports/day-close). The matrix itself is kept in @/lib/alerts as the
+    // reference of who *should* react, and the screens still update instantly
+    // through the realtime channel published below.
 
     publish(CHANNELS.orders);
     return NextResponse.json(updated[0]);

@@ -7,39 +7,18 @@ import { ensureTablesExist } from "@/db/migrate";
 import { eq, and } from "drizzle-orm";
 import { requireStaffOrAdmin } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
-import { sendPushToRoles } from "@/lib/push";
-import { itemQuantityAlerts, itemRemovedAlerts, itemNotesAlerts, itemEditedAfterPrintAlerts, withoutActor, type RoleAlert } from "@/lib/alerts";
 import { readStaffSession } from "@/lib/session";
 
-/** Send a built alert list, never blocking or failing the caller. */
-function ring(alerts: RoleAlert[], actorRole?: string | null) {
-  for (const alert of withoutActor(alerts, actorRole)) {
-    void sendPushToRoles(alert.roles, {
-      title: alert.title,
-      body: alert.body,
-      tag: alert.tag,
-      urgent: alert.urgent,
-      repeat: alert.repeat,
-    }).catch(() => {});
-  }
-}
+/*
+ * PHONE NOTIFICATIONS ARE GONE (owner's decision, 29 Sept 2026): a corrected
+ * quantity, a changed note and a removed dish used to ring the crew's phones
+ * through @/lib/alerts. The owner removed every staff phone notification — the
+ * crews read those moments on their screens (the alarm, the sound and the
+ * realtime list) and the in-system cards cover the rest. The only phone that
+ * still rings is the owner's, once, for the daily total
+ * (see /api/reports/day-close).
+ */
 
-/** The bill an item belongs to, for the alert text (status + print stamp included). */
-async function ticketOf(ticketId: number) {
-  const rows = await db
-    .select({ id: tickets.id, tableName: tickets.tableName, totalAmount: tickets.totalAmount, status: tickets.status, printedAt: tickets.printedAt })
-    .from(tickets)
-    .where(eq(tickets.id, ticketId))
-    .limit(1);
-  return rows[0] || null;
-}
-
-/** True when this bill already went out through the EFD (its receipt exists). */
-function isPrintedBill(t: { status: string | null; printedAt: Date | string | null } | null): boolean {
-  return !!t && t.status === "printed" && !!t.printedAt;
-}
-
-// PUT: edit item quantity or notes (waiter can adjust before payment)
 export async function PUT(request: Request) {
   const __auth = await requireStaffOrAdmin();
   if (!__auth.ok) return __auth.response;
@@ -156,59 +135,9 @@ export async function PUT(request: Request) {
     });
     if (!updated[0]) return NextResponse.json({ error: "Item not found" }, { status: 404 });
 
-    // A corrected quantity changes what the crew must cook and what the guest
-    // pays, so it rings the waiter and the station that owns the line. A
-    // changed note rings the owning station only when the line was already
-    // started (a pending line's note is simply read fresh when cooking starts).
-    // Unchanged values ring nobody — the editors always send both fields.
-    try {
-      const ticket = qtyChanged || notesChanged ? await ticketOf(updated[0].ticketId) : null;
-      if (ticket) {
-        if (qtyChanged) {
-          ring(
-            itemQuantityAlerts({
-              id: ticket.id,
-              tableName: ticket.tableName,
-              totalAmount: ticket.totalAmount,
-              itemName: updated[0].name,
-              station: updated[0].stationName,
-              fromQuantity: before[0].quantity,
-              toQuantity: updated[0].quantity,
-            }),
-            actorRole
-          );
-        }
-        if (notesChanged && wasStarted) {
-          ring(
-            itemNotesAlerts({
-              id: ticket.id,
-              tableName: ticket.tableName,
-              totalAmount: ticket.totalAmount,
-              itemName: updated[0].name,
-              station: updated[0].stationName,
-            }),
-            actorRole
-          );
-        }
-        // The bill already went out through the EFD and someone just changed
-        // what it claims: the cashier must re-key it. (When she is the editor
-        // herself the ring is skipped — her own card flags the bill instead.)
-        if ((qtyChanged || notesChanged) && isPrintedBill(ticket)) {
-          ring(
-            itemEditedAfterPrintAlerts({
-              id: ticket.id,
-              tableName: ticket.tableName,
-              totalAmount: ticket.totalAmount,
-              itemName: updated[0].name,
-              station: updated[0].stationName,
-            }),
-            actorRole
-          );
-        }
-      }
-    } catch {
-      /* alerts must never fail an edit */
-    }
+    // Corrections update every screen through the realtime channel below; the
+    // crew that already started the line hears its alarm + sound from the live
+    // list itself. No phone is rung (owner's decision, 29 Sept 2026).
 
     publish(CHANNELS.orders);
     return NextResponse.json({ ...updated[0], reopened });
@@ -283,44 +212,9 @@ export async function DELETE(request: Request) {
       });
     });
 
-    // Removing a dish the crew ALREADY STARTED must stop them ("do not
-    // prepare"). But a dish still PENDING was never in the pan — nobody needs
-    // an alarm for it, the screens just update (this is also what keeps the
-    // waiter's own bill-editor removals silent for the kitchen).
-    const wasPending = !rows[0].stationStatus || rows[0].stationStatus === "pending";
-    try {
-      const ticket = await ticketOf(rows[0].ticketId);
-      if (ticket) {
-        if (!wasPending) {
-          ring(
-            itemRemovedAlerts({
-              id: ticket.id,
-              tableName: ticket.tableName,
-              totalAmount: ticket.totalAmount,
-              itemName: rows[0].name,
-              station: rows[0].stationName,
-            }),
-            actorRole
-          );
-        }
-        // A removal from a printed bill changes what the EFD receipt claims:
-        // the cashier must re-key it (skipped when she removed it herself).
-        if (isPrintedBill(ticket)) {
-          ring(
-            itemEditedAfterPrintAlerts({
-              id: ticket.id,
-              tableName: ticket.tableName,
-              totalAmount: ticket.totalAmount,
-              itemName: rows[0].name,
-              station: rows[0].stationName,
-            }),
-            actorRole
-          );
-        }
-      }
-    } catch {
-      /* alerts must never fail a removal */
-    }
+    // A removed dish updates the crew's screen through the realtime channel
+    // below, with its own alarm + sound from the live list. No phone is rung
+    // (owner's decision, 29 Sept 2026).
 
     publish(CHANNELS.orders);
     return NextResponse.json({ success: true, id: Number(id) });

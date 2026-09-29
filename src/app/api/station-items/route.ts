@@ -5,8 +5,6 @@ import { ensureTablesExist } from "@/db/migrate";
 import { and, eq, notInArray, asc, desc, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { requireStaffOrAdmin, readStaffSession, readAdminSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
-import { sendPushToNamedStaff, sendPushToRoles } from "@/lib/push";
-import { stationProgressAlerts, ticketOwner } from "@/lib/alerts";
 import { stationOf, type StationName } from "@/lib/stations";
 import { allLinesFinished, isBillSent, isLineHeld, isLineServedByPrint, isTableReleased } from "@/lib/order-release";
 import { etStartOfToday } from "@/lib/timezone";
@@ -568,9 +566,8 @@ export async function GET(request: Request) {
             // A full-day barista: he kept the morning and continued.
             alsoMorning: rule.alsoMorning,
             // The standby screen names whoever holds the board away from me,
-            // and the buttons I may tap right now.
+            // and the one button a morning owner may still get.
             blockedBy: rule.blockedBy,
-            canTakeOverMorning: rule.canTakeOverMorning,
             canContinueAfternoon: rule.canContinueAfternoon,
             owners: {
               morning: owners.morning
@@ -764,73 +761,15 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: `Already accepted • ${owner || "another barista"} is on it` }, { status: 409 });
     }
 
-    // ── THE ALERT THAT WAS MISSING COMPLETELY ──
-    // The crew finishing a dish rang nobody, so food sat on the pass until a
-    // waiter happened to look at her screen. Now every station action wakes
-    // the waiter's phone, and the last finished item says "whole order ready".
-    try {
-      const item = existing[0];
-      const ticketRows = await db
-        .select({
-          id: tickets.id,
-          tableName: tickets.tableName,
-          totalAmount: tickets.totalAmount,
-          orderType: tickets.orderType,
-          confirmedBy: tickets.confirmedBy,
-          createdBy: tickets.createdBy,
-        })
-        .from(tickets)
-        .where(eq(tickets.id, item.ticketId))
-        .limit(1);
-      if (ticketRows.length > 0) {
-        // Is anything on this bill still unfinished (any station)?
-        const siblings = await db
-          .select({ id: ticketItems.id, stationStatus: ticketItems.stationStatus })
-          .from(ticketItems)
-          .where(and(eq(ticketItems.ticketId, item.ticketId), eq(ticketItems.removed, false)));
-        const wholeOrderReady = siblings.every((row) =>
-          row.id === item.id ? nextStatus === "done" : row.stationStatus === "done"
-        );
-        const alerts = stationProgressAlerts(nextStatus, {
-          id: ticketRows[0].id,
-          tableName: ticketRows[0].tableName,
-          totalAmount: ticketRows[0].totalAmount,
-          station: String(item.stationName || ""),
-          itemName: item.name,
-          quantity: item.quantity,
-          wholeOrderReady,
-        });
-        // OWNER-ONLY (owner's decision, Sept 2026): "food ready" rings the
-        // waiter who accepted/sent this table — not every waiter on duty. An
-        // unowned ticket (QR order nobody accepted) still rings all waiters.
-        const owner = ticketOwner(ticketRows[0].confirmedBy, ticketRows[0].createdBy);
-        for (const alert of alerts) {
-          const payload = {
-            title: alert.title,
-            body: alert.body,
-            tag: alert.tag,
-            urgent: alert.urgent,
-            repeat: alert.repeat,
-          };
-          if (ticketRows[0].orderType === "outdoor" && alert.roles.length === 1 && alert.roles[0] === "waiter") {
-            if (wholeOrderReady) {
-              void sendPushToRoles(["cashier"], {
-                ...payload,
-                title: "🔔 OUTDOOR ORDER READY",
-                body: `${ticketRows[0].tableName} • the whole outdoor order is ready to deliver`,
-                tag: `fana-outdoor-ready-${ticketRows[0].id}`,
-              }).catch(() => {});
-            }
-          } else if (owner && alert.roles.length === 1 && alert.roles[0] === "waiter") {
-            void sendPushToNamedStaff("waiter", owner, payload).catch(() => {});
-          } else {
-            void sendPushToRoles(alert.roles, payload).catch(() => {});
-          }
-        }
-      }
-    } catch {
-      // A push hiccup must never fail the crew's tap.
-    }
+    // ── NO MORE PHONE RINGS (owner's decision, 29 Sept 2026) ──
+    // The crew tapping Done used to ring the waiter's phone ("3 Macchiato
+    // ready", "the whole order is ready") and, for an outdoor bill, the
+    // cashier's. The owner removed every staff phone notification: the waiter
+    // reads "ready" on her own screen (the list updates through the realtime
+    // channel published below, with the alarm and the voice), and the outdoor
+    // order card on the cashier's screen is the in-system notification.
+    // The only phone that still rings belongs to the OWNER, once, for the
+    // daily total (see /api/reports/day-close).
 
     // A RELEASED BILL CLOSES ITSELF (owner's decision, Sept 2026)
     // The cashier's PRINT already cleared the table, and the waiters kept
@@ -874,23 +813,18 @@ export async function PUT(request: Request) {
 }
 
 /**
- * POST — the two barista SHIFT actions (owner's decision, Sept 2026).
+ * POST — the barista SHIFT action (owner's decision, Sept 2026).
  *
- *   { action: "take-morning" }       — "No, this is my shift, add me"
  *   { action: "continue-afternoon" } — "I will continue as afternoon shift"
  *
- * Both are barista-lane only, and both need a SIGNED-IN barista (the admin
- * session can act on items, but a shift belongs to a person, never to the
- * owner looking over a shoulder).
+ * Barista-lane only, and it needs a SIGNED-IN barista (the admin session can
+ * act on items, but a shift belongs to a person, never to the owner looking
+ * over a shoulder).
  *
- * THE MORNING CAN BE TAKEN. While the morning shift is still live (phase
- * "open") and somebody else holds it, another barista may take it over. The
- * claim moves to him AND every drink the previous man had already accepted
- * but not finished moves with it, so nothing is left in a pair of hands that
- * is no longer allowed to work: the previous barista walks back to the
- * standby screen, exactly as the owner described it. (The AFTERNOON is never
- * taken this way: it changes hands only through the morning owner continuing
- * into it.)
+ * A REGISTERED SHIFT IS LOCKED (owner's rule, 29 Sept 2026): whoever accepted
+ * the first drink of a shift keeps it — the morning can NOT be taken from him
+ * by another barista tapping a button, exactly like the afternoon. Every other
+ * barista reads "this is not your shift" with his name.
  *
  * THE MORNING CAN CONTINUE. Once the 20-minute window has closed, the day's
  * morning owner may register himself as the afternoon owner, but only while
@@ -914,58 +848,6 @@ export async function POST(request: Request) {
 
     const { info, owners } = await baristaHandoverNow();
     if (!info.dayKey) return NextResponse.json({ error: "Could not read the day" }, { status: 500 });
-
-    if (action === "take-morning") {
-      if (info.phase !== "open") {
-        return NextResponse.json({ error: "The morning shift is over • it can not be taken anymore" }, { status: 409 });
-      }
-      const holder = owners.morning;
-      if (!holder) {
-        return NextResponse.json({ error: "Nobody holds the morning shift yet • accept your first drink" }, { status: 409 });
-      }
-      if (holder.staffName === viewerName) {
-        return NextResponse.json({ ok: true, action, staffName: viewerName });
-      }
-      // 1. Move the claim itself. The WHERE clause names the man who holds it
-      //    right now, so a same-second race ends with exactly one winner: the
-      //    second tapper matches no row and hears that the shift moved.
-      const moved = await db
-        .update(stationShiftClaims)
-        .set({ staffName: viewerName, claimedAt: new Date() })
-        .where(
-          and(
-            eq(stationShiftClaims.station, HANDOVER_STATION),
-            eq(stationShiftClaims.dayKey, info.dayKey),
-            eq(stationShiftClaims.shiftName, "morning"),
-            eq(stationShiftClaims.staffName, holder.staffName)
-          )
-        )
-        .returning({ id: stationShiftClaims.id });
-      if (moved.length === 0) {
-        const fresh = await readBaristaClaims(info.dayKey);
-        const winner = fresh.morning;
-        return NextResponse.json(
-          { error: winner && winner.staffName !== viewerName ? `${winner.staffName} took the morning shift first` : "The morning shift already changed hands" },
-          { status: 409 }
-        );
-      }
-      // 2. The drinks he had already accepted come with the shift: the man who
-      //    left can no longer finish them, and a started drink must never sit
-      //    ownerless. Finished lines keep HIS name — that work was his.
-      await db
-        .update(ticketItems)
-        .set({ stationAcceptedBy: viewerName, stationStatusBy: viewerName, stationStatusAt: new Date() })
-        .where(
-          and(
-            eq(ticketItems.stationName, HANDOVER_STATION),
-            eq(ticketItems.removed, false),
-            eq(ticketItems.stationStatus, "accepted"),
-            sql`COALESCE(NULLIF(${ticketItems.stationAcceptedBy}, ''), ${ticketItems.stationStatusBy}) = ${holder.staffName}`
-          )
-        );
-      publish(CHANNELS.orders);
-      return NextResponse.json({ ok: true, action, staffName: viewerName, from: holder.staffName });
-    }
 
     if (action === "continue-afternoon") {
       if (info.phase !== "after") {

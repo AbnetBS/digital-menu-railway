@@ -1276,11 +1276,14 @@ export default function StationApp({ station }: { station: Station }) {
               ) : lockScreen === "morning-over" ? (
                 <>
                   <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
-                  <p className="text-amber-100 text-sm font-black">
-                    {blockedBy
-                      ? L("Your shift is over now • {name} will take the afternoon.", { name: blockedBy.name })
-                      : L("Your shift is over now.")}
-                  </p>
+                  <p className="text-amber-100 text-sm font-black">{L("Your shift is over now.")}</p>
+                  {/* The note the owner asked for on the black screen: WHO
+                      takes the afternoon, by name. */}
+                  {blockedBy && (
+                    <p className="text-amber-200 text-xs font-black">
+                      {L("Today's afternoon shift is {name}", { name: blockedBy.name })}
+                    </p>
+                  )}
                   <p className="text-stone-400 text-xs">
                     {L("The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.")}
                   </p>

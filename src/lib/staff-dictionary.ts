@@ -696,7 +696,6 @@ export const STAFF_AM = {
   "No, this is my shift • add me": "አይ፣ ይህ የእኔ ፈረቃ ነው • እኔን ጨምር",
   "✗ {name} took the morning shift • you are on standby now": "✗ የጠዋት ፈረቃውን {name} ወሰደው • አሁን በመጠባበቅ ላይ ነዎት",
   "Your shift is over now.": "ፈረቃዎ አለቀ።",
-  "Your shift is over now • {name} will take the afternoon.": "ፈረቃዎ አለቀ • ከሰዓቱን {name} ይወስዳል።",
   "I will continue as afternoon shift": "በከሰዓት ፈረቃ እቀጥላለሁ",
   "The counter has ended and nobody took the afternoon shift yet. Continue as the afternoon barista and new orders come back to this screen.": "ቆጣሪው አልቋል፤ የከሰዓት ፈረቃውን እስካሁን ማንም አልያዘውም። የከሰዓት ባሪስታ ሆነው ይቀጥሉ፤ አዲስ ትዕዛዞች ወደዚህ ስክሪን ይመለሳሉ።",
   "Nobody took the afternoon shift yet. When your accepted drinks are done, tap below to continue as the afternoon barista.": "የከሰዓት ፈረቃውን እስካሁን ማንም አልያዘውም። የተቀበሏቸው መጠጦች ሲጠናቀቁ የከሰዓት ባሪስታ ሆነው ለመቀጠል ከታች ይንኩ።",

@@ -9,13 +9,13 @@
  * /api/station-sales with the REAL pure builder (src/lib/station-sales.ts), and
  * then checks what the crew actually reads:
  *
- *   1. the tile on the live screen already carries today's own unit count;
+ *   1. the tile on the live screen already carries today's own unit count (the
+ *      DONE pile: what this cook finished, the number that used to read 0);
  *   2. tapping it opens a panel with real figures — units, ETB, bills, the
  *      dates covered, the menu CATEGORIES with their subtotals and items;
  *   3. the five DATE buttons re-fetch their own period and change the figures;
- *   4. the three ACCEPTED / DONE / COMBINED tabs switch piles without another
- *      request, and Combined is the union (never the old "someone else
- *      finished it" rule that always read zero);
+ *   4. the TWO tabs (ACCEPTED / DONE) switch piles without another request,
+ *      the panel opens on DONE, and the removed COMBINED pile is nowhere;
  *   5. a failed load says so, and an expired session returns to the login
  *      screen, instead of leaving a panel full of zeros.
  *
@@ -113,7 +113,9 @@ const fakeFetch = async (url: string) => {
   if (u.startsWith("/api/station-sales")) {
     if (salesFails) return { ok: false, status: 500, json: async () => ({ error: "boom" }) };
     const period = salesPeriodOf(new URL(u, "https://fana.test").searchParams.get("period")) as SalesPeriod;
-    return ok(buildStationSales({ period, station: STATION, staff: COOK, rows: SALES_ROWS, categoryNames: CATEGORY_NAMES }));
+    const mine = buildStationSales({ period, station: STATION, staff: COOK, rows: SALES_ROWS, categoryNames: CATEGORY_NAMES });
+    const lane = buildStationSales({ period, station: STATION, staff: null, rows: SALES_ROWS, categoryNames: CATEGORY_NAMES }).modes;
+    return ok({ ...mine, lane });
   }
   if (u.startsWith("/api/station-items")) return ok(u.includes("history=1") ? [] : LIVE_TICKETS);
   if (u.startsWith("/api/staff")) return ok([{ id: 3, name: COOK, role: STATION }]);
@@ -181,59 +183,72 @@ async function main() {
   });
   await flush();
 
-  /* ── 1. the live screen: the tile already knows today ───────────────────── */
+  /* ── 1. the live screen: the tile already knows today ───────────────── */
   pass("the crew is logged in and sees the live list", text().includes("TABLE 4") && text().includes("Kitfo"));
   const tile = buttonByText("Items sold");
   pass("the 'Items sold' tile is a button the crew can open", !!tile);
-  // Today: 2 Kitfo + 1 Firfir accepted, 3 Pastry finished = 6 units combined.
-  pass("the tile carries today's own unit count before anyone opens it", (tile?.textContent || "").includes("6"), tile?.textContent || "");
+  // Today's DONE pile for this cook: 2 Kitfo + 3 Pastry = 5 units. The Kitfo she
+  // accepted and finished is hers; the Firfir she accepted but Mitke finished is
+  // not (it sits in her Accepted pile, waiting to be seen there).
+  pass("the tile carries today's own unit count before anyone opens it", (tile?.textContent || "").includes("5"), tile?.textContent || "");
   pass("the tile says which day that number is", /Today/.test(tile?.textContent || ""));
 
-  /* ── 2. opening the tab: real figures, per category ─────────────────────── */
+  /* ── 2. opening the tab: real figures, per category ─────────────── */
   calls.length = 0;
   await click(tile);
   pass("opening the tab asks the server for today's figures", calls.some((c) => c.startsWith("/api/station-sales?period=today")), calls.join(" "));
   pass("the panel shows the person whose sales these are", text().includes(`Items sold • ${COOK}`));
-  pass("the panel shows the units and the money (never a bare 0)", text().includes("6") && text().includes("ETB"));
+  pass("the panel OPENS on the Done pile, the number the crew is paid on", /DONE • ITEMS SOLD/.test(text()));
+  pass("the panel shows the units and the money (never a bare 0)", text().includes("5") && text().includes("ETB"));
   pass("the panel does NOT read '0 items • 0 ETB' on a day that had work", !/0 items • 0 ETB/.test(text()));
   pass("the figures are grouped by menu category", text().includes("Foods") && text().includes("Pastries"));
-  pass("each category carries its items and their quantities", text().includes("Kitfo") && text().includes("Firfir") && text().includes("Pastry") && /×2/.test(text()));
-  pass("the money is the real price × quantity of what was counted (2 Kitfo + 1 Firfir + 3 Pastry)",
-    text().includes("1,090 ETB"), text().slice(0, 400));
+  pass("each category carries its items and their quantities", text().includes("Kitfo") && text().includes("Pastry") && /×2/.test(text()));
+  pass("the money is the real price × quantity of what was counted (2 Kitfo + 3 Pastry)",
+    text().includes("910 ETB"), text().slice(0, 400));
   pass("a cancelled order and a removed line are not in the pile", !text().includes("Pizza") && !text().includes("Soup"));
   pass("the panel names how many bills the figures came from", text().includes("2 bill(s)"), text().slice(0, 300));
   pass("the panel prints the dates it covers", /Covers:/.test(text()));
+  pass("the panel ALSO shows the whole station's total for the same period (910 is this cook, 1,090 is the kitchen)",
+    /total: 6 items/.test(text()) && text().includes("1,090 ETB"), text().slice(0, 400));
   pass("the five date buttons are there", ["Today", "Yesterday", "Day Before Yesterday", "Last 7 Days", "Last 30 Days"].every((l) => !!dateButton(l)));
-  pass("the three pile tabs are there", ["Accepted", "Done", "Combined"].every((l) => !!modeButton(l)));
-  pass("the counting rule is explained to the crew", /Combined every line you touched, counted once/.test(text()));
+  pass("the TWO pile tabs are there — and the removed Combined tab is not",
+    ["Accepted", "Done"].every((l) => !!modeButton(l)) && !modeButton("Combined"), buttons().map((b) => (b.textContent || "").trim()).join(" | ").slice(0, 300));
+  pass("the counting rule is explained to the crew",
+    /Accepted counts the lines you tapped Accept on, Done the lines you finished, counted once each/.test(text()));
 
-  /* ── 3. the three tabs: accepted / done / combined ──────────────────────── */
+  /* ── 3. the two tabs: accepted / done ──────────────────────── */
   calls.length = 0;
   await click(modeButton("Accepted"));
+  const acceptedText = text();
   pass("the Accepted tab counts the lines the cook accepted today (2 Kitfo + 1 Firfir = 3)",
-    text().includes("3") && !text().includes("Pastry"), text().slice(0, 300));
+    /ACCEPTED • ITEMS SOLD/.test(acceptedText) && acceptedText.includes("820 ETB") && acceptedText.includes("Firfir"), acceptedText.slice(0, 300));
+  pass("its own tab carries the unit count too (Accepted 3, Done 5)",
+    (modeButton("Accepted")?.textContent || "").includes("3") && (modeButton("Done")?.textContent || "").includes("5"),
+    `${modeButton("Accepted")?.textContent} | ${modeButton("Done")?.textContent}`);
   pass("switching a pile needs no new request", calls.filter((c) => c.startsWith("/api/station-sales")).length === 0, calls.join(" "));
   await click(modeButton("Done"));
   pass("the Done tab counts what the cook finished today (2 Kitfo + 3 Pastry = 5)",
-    text().includes("5") && text().includes("Pastries") && !text().includes("Firfir"), text().slice(0, 300));
-  await click(modeButton("Combined"));
-  pass("Combined is the union of both, each line counted once (6 units, 3 lines)",
-    text().includes("6") && text().includes("Firfir") && text().includes("Pastry"), text().slice(0, 300));
+    /DONE • ITEMS SOLD/.test(text()) && text().includes("910 ETB") && text().includes("Pastries") && !text().includes("Firfir"), text().slice(0, 300));
+  pass("a line the same person accepted AND finished counts in BOTH piles, once each",
+    acceptedText.includes("Kitfo") && text().includes("Kitfo") && /×2/.test(text()) &&
+    acceptedText.includes("820 ETB") && text().includes("910 ETB"), acceptedText.slice(0, 200));
+  pass("an accepted-but-unfinished line is not sold yet (Firfir is in Accepted, never in Done)",
+    acceptedText.includes("Firfir") && !text().includes("Firfir"), text().slice(0, 300));
 
   /* ── 4. the date buttons ────────────────────────────────────────────────── */
   calls.length = 0;
   await click(dateButton("Yesterday"));
   pass("tapping Yesterday re-fetches that period", calls.some((c) => c.startsWith("/api/station-sales?period=yesterday")), calls.join(" "));
-  pass("yesterday shows its own figures (1 Kitfo, not today's six)", text().includes("320 ETB") && !text().includes("Firfir"), text().slice(0, 300));
+  pass("yesterday shows its own figures (1 Kitfo, not today's numbers)", text().includes("320 ETB") && !text().includes("Pastry"), text().slice(0, 300));
   calls.length = 0;
   await click(dateButton("Last 7 Days"));
   pass("tapping Last 7 Days re-fetches the rolling window", calls.some((c) => c.startsWith("/api/station-sales?period=week")), calls.join(" "));
   pass("the rolling window includes TODAY as well as the days before it",
-    text().includes("Firfir") && text().includes("Burger"), text().slice(0, 300));
+    text().includes("Pastry") && text().includes("Burger"), text().slice(0, 300));
   await click(dateButton("Day Before Yesterday"));
-  pass("the day before yesterday is its own single day", text().includes("Burger") && !text().includes("Firfir"), text().slice(0, 300));
+  pass("the day before yesterday is its own single day", text().includes("Burger") && !text().includes("Pastry"), text().slice(0, 300));
   await click(dateButton("Today"));
-  pass("back to today, the figures return", text().includes("Firfir") && text().includes("6"));
+  pass("back to today, the figures return", text().includes("Pastry") && text().includes("910 ETB"));
 
   /* ── 5. the crew's own language (English ⇄ አማርኛ on the same panel) ──────── */
   {
@@ -243,16 +258,16 @@ async function main() {
     });
     await flush();
     pass("a device that chose Amharic reads the whole panel in Amharic",
-      text().includes("የተሸጡ እቃዎች") && text().includes("ዛሬ") && text().includes("በጋራ"), text().slice(0, 300));
-    pass("the counting rule is explained in Amharic too", /አንድ ጊዜ ብቻ ይቆጥራል/.test(text()));
-    pass("money keeps its Latin digits and its ETB in Amharic", /1,090 ETB/.test(text()));
+      text().includes("የተሸጡ እቃዎች") && text().includes("ዛሬ") && text().includes("ተጠናቋል"), text().slice(0, 300));
+    pass("the counting rule is explained in Amharic too", /ጨርሻለሁ/.test(text()) && /ፈጽሞ አይቆጠሩም/.test(text()));
+    pass("money keeps its Latin digits and its ETB in Amharic", /910 ETB/.test(text()));
     pass("menu data (item and category names) is never machine-translated",
       text().includes("Kitfo") && text().includes("Foods"));
     await act(async () => {
       setStaffLang("en");
     });
     await flush();
-    pass("switching back gives English again", text().includes("Items sold") && text().includes("Combined"));
+    pass("switching back gives English again", text().includes("Items sold") && text().includes("Done") && !text().includes("Combined"));
   }
 
   /* ── 6. failures are explained, never shown as zeros ────────────────────── */

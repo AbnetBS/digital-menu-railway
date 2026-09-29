@@ -5,8 +5,6 @@ import { ensureTablesExist } from "@/db/migrate";
 import { and, eq, notInArray, asc, desc, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { requireStaffOrAdmin, readStaffSession, readAdminSession } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
-import { sendPushToNamedStaff, sendPushToRoles } from "@/lib/push";
-import { stationProgressAlerts, ticketOwner } from "@/lib/alerts";
 import { stationOf, type StationName } from "@/lib/stations";
 import { allLinesFinished, isBillSent, isLineHeld, isLineServedByPrint, isTableReleased } from "@/lib/order-release";
 import { etStartOfToday } from "@/lib/timezone";
@@ -73,11 +71,19 @@ async function baristaHandoverNow() {
 }
 
 async function authorizedStation(): Promise<Station | "admin" | null> {
-  if (await readAdminSession()) return "admin";
+  // THE CREW'S OWN SESSION WINS (owner's bug report, 29 Sept 2026): the
+  // cafe's tablets and phones are also used to look at /admin, and an admin
+  // cookie lives SEVEN days. This function used to answer "admin" the moment
+  // that cookie existed, which silently switched the whole barista hand-over
+  // off on that device: the shift was never registered and every logged-in
+  // barista saw the full board again. A station crew member is now always
+  // treated as his own lane; the admin session stays the fallback for a lane
+  // nobody signed in for.
   const staff = await readStaffSession();
   // A crew may only ever read its OWN lane: buna makers see buna lines, the
   // barista sees the drinks, the kitchen sees the food, juice sees the juices.
   if (staff?.role === "barista" || staff?.role === "kitchen" || staff?.role === "buna" || staff?.role === "juice") return staff.role as Station;
+  if (await readAdminSession()) return "admin";
   return null;
 }
 
@@ -557,6 +563,12 @@ export async function GET(request: Request) {
             seesPending: rule.seesPending,
             canAcceptPending: rule.canAcceptPending,
             myShift: rule.myShift,
+            // A full-day barista: he kept the morning and continued.
+            alsoMorning: rule.alsoMorning,
+            // The standby screen names whoever holds the board away from me,
+            // and the one button a morning owner may still get.
+            blockedBy: rule.blockedBy,
+            canContinueAfternoon: rule.canContinueAfternoon,
             owners: {
               morning: owners.morning
                 ? { name: owners.morning.staffName, at: owners.morning.claimedAt ? new Date(owners.morning.claimedAt).toISOString() : null }
@@ -749,73 +761,15 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: `Already accepted • ${owner || "another barista"} is on it` }, { status: 409 });
     }
 
-    // ── THE ALERT THAT WAS MISSING COMPLETELY ──
-    // The crew finishing a dish rang nobody, so food sat on the pass until a
-    // waiter happened to look at her screen. Now every station action wakes
-    // the waiter's phone, and the last finished item says "whole order ready".
-    try {
-      const item = existing[0];
-      const ticketRows = await db
-        .select({
-          id: tickets.id,
-          tableName: tickets.tableName,
-          totalAmount: tickets.totalAmount,
-          orderType: tickets.orderType,
-          confirmedBy: tickets.confirmedBy,
-          createdBy: tickets.createdBy,
-        })
-        .from(tickets)
-        .where(eq(tickets.id, item.ticketId))
-        .limit(1);
-      if (ticketRows.length > 0) {
-        // Is anything on this bill still unfinished (any station)?
-        const siblings = await db
-          .select({ id: ticketItems.id, stationStatus: ticketItems.stationStatus })
-          .from(ticketItems)
-          .where(and(eq(ticketItems.ticketId, item.ticketId), eq(ticketItems.removed, false)));
-        const wholeOrderReady = siblings.every((row) =>
-          row.id === item.id ? nextStatus === "done" : row.stationStatus === "done"
-        );
-        const alerts = stationProgressAlerts(nextStatus, {
-          id: ticketRows[0].id,
-          tableName: ticketRows[0].tableName,
-          totalAmount: ticketRows[0].totalAmount,
-          station: String(item.stationName || ""),
-          itemName: item.name,
-          quantity: item.quantity,
-          wholeOrderReady,
-        });
-        // OWNER-ONLY (owner's decision, Sept 2026): "food ready" rings the
-        // waiter who accepted/sent this table — not every waiter on duty. An
-        // unowned ticket (QR order nobody accepted) still rings all waiters.
-        const owner = ticketOwner(ticketRows[0].confirmedBy, ticketRows[0].createdBy);
-        for (const alert of alerts) {
-          const payload = {
-            title: alert.title,
-            body: alert.body,
-            tag: alert.tag,
-            urgent: alert.urgent,
-            repeat: alert.repeat,
-          };
-          if (ticketRows[0].orderType === "outdoor" && alert.roles.length === 1 && alert.roles[0] === "waiter") {
-            if (wholeOrderReady) {
-              void sendPushToRoles(["cashier"], {
-                ...payload,
-                title: "🔔 OUTDOOR ORDER READY",
-                body: `${ticketRows[0].tableName} • the whole outdoor order is ready to deliver`,
-                tag: `fana-outdoor-ready-${ticketRows[0].id}`,
-              }).catch(() => {});
-            }
-          } else if (owner && alert.roles.length === 1 && alert.roles[0] === "waiter") {
-            void sendPushToNamedStaff("waiter", owner, payload).catch(() => {});
-          } else {
-            void sendPushToRoles(alert.roles, payload).catch(() => {});
-          }
-        }
-      }
-    } catch {
-      // A push hiccup must never fail the crew's tap.
-    }
+    // ── NO MORE PHONE RINGS (owner's decision, 29 Sept 2026) ──
+    // The crew tapping Done used to ring the waiter's phone ("3 Macchiato
+    // ready", "the whole order is ready") and, for an outdoor bill, the
+    // cashier's. The owner removed every staff phone notification: the waiter
+    // reads "ready" on her own screen (the list updates through the realtime
+    // channel published below, with the alarm and the voice), and the outdoor
+    // order card on the cashier's screen is the in-system notification.
+    // The only phone that still rings belongs to the OWNER, once, for the
+    // daily total (see /api/reports/day-close).
 
     // A RELEASED BILL CLOSES ITSELF (owner's decision, Sept 2026)
     // The cashier's PRINT already cleared the table, and the waiters kept
@@ -854,6 +808,79 @@ export async function PUT(request: Request) {
     return NextResponse.json(updated[0]);
   } catch (error) {
     console.error("[station-items PUT error]", error);
+    return NextResponse.json({ error: String(error) }, { status: 500 });
+  }
+}
+
+/**
+ * POST — the barista SHIFT action (owner's decision, Sept 2026).
+ *
+ *   { action: "continue-afternoon" } — "I will continue as afternoon shift"
+ *
+ * Barista-lane only, and it needs a SIGNED-IN barista (the admin session can
+ * act on items, but a shift belongs to a person, never to the owner looking
+ * over a shoulder).
+ *
+ * A REGISTERED SHIFT IS LOCKED (owner's rule, 29 Sept 2026): whoever accepted
+ * the first drink of a shift keeps it — the morning can NOT be taken from him
+ * by another barista tapping a button, exactly like the afternoon. Every other
+ * barista reads "this is not your shift" with his name.
+ *
+ * THE MORNING CAN CONTINUE. Once the 20-minute window has closed, the day's
+ * morning owner may register himself as the afternoon owner, but only while
+ * NOBODY else holds the afternoon. This is the one explicit door to a
+ * full-day barista; accepting drinks never writes a double shift.
+ */
+export async function POST(request: Request) {
+  const __auth = await requireStaffOrAdmin();
+  if (!__auth.ok) return __auth.response;
+  await ensureTablesExist();
+  const stationRole = await authorizedStation();
+  if (stationRole !== HANDOVER_STATION) {
+    return NextResponse.json({ error: "Barista station role required" }, { status: 403 });
+  }
+  try {
+    const body = await request.json().catch(() => null);
+    const action = String(body?.action || "");
+    const session = await readStaffSession();
+    const viewerName = String(session?.name || "").trim();
+    if (!viewerName) return NextResponse.json({ error: "Sign in as a barista first" }, { status: 403 });
+
+    const { info, owners } = await baristaHandoverNow();
+    if (!info.dayKey) return NextResponse.json({ error: "Could not read the day" }, { status: 500 });
+
+    if (action === "continue-afternoon") {
+      if (info.phase !== "after") {
+        return NextResponse.json({ error: "The hand-over window is still running • wait for the counter" }, { status: 409 });
+      }
+      if (!owners.morning || owners.morning.staffName !== viewerName) {
+        return NextResponse.json({ error: "Only today's morning barista can continue into the afternoon" }, { status: 403 });
+      }
+      if (owners.afternoon && owners.afternoon.staffName !== viewerName) {
+        return NextResponse.json({ error: `${owners.afternoon.staffName} already holds the afternoon shift` }, { status: 409 });
+      }
+      if (owners.afternoon?.staffName === viewerName) {
+        return NextResponse.json({ ok: true, action, staffName: viewerName });
+      }
+      const inserted = await db
+        .insert(stationShiftClaims)
+        .values({ station: HANDOVER_STATION, dayKey: info.dayKey, shiftName: "afternoon", staffName: viewerName })
+        .onConflictDoNothing()
+        .returning({ id: stationShiftClaims.id });
+      if (inserted.length === 0) {
+        const fresh = await readBaristaClaims(info.dayKey);
+        const winner = fresh.afternoon;
+        if (winner && winner.staffName !== viewerName) {
+          return NextResponse.json({ error: `${winner.staffName} already holds the afternoon shift` }, { status: 409 });
+        }
+      }
+      publish(CHANNELS.orders);
+      return NextResponse.json({ ok: true, action, staffName: viewerName });
+    }
+
+    return NextResponse.json({ error: "Unknown shift action" }, { status: 400 });
+  } catch (error) {
+    console.error("[station-items POST error]", error);
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }

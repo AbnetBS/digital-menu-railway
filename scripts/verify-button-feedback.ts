@@ -55,6 +55,7 @@ const screenFiles = (): string[] => {
 /** Anything that puts words in front of the person who pressed the button. */
 const FEEDBACK_SINKS = [
   "showToast(", // crew toast (station, cashier, waiter)
+  "onToast?.(", // a child button handing the message up to its screen's toast
   "flash(", // coffee-note panel's own inline strip
   "alert(",
   "say(", // staff tab inline line

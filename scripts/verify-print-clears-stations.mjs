@@ -10,10 +10,13 @@
  * line — and when nobody did, the items sat there for days.
  *
  * This test pins the fix, on every side of it:
- *   1. WRITE SIDE (tickets PUT): the print stamps every RELEASED, unfinished
- *      line on the bill done — in the cashier's name, for the audit trail.
- *      HELD guest additions are skipped (the crews never received them; when
- *      the staff confirm them later that is real new work).
+ *   1. WRITE SIDE (tickets PUT): the print is REFUSED while any released,
+ *      visible kitchen / barista / juice line is not Done ("the stations must
+ *      accept and done for the printed button to work", owner 29 Sept 2026),
+ *      and when it does go out it finishes the BUNA lane only — the buna
+ *      makers have no Accept/Done buttons, so the receipt is what clears
+ *      their line. HELD guest additions are skipped on both sides (the crews
+ *      never received them; when staff confirm them later that is new work).
  *   2. SELF-CLOSE: a dine-in bill whose table the print freed closes itself
  *      right there when every line is finished (same rule the crews' last
  *      Done tap already followed) — so a printed bill can never linger "open"
@@ -63,13 +66,25 @@ function pass(name, cond) {
   if (!cond) failures.push(name);
 }
 
-/* ── 1. WRITE SIDE: the print finishes the released lines ─────────────────── */
+/* ── 1. WRITE SIDE: the stations finish the food, the print only buna ─────── */
 {
   const printHalf = ticketsApi.split("export async function PUT")[1] || "";
   pass(
-    "the print stamps every released, unfinished line done (all four stations)",
+    "THE GATE: the print is refused (409) while a visible non-buna line is not Done",
     printHalf.includes('body.status === "printed"') &&
-      !printHalf.includes('eq(ticketItems.stationName, "buna")') &&
+      printHalf.includes("must tap Done first") &&
+      printHalf.includes("status: 409") &&
+      printHalf.includes("COALESCE(${ticketItems.stationStatus}, '') <> 'done'") &&
+      printHalf.includes("trim(coalesce(${ticketItems.stationName}, '')) <> 'buna'")
+  );
+  pass(
+    "the refusal names the crew and the open lines, and reports them as data too",
+    printHalf.includes("STATION_LABELS[station]") && printHalf.includes("openLines: openLines.length") &&
+      printHalf.includes("stations: crews")
+  );
+  pass(
+    "the print stamps the BUNA lane done, and ONLY the buna lane",
+    printHalf.includes('eq(ticketItems.stationName, "buna")') &&
       printHalf.includes('stationDoneBy: "cashier print"') &&
       printHalf.includes("stationDoneAt: finishedAt")
   );
@@ -187,9 +202,13 @@ function pass(name, cond) {
     "the sweep stamps the print itself as the finisher (honest audit, no fake crew name)",
     sweep.includes("'cashier print'") && sweep.includes("COALESCE(t.printed_at, now())")
   );
+  // The version only ever moves FORWARD (a later release may bump it again,
+  // e.g. for another backfill), so the guard asks for the format and for a
+  // stamp at least as new as the one that shipped this sweep.
+  const schemaVersion = /const SCHEMA_VERSION = "([^"]+)"/.exec(migrate)?.[1] || "";
   pass(
     "schema version was bumped so existing databases run the sweep once",
-    migrate.includes('const SCHEMA_VERSION = "2026-09-28-1"')
+    /^\d{4}-\d{2}-\d{2}-\d+$/.test(schemaVersion) && schemaVersion >= "2026-09-28-1"
   );
   pass(
     "the schema documents the decision next to printed_at",
@@ -208,10 +227,26 @@ function pass(name, cond) {
 
 /* ── 8. THE DONE TAP FREES THE BOARD (owner's request, Sept 2026) ─────────── */
 {
+  /* OWNER'S DECISION (29 Sept 2026), superseding "frees the board at once":
+   * "make it stay for 3 min before it disappears after it clicked done" — the
+   * kitchen, barista and juice crews asked to keep the line in front of them
+   * for a moment. The board therefore keeps a line THIS SCREEN finished for
+   * three minutes, struck through with its countdown; a print-cleared line
+   * never reaches this board at all (it is filtered out server-side). */
   pass(
-    "an item the crew marks Done leaves the station dashboard at once (render keeps only open work)",
-    stationApp.includes('boardItems: t.items.filter((i) => i.stationStatus !== "done" && !i.taken)') &&
+    "an item the crew marks Done stays on the station dashboard for 3 minutes, then leaves",
+    stationApp.includes("const DONE_LINGER_MS = 3 * 60 * 1000;") &&
+      stationApp.includes('(i.stationStatus !== "done" || doneLingerLeft(i) > 0)') &&
       stationApp.includes(".filter((t) => t.boardItems.length > 0)")
+  );
+  pass(
+    "the three minutes come from the server's own Done stamp (a reload shows the same countdown)",
+    stationApp.includes("item.stationStatusAt ? Date.parse(item.stationStatusAt) : NaN") &&
+      stationApp.includes("at + DONE_LINGER_MS - now")
+  );
+  pass(
+    "a print-cleared line can never be resurrected by the linger (it is not in the payload)",
+    stationApp.includes("doneLingerLeft") && stationsApi.includes("isLineServedByPrint")
   );
   pass(
     "the alarms still watch the FULL server list, so a real removal can never hide behind the board filter",

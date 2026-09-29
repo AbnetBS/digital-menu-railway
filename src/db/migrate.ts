@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-09-28-1";
+const SCHEMA_VERSION = "2026-09-29-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -683,6 +683,15 @@ async function runFullMigrate(force: boolean) {
       AND COALESCE(ti.station_status, 'pending') <> 'done'
       AND ti.created_at <= t.printed_at
   `);
+
+  //  • CREW-LINE STATUS backfill (owner's bug report, 29 Sept 2026). A line's
+  //    station_status only ever reads "pending", "accepted" or "done";
+  //    everything else is work nobody has taken yet. Rows written before the
+  //    column existed carry NULL, and SQL that compares station_status to
+  //    'pending' never matched them: the barista hand-over treated them as
+  //    "not pending", so they leaked onto a second barista's board. Make the
+  //    data say what every screen already assumes. Re-run safe.
+  await run(`UPDATE ticket_items SET station_status = 'pending' WHERE station_status IS NULL OR trim(station_status) = ''`);
 
   //  • GROUP 5 — one active bill per table, enforced at the DATABASE level.
   //    Before creating the partial unique index, repair any duplicate active

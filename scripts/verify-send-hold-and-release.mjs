@@ -182,8 +182,11 @@ function pass(name, cond) {
     cashier.includes("✓ CONFIRM TO STATIONS"));
   pass("both releases go through the same PUT (send:true / confirmed)",
     tickets.includes("sendRequested") && tickets.includes("additions_released"));
-  pass("releasing wakes exactly the crews that received new work",
-    tickets.includes("releasedStations") && countOf(tickets, "sendPushToRoles(releasedStations") === 1);
+  /* OWNER'S DECISION (29 Sept 2026): releasing rings no phone. The audit still
+   * records WHICH crews got the new work, and the crews' screens pick the lines
+   * up on their next refresh — the ring itself is gone, forever. */
+  pass("releasing still records the crews that received new work (no phone ring any more)",
+    tickets.includes("releasedStations") && tickets.includes("additions_released") && !/sendPushTo/.test(tickets));
   pass("the guest's own status screen is driven by the shared phase helper",
     tableStatusApi.includes("customerOrderPhase") && orderLinesLib.includes("customerOrderPhase"));
 }

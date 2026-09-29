@@ -16,10 +16,10 @@ import {
  * GET /api/station-sales?period=today|yesterday|dayBefore|week|month
  *
  * The crew's own "Items sold" tab: what THIS kitchen / barista / juice maker
- * sold, per menu category, for the period they tapped, split into the three
- * piles they can choose (accepted / done / combined). All the counting rules
- * live in the pure `@/lib/station-sales` module — this route only authenticates
- * and reads the rows.
+ * sold, per menu category, for the period they tapped, split into the two piles
+ * they can choose (accepted / done). All the counting rules live in the pure
+ * `@/lib/station-sales` module — this route only authenticates and reads the
+ * rows.
  *
  * An action belongs to the day it was TAPPED, never to the day the bill was
  * opened, so a late order finished after midnight lands on the right day for
@@ -103,7 +103,15 @@ export async function GET(request: Request) {
     for (const c of cats) if (c.slug && c.slug !== "all") categoryNames[c.slug] = c.name;
 
     const report = buildStationSales({ period, station, staff: person, rows, categoryNames });
-    return NextResponse.json(report, { headers: { "Cache-Control": "no-store" } });
+    // A CREW SCREEN ALSO GETS ITS WHOLE LANE'S PILES (owner, 29 Sept 2026:
+    // "make it to show the total sale"). The signed-in person's own numbers
+    // stay the report itself (the shift report cross-checks them one to one),
+    // but the lane's total is what the crew reads on their own screen when the
+    // tablet is signed in as somebody who did not tap today — or when the
+    // cashier's print closed the lines before they were tapped. Same rows,
+    // same rules, me = everybody.
+    const lane = staff ? buildStationSales({ period, station, staff: null, rows, categoryNames }).modes : undefined;
+    return NextResponse.json(lane ? { ...report, lane } : report, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[station-sales error]", error);
     return NextResponse.json({ error: String(error) }, { status: 500 });

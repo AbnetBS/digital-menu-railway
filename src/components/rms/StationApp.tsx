@@ -5,10 +5,6 @@ import { Coffee, CookingPot, CupSoda, RefreshCw, LogOut, CheckCircle2, BellRing,
 import { unlockAudio, playAlarm, playDing, setStationBell } from "@/lib/sound";
 import { formatClock, formatDayMonthYear, minutesSince, waitingLabel } from "@/lib/order-lines";
 import { triggerDesktopNotification } from "@/lib/notifications";
-import { enablePocketAlerts } from "@/lib/push-client";
-import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
-import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
-import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import Link from "next/link";
 import { phrase, useStaffT, tNow, staffEtb } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
@@ -71,6 +67,17 @@ interface ShiftMeta {
   seesPending: boolean;
   canAcceptPending: boolean;
   myShift: "morning" | "afternoon" | null;
+  /** A FULL-DAY barista: he kept the morning and continued into the afternoon. */
+  alsoMorning: boolean;
+  /**
+   * Who holds the board away from me right now (null = nothing does). The
+   * standby screen names this person: "Barista morning shift is taken by
+   * Eyob" (afternoon: "Today's afternoon shift is Ermias"). A registered
+   * shift is locked, morning and afternoon alike, so there is no button here.
+   */
+  blockedBy: { name: string; shift: "morning" | "afternoon" } | null;
+  /** I am the morning owner, the window closed and nobody took the afternoon. */
+  canContinueAfternoon: boolean;
   owners: {
     morning: { name: string; at: string | null } | null;
     afternoon: { name: string; at: string | null } | null;
@@ -129,6 +136,18 @@ interface StationTicket {
   items: StationItem[];
 }
 
+/**
+ * THE DONE LINGER (owner, 29 Sept 2026): "make it stay for 3 min before it
+ * disappears after it clicked done" — the crews asked for it on the kitchen,
+ * the barista and the juice screens (the buna lane is a different screen and
+ * keeps its own behaviour). The Done tap used to free the line from this board
+ * in the same second, so the person who tapped it had nothing to point at when
+ * a plate came back. Now the line stays where it was, struck through with its
+ * ✓ Done badge and the minutes it still lingers — this is the person's own
+ * confirmation window, NOT work: every later refresh simply finds it done.
+ */
+const DONE_LINGER_MS = 3 * 60 * 1000;
+
 const STATION_META = {
   barista: { label: phrase("Barista"), icon: Coffee, color: "amber", slug: "barista" as Station, desc: phrase("Machine coffee & cold beverages") },
   kitchen: { label: phrase("Kitchen (Chef)"), icon: CookingPot, color: "emerald", slug: "kitchen" as Station, desc: phrase("Foods, pastries, meals & snacks") },
@@ -153,6 +172,9 @@ export default function StationApp({ station }: { station: Station }) {
   const serverOffsetRef = useRef(0);
   const [handoverLeftMs, setHandoverLeftMs] = useState<number | null>(null);
   const handoverEndFiredRef = useRef(false);
+  // THE SHIFT BUTTON (owner, 29 Sept 2026): "I will continue as afternoon
+  // shift". One tap at a time, so a double tap can never register twice.
+  const [shiftBusy, setShiftBusy] = useState(false);
   const [alertsOn, setAlertsOn] = useState(false);
   // STALE-CLOSURE FIX: the SSE handler is created once (deps [staffName]) and
   // captured whatever `alertsOn` was then. Enabling alerts afterwards never
@@ -166,14 +188,14 @@ export default function StationApp({ station }: { station: Station }) {
 
   // ── ITEMS SOLD (the crew's own tab) ──
   // What THIS cook / barista / juice maker sold, grouped by menu category, for
-  // the date they tap and the pile they choose (accepted / done / combined).
+  // the date they tap and the pile they choose (accepted / done).
   // The owner replaced the old "Today's History" counter with it: the crew
   // asked what they SOLD, not how many tables were open. All counting rules
   // live in the pure @/lib/station-sales module (the same attribution the shift
   // report uses), served by /api/station-sales, so the two papers agree.
   const [showSales, setShowSales] = useState(false);
   const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>("today");
-  const [salesMode, setSalesMode] = useState<SalesMode>("combined");
+  const [salesMode, setSalesMode] = useState<SalesMode>("done");
   const [sales, setSales] = useState<StationSalesReport | null>(null);
   const [salesLoading, setSalesLoading] = useState(false);
   const [salesError, setSalesError] = useState("");
@@ -209,7 +231,7 @@ export default function StationApp({ station }: { station: Station }) {
         setSales(report);
         setSalesPeriod(report.period);
         salesPeriodRef.current = report.period;
-        if (report.period === "today") setTodayUnits(report.modes?.combined?.quantity ?? 0);
+        if (report.period === "today") setTodayUnits(report.modes?.done?.quantity ?? 0);
       }
     } catch {
       setSalesError(tNow("Could not load your sales. Tap refresh to try again."));
@@ -223,7 +245,7 @@ export default function StationApp({ station }: { station: Station }) {
     try {
       const report = await fetchSales("today");
       if (!report) return;
-      setTodayUnits(report.modes?.combined?.quantity ?? 0);
+      setTodayUnits(report.modes?.done?.quantity ?? 0);
       if (showSalesRef.current && salesPeriodRef.current === "today") setSales(report);
     } catch {
       /* the tile simply keeps the previous number */
@@ -266,6 +288,27 @@ export default function StationApp({ station }: { station: Station }) {
   // Ticks every 30s so the "waiting N min" badge on each ticket stays honest
   // even when no new order arrives to trigger a refresh.
   const [now, setNow] = useState(() => Date.now());
+
+  /**
+   * How long THIS line still lingers after its Done tap (0 = gone). Read from
+   * the SERVER stamp (`stationStatusAt`, the same clock the reports use), so a
+   * tablet reloaded right after the tap shows the same countdown and nobody
+   * can keep a finished line on the board forever.
+   */
+  const doneLingerLeft = (item: StationItem): number => {
+    if (item.stationStatus !== "done") return 0;
+    const at = item.stationStatusAt ? Date.parse(item.stationStatusAt) : NaN;
+    if (!Number.isFinite(at)) return 0;
+    return Math.max(0, at + DONE_LINGER_MS - now);
+  };
+  const lingeringCount = tickets.reduce(
+    (n, t) => n + t.items.filter((i) => !i.taken && doneLingerLeft(i) > 0).length,
+    0
+  );
+  const lingerClock = (ms: number) => {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+  };
   const pendingSeenRef = useRef<Set<number>>(new Set());
   // EVERY ROLE EVENT RINGS: the crew also has to hear when a line they are
   // cooking is REMOVED or its quantity is corrected, and when an order they
@@ -359,6 +402,14 @@ export default function StationApp({ station }: { station: Station }) {
     return () => clearInterval(ticker);
   }, []);
 
+  // While a Done line lingers, the clock must move faster than the 30s ticker:
+  // the countdown has to be honest and the line has to go exactly on time.
+  useEffect(() => {
+    if (lingeringCount === 0) return;
+    const ticker = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(ticker);
+  }, [lingeringCount]);
+
   useEffect(() => {
     const saved = sessionStorage.getItem(`fana_${station}`);
     // A restored crew session means someone is on shift: alerts default to ON.
@@ -398,13 +449,11 @@ export default function StationApp({ station }: { station: Station }) {
     if (r.ok && d?.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem(`fana_${station}`, JSON.stringify(d.staff));
-      // GROUP 10: the login tap is the gesture browsers need — unlock the loud
-      // alarm AND arm pocket notifications for this crew tablet/phone.
+      // The login tap is the gesture browsers need to unlock the loud alarm.
       unlockAudio();
       localStorage.setItem(`fana_alerts_${station}`, "1");
       setAlertsOn(true);
       alertsOnRef.current = true;
-      void enablePocketAlerts().then(() => pocket.refreshStatus());
     } else {
       setLoginError(tNow("Wrong name or PIN. Ask admin for your {label} PIN.", { label: tNow(meta.label) }));
     }
@@ -415,6 +464,9 @@ export default function StationApp({ station }: { station: Station }) {
     fetch("/api/staff/login", { method: "DELETE" }).catch(() => {});
     setStaffName("");
     setPin("");
+    // A different person is coming: the next login must never show the
+    // previous barista's shift envelope.
+    setShiftMeta(null);
   };
 
   // The staff cookie lives 12 hours (one shift). When it dies mid-service the
@@ -427,6 +479,7 @@ export default function StationApp({ station }: { station: Station }) {
     setPin("");
     setLoginError(tNow("Your session ended. Log in again to keep receiving orders."));
     setStaffName("");
+    setShiftMeta(null);
   };
 
   const load = async () => {
@@ -776,13 +829,6 @@ export default function StationApp({ station }: { station: Station }) {
     return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
   })();
 
-  // POCKET MODE: keeps this tablet/phone subscribed (self-healing) and rings
-  // the loud alarm the moment a push lands, even if SSE was frozen.
-  const pocket = usePocketAlerts({
-    active: !!staffName,
-    onAlert: () => loadRef.current(),
-  });
-
   useEffect(() => {
     if (staffName) {
       // Both loaders are async to their core — every setState inside them
@@ -841,15 +887,19 @@ export default function StationApp({ station }: { station: Station }) {
     }
   }, [staffName]);
 
+  /**
+   * THE ALARM SWITCH (owner's decision, 29 Sept 2026: "only the alarm is
+   * enough"). Staff phones are no longer notified, so this button no longer
+   * arms pocket alerts: it unlocks the audio engine (browsers demand a tap),
+   * allows the desktop pop-up on this device and rings a sample so the crew
+   * knows the alarm really works.
+   */
   const enableAlerts = async () => {
     unlockAudio();
     if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
     localStorage.setItem(`fana_alerts_${station}`, "1");
     setAlertsOn(true);
     alertsOnRef.current = true;
-    // (Re)arm pocket alerts + a sample ring so the crew knows it works.
-    await enablePocketAlerts();
-    void pocket.refreshStatus();
     playAlarm();
   };
 
@@ -874,6 +924,37 @@ export default function StationApp({ station }: { station: Station }) {
     // The tap the crew just made is what the "Items sold" figures count, so the
     // tile (and an open panel on today) follows it right away.
     void refreshTodayUnits();
+  };
+
+  /**
+   * THE SHIFT BUTTON (owner, 29 Sept 2026): "I will continue as afternoon
+   * shift". A single POST and then a reload, so every tablet reflects the new
+   * owner in the same second. The server answers with the reason when it
+   * refuses (somebody else registered first, or the window is still running),
+   * and that reason is what the crew reads.
+   */
+  const runShiftAction = async (action: "continue-afternoon") => {
+    if (shiftBusy) return;
+    setShiftBusy(true);
+    let expired = false;
+    try {
+      const r = await fetch("/api/station-items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (r.status === 401) {
+        expired = true;
+      } else if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        showToast(d?.error ? Ld(d.error) : tNow("That tap did not go through. Try again."));
+      }
+    } catch {
+      showToast(tNow("Network error. Try again."));
+    }
+    setShiftBusy(false);
+    if (expired) return expireSession();
+    load();
   };
 
   /* ── LOGIN ── */
@@ -942,18 +1023,44 @@ export default function StationApp({ station }: { station: Station }) {
    * line, one pair of hands".
    */
   const boardTickets = tickets
-    .map((t) => ({ ...t, boardItems: t.items.filter((i) => i.stationStatus !== "done" && !i.taken) }))
+    .map((t) => ({
+      ...t,
+      boardItems: t.items.filter(
+        (i) => !i.taken && (i.stationStatus !== "done" || doneLingerLeft(i) > 0)
+      ),
+    }))
     .filter((t) => t.boardItems.length > 0);
   /**
    * STANDBY (barista hand-over): my board is empty because the shift is
-   * someone else's today — the owner's name goes on the empty screen, so a
-   * second barista knows at a glance why he sees no orders (and who to call).
-   * The morning owner after the hard stop instead reads that his day of
-   * orders is finished and his numbers live under Items sold.
+   * someone else's today. The SERVER names who holds the board away from me
+   * (blockedBy), so the lock screen can say "Barista morning shift is taken by
+   * Eyob" and, while the morning is still live, offer the one-tap takeover
+   * "no, this is my shift, add me". The afternoon is never taken this way.
    */
-  const standbyOwner =
-    shiftMeta && !shiftMeta.myShift ? (shiftMeta.phase === "open" ? shiftMeta.owners.morning : shiftMeta.owners.afternoon) : null;
-  /** The pile the crew is looking at right now (accepted / done / combined). */
+  const blockedBy = shiftMeta?.blockedBy ?? null;
+  /**
+   * WHICH LOCK SCREEN the empty board shows (barista hand-over only):
+   *   • "continue"     — the morning owner, window closed, afternoon free:
+   *                      he may keep working all day with one tap.
+   *   • "morning-over" — his shift is finished and somebody else took the
+   *                      afternoon: the note names who takes over.
+   *   • "standby"      — this shift belongs to somebody else today.
+   *   • null           — nothing to lock: a barista whose shift is still live
+   *                      simply has no orders right now (normal "all clear").
+   */
+  const lockScreen: "continue" | "morning-over" | "standby" | null =
+    !shiftMeta || shiftMeta.seesPending
+      ? null
+      : shiftMeta.canContinueAfternoon
+        ? "continue"
+        : shiftMeta.myShift === "morning"
+          ? shiftMeta.phase === "after"
+            ? "morning-over"
+            : null
+          : blockedBy
+            ? "standby"
+            : null;
+  /** The pile the crew is looking at right now (accepted / done). */
   const salesPile: StationSalesPile | null = sales?.modes?.[salesMode] ?? null;
 
   return (
@@ -972,22 +1079,13 @@ export default function StationApp({ station }: { station: Station }) {
                   everyone can see whose board this is. */}
               {shiftMeta?.myShift && (
                 <span className="ml-1.5 inline-block text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-600/25 border border-emerald-600/60 text-emerald-300 align-middle">
-                  {shiftMeta.myShift === "morning" ? L("Morning") : L("Afternoon")}
+                  {shiftMeta.alsoMorning ? L("Full day") : shiftMeta.myShift === "morning" ? L("Morning") : L("Afternoon")}
                 </span>
               )}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <PocketAlertsChip
-            status={pocket.status}
-            busy={pocket.busy}
-            onArm={pocket.arm}
-            onTest={pocket.test}
-            onToast={showToast}
-            notificationsEnabled={pocket.notificationsEnabled}
-            onSetNotificationsEnabled={pocket.setNotificationsEnabled}
-          />
           <button
             onClick={enableAlerts}
             className={`text-[10px] font-black px-3 py-1.5 rounded-full flex items-center gap-1.5 transition ${
@@ -1013,11 +1111,6 @@ export default function StationApp({ station }: { station: Station }) {
           {toast}
         </div>
       )}
-
-      {/* iPhone pocket-mode instruction (Android needs nothing) */}
-      <div className="max-w-4xl mx-auto px-4 md:px-6 pt-4">
-        <PocketAlertsHint />
-      </div>
 
       {/* counters + the crew's own "Items sold" tab (owner's decision, Sept
           2026: the crew asked what they SOLD, not how many tables were open).
@@ -1062,6 +1155,28 @@ export default function StationApp({ station }: { station: Station }) {
                   ? L("You are the afternoon shift. Shared drinks below belong to whoever accepts them first.")
                   : L("Accept your first drink to register as the afternoon shift.")}
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── KEEP WORKING (owner, Sept 2026) ──
+          The morning man still has drinks to finish, the 20 minutes are over
+          and nobody took the afternoon. He does not have to stand by: while he
+          finishes what he accepted, he may already continue as the day's
+          afternoon barista, and new orders come back to this screen. */}
+      {shiftMeta?.canContinueAfternoon && boardTickets.length > 0 && (
+        <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5">
+          <div className="bg-amber-950/70 border border-[#C9A227] rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-[11px] font-bold text-amber-200 max-w-md">
+              {L("Nobody took the afternoon shift yet. When your accepted drinks are done, tap below to continue as the afternoon barista.")}
+            </p>
+            <button
+              onClick={() => runShiftAction("continue-afternoon")}
+              disabled={shiftBusy}
+              className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] text-xs font-black uppercase disabled:opacity-50"
+            >
+              {L("I will continue as afternoon shift")}
+            </button>
           </div>
         </div>
       )}
@@ -1142,25 +1257,54 @@ export default function StationApp({ station }: { station: Station }) {
       {/* tickets cards */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5 space-y-4">
         {boardTickets.length === 0 ? (
-          shiftMeta && !shiftMeta.seesPending ? (
-            <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-10 text-center space-y-2">
-              {shiftMeta.myShift === "morning" ? (
+          shiftMeta && lockScreen ? (
+            <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-10 text-center space-y-3">
+              {lockScreen === "continue" ? (
                 <>
                   <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
+                  <p className="text-stone-400 text-xs max-w-md mx-auto">
+                    {L("The counter has ended and nobody took the afternoon shift yet. Continue as the afternoon barista and new orders come back to this screen.")}
+                  </p>
+                  <button
+                    onClick={() => runShiftAction("continue-afternoon")}
+                    disabled={shiftBusy}
+                    className="mx-auto block px-5 py-3 rounded-xl bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] text-xs font-black uppercase disabled:opacity-50"
+                  >
+                    {L("I will continue as afternoon shift")}
+                  </button>
+                </>
+              ) : lockScreen === "morning-over" ? (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
+                  <p className="text-amber-100 text-sm font-black">{L("Your shift is over now.")}</p>
+                  {/* The note the owner asked for on the black screen: WHO
+                      takes the afternoon, by name. */}
+                  {blockedBy && (
+                    <p className="text-amber-200 text-xs font-black">
+                      {L("Today's afternoon shift is {name}", { name: blockedBy.name })}
+                    </p>
+                  )}
                   <p className="text-stone-400 text-xs">
                     {L("The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.")}
                   </p>
                 </>
-              ) : (
+              ) : lockScreen === "standby" && blockedBy ? (
                 <>
                   <p className="font-serif font-black text-amber-200 text-base">{L("Waiting for your shift")}</p>
+                  <p className="text-amber-100 text-sm font-black">
+                    {blockedBy.shift === "morning"
+                      ? L("Barista morning shift is taken by {name}", { name: blockedBy.name })
+                      : L("Today's afternoon shift is {name}", { name: blockedBy.name })}
+                  </p>
+                  <p className="text-stone-400 text-xs max-w-md mx-auto">
+                    {L("You are not in this shift. Orders show only on {name}'s screen.", { name: blockedBy.name })}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
                   <p className="text-stone-400 text-xs">
-                    {standbyOwner
-                      ? L("{name} is the {shift} shift today. Orders show only on their screen.", {
-                          name: standbyOwner.name,
-                          shift: shiftMeta.phase === "open" ? L("Morning") : L("Afternoon"),
-                        })
-                      : L("Orders show only on the shift owner's screen.")}
+                    {L("The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.")}
                   </p>
                 </>
               )}
@@ -1273,8 +1417,8 @@ export default function StationApp({ station }: { station: Station }) {
                       </button>
                     )}
                     {i.stationStatus === "done" && (
-                      <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700">
-                        {L("✓ Done")}
+                      <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700 tabular-nums">
+                        {L("✓ Done • leaves in {clock}", { clock: lingerClock(doneLingerLeft(i)) })}
                       </span>
                     )}
                   </div>
@@ -1288,7 +1432,7 @@ export default function StationApp({ station }: { station: Station }) {
       {/* ═══ ITEMS SOLD — the crew's own sales tab ═══
           What this cook / barista / juice maker sold, grouped by menu CATEGORY,
           for the DATE they tap and the pile they choose (accepted / done /
-          combined). The counting rules live in @/lib/station-sales — the same
+          done). The counting rules live in @/lib/station-sales — the same
           attribution the shift report uses — and are served by
           /api/station-sales, so this screen and the cross-checker's paper can
           never disagree about who sold what. */}
@@ -1342,11 +1486,11 @@ export default function StationApp({ station }: { station: Station }) {
               </div>
             </div>
 
-            {/* WHICH TAPS COUNT — accepted / done / combined, each with its own
-                unit count so the crew sees the three piles at a glance */}
+            {/* WHICH TAPS COUNT — accepted / done, each with its own unit
+                count so the crew reads both piles at a glance */}
             <div>
               <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-2">{L("Which taps to count")}</p>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 {SALES_MODES.map((m) => (
                   <button
                     key={m}
@@ -1365,7 +1509,7 @@ export default function StationApp({ station }: { station: Station }) {
             </div>
 
             <p className="text-[11px] text-stone-400">
-              {L("Accepted counts the lines you tapped Accept on, Done the lines you tapped Done on, and Combined every line you touched, counted once. Removed lines and cancelled orders are never counted.")}
+              {L("Accepted counts the lines you tapped Accept on, Done the lines you finished, counted once each. Removed lines and cancelled orders are never counted.")}
             </p>
 
             {salesError ? (
@@ -1384,6 +1528,20 @@ export default function StationApp({ station }: { station: Station }) {
                     <p className="text-[11px] text-stone-400 mt-0.5">
                       {L("Covers: {rangeText}", { rangeText: salesRangeText(sales.range) })}
                     </p>
+                    {/* THE WHOLE LANE, NEXT TO THE PERSON'S OWN PILE (owner:
+                        "make it to show the total sale"). Same rows, every
+                        member of this crew counted — so a tablet signed in as
+                        somebody who did not tap, or lines the cashier's print
+                        closed, can never leave the crew reading a lone 0,0. */}
+                    {sales.lane?.[salesMode] && (
+                      <p className="text-[11px] font-bold text-amber-200/80 mt-1">
+                        {L("{station} total: {n} items • {amount}", {
+                          station: Ld(meta.label),
+                          n: sales.lane[salesMode].quantity.toLocaleString("en-US"),
+                          amount: staffEtb(sales.lane[salesMode].amount),
+                        })}
+                      </p>
+                    )}
                   </div>
                   <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-[#C9A227]/20 text-[#C9A227] shrink-0">
                     {L("{orders} bill(s)", { orders: salesPile.bills })}

@@ -25,8 +25,17 @@
  *     accept: his screen keeps only the lines he accepted until they are done
  *     or the cashier prints, then it goes blank and only his day's sale is
  *     left. New orders wait for the afternoon barista.
- *   • NO DOUBLE SHIFT. The morning owner can never also register as the
- *     afternoon owner of the same day.
+ *   • NO DOUBLE SHIFT (by accepting). The first accept can never register a
+ *     person in both shifts. The ONE door to a full day is explicit: the
+ *     morning owner, after the window, when nobody took the afternoon, taps
+ *     "I will continue as afternoon shift" (see canContinueAfternoon).
+ * Whether it is the MORNING or the AFTERNOON, the shift is locked the moment
+ * somebody registers it: every other barista reads "this is not your shift"
+ * with the owner's name (and, before the shift change, that is where he stays
+ * until the 20-minute window opens — the morning can NOT be taken from him).
+ * The one and only way a barista works a full day is the morning owner
+ * continuing into the afternoon when nobody else registered it
+ * (see canContinueAfternoon).
  *
  * The ADMIN shift report for the barista role reads the same claims and the
  * same per-line attribution, so the cross-checker's paper and the barista's
@@ -89,8 +98,22 @@ export interface BaristaViewerRule {
   seesPending: boolean;
   /** He may press Accept on a still-pending line right now. */
   canAcceptPending: boolean;
-  /** The shift he already owns today, if any (he pressed Accept earlier). */
+  /** The LIVE shift he owns today, if any (he pressed Accept earlier). */
   myShift: HandoverShift | null;
+  /** A FULL-DAY barista: he kept the morning and continued into the afternoon. */
+  alsoMorning: boolean;
+  /**
+   * The shift whose owner currently holds the board away from him (null =
+   * nothing holds him back). The standby screen names this person; after the
+   * hard stop the same name is what the morning man reads in
+   * "your shift is over now, {name} will take the afternoon".
+   */
+  blockedBy: { name: string; shift: HandoverShift } | null;
+  /**
+   * The morning owner, window closed, and NOBODY holds the afternoon: he may
+   * tap "I will continue as afternoon shift" and keep working all day.
+   */
+  canContinueAfternoon: boolean;
 }
 
 /**
@@ -102,6 +125,13 @@ export interface BaristaViewerRule {
  * his alone. The afternoon candidate gets his own first accept during (or
  * after) the window. The morning owner keeps accepting through the window
  * (the afternoon man may be late), then hard-stops.
+ *
+ * Two owner's additions (Sept 2026):
+ *   • the morning shift can be TAKEN over by another logged-in barista while
+ *     it is still live ("no, this is my shift, add me");
+ *   • the morning owner can CONTINUE as the afternoon owner when the window
+ *     has closed and nobody else registered (a full-day barista then holds
+ *     both claims, and the live afternoon side wins).
  */
 export function baristaViewer(input: {
   name: string;
@@ -110,27 +140,43 @@ export function baristaViewer(input: {
   afternoonOwner: string | null;
 }): BaristaViewerRule {
   const name = String(input.name || "").trim();
-  const isMorning = !!input.morningOwner && input.morningOwner === name;
-  const isAfternoon = !!input.afternoonOwner && input.afternoonOwner === name;
-  const myShift: HandoverShift | null = isMorning ? "morning" : isAfternoon ? "afternoon" : null;
+  const morningOwner = clean(input.morningOwner);
+  const afternoonOwner = clean(input.afternoonOwner);
+  const isMorning = !!morningOwner && morningOwner === name;
+  const isAfternoon = !!afternoonOwner && afternoonOwner === name;
+  // A full-day barista holds BOTH claims: the live (afternoon) side wins, so
+  // he keeps seeing and accepting new orders for the rest of the day.
+  const myShift: HandoverShift | null = isAfternoon ? "afternoon" : isMorning ? "morning" : null;
+  // WHO HOLDS THE BOARD RIGHT NOW? Before the shift change it is the morning
+  // owner; from the shift change on it is the afternoon owner. During the
+  // 20-minute window with nobody registered yet the board is SHARED, so it
+  // holds nobody back.
+  const holderShift: HandoverShift = input.phase === "open" ? "morning" : "afternoon";
+  const holderName = holderShift === "morning" ? morningOwner : afternoonOwner;
+  const blockedBy = holderName && holderName !== name ? { name: holderName, shift: holderShift } : null;
+  if (isAfternoon) {
+    // Already registered (or continued): his board is live until the day ends.
+    return { seesPending: true, canAcceptPending: true, myShift, alsoMorning: isMorning, blockedBy: null, canContinueAfternoon: false };
+  }
   if (isMorning) {
     // Hard stop: after the window his Accept dies; his own lines stay until
-    // they are done or the cashier prints.
+    // they are done or the cashier prints. If nobody took the afternoon he
+    // may continue as the afternoon barista with one tap.
     const open = input.phase !== "after";
-    return { seesPending: open, canAcceptPending: open, myShift };
-  }
-  if (isAfternoon) {
-    // Already registered: his board is live until the day ends.
-    return { seesPending: true, canAcceptPending: true, myShift };
+    return {
+      seesPending: open,
+      canAcceptPending: open,
+      myShift,
+      alsoMorning: false,
+      blockedBy,
+      canContinueAfternoon: input.phase === "after" && !afternoonOwner,
+    };
   }
   // A candidate: nobody owns the relevant shift yet, so he may accept the
-  // first drink and take it. Otherwise he waits on the standby screen.
-  if (input.phase === "open") {
-    const open = !input.morningOwner;
-    return { seesPending: open, canAcceptPending: open, myShift };
-  }
-  const open = !input.afternoonOwner;
-  return { seesPending: open, canAcceptPending: open, myShift };
+  // first drink and take it. Otherwise he waits on the standby screen — a
+  // registered shift is LOCKED, morning and afternoon alike.
+  const open = input.phase === "open" ? !morningOwner : !afternoonOwner;
+  return { seesPending: open, canAcceptPending: open, myShift, alsoMorning: false, blockedBy, canContinueAfternoon: false };
 }
 
 /**
@@ -216,7 +262,11 @@ export function filterBaristaLive<T extends { items: OwnedLine[] }>(
     const items: LiveLineView<T["items"][number]>[] = [];
     for (const it of t.items) {
       const status = clean(it.stationStatus).toLowerCase();
-      if (status === "pending") {
+      // ONLY "accepted" and "done" are real states. Anything else — including
+      // the empty status of lines written before the column existed — is work
+      // nobody has taken yet, so it follows the pending rule. (A line that
+      // leaked past this used to show up on every barista's screen.)
+      if (status !== "accepted" && status !== "done") {
         if (opts.seesPending) items.push(it);
         continue;
       }
@@ -232,34 +282,46 @@ export function filterBaristaLive<T extends { items: OwnedLine[] }>(
 /* ─── THE ADMIN REPORT, BY OWNER ─────────────────────────────────────────── */
 
 /**
+ * One name's shift slot for a day: a shift, or "both" for a full-day barista
+ * (he kept the morning and continued into the afternoon).
+ */
+export type HandoverClaimSlot = HandoverShift | "both";
+
+/**
  * Which shift bucket does one barista action fall in? When the day has
  * registered OWNERS the bucketing follows the person, not the clock: the
  * morning owner's Done at 14:35 (finishing through the window, exactly as the
- * rules expect) is still MORNING work. Without owners (older days) it falls
- * back to the plain clock split.
+ * rules expect) is still MORNING work. A FULL-DAY barista holds both claims,
+ * so his actions go back to the plain clock split — the only honest answer
+ * when one person worked both shifts (the sheet already says "a person who
+ * worked both shifts shows in both"). Without owners (older days) it falls
+ * back to the clock split too.
  */
 export function actionShiftByClaims(input: {
   name: string;
   at: Date | string;
   fallback: HandoverShift;
-  claimsByDay: Map<string, Map<string, HandoverShift>> | null;
+  claimsByDay: Map<string, Map<string, HandoverClaimSlot>> | null;
 }): HandoverShift {
   const key = etDayKey(input.at);
-  const owners = key ? input.claimsByDay?.get(key) : undefined;
-  return owners?.get(input.name) ?? input.fallback;
+  const slot = key ? input.claimsByDay?.get(key)?.get(input.name) : undefined;
+  if (!slot || slot === "both") return input.fallback;
+  return slot;
 }
 
 /** dayKey → (name → shift), from the claims the route read for the window. */
 export function claimsByDayMap(
   claims: Array<{ dayKey: string; shift: HandoverShift; staffName: string }>
-): Map<string, Map<string, HandoverShift>> {
-  const map = new Map<string, Map<string, HandoverShift>>();
+): Map<string, Map<string, HandoverClaimSlot>> {
+  const map = new Map<string, Map<string, HandoverClaimSlot>>();
   for (const c of claims || []) {
     const key = String(c.dayKey || "").trim();
     const name = String(c.staffName || "").trim();
     if (!key || !name) continue;
-    const day = map.get(key) || new Map<string, HandoverShift>();
-    if (!day.has(name)) day.set(name, c.shift);
+    const day = map.get(key) || new Map<string, HandoverClaimSlot>();
+    const seen = day.get(name);
+    if (!seen) day.set(name, c.shift);
+    else if (seen !== c.shift) day.set(name, "both");
     map.set(key, day);
   }
   return map;

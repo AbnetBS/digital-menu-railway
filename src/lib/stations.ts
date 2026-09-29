@@ -29,7 +29,43 @@
  * imported by the alert matrix and by the regression tests.
  */
 
+import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
+
 export type StationName = "kitchen" | "barista" | "buna" | "juice";
+
+/** The three crews a whole CATEGORY can be routed to (buna is per item). */
+export type RoutedStation = "barista" | "kitchen" | "juice";
+
+export function isRoutedStation(value: unknown): value is RoutedStation {
+  return value === "barista" || value === "kitchen" || value === "juice";
+}
+
+/**
+ * MERGE THE OWNER'S SAVED ROUTING OVER THE BUILT-IN DEFAULTS — NEVER REPLACE
+ * THEM (the juice bug, 29 Sept 2026).
+ *
+ * The order path used to do `routing = JSON.parse(saved)`, so a saved map that
+ * simply did not mention a category sent that category to the KITCHEN fallback.
+ * The fresh juices were exactly that case: an older save (from before the
+ * juice lane existed, or keyed with the category's stored capitalisation) had
+ * no "juices" key, so every juice was routed to the kitchen — the juice maker's
+ * screen showed nothing and its "Items sold" figure could only ever read 0.
+ *
+ * The merge also normalises every saved key (trim + lowercase) because the
+ * order path lowercases the category slug before looking it up. A junk value
+ * ("buna" on a category, a number, null) is ignored, never routed: the category
+ * keeps the default crew, exactly like the Stations tab shows.
+ */
+export function mergeCategoryRouting(saved: unknown): Record<string, RoutedStation> {
+  const merged: Record<string, RoutedStation> = { ...DEFAULT_CATEGORY_ROUTING };
+  if (!saved || typeof saved !== "object") return merged;
+  for (const [key, value] of Object.entries(saved as Record<string, unknown>)) {
+    const slug = String(key || "").trim().toLowerCase();
+    if (!slug || !isRoutedStation(value)) continue;
+    merged[slug] = value;
+  }
+  return merged;
+}
 
 /** Every crew that can receive work — the order they are listed in. */
 export const STATION_NAMES: StationName[] = ["kitchen", "barista", "buna", "juice"];

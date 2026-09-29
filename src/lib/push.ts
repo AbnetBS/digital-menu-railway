@@ -53,6 +53,10 @@ export async function getVapidKeys(): Promise<{ publicKey: string; privateKey: s
 }
 
 export function urlForRole(role: string): string {
+  // THE OWNER'S PHONE: the one notification that still exists (the daily total
+  // the cashier sends at closing time) opens straight onto the Daily Sales
+  // page of the dashboard.
+  if (role === "admin") return "/admin?tab=sales";
   if (role === "cashier") return "/cashier";
   if (role === "kitchen") return "/kitchen";
   if (role === "barista") return "/barista";

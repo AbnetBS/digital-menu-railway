@@ -220,48 +220,46 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   pass("no actor given = nobody filtered", withoutActor(cancelled, null).length === cancelled.length);
 }
 
-/* ── 6. The routes are actually wired to the matrix ───────────────────────── */
+/* ── 6. THE PHONES ARE SILENT (owner's decision, 29 Sept 2026) ────────────── */
+/* The alarm, the sound, the voice and the in-system cards say everything the
+ * staff need; a ringing pocket was noise. The matrix above is kept as the
+ * reference of who SHOULD react on screen, and the routes are checked to be
+ * PUSH-FREE. The single phone notification left in the cafe is the owner's
+ * daily total (POST /api/reports/daily-sales, role "admin"). */
 {
   const ticketsRoute = read("src/app/api/tickets/route.ts");
   const stationRoute = read("src/app/api/station-items/route.ts");
   const itemsRoute = read("src/app/api/tickets/items/route.ts");
   const tableStatus = read("src/app/api/table-status/route.ts");
+  const dayClose = read("src/app/api/reports/daily-sales/route.ts");
+  // Round 4: the manual tap and the automatic send share one sender, so the
+  // push wiring lives in the server module both of them call.
+  const dayCloseSender = read("src/lib/day-close.ts");
 
-  pass("ticket status changes go through the matrix", /ticketStatusAlerts\(/.test(ticketsRoute) && /withoutActor\(/.test(ticketsRoute));
-  pass("the ticket route knows WHO acted (to skip their own phone)", /readStaffSession\(\)/.test(ticketsRoute) && /actor\?\.role/.test(ticketsRoute));
-  pass("station progress pushes the waiter", /stationProgressAlerts\(/.test(stationRoute) && /sendPushToRoles/.test(stationRoute));
-  pass("station route computes whether the WHOLE order is ready", /wholeOrderReady/.test(stationRoute));
-  pass("station progress rings only the OWNING waiter", /ticketOwner\(/.test(stationRoute) && /sendPushToNamedStaff/.test(stationRoute));
-  pass("bill requests ring only the OWNING waiter (+ all cashiers)", /ticketOwner\(/.test(tableStatus) && /sendPushToNamedStaff/.test(tableStatus));
-  pass("item removal pushes the station (waiter stays silent)", /itemRemovedAlerts\(/.test(itemsRoute));
-  pass("removing a not-yet-started item rings nobody", /wasPending/.test(itemsRoute));
-  pass("quantity edits push waiter + station", /itemQuantityAlerts\(/.test(itemsRoute));
-  pass("note edits on a STARTED line push its station", /itemNotesAlerts\(/.test(itemsRoute) && /notesChanged && wasStarted/.test(itemsRoute));
-  pass("edits to a PRINTED bill push the cashier (EFD re-key)", /itemEditedAfterPrintAlerts\(/.test(itemsRoute) && /isPrintedBill\(ticket\)/.test(itemsRoute));
-  pass("more work on a started line reopens it (accepted/done back to pending)", /qtyIncreased \|\| notesChanged/.test(itemsRoute) && /updates\.stationStatus = "pending"/.test(itemsRoute));
+  pass("the ticket route pushes nobody (accept, print, cancel and top-ups are silent)",
+    !/sendPushTo/.test(ticketsRoute) && !/lib\/push/.test(ticketsRoute));
+  pass("the station route pushes nobody (a finished dish updates the screen)",
+    !/sendPushTo/.test(stationRoute) && !/stationProgressAlerts\(/.test(stationRoute));
+  pass("the items route pushes nobody (removals, quantities, notes, EFD re-keys)",
+    !/sendPushTo/.test(itemsRoute) && !/itemRemovedAlerts\(/.test(itemsRoute) && !/itemQuantityAlerts\(/.test(itemsRoute));
+  pass("the table-status route pushes nobody (a bill request stays an in-system card)",
+    !/sendPushTo/.test(tableStatus));
+  pass("the routes still know WHO acted (audit trail + the cashier's correction locks)",
+    /readStaffSession\(\)/.test(ticketsRoute) && /actor\?\.role/.test(ticketsRoute));
+  pass("more work on a started line still reopens it (accepted/done back to pending)",
+    /qtyIncreased \|\| notesChanged/.test(itemsRoute) && /updates\.stationStatus = "pending"/.test(itemsRoute));
   pass("lowering a quantity never reopens the line", /Number\(updates\.quantity\) > before\[0\]\.quantity/.test(itemsRoute));
-  pass("cancellation alarms are scoped to the bill's crews", /alertStatus === "cancelled"/.test(ticketsRoute));
-  {
-    // The guest burst is the ONE alarm left in the system: its four quick
-    // rings ~1.1s apart are a single ~3 second alarm, not repeats. The shared
-    // constant must stay untouched, and no route may pass its own repeat
-    // above 0 apart from that constant.
-    const pushLib = read("src/lib/push.ts");
-    const billAlerts = billRequestAlerts(TICKET);
-    pass("bill requests ring the full guest burst, exactly once (constant untouched)",
-      /CUSTOMER_ALERT_RING/.test(tableStatus) &&
-      /export const CUSTOMER_ALERT_RING = \{ urgent: true as const, repeat: 3, gapMs: 1100, kind: "customer" as const \};/.test(pushLib) &&
-      billAlerts.every((a) => a.repeat === 0));
-    for (const [name, src] of [["tickets", ticketsRoute], ["station-items", stationRoute], ["tickets/items", itemsRoute], ["table-status", tableStatus]] as const) {
-      const ownRepeats = [...src.matchAll(/repeat:\s*(\d+)/g)].map((m) => Number(m[1]));
-      pass(`${name}: no push passes its own repeat above 0 (got [${ownRepeats.join(", ")}])`,
-        ownRepeats.every((r) => r === 0));
-    }
-  }
+  pass("the note/qty rules themselves still run (the screens still need them)",
+    /wasStarted/.test(itemsRoute) && /notesChanged/.test(itemsRoute));
+  pass("the ONE phone notification left is the owner's day-close total (role admin)",
+    /sendDayClosePush/.test(dayClose) &&
+    /sendPushToRoles\(\["admin"\]/.test(dayCloseSender) && /dayClosePush\(/.test(dayCloseSender));
 
-  // Alerts may never take an order flow down with them.
+  // Alerts used to be fire-and-forget so a push could never fail a request.
+  // With no push left in these routes, the same guard is now simply true: the
+  // order flow cannot be broken by a notification that does not exist.
   for (const [name, src] of [["tickets", ticketsRoute], ["station-items", stationRoute], ["tickets/items", itemsRoute]] as const) {
-    pass(`${name}: alerts are fire-and-forget and cannot fail the request`, /void sendPushToRoles/.test(src) && /catch/.test(src));
+    pass(`${name}: no push call can fail the request (there is no push call)`, !/sendPushTo/.test(src));
   }
 }
 
@@ -352,11 +350,12 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   pass("the station vocabulary holds all four crews", /export type StationName = "kitchen" \| "barista" \| "buna" \| "juice"/.test(stationsLib));
   pass("a flagged item goes to the buna station whatever its category", /if \(isBunaItem\) return "buna"/.test(stationsLib));
   pass("the order route uses that rule (buna flag + per-item override + category routing)", /stationForOrder\(\s*routing,\s*catSlug,\s*bunaById\.get/.test(tickets) && /overrideById\.get/.test(tickets));
-  pass("the instant-release push keeps every crew's lane apart (per-station titles)",
-    /single === "buna" \? "🫖 New buna"/.test(tickets) &&
-    /single === "juice" \? "🧃 New juices"/.test(tickets) &&
-    /single === "barista" \? "☕ New drinks"/.test(tickets) &&
-    /single === "kitchen" \? "👨‍🍳 New items to cook"/.test(tickets));
+  /* The per-station push titles are gone with the rings; what must survive is
+   * the ROUTING: each crew's lane keeps its own lines on its own screen. */
+  pass("the crew lanes stay apart on the screens (buna flag, overrides, categories)",
+    /if \(isBunaItem\) return "buna"/.test(stationsLib) && /overrideById\.get/.test(tickets));
+  pass("the tickets route no longer builds any push title (no rings left)",
+    !/sendPushTo/.test(tickets) && !/🫖 New buna/.test(tickets));
   pass("food ready still finds its owner by NAME, whatever role they hold",
     /\.where\(eq\(pushSubscriptions\.name, name\)\)/.test(read("src/lib/push.ts")));
 }
@@ -410,11 +409,12 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log("\n✅ Role-alert coverage test PASSED");
-console.log("   • every ticket status, every station action, every item change and every");
-console.log("     bill request now wakes the roles that must react");
-console.log("   • every event rings EXACTLY ONCE (repeat 0); the only repeat left is");
-console.log("     the shared CUSTOMER_ALERT_RING burst, whose quick rings are one");
-console.log("     ~3 second alarm, not repeats");
-console.log("   • the person who performed the action is never rung by their own tap");
-console.log("   • a staff member who tapped OFF DUTY hears nothing at home, and their");
-console.log("     next PIN sign-in wakes their phone again");
+console.log("   • the alert matrix still says WHO reacts on screen to every ticket");
+console.log("     status, station action, item change and bill request");
+console.log("   • NO STAFF PHONE RINGS ANY MORE (owner, 29 Sept 2026): the ticket,");
+console.log("     station, items and table-status routes are push-free — the alarm,");
+console.log("     the sound, the voice and the in-system cards carry the news");
+console.log("   • the ONE phone notification left is the OWNER's daily total, sent by");
+console.log("     the cashier's day close (role \"admin\", /admin?tab=sales)");
+console.log("   • a staff member who tapped OFF DUTY still hears nothing at home, and");
+console.log("     their next PIN sign-in wakes their phone again");

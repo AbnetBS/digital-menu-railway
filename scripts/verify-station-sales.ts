@@ -11,13 +11,15 @@
  *      Days" used the same `-1` as its end and silently dropped today too.
  *   2. "COMBINED" MEANT NOTHING ON A NORMAL SHIFT. It counted only lines this
  *      person accepted AND somebody else finished, so a station with one person
- *      on duty always read zero.
+ *      on duty always read zero. It has since been REMOVED outright (see §2):
+ *      the same person accepts and finishes every line, so the union could only
+ *      repeat the Accepted pile.
  *
  * This guard pins the fixes: periods are Ethiopian calendar DAY KEYS (a window
- * can never be zero-width, a rolling window always ends today), the three piles
- * are accepted / done / their union counted once, the figures are grouped per
- * menu category, and removed lines, cancelled bills and other people's taps
- * never count.
+ * can never be zero-width, a rolling window always ends today), the TWO piles
+ * are accepted / done (a line the same person both accepted and finished is
+ * counted once in each), the figures are grouped per menu category, and removed
+ * lines, cancelled bills and other people's taps never count.
  *
  * Part runtime (the pure builder in src/lib/station-sales.ts is exercised with
  * fixtures, no database), part static source inspection of the API route and
@@ -150,22 +152,28 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
     pile("yesterday", [I({ stationAcceptedBy: "Abnet", stationAcceptedAt: eat(1, 23, 50), stationDoneBy: "Abnet", stationDoneAt: eat(0, 0, 10) })], "accepted").lines === 1);
 }
 
-/* ── 2. THE THREE PILES: accepted, done, combined ─────────────────────────── */
+/* ── 2. THE TWO PILES: accepted, done (combined is gone) ───────────────── */
+/* The owner, 29 Sept 2026: "the combined option now will be removed because
+ * their actions will be done only by them, accept and done by the same person".
+ * Whoever accepts a line is the only one who may finish it, so the union of the
+ * two piles could only ever repeat the Accepted pile — a third number that
+ * said nothing. Two piles, each counted once: a line the same person both
+ * accepted and finished is in BOTH. */
 {
   const rows = [
-    // Accepted AND finished by Abnet today.
+    // Accepted AND finished by Abnet today — the line both piles hold.
     I({ id: 101, ticketId: 7, name: "Macchiato", quantity: 2, price: 60, stationAcceptedBy: "Abnet", stationAcceptedAt: eat(0, 9), stationDoneBy: "Abnet", stationDoneAt: eat(0, 9, 10) }),
-    // Accepted by Abnet, finished by somebody else (the only thing the OLD
-    // "combined" tab counted — it must still be there, inside the union).
-    I({ id: 102, ticketId: 7, name: "Tea", quantity: 1, price: 40, stationAcceptedBy: "Abnet", stationAcceptedAt: eat(0, 10), stationDoneBy: "Mitke", stationDoneAt: eat(0, 10, 20) }),
-    // Finished by Abnet, although a colleague had accepted it.
+    // Accepted by Abnet and NOT finished yet: an open line still on her board,
+    // and exactly the kind of line that now blocks the cashier's ✓ PRINTED.
+    I({ id: 102, ticketId: 7, name: "Tea", quantity: 1, price: 40, stationAcceptedBy: "Abnet", stationAcceptedAt: eat(0, 10) }),
+    // Finished by Abnet although a colleague had accepted it (an audit row):
+    // Done has it, Accepted does not.
     I({ id: 103, ticketId: 8, name: "Buna", quantity: 3, price: 50, stationAcceptedBy: "Mitke", stationAcceptedAt: eat(0, 11), stationDoneBy: "Abnet", stationDoneAt: eat(0, 11, 30) }),
     // A colleague's line, start to finish: never Abnet's.
     I({ id: 104, ticketId: 9, name: "Macchiato", quantity: 5, price: 60, stationAcceptedBy: "Mitke", stationAcceptedAt: eat(0, 12), stationDoneBy: "Mitke", stationDoneAt: eat(0, 12, 5) }),
   ];
   const accepted = pile("today", rows, "accepted");
   const done = pile("today", rows, "done");
-  const combined = pile("today", rows, "combined");
 
   pass("RUNTIME: ACCEPTED counts only the lines this person tapped Accept on",
     accepted.lines === 2 && accepted.quantity === 3 && accepted.amount === 2 * 60 + 1 * 40,
@@ -173,21 +181,25 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
   pass("RUNTIME: DONE counts only the lines this person tapped Done on",
     done.lines === 2 && done.quantity === 5 && done.amount === 2 * 60 + 3 * 50,
     JSON.stringify({ lines: done.lines, quantity: done.quantity, amount: done.amount }));
-  pass("RUNTIME: COMBINED is every line the person touched, each counted ONCE (not accepted + done)",
-    combined.lines === 3 && combined.quantity === 6 && combined.amount === 2 * 60 + 1 * 40 + 3 * 50,
-    JSON.stringify({ lines: combined.lines, quantity: combined.quantity, amount: combined.amount }));
-  pass("RUNTIME: COMBINED is never zero when the person worked (the old rule was)", combined.lines > 0);
-  pass("RUNTIME: COMBINED still contains 'accepted by me, finished by a colleague'",
-    combined.items.some((i) => i.name === "Tea" && i.quantity === 1));
+  pass("RUNTIME: a line accepted AND finished by the same person is in both piles, counted once in each",
+    accepted.items.some((i) => i.name === "Macchiato" && i.quantity === 2) &&
+    done.items.some((i) => i.name === "Macchiato" && i.quantity === 2));
+  pass("RUNTIME: an accepted-but-unfinished line is in Accepted and NEVER in Done",
+    accepted.items.some((i) => i.name === "Tea" && i.quantity === 1) &&
+    !done.items.some((i) => i.name === "Tea"));
+  pass("RUNTIME: there are exactly TWO piles and combined is GONE",
+    SALES_MODES.length === 2 && SALES_MODES.includes("accepted") && SALES_MODES.includes("done") &&
+    Object.keys(SALES_MODE_LABELS).length === 2 &&
+    !Object.prototype.hasOwnProperty.call(build("today", rows).modes, "combined"));
   pass("RUNTIME: a colleague's line from start to finish is in nobody else's pile",
-    !combined.items.some((i) => i.quantity === 5) && !accepted.items.some((i) => i.name === "Buna"));
+    !done.items.some((i) => i.quantity === 5) && !accepted.items.some((i) => i.name === "Buna"));
   pass("RUNTIME: bills are counted once per pile, however many lines they carried",
-    accepted.bills === 1 && done.bills === 2 && combined.bills === 2,
-    JSON.stringify({ a: accepted.bills, d: done.bills, c: combined.bills }));
-  pass("RUNTIME: all three piles are always present in the report",
-    SALES_MODES.every((m) => build("today", rows).modes[m]) && SALES_MODES.length === 3);
+    accepted.bills === 1 && done.bills === 2,
+    JSON.stringify({ a: accepted.bills, d: done.bills }));
+  pass("RUNTIME: both piles are always present in the report",
+    SALES_MODES.every((m) => build("today", rows).modes[m]));
   pass("RUNTIME: an empty day reads as a real zero, not as a broken payload",
-    pile("today", [], "combined").quantity === 0 && pile("today", [], "combined").categories.length === 0);
+    pile("today", [], "done").quantity === 0 && pile("today", [], "done").categories.length === 0);
 
   // Attribution helpers used above.
   pass("attribution: the accept and the done step are kept separately",
@@ -196,9 +208,10 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
     !isCrewName("admin") && !isCrewName("(cashier)") && !isCrewName("Customer (QR)") && isCrewName("Abnet"));
   pass("RUNTIME: a line an ADMIN finished on the crew's behalf is not their sale",
     pile("today", [I({ stationAcceptedBy: "Abnet", stationAcceptedAt: eat(0, 9), stationDoneBy: "admin", stationDoneAt: eat(0, 9, 30) })], "done").lines === 0 &&
-    pile("today", [I({ stationAcceptedBy: "Abnet", stationAcceptedAt: eat(0, 9), stationDoneBy: "admin", stationDoneAt: eat(0, 9, 30) })], "combined").lines === 1);
+    pile("today", [I({ stationAcceptedBy: "Abnet", stationAcceptedAt: eat(0, 9), stationDoneBy: "admin", stationDoneAt: eat(0, 9, 30) })], "accepted").lines === 1);
   pass("RUNTIME: the whole-crew view (an owner asking for a station) counts every real person once",
-    pile("today", rows, "combined", null).lines === 4 && pile("today", rows, "combined", null).quantity === 11);
+    pile("today", rows, "done", null).lines === 3 && pile("today", rows, "done", null).quantity === 10 &&
+    pile("today", rows, "accepted", null).lines === 4 && pile("today", rows, "accepted", null).quantity === 11);
 }
 
 /* ── 3. GROUPED BY MENU CATEGORY (what the crew asked to see) ─────────────── */
@@ -209,59 +222,59 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
     I({ name: "Mango Juice", category: "juices", quantity: 4, price: 120, stationDoneBy: "Abnet", stationDoneAt: eat(0, 10) }),
     I({ name: "Buna", category: "", quantity: 1, price: 50, stationDoneBy: "Abnet", stationDoneAt: eat(0, 11) }),
   ];
-  const combined = pile("today", rows, "combined");
+  const done = pile("today", rows, "done");
   pass("RUNTIME: lines are grouped per menu category with a subtotal per category",
-    combined.categories.length === 3 &&
-    combined.categories.find((c) => c.category === "Hot Drinks")?.quantity === 3 &&
-    combined.categories.find((c) => c.category === "Hot Drinks")?.amount === 2 * 60 + 40 &&
-    combined.categories.find((c) => c.category === "Fresh Juices")?.quantity === 4);
+    done.categories.length === 3 &&
+    done.categories.find((c) => c.category === "Hot Drinks")?.quantity === 3 &&
+    done.categories.find((c) => c.category === "Hot Drinks")?.amount === 2 * 60 + 40 &&
+    done.categories.find((c) => c.category === "Fresh Juices")?.quantity === 4);
   pass("RUNTIME: the owner's category NAME is shown, not the stored slug",
     categoryLabel("hot-drinks", CATEGORY_NAMES) === "Hot Drinks" && categoryLabel("juices", CATEGORY_NAMES) === "Fresh Juices");
   pass("RUNTIME: an unknown or empty slug still gets a readable pile",
     categoryLabel("", CATEGORY_NAMES) === "General" && categoryLabel("specials", CATEGORY_NAMES) === "specials" &&
-    combined.categories.some((c) => c.category === "General"));
+    done.categories.some((c) => c.category === "General"));
   pass("RUNTIME: the same item on two bills folds into one line with both bills counted",
     pile("today", [
       I({ ticketId: 1, name: "Macchiato", quantity: 2, stationDoneBy: "Abnet", stationDoneAt: eat(0, 9) }),
       I({ ticketId: 2, name: "Macchiato", quantity: 3, stationDoneBy: "Abnet", stationDoneAt: eat(0, 10) }),
-    ], "combined").items.length === 1 &&
+    ], "done").items.length === 1 &&
     pile("today", [
       I({ ticketId: 1, name: "Macchiato", quantity: 2, stationDoneBy: "Abnet", stationDoneAt: eat(0, 9) }),
       I({ ticketId: 2, name: "Macchiato", quantity: 3, stationDoneBy: "Abnet", stationDoneAt: eat(0, 10) }),
-    ], "combined").items[0].quantity === 5 &&
+    ], "done").items[0].quantity === 5 &&
     pile("today", [
       I({ ticketId: 1, name: "Macchiato", quantity: 2, stationDoneBy: "Abnet", stationDoneAt: eat(0, 9) }),
       I({ ticketId: 2, name: "Macchiato", quantity: 3, stationDoneBy: "Abnet", stationDoneAt: eat(0, 10) }),
-    ], "combined").items[0].bills === 2);
+    ], "done").items[0].bills === 2);
   pass("RUNTIME: the busiest category comes first, the busiest item inside it too",
-    combined.categories[0].category === "Fresh Juices" &&
-    combined.categories.find((c) => c.category === "Hot Drinks")?.items[0].name === "Macchiato");
+    done.categories[0].category === "Fresh Juices" &&
+    done.categories.find((c) => c.category === "Hot Drinks")?.items[0].name === "Macchiato");
   pass("RUNTIME: the pile totals are the sum of their categories",
-    combined.quantity === combined.categories.reduce((n, c) => n + c.quantity, 0) &&
-    combined.amount === combined.categories.reduce((n, c) => n + c.amount, 0) &&
-    combined.lines === combined.categories.reduce((n, c) => n + c.lines, 0));
+    done.quantity === done.categories.reduce((n, c) => n + c.quantity, 0) &&
+    done.amount === done.categories.reduce((n, c) => n + c.amount, 0) &&
+    done.lines === done.categories.reduce((n, c) => n + c.lines, 0));
 }
 
 /* ── 4. WHAT NEVER COUNTS AS SOLD ─────────────────────────────────────────── */
 {
   const base = { stationAcceptedBy: "Abnet", stationAcceptedAt: eat(0, 9), stationDoneBy: "Abnet", stationDoneAt: eat(0, 9, 20) };
-  pass("RUNTIME: a line the cashier removed is never a sale", pile("today", [I({ ...base, removed: true })], "combined").lines === 0);
-  pass("RUNTIME: a CANCELLED order is never a sale", pile("today", [I({ ...base, ticketStatus: "cancelled" })], "combined").lines === 0);
+  pass("RUNTIME: a line the cashier removed is never a sale", pile("today", [I({ ...base, removed: true })], "done").lines === 0);
+  pass("RUNTIME: a CANCELLED order is never a sale", pile("today", [I({ ...base, ticketStatus: "cancelled" })], "done").lines === 0);
   pass("RUNTIME: a paid, printed or still-open bill all count the same",
-    ["paid", "printed", "confirmed", "closed", null].every((s) => pile("today", [I({ ...base, ticketStatus: s })], "combined").lines === 1));
-  pass("RUNTIME: a line nobody tapped is not a sale", pile("today", [I({ name: "Tea" })], "combined").lines === 0);
+    ["paid", "printed", "confirmed", "closed", null].every((s) => pile("today", [I({ ...base, ticketStatus: s })], "done").lines === 1));
+  pass("RUNTIME: a line nobody tapped is not a sale", pile("today", [I({ name: "Tea" })], "done").lines === 0);
   pass("RUNTIME: a tap outside the chosen date is not in it",
-    pile("yesterday", [I({ ...base })], "combined").lines === 0 && pile("today", [I({ ...base })], "combined").lines === 1);
+    pile("yesterday", [I({ ...base })], "done").lines === 0 && pile("today", [I({ ...base })], "done").lines === 1);
   pass("RUNTIME: zero and missing quantities/prices can never produce NaN",
-    Number.isFinite(pile("today", [I({ ...base, quantity: null, price: null })], "combined").amount) &&
-    pile("today", [I({ ...base, quantity: null, price: null })], "combined").quantity === 0);
+    Number.isFinite(pile("today", [I({ ...base, quantity: null, price: null })], "done").amount) &&
+    pile("today", [I({ ...base, quantity: null, price: null })], "done").quantity === 0);
   // Legacy rows: stamped before station_accepted_* / station_done_* existed.
   pass("RUNTIME: an older line that only knows its LAST tap is still counted (done)",
     pile("today", [I({ stationStatus: "done", stationStatusBy: "Abnet", stationStatusAt: eat(0, 8), stationDoneBy: null, stationDoneAt: null })], "done").lines === 1);
   pass("RUNTIME: an older line that only knows its LAST tap is still counted (accepted)",
     pile("today", [I({ stationStatus: "accepted", stationStatusBy: "Abnet", stationStatusAt: eat(0, 8), stationAcceptedBy: null, stationAcceptedAt: null })], "accepted").lines === 1);
-  pass("RUNTIME: a legacy line is never counted twice in combined",
-    pile("today", [I({ stationStatus: "done", stationStatusBy: "Abnet", stationStatusAt: eat(0, 8) })], "combined").lines === 1);
+  pass("RUNTIME: a legacy line is never counted twice in Done",
+    pile("today", [I({ stationStatus: "done", stationStatusBy: "Abnet", stationStatusAt: eat(0, 8) })], "done").lines === 1);
 }
 
 /* ── 5. THE API ROUTE ─────────────────────────────────────────────────────── */
@@ -295,10 +308,10 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
 {
   pass("the screen builds its date buttons from the shared period list",
     /SALES_PERIODS\.map/.test(ui) && /SALES_PERIOD_LABELS\[p\]/.test(ui));
-  pass("the screen builds its three tabs from the shared mode list",
+  pass("the screen builds its two tabs from the shared mode list",
     /SALES_MODES\.map/.test(ui) && /SALES_MODE_LABELS\[m\]/.test(ui));
   pass("every date button reloads that period", /onClick=\{\(\) => loadSales\(p\)\}/.test(ui));
-  pass("the three tabs switch the pile without another request", /onClick=\{\(\) => setSalesMode\(m\)\}/.test(ui));
+  pass("the two tabs switch the pile without another request", /onClick=\{\(\) => setSalesMode\(m\)\}/.test(ui));
   pass("the screen reads the report's piles, not the old flat record",
     /sales\?\.modes\?\.\[salesMode\]/.test(ui) && !/sales\[salesMode\]/.test(ui));
   pass("the figures are listed per category on the screen", /salesPile\.categories\.map/.test(ui));
@@ -317,10 +330,10 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
   pass("the disabled 'Today's History' panel the tab replaced is gone",
     !/\{false && showHistory/.test(ui) && !/showHistory/.test(ui));
   pass("the labels the crew taps come from the dictionary (English and Amharic)",
-    ["Today", "Yesterday", "Day Before Yesterday", "Last 7 Days", "Last 30 Days", "Accepted", "Done", "Combined"]
+    ["Today", "Yesterday", "Day Before Yesterday", "Last 7 Days", "Last 30 Days", "Accepted", "Done"]
       .every((w) => new RegExp(`^  "${w}":`, "m").test(read("src/lib/staff-dictionary.ts"))));
   pass("the mode labels and the period labels are the dictionary's own words",
-    Object.values(SALES_MODE_LABELS).every((l) => ["Accepted", "Done", "Combined"].includes(l)) &&
+    Object.values(SALES_MODE_LABELS).every((l) => ["Accepted", "Done"].includes(l)) &&
     Object.values(SALES_PERIOD_LABELS).every((l) => ["Today", "Yesterday", "Day Before Yesterday", "Last 7 Days", "Last 30 Days"].includes(l)));
   pass("all three station screens render this one component",
     ["kitchen", "barista", "juice"].every((s) => read(`src/app/(internal)/${s}/page.tsx`).includes("StationApp")));

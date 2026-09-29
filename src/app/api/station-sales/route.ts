@@ -16,10 +16,10 @@ import {
  * GET /api/station-sales?period=today|yesterday|dayBefore|week|month
  *
  * The crew's own "Items sold" tab: what THIS kitchen / barista / juice maker
- * sold, per menu category, for the period they tapped, split into the three
- * piles they can choose (accepted / done / combined). All the counting rules
- * live in the pure `@/lib/station-sales` module — this route only authenticates
- * and reads the rows.
+ * sold, per menu category, for the period they tapped, split into the two piles
+ * they can choose (accepted / done). All the counting rules live in the pure
+ * `@/lib/station-sales` module — this route only authenticates and reads the
+ * rows.
  *
  * An action belongs to the day it was TAPPED, never to the day the bill was
  * opened, so a late order finished after midnight lands on the right day for

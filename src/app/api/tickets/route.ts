@@ -13,7 +13,7 @@ import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
 import { recordTicketEvent, summarizeSubmissionLines } from "@/lib/ticket-audit";
-import { mergeCategoryRouting, stationForOrder, stationOf, type StationName } from "@/lib/stations";
+import { mergeCategoryRouting, stationForOrder, stationOf, STATION_LABELS, type StationName } from "@/lib/stations";
 import { isBillSent, isTableReleased, allLinesFinished } from "@/lib/order-release";
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
 import { nextGroupNumberToday, nextGroupNumberInTx, groupLabel } from "@/lib/group-orders";
@@ -1156,6 +1156,60 @@ export async function PUT(request: Request) {
       updates.verifiedAt = new Date();
     }
 
+    // ── THE STATIONS FINISH BEFORE THE RECEIPT (owner's decision, 29 Sept 2026) ──
+    // "the stations must accept and done for the printed button to work" and
+    // "i dont want to see cashier printed on the admin shift report". From now
+    // on the cashier's ✓ PRINTED is REFUSED while any line the crews can see is
+    // still pending or started, so the receipt no longer has to finish anybody
+    // else's work — and it no longer stamps the "cashier print" marker on a
+    // kitchen / barista / juice line.
+    //
+    // TWO EXCEPTIONS, both deliberate:
+    //   • BUNA — its lane is read-only (the buna makers have no Accept/Done
+    //     buttons; the cashier prints to clear), so buna lines are exempt from
+    //     the gate and the receipt still finishes them;
+    //   • HELD guest additions (ticket_items.released = false) — the crews never
+    //     received them, so they can not block a print. They become real work
+    //     the moment the cashier or a waiter releases them (CONFIRM & SEND).
+    // Removed lines were never made, so they never block either.
+    if (body.status === "printed") {
+      const openLines = await db
+        .select({
+          name: ticketItems.name,
+          quantity: ticketItems.quantity,
+          stationName: ticketItems.stationName,
+        })
+        .from(ticketItems)
+        .where(
+          and(
+            eq(ticketItems.ticketId, cur.id),
+            eq(ticketItems.removed, false),
+            sql`COALESCE(${ticketItems.released}, true) = true`,
+            sql`COALESCE(${ticketItems.stationStatus}, '') <> 'done'`,
+            // An unset station is the kitchen (stationOf's own fallback), so it
+            // is gated like the kitchen; only buna is exempt.
+            sql`trim(coalesce(${ticketItems.stationName}, '')) <> 'buna'`
+          )
+        );
+      if (openLines.length > 0) {
+        const crews = [...new Set(openLines.map((l) => stationOf(l.stationName)))];
+        const who = crews.map((station) => STATION_LABELS[station]).join(", ");
+        const what = openLines
+          .slice(0, 3)
+          .map((l) => `${l.quantity}× ${l.name}`)
+          .join(", ");
+        const more = openLines.length > 3 ? ` +${openLines.length - 3} more` : "";
+        return NextResponse.json(
+          {
+            error: `${who} must tap Done first: ${what}${more}`,
+            openLines: openLines.length,
+            stations: crews,
+          },
+          { status: 409 }
+        );
+      }
+    }
+
     // Crews whose held lines this tap released (filled inside the transaction).
     let releasedStations: StationName[] = [];
     const updated = await db.transaction(async (tx) => {
@@ -1186,22 +1240,21 @@ export async function PUT(request: Request) {
         releasedStations = [...new Set(releasedRows.map((r) => stationOf(r.stationName)))];
       }
 
-      // THE PRINT SERVES THE FOOD (owner's decision, Sept 2026). Every line
-      // the crews could see on this bill right now is done and served with the
-      // receipt: stamp it done so it leaves the kitchen / barista / juice /
-      // buna dashboards on their next refresh (the live list hides lines
-      // finished on or before the print — see station-items GET). Held guest
-      // additions are skipped on purpose (the crews never received them; they
-      // become real work when the staff confirm them) and so are lines the
-      // crews already finished themselves (their own Done stamp and audit
-      // trail are kept). Re-prints simply repeat this safely.
+      // THE RECEIPT CLEARS THE BUNA LANE — AND ONLY THE BUNA LANE (owner's
+      // decision, 29 Sept 2026). The gate above already proved that every
+      // kitchen / barista / juice line on this bill is DONE, tapped by the
+      // person who accepted it, so this tap finishes nothing for them: their
+      // own Done stamp and audit trail stay exactly as the crew left them, and
+      // the admin shift report can never read "cashier print" for a crew that
+      // has a Done button. The buna makers are the one exception — their lane
+      // is read-only, so the receipt is still what clears a buna line.
       //
-      // "cashier print" is deliberately NOT a person's name — it is the marker
-      // the admin report reads to say "this line left the boards because the
-      // receipt went out: the crew never clicked Done" (the same marker the
-      // migration sweep writes). WHICH cashier printed stays on the bill
-      // (printedBy) and in the audit trail (the ticket_printed event below),
-      // and the crew's own taps keep their real names.
+      // "cashier print" stays the honest provenance of that buna clear (it is
+      // NOT a person's name); the report screens never print it as one (see
+      // shift-report's marker skip). WHICH cashier printed stays on the bill
+      // (printedBy) and in the audit trail (the ticket_printed event below).
+      // A held guest addition is skipped on purpose: the crews never received
+      // it, so the receipt can not have served it. Re-prints repeat safely.
       if (rows[0] && body.status === "printed") {
         const finishedAt = new Date();
         await tx
@@ -1217,6 +1270,9 @@ export async function PUT(request: Request) {
             and(
               eq(ticketItems.ticketId, rows[0].id),
               eq(ticketItems.removed, false),
+              // BUNA ONLY: every other crew finishes its own lines before this
+              // tap is even allowed, so their rows are never touched here.
+              eq(ticketItems.stationName, "buna"),
               // A held guest addition is NOT served by this receipt — the
               // crews have not even seen it yet.
               sql`COALESCE(${ticketItems.released}, true) = true`,

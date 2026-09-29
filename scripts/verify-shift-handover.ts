@@ -17,8 +17,9 @@
  *      never board items.
  *   4. THE TWO PAPERS AGREE — buildShiftReport (barista) buckets by OWNER and
  *      counts per LINE, so each person's orders/amount equal buildStationSales
- *      "combined" for the same rows, and a Done at 14:35 still lands in the
- *      morning bucket. Days without claims keep the old clock behaviour.
+ *      "accepted" for the same rows (accept and done are the same person since
+ *      the shift lock), and a Done at 14:35 still lands in the morning bucket.
+ *      Days without claims keep the old clock behaviour.
  *
  * Pure, no database. Run with: npx tsx scripts/verify-shift-handover.ts
  * (wired into `npm test`)
@@ -325,16 +326,19 @@ const day = etDayKey(at("10:00"))!;
   assert.equal(report.combined[0].label, "Abel - Biniam");
   assert.deepEqual(report.combined[0].ticketIds, [2]);
 
-  // THE ARGUMENT-SETTLER: each person's row equals what his own tablet says
-  // (station-sales "combined" for the same lines, day and person).
+  // THE ARGUMENT-SETTLER: each person's row equals what his own tablet says.
+  // Since the shift lock (round 5) the same person accepts and finishes a line,
+  // so "every line this person touched" is now exactly the ACCEPTED pile — the
+  // union that used to be called Combined. The "#cashier print" marker still
+  // never becomes a person: line 18 is Abel's through his accept.
   for (const [person, row] of [["Abel", abel], ["Biniam", biniam]] as const) {
     const sales = buildStationSales({
       period: "today", station: "barista", staff: person,
       rows: items.map((it) => ({ ...it, ticketStatus: tickets.find((t) => t.id === it.ticketId)?.status }) as StationSalesItemRow),
       now: at("18:00"),
     });
-    assert.equal(row.amount, sales.modes.combined.amount, `${person}: shift report must equal Items sold`);
-    assert.equal(row.orders, sales.modes.combined.bills, `${person}: order count must equal Items sold bills`);
+    assert.equal(row.amount, sales.modes.accepted.amount, `${person}: shift report must equal Items sold`);
+    assert.equal(row.orders, sales.modes.accepted.bills, `${person}: order count must equal Items sold bills`);
   }
 
   // WITHOUT claims (a day before this feature existed): the old clock split

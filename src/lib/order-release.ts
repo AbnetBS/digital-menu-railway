@@ -28,8 +28,11 @@
  *
  * 4. THE PRINT SERVES THE FOOD. The cashier's ✓ PRINTED tap means the order is
  *    done and served, so every line that was on the printed receipt leaves the
- *    crews' dashboards the same second (the print stamps those lines done —
- *    see the PUT in tickets/route.ts). Nothing lingers overnight any more.
+ *    crews' dashboards the same second. Since the shift lock (29 Sept 2026) the
+ *    CREWS finish their own lines — the print is refused (409) while any
+ *    visible kitchen / barista / juice line is still open, and then it stamps
+ *    the BUNA lane alone done (the buna makers have no Done button; see the PUT
+ *    in tickets/route.ts). Nothing lingers overnight any more.
  *    Lines that become work only AFTER the print are untouched: a guest top-up
  *    the staff confirm later is NEW work the receipt never covered, and a line
  *    finished after the print stays visible until receipt #2 goes out.
@@ -106,9 +109,9 @@ export function isLineHeld(line: ReleaseLine | null | undefined): boolean {
  * dashboard any more?
  *
  * True when the cashier printed the bill AND this line was finished on or
- * before that print — by the crew's own Done tap, or by the print itself
- * (the print stamps every released, unfinished line done; see the PUT in
- * tickets/route.ts). False for:
+ * before that print — by the crew's own Done tap (a print can only go out once
+ * every visible crew line is Done), or by the print itself on the buna lane
+ * (see the PUT in tickets/route.ts). False for:
  *   • a line still pending/accepted — that is live work. If it was released
  *     only AFTER the print (a guest top-up the staff just confirmed), the
  *     receipt never covered it and the crews must still make it;

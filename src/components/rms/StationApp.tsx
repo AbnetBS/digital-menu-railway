@@ -188,14 +188,14 @@ export default function StationApp({ station }: { station: Station }) {
 
   // ── ITEMS SOLD (the crew's own tab) ──
   // What THIS cook / barista / juice maker sold, grouped by menu category, for
-  // the date they tap and the pile they choose (accepted / done / combined).
+  // the date they tap and the pile they choose (accepted / done).
   // The owner replaced the old "Today's History" counter with it: the crew
   // asked what they SOLD, not how many tables were open. All counting rules
   // live in the pure @/lib/station-sales module (the same attribution the shift
   // report uses), served by /api/station-sales, so the two papers agree.
   const [showSales, setShowSales] = useState(false);
   const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>("today");
-  const [salesMode, setSalesMode] = useState<SalesMode>("combined");
+  const [salesMode, setSalesMode] = useState<SalesMode>("done");
   const [sales, setSales] = useState<StationSalesReport | null>(null);
   const [salesLoading, setSalesLoading] = useState(false);
   const [salesError, setSalesError] = useState("");
@@ -231,7 +231,7 @@ export default function StationApp({ station }: { station: Station }) {
         setSales(report);
         setSalesPeriod(report.period);
         salesPeriodRef.current = report.period;
-        if (report.period === "today") setTodayUnits(report.modes?.combined?.quantity ?? 0);
+        if (report.period === "today") setTodayUnits(report.modes?.done?.quantity ?? 0);
       }
     } catch {
       setSalesError(tNow("Could not load your sales. Tap refresh to try again."));
@@ -245,7 +245,7 @@ export default function StationApp({ station }: { station: Station }) {
     try {
       const report = await fetchSales("today");
       if (!report) return;
-      setTodayUnits(report.modes?.combined?.quantity ?? 0);
+      setTodayUnits(report.modes?.done?.quantity ?? 0);
       if (showSalesRef.current && salesPeriodRef.current === "today") setSales(report);
     } catch {
       /* the tile simply keeps the previous number */
@@ -1060,7 +1060,7 @@ export default function StationApp({ station }: { station: Station }) {
           : blockedBy
             ? "standby"
             : null;
-  /** The pile the crew is looking at right now (accepted / done / combined). */
+  /** The pile the crew is looking at right now (accepted / done). */
   const salesPile: StationSalesPile | null = sales?.modes?.[salesMode] ?? null;
 
   return (
@@ -1432,7 +1432,7 @@ export default function StationApp({ station }: { station: Station }) {
       {/* ═══ ITEMS SOLD — the crew's own sales tab ═══
           What this cook / barista / juice maker sold, grouped by menu CATEGORY,
           for the DATE they tap and the pile they choose (accepted / done /
-          combined). The counting rules live in @/lib/station-sales — the same
+          done). The counting rules live in @/lib/station-sales — the same
           attribution the shift report uses — and are served by
           /api/station-sales, so this screen and the cross-checker's paper can
           never disagree about who sold what. */}
@@ -1486,11 +1486,11 @@ export default function StationApp({ station }: { station: Station }) {
               </div>
             </div>
 
-            {/* WHICH TAPS COUNT — accepted / done / combined, each with its own
-                unit count so the crew sees the three piles at a glance */}
+            {/* WHICH TAPS COUNT — accepted / done, each with its own unit
+                count so the crew reads both piles at a glance */}
             <div>
               <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-2">{L("Which taps to count")}</p>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 {SALES_MODES.map((m) => (
                   <button
                     key={m}
@@ -1509,7 +1509,7 @@ export default function StationApp({ station }: { station: Station }) {
             </div>
 
             <p className="text-[11px] text-stone-400">
-              {L("Accepted counts the lines you tapped Accept on, Done the lines you tapped Done on, and Combined every line you touched, counted once. Removed lines and cancelled orders are never counted.")}
+              {L("Accepted counts the lines you tapped Accept on, Done the lines you finished, counted once each. Removed lines and cancelled orders are never counted.")}
             </p>
 
             {salesError ? (

@@ -24,9 +24,10 @@
  *     opened: an order sent at 23:50 and finished at 00:10 counts on the day
  *     the person pressed Done;
  *   • ACCEPTED = the lines this person tapped Accept on, DONE = the lines they
- *     tapped Done on, COMBINED = every line they touched (accept OR done),
- *     each line counted ONCE — the same attribution the shift report's
- *     per-person pile uses, so the two papers agree;
+ *     tapped Done on, each line counted ONCE — the same attribution the shift
+ *     report's per-person pile uses, so the two papers agree. (There used to be
+ *     a COMBINED pile as well; the owner removed it on 29 Sept 2026 — since
+ *     only the accepter may finish a line, it only ever repeated Accepted.)
  *   • lines stamped before the accept/done columns existed are still counted,
  *     through the last-tap fallback (`station_status_by` / `station_status_at`);
  *   • the pile is grouped by menu CATEGORY with a subtotal per category, which
@@ -132,16 +133,20 @@ export function salesRangeText(range: { from: string | null; to: string | null }
   return `${from} – ${to}`;
 }
 
-/* ─── MODES (the accepted / done / combined tabs) ─────────────────────────── */
+/* ─── MODES (the accepted / done tabs) ────────────────────────────────── */
+/* COMBINED IS GONE (owner, 29 Sept 2026): "the combined option now will be
+ * removed because their actions will be done only by them, accept and done by
+ * the same person". Since whoever accepts a line is the only one who may
+ * finish it, the union of the two piles was just the Accepted pile again — a
+ * third number that could only ever repeat one of the other two. */
 
-export type SalesMode = "accepted" | "done" | "combined";
+export type SalesMode = "accepted" | "done";
 
-export const SALES_MODES: SalesMode[] = ["accepted", "done", "combined"];
+export const SALES_MODES: SalesMode[] = ["accepted", "done"];
 
 export const SALES_MODE_LABELS: Record<SalesMode, string> = {
   accepted: "Accepted",
   done: "Done",
-  combined: "Combined",
 };
 
 /* ─── INPUT ROWS ──────────────────────────────────────────────────────────── */
@@ -198,7 +203,7 @@ export interface StationSalesCategory {
   items: StationSalesItem[];
 }
 
-/** Everything one mode (accepted / done / combined) sold in the period. */
+/** Everything one mode (accepted / done) sold in the period. */
 export interface StationSalesPile {
   /** Item UNITS sold (quantities added up). */
   quantity: number;
@@ -287,8 +292,9 @@ type CatAcc = { quantity: number; amount: number; lines: number; bills: Set<numb
  * Build the crew's "Items sold" figures for one period.
  *
  * `staff` = the person whose taps count (null/empty = everybody on that
- * station, which is what an admin sees). Every line is counted at most once
- * per mode, so Combined is the union of Accepted and Done, never their sum.
+ * station, which is what an admin sees). Every line is counted at most once per
+ * mode: Accept and Done are two separate piles with their own rules, and a line
+ * the same person both accepted and finished is counted once in each.
  */
 export function buildStationSales(input: {
   period: SalesPeriod;
@@ -309,9 +315,8 @@ export function buildStationSales(input: {
   const acc: Record<SalesMode, Map<string, CatAcc>> = {
     accepted: new Map(),
     done: new Map(),
-    combined: new Map(),
   };
-  const billSets: Record<SalesMode, Set<number>> = { accepted: new Set(), done: new Set(), combined: new Set() };
+  const billSets: Record<SalesMode, Set<number>> = { accepted: new Set(), done: new Set() };
 
   const onDay = (at: string | null) => {
     const key = at ? etDayKey(at) : null;
@@ -336,7 +341,7 @@ export function buildStationSales(input: {
 
     const category = categoryLabel(row.category, names);
     const itemName = clean(row.name) || "Item";
-    const modes: SalesMode[] = accepted && done ? ["accepted", "done", "combined"] : accepted ? ["accepted", "combined"] : ["done", "combined"];
+    const modes: SalesMode[] = accepted && done ? ["accepted", "done"] : accepted ? ["accepted"] : ["done"];
     for (const mode of modes) {
       const cats = acc[mode];
       const cat = cats.get(category) || { quantity: 0, amount: 0, lines: 0, bills: new Set<number>(), items: new Map<string, ItemAcc>() };

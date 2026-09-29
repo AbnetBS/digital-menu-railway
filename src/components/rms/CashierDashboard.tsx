@@ -107,6 +107,12 @@ export default function CashierDashboard() {
   // never reached it and the counter tablet stayed silent. Reads use the ref.
   const alertsOnRef = useRef(false);
   const [toast, setToast] = useState("");
+  // THE STATION GATE (owner, 29 Sept 2026): "the stations must accept and done
+  // for the printed button in cashier to work". When the server refuses a print
+  // (409: a crew has not tapped Done yet) the reason stays ON THE CARD, under
+  // the button, until a later print of that bill succeeds — the 4-second toast
+  // alone was too easy to miss on a busy screen.
+  const [printBlocked, setPrintBlocked] = useState<Record<number, string>>({});
 
   // ── GUEST EVENTS TAKE OVER THE SCREEN ──
   // The tablet lives behind the counter, often face down or asleep. A guest
@@ -771,8 +777,19 @@ export default function CashierDashboard() {
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || tNow("Could not mark this bill printed. Try again."));
+      const why = d?.error || tNow("Could not mark this bill printed. Try again.");
+      // A gated print (409) leaves the card in her queue with the reason on it.
+      setPrintBlocked((prev) => ({ ...prev, [t.id]: why }));
+      showToast(why);
+      loadAll();
+      return;
     }
+    setPrintBlocked((prev) => {
+      if (!(t.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[t.id];
+      return next;
+    });
     loadAll();
     loadHistory();
   };
@@ -1296,6 +1313,11 @@ export default function CashierDashboard() {
                         >
                           {L("✓ Printed")}
                         </button>
+                      )}
+                      {printBlocked[t.id] && (
+                        <p className="w-full text-[11px] font-bold text-rose-200 bg-rose-950/60 border border-rose-800 rounded-lg px-2 py-1.5">
+                          {"🚫"}{" "}{printBlocked[t.id]}
+                        </p>
                       )}
                       {t.status === "printed" && outdoorReady(t) && (
                         <button
@@ -1903,6 +1925,14 @@ export default function CashierDashboard() {
                             </button>
                           )}
                         </div>
+                        {/* THE STATION GATE (owner, 29 Sept 2026): the print is
+                            refused until every crew has tapped Done. The reason
+                            stays on the card until a later print succeeds. */}
+                        {printBlocked[t.id] && (
+                          <p className="text-[11px] font-bold text-rose-200 bg-rose-950/60 border border-rose-800 rounded-xl px-3 py-2">
+                            {"🚫"}{" "}{printBlocked[t.id]}
+                          </p>
+                        )}
                         {!orderLocked && problem && (
                           <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
                             <p>{Lr("Use <b>Remove</b> on an item above if it is unavailable, or cancel the whole order:", { b: (s) => <strong>{s}</strong> })}</p>

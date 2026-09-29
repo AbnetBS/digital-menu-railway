@@ -1204,7 +1204,7 @@ export const STAFF_AM = {
   "Refresh buna totals": "የቡና ድምርን አድስ",
   "Refresh sales": "ሽያጩን አድስ",
   /* The crew's "Items sold" tab: date, the three piles and their rules */
-  "Accepted counts the lines you tapped Accept on, Done the lines you tapped Done on, and Combined every line you touched, counted once. Removed lines and cancelled orders are never counted.": "ተቀበልኩ የሚቆጥረው ተቀብያለሁ የነኩትን እቃ ነው፤ ጨረስኩ የሚቆጥረው ጨርሻለሁ የነኩትን፤ በጋራ ደግሞ እርስዎ የነኩትን ሁሉንም እቃ አንድ ጊዜ ብቻ ይቆጥራል። የተሰረዙ እቃዎችና የተሰረዙ ትዕዛዞች ፈጽሞ አይቆጠሩም።",
+  "Accepted counts the lines you tapped Accept on, Done the lines you finished, counted once each. Removed lines and cancelled orders are never counted.": "ተቀበልኩ የሚቆጥረው ተቀብያለሁ የነኩትን እቃ ነው፤ ጨረስኩ የሚቆጥረው ጨርሻለሁ የነኩትን። የተሰረዙ እቃዎችና የተሰረዙ ትዕዛዞች ፈጽሞ አይቆጠሩም።",
   "Which taps to count": "የትኞቹ ንክኪዎች ይቆጠሩ",
   "Loading your sales...": "ሽያጭዎ በመጫን ላይ...",
   "Could not load your sales. Tap refresh to try again.": "ሽያጭዎን መጫን አልተቻለም። እንደገና ለመሞከር አድስ ይንኩ።",

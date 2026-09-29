@@ -208,7 +208,7 @@ function pass(name, cond) {
    * juice and buna alike — it used to be buna only, and the other crews'
    * items lingered on their dashboards overnight). The shared pure rule is
    * isLineServedByPrint in @/lib/order-release. */
-  pass("every station's live list drops lines served by the cashier's print",
+  pass("every station's live list still drops lines served by the cashier's print",
     /isLineServedByPrint/.test(stationsApi) && /isLineServedByPrint/.test(orderRelease)
     && /station === "buna" && it\.stationStatus === "done"/.test(stationsApi));
   pass("the acceptance stamp is written and self-heals on old databases", /updates\.confirmedAt = new Date\(\)/.test(tickets) && /confirmedAt: timestamp\("confirmed_at"\)/.test(schema) && /confirmed_at: \{ type: "timestamp", dropNotNull: true \}/.test(migrate));
@@ -221,12 +221,15 @@ function pass(name, cond) {
   pass("the waiter's button says where the order goes", /Accept & Send → Stations & Cashier/.test(waiter));
   pass("the cashier's button says plain ✓ PRINTED (the print sends nothing — instant release)",
     /<Printer className="w-5 h-5" \/> \{L\("✓ PRINTED"\)\}/.test(cashier) && !/PRINTED & SEND/.test(cashier));
-  /* Same owner decision, write side: the print stamps every RELEASED,
-   * unfinished line on the bill done (all four stations — the eq(stationName,
-   * "buna") filter is gone), while HELD guest additions are skipped because
-   * the crews never received them. */
-  pass("cashier printing finishes every released line on the bill (all stations, held lines untouched)",
-    /body\.status === "printed"/.test(tickets) && !/eq\(ticketItems\.stationName, "buna"\)/.test(tickets)
+  /* The shift lock (owner, 29 Sept 2026) turned this around on the write side:
+   * the print may not go out until every released, visible kitchen / barista /
+   * juice line is Done, and then it finishes the BUNA lane only (the buna makers
+   * have no buttons). HELD guest additions never block it and are never
+   * stamped, because the crews never received them. */
+  pass("cashier printing is GATED by the stations, then finishes the buna lane only",
+    /body\.status === "printed"/.test(tickets) && /must tap Done first/.test(tickets) && /status: 409/.test(tickets)
+    && /trim\(coalesce\(\$\{ticketItems\.stationName\}, ''\)\) <> 'buna'/.test(tickets)
+    && /eq\(ticketItems\.stationName, "buna"\)/.test(tickets)
     && /stationStatus: "done"/.test(tickets) && /COALESCE\(\$\{ticketItems\.released\}, true\) = true/.test(tickets));
   pass("the buna makers' lane is read-only (no Accept or Done buttons)", /Cashier prints to clear/.test(waiter) && !/setBunaStatus/.test(waiter));
   pass("her addition card still shows ONLY the new items", /isNewUnprinted/.test(cashier) && /new items only/.test(cashier));

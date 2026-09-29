@@ -207,6 +207,18 @@ const iso = (d: Stamp): string | null => {
 };
 const clean = (s: string | null | undefined) => String(s || "").trim();
 
+/**
+ * THE PRINT IS NOT A PERSON. The cashier's ✓ PRINTED signs the buna lane off
+ * with this marker (see the tickets PUT), and nothing else ever writes it.
+ * Owner, 29 Sept 2026: "i dont want to see cashier printed on the admin shift
+ * report" — so no crew sheet may show it as a member with money next to the
+ * name, and no item card may read "Done by cashier print" as if a person did
+ * it. The honest provenance stays on the ticket (printedBy) and in the audit
+ * trail, where the admin order history already badges it.
+ */
+export const PRINT_MARKER = "cashier print";
+export const isPrintMarker = (name: string | null | undefined) => /^cashier print$/i.test(clean(name));
+
 export function shiftOf(at: Stamp, splitHour = DEFAULT_SHIFT_SPLIT_HOUR): ShiftName {
   const d = at instanceof Date ? at : new Date(String(at));
   return etHour(d) < splitHour ? "morning" : "afternoon";
@@ -392,13 +404,13 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
     };
 
     if (station) {
-      // THE PRINT IS NOT A PERSON (barista hand-over, Sept 2026): the
-      // cashier's ✓ PRINTED clears leftover lines with the marker "cashier
-      // print". On the BARISTA sheet that marker must never stand as a crew
-      // member with money next to its name — the barista's own Items-sold tab
-      // counts real names only, and this sheet must match it one to one. The
-      // other lanes keep their original rows exactly as they are.
-      const skipMarker = (n: string) => role === "barista" && /^cashier print$/i.test(n);
+      // THE PRINT IS NOT A PERSON (owner, 29 Sept 2026: "i dont want to see
+      // cashier printed on the admin shift report"). The marker must never
+      // stand as a crew member with money next to its name on ANY lane — the
+      // crew's own Items-sold tab counts real names only, and these sheets must
+      // match it one to one. (Since the shift lock the print only ever touches
+      // the buna lane anyway, so its rows are the only ones this can meet.)
+      const skipMarker = (n: string) => isPrintMarker(n);
       for (const it of items) {
         if (it.stationName !== role) continue;
         const acc = clean(it.stationAcceptedBy);
@@ -456,6 +468,9 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
     const people = [...new Set(actions.map((a) => a.name))];
 
     const printedMs = t.printedAt ? new Date(String(t.printedAt)).getTime() : 0;
+    // A card never carries the print marker as a person either: a buna line the
+    // receipt cleaned keeps its timestamps but shows no "Done by cashier print".
+    const markless = (n: string | null | undefined): string | null => (isPrintMarker(n) ? null : n || null);
     const cardItems = items.map((it) => ({
       id: it.id,
       name: it.name,
@@ -465,9 +480,9 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
       removed: !!it.removed,
       stationName: it.stationName,
       stationStatus: it.stationStatus,
-      acceptedBy: it.stationAcceptedBy || (!it.stationDoneBy && it.stationStatus === "accepted" ? it.stationStatusBy : null),
+      acceptedBy: markless(it.stationAcceptedBy || (!it.stationDoneBy && it.stationStatus === "accepted" ? it.stationStatusBy : null)),
       acceptedAt: iso(it.stationAcceptedAt) || (!it.stationDoneBy && it.stationStatus === "accepted" ? iso(it.stationStatusAt) : null),
-      doneBy: it.stationDoneBy || (it.stationStatus === "done" ? it.stationStatusBy : null),
+      doneBy: markless(it.stationDoneBy || (it.stationStatus === "done" ? it.stationStatusBy : null)),
       doneAt: iso(it.stationDoneAt) || (it.stationStatus === "done" ? iso(it.stationStatusAt) : null),
       createdAt: iso(it.createdAt),
       afterPrint: !!printedMs && !!it.createdAt && new Date(String(it.createdAt)).getTime() > printedMs,

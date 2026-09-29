@@ -279,6 +279,9 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
 
 /* ── 5. THE API ROUTE ─────────────────────────────────────────────────────── */
 {
+  pass("a crew screen also gets the whole lane's piles (never a lone zero)",
+    /lane = staff \? buildStationSales\(\{ period, station, staff: null, rows, categoryNames \}\)\.modes/.test(route) &&
+    /lane \? \{ \.\.\.report, lane \} : report/.test(route));
   pass("the route asks the pure builder for the figures (no counting of its own)",
     /buildStationSales\(\{ period, station, staff: person, rows, categoryNames \}\)/.test(route));
   pass("the route never builds a day window from a negative day count (the 0,0 bug)",

@@ -113,7 +113,9 @@ const fakeFetch = async (url: string) => {
   if (u.startsWith("/api/station-sales")) {
     if (salesFails) return { ok: false, status: 500, json: async () => ({ error: "boom" }) };
     const period = salesPeriodOf(new URL(u, "https://fana.test").searchParams.get("period")) as SalesPeriod;
-    return ok(buildStationSales({ period, station: STATION, staff: COOK, rows: SALES_ROWS, categoryNames: CATEGORY_NAMES }));
+    const mine = buildStationSales({ period, station: STATION, staff: COOK, rows: SALES_ROWS, categoryNames: CATEGORY_NAMES });
+    const lane = buildStationSales({ period, station: STATION, staff: null, rows: SALES_ROWS, categoryNames: CATEGORY_NAMES }).modes;
+    return ok({ ...mine, lane });
   }
   if (u.startsWith("/api/station-items")) return ok(u.includes("history=1") ? [] : LIVE_TICKETS);
   if (u.startsWith("/api/staff")) return ok([{ id: 3, name: COOK, role: STATION }]);
@@ -206,6 +208,8 @@ async function main() {
   pass("a cancelled order and a removed line are not in the pile", !text().includes("Pizza") && !text().includes("Soup"));
   pass("the panel names how many bills the figures came from", text().includes("2 bill(s)"), text().slice(0, 300));
   pass("the panel prints the dates it covers", /Covers:/.test(text()));
+  pass("the panel ALSO shows the whole station's total for the same period (910 is this cook, 1,090 is the kitchen)",
+    /total: 6 items/.test(text()) && text().includes("1,090 ETB"), text().slice(0, 400));
   pass("the five date buttons are there", ["Today", "Yesterday", "Day Before Yesterday", "Last 7 Days", "Last 30 Days"].every((l) => !!dateButton(l)));
   pass("the TWO pile tabs are there — and the removed Combined tab is not",
     ["Accepted", "Done"].every((l) => !!modeButton(l)) && !modeButton("Combined"), buttons().map((b) => (b.textContent || "").trim()).join(" | ").slice(0, 300));

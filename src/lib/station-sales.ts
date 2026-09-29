@@ -228,6 +228,16 @@ export interface StationSalesReport {
   staff: string | null;
   generatedAt: string;
   modes: Record<SalesMode, StationSalesPile>;
+  /**
+   * THE WHOLE STATION'S OWN PILES — the same rows counted for EVERY member of
+   * the crew, whoever tapped. Only /api/station-sales adds this, and only for a
+   * signed-in crew member: the person's own pile is what the shift report
+   * cross-checks, but the crew's screen must still be able to show the lane's
+   * total (owner: "make it to show the total sale", the juice lane read 0,0 on
+   * a screen that had sold all day). Null/absent for an admin's request, where
+   * the main report is already the whole lane.
+   */
+  lane?: Record<SalesMode, StationSalesPile>;
 }
 
 /* ─── HELPERS ─────────────────────────────────────────────────────────────── */

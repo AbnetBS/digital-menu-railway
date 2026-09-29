@@ -1528,6 +1528,20 @@ export default function StationApp({ station }: { station: Station }) {
                     <p className="text-[11px] text-stone-400 mt-0.5">
                       {L("Covers: {rangeText}", { rangeText: salesRangeText(sales.range) })}
                     </p>
+                    {/* THE WHOLE LANE, NEXT TO THE PERSON'S OWN PILE (owner:
+                        "make it to show the total sale"). Same rows, every
+                        member of this crew counted — so a tablet signed in as
+                        somebody who did not tap, or lines the cashier's print
+                        closed, can never leave the crew reading a lone 0,0. */}
+                    {sales.lane?.[salesMode] && (
+                      <p className="text-[11px] font-bold text-amber-200/80 mt-1">
+                        {L("{station} total: {n} items • {amount}", {
+                          station: Ld(meta.label),
+                          n: sales.lane[salesMode].quantity.toLocaleString("en-US"),
+                          amount: staffEtb(sales.lane[salesMode].amount),
+                        })}
+                      </p>
+                    )}
                   </div>
                   <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-[#C9A227]/20 text-[#C9A227] shrink-0">
                     {L("{orders} bill(s)", { orders: salesPile.bills })}

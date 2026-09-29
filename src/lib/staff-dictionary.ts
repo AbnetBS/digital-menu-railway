@@ -419,6 +419,10 @@ export const STAFF_AM = {
   "No sales {emptySuffix}.": "{emptySuffix} ሽያጭ የለም።",
   "Sales by Category ({label})": "ሽያጭ በምድብ ({label})",
   "{n} sold": "{n} ተሽጧል",
+  /* The crew's own screen also shows the WHOLE station's total for the same
+     period, whoever tapped: the owner asked for the juice lane's real total
+     ("make it to show the total sale"), which used to read 0,0. */
+  "{station} total: {n} items • {amount}": "{station} ድምር፦ {n} እቃ • {amount}",
   "Printed Bills ({label}) • {length}": "የታተሙ ሂሳቦች ({label}) • {length}",
   " of {archiveTotal}": " (ከ{archiveTotal} ውስጥ)",
   "Total printed (compare with the EFD pile)": "ጠቅላላ የታተመ (ከEFD ክምር ጋር ያወዳድሩ)",

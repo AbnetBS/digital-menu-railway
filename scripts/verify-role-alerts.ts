@@ -232,6 +232,9 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   const itemsRoute = read("src/app/api/tickets/items/route.ts");
   const tableStatus = read("src/app/api/table-status/route.ts");
   const dayClose = read("src/app/api/reports/daily-sales/route.ts");
+  // Round 4: the manual tap and the automatic send share one sender, so the
+  // push wiring lives in the server module both of them call.
+  const dayCloseSender = read("src/lib/day-close.ts");
 
   pass("the ticket route pushes nobody (accept, print, cancel and top-ups are silent)",
     !/sendPushTo/.test(ticketsRoute) && !/lib\/push/.test(ticketsRoute));
@@ -249,7 +252,8 @@ const urgentFor = (alerts: RoleAlert[], role: string) =>
   pass("the note/qty rules themselves still run (the screens still need them)",
     /wasStarted/.test(itemsRoute) && /notesChanged/.test(itemsRoute));
   pass("the ONE phone notification left is the owner's day-close total (role admin)",
-    /sendPushToRoles\(\["admin"\]/.test(dayClose) && /dayClosePush\(/.test(dayClose));
+    /sendDayClosePush/.test(dayClose) &&
+    /sendPushToRoles\(\["admin"\]/.test(dayCloseSender) && /dayClosePush\(/.test(dayCloseSender));
 
   // Alerts used to be fire-and-forget so a push could never fail a request.
   // With no push left in these routes, the same guard is now simply true: the

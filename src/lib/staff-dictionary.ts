@@ -673,6 +673,7 @@ export const STAFF_AM = {
   "NEW": "አዲስ",
   "🕒 {clock} • waiting {waitingLabel}": "🕒 {clock} • እየጠበቀ {waitingLabel}",
   "✓ Done": "✓ ተጠናቋል",
+  "✓ Done • leaves in {clock}": "✓ ተጠናቋል • በ{clock} ይወጣል",
   "▶ Started": "▶ ተጀምሯል",
   "by {stationStatusBy}{value}": "ያደረገው፦ {stationStatusBy}{value}",
   "Accept ✓": "ተቀበል ✓",
@@ -1340,6 +1341,7 @@ export const STAFF_AM = {
   "No printed sales yet. They appear here the moment the cashier prints a bill.": "እስካሁን የታተመ ሽያጭ የለም። ገንዘብ ተቀባይዋ ሂሳብ ስታትም ወዲያውኑ እዚህ ይታያል።",
   "sent {value}": "የተላከው {value}",
   "A sale is counted the moment the cashier prints the bill (the EFD receipt). Cancelled orders are never counted.": "ሽያጭ የሚቆጠረው ገንዘብ ተቀባይዋ ሂሳቡን ስታትም ነው (የ EFD ደረሰኝ)። የተሰረዙ ትዕዛዞች ፈጽሞ አይቆጠሩም።",
+  "The system could not send today's total by itself. It will try again.": "ሲስተሙ የዛሬውን ጠቅላላ በራሱ ሊልክ አልቻለም። እንደገና ይሞክራል።",
   "Could not close the day. Try again.": "ቀኑን መዝጋት አልተቻለም። እንደገና ይሞክሩ።",
   "✓ Today's total sent to the owner • {value}": "✓ የዛሬው ጠቅላላ ወደ ባለቤቱ ተልኳል • {value}",
   "Today's shift end opens at {hour}:00 • the total is sent to the owner's phone": "የዛሬ ፈረቃ ማብቂያ በ{hour}:00 ይከፈታል • ጠቅላላው ወደ ባለቤቱ ስልክ ይላካል",
@@ -1349,6 +1351,24 @@ export const STAFF_AM = {
   "Total sent • {value}": "ጠቅላላ ተልኳል • {value}",
   "🔔 Ring bell + desktop alerts are now ON for this device!": "🔔 የደወል እና የኮምፒውተር ማንቂያዎች አሁን በዚህ መሳሪያ ላይ በርተዋል!",
   "🔔 Alerts ON • the alarm is ready": "🔔 ማንቂያዎች በርተዋል • ደወሉ ተዘጋጅቷል",
+
+  /* ── the day close: the button, its alarm and the owner's chosen hour
+        (owner, 29 Sept 2026: the button opens at 2:00 local, the alarm and the
+        card tell the cashier, the system sends at the owner's notify hour) ── */
+  "🌙 Today's shift end is available • send today's total to the owner": "🌙 የዛሬ ፈረቃ ማብቂያ ተከፍቷል • የዛሬውን ጠቅላላ ወደ ባለቤቱ ላክ",
+  "Today's shift end is open": "የዛሬ ፈረቃ ማብቂያ ተከፍቷል",
+  "Later": "በኋላ",
+  "Send today's total sale to the owner's phone. The system sends it by itself at {hour}:00 if you forget.": "የዛሬውን ጠቅላላ ሽያጭ ወደ ባለቤቱ ስልክ ላክ። ካረሱት ሲስተሙ በ{hour}:00 ራሱ ይልከዋል።",
+  "✓ Send to the owner now": "✓ አሁን ወደ ባለቤቱ ላክ",
+  "Could not save the time. Try again.": "ሰዓቱን ማስቀመጥ አልተቻለም። እንደገና ይሞክሩ።",
+  "✓ Your phone will ring at {time}": "✓ ስልክዎ በ{time} ይጠራል",
+  "Live • it grows as the cashier prints bills": "ቀጥታ • ገንዘብ ተቀባይዋ ሂሳብ ስታትም ያድጋል",
+  "The cashier taps it to send the total to your phone. The button disappears after midnight, and the next day starts its own evening window.": "ገንዘብ ተቀባይዋ ስትነካው ጠቅላላው ወደ ስልክዎ ይላካል። ከእኩለ ሌሊት በኋላ ቁልፉ ይጠፋል፣ ቀጣዩ ቀንም የራሱን የምሽት ጊዜ ይጀምራል።",
+  "If she forgets, the system sends it by itself at {hour}:00.": "ካረሳች ሲስተሙ በ{hour}:00 ራሱ ይልከዋል።",
+  "When should your phone ring?": "ስልክዎ መቼ ይጠራ?",
+  "The cashier's button appears one hour before this time. If she forgets, the system sends the total by itself.": "የገንዘብ ተቀባይዋ ቁልፍ ከዚህ ሰዓት አንድ ሰዓት በፊት ይታያል። ካረሳች ሲስተሙ ጠቅላላውን ራሱ ይልካል።",
+  "Send the daily total at {time}": "የቀኑን ጠቅላላ በ{time} ላክ",
+  "Now: {hour}:00 • the button opens at {cutoff}:00": "አሁን፦ {hour}:00 • ቁልፉ በ{cutoff}:00 ይከፈታል",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

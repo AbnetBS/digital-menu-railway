@@ -1,30 +1,45 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Printer, RefreshCw, BellRing, BellOff, CheckCircle2 } from "lucide-react";
+import { Printer, RefreshCw, BellRing, BellOff, CheckCircle2, Clock } from "lucide-react";
 import PrintLetterhead from "@/components/rms/PrintLetterhead";
 import { useStaffT, tNow, staffEtb } from "@/lib/staff-i18n";
-import { dayKeyLabel, formatEtb, type DayCloseRecord } from "@/lib/daily-sales";
-import { formatClock } from "@/lib/order-lines";
-import { enablePocketAlerts, pocketAlertsStatus, pushSupported, sendTestPush, type PocketAlertsStatus } from "@/lib/push-client";
+import {
+  dayKeyLabel,
+  formatEtb,
+  localLabelForHour,
+  NOTIFY_HOUR_CHOICES,
+  type DayCloseRecord,
+} from "@/lib/daily-sales";
+import {
+  enablePocketAlerts,
+  pocketAlertsStatus,
+  pushSupported,
+  sendTestPush,
+  type PocketAlertsStatus,
+} from "@/lib/push-client";
 
 /**
- * DAILY SALES — the owner's page (owner's decision, 29 Sept 2026).
+ * DAILY SALES — the owner's page (owner's decisions, 29 Sept 2026).
  *
- * WHAT HE ASKED FOR: when the restaurant is about to close he wants today's
- * total so he can check it against the money in the drawer and the system
- * printer (EFD) receipts, and he wants the same list for the days before it:
- *
- *   29 Sep 2026 .................. 12,450 ETB
- *   28 Sep 2026 ................... 9,800 ETB
- *
- * A line counts when the cashier PRINTED the bill (the EFD receipt moment);
- * cancelled bills never count. The cashier's "Today's shift end" button sends
- * the total to HIS phone, and this page is where that notification lands.
+ * WHAT HE ASKED FOR:
+ *   • "whenever the owner opens that page it shows him the total price that got
+ *     printed up to that time" — the figure is LIVE (recomputed on every read,
+ *     never cached) and this tab refreshes itself every minute while he looks;
+ *   • "for now only todays and yesterday total sale because before that it isnt
+ *     full report but starting from tomorrow it started listed" — the list
+ *     shows TODAY and YESTERDAY, plus every day closed since this feature
+ *     started, so the daily history grows one day at a time;
+ *   • "in that tab add choose time to notify button ... as default I choose 3
+ *     lt but he can choose it there" — the notify-hour chooser sits on this
+ *     page (21:00 / 22:00 / 23:00 EAT), and the cashier's button appears one
+ *     hour before it;
+ *   • the cashier's tap (or the system's automatic send) puts a NORMAL
+ *     notification on his phone; tapping it lands him right here.
  *
  * This page also holds the ONLY phone-alert switch left in the cafe: every
- * staff phone notification was removed, so arming this device is how the owner
- * hears "Today's total sale".
+ * staff notification was removed, so arming this device is how he hears the
+ * daily total.
  */
 
 interface DailySalesDay {
@@ -36,10 +51,11 @@ interface DailySalesDay {
 
 interface DailySalesData {
   serverTime: string;
-  splitHour: number;
+  notifyHour: number;
   cutoffHour: number;
   currentHour: number;
   canClose: boolean;
+  dueNow: boolean;
   todayKey: string;
   today: { total: number; bills: number; closed: DayCloseRecord | null };
   days: DailySalesDay[];
@@ -53,6 +69,7 @@ export default function DailySalesTab() {
   const [toast, setToast] = useState("");
   const [pushStatus, setPushStatus] = useState<PocketAlertsStatus | null>(null);
   const [pushBusy, setPushBusy] = useState(false);
+  const [savingHour, setSavingHour] = useState(false);
   const loadRef = useRef<() => void>(() => {});
 
   const showToast = (msg: string) => {
@@ -81,10 +98,13 @@ export default function DailySalesTab() {
     loadRef.current = load;
   });
   useEffect(() => {
-    // The loader is async to its core (every setState sits behind a fetch) and
-    // the lint rule cannot see through the function boundary.
+    // Async loader behind a fetch; the lint rule cannot see through the
+    // function boundary.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
+    // LIVE: the owner watches today's number grow as the cashier prints bills.
+    const timer = setInterval(() => void loadRef.current(), 60 * 1000);
+    return () => clearInterval(timer);
   }, [load]);
 
   const refreshPushStatus = useCallback(async () => {
@@ -130,9 +150,40 @@ export default function DailySalesTab() {
     else showToast(tNow("Test sent • this device should ring now"));
   };
 
+  /** THE OWNER PICKS WHEN HIS PHONE RINGS (default 3:00 local = 21:00 EAT). */
+  const chooseHour = async (hour: number) => {
+    setSavingHour(true);
+    try {
+      const r = await fetch("/api/reports/daily-sales", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set-notify-hour", hour }),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) showToast(body?.error ? Ld(body.error) : tNow("Could not save the time. Try again."));
+      else {
+        showToast(tNow("✓ Your phone will ring at {time}", { time: localLabelForHour(hour) }));
+        await load();
+      }
+    } catch {
+      showToast(tNow("Network error. Try again."));
+    }
+    setSavingHour(false);
+  };
+
+  /** "21:04" — the moment a close record was written (the cafe clock). */
+  const clockOf = (iso: string | null | undefined) => {
+    const d = new Date(String(iso || ""));
+    return Number.isFinite(d.getTime())
+      ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+      : "";
+  };
+
   const days = data?.days ?? [];
   const armed = !!pushStatus?.armed;
   const todayRow = data?.today;
+  const cutoff = String(data?.cutoffHour ?? 20).padStart(2, "0");
+  const notify = String(data?.notifyHour ?? 21).padStart(2, "0");
 
   return (
     <div id="fana-daily-sales" className="space-y-6">
@@ -193,6 +244,76 @@ export default function DailySalesTab() {
         <PrintLetterhead />
       </div>
 
+      {/* TODAY (LIVE) + THE TWO MOMENTS */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-gradient-to-br from-[#C9A227] to-[#8C6D18] rounded-2xl p-4 text-[#2C1B17] sm:col-span-2">
+          <p className="text-[10px] font-extrabold uppercase tracking-wider opacity-80">
+            {L("Today • {day}", { day: dayKeyLabel(data?.todayKey || "") })}
+          </p>
+          <p className="font-serif font-black text-3xl">{todayRow ? formatEtb(todayRow.total) : "…"}</p>
+          <p className="text-[11px] font-bold">
+            {todayRow ? L("{bills} printed bill(s)", { bills: todayRow.bills }) : ""}
+            {todayRow?.closed ? ` • ${L("closed {clock} by {name}", { clock: clockOf(todayRow.closed.at), name: todayRow.closed.by })}` : ""}
+          </p>
+          <p className="text-[10px] font-bold opacity-80 mt-1">{L("Live • it grows as the cashier prints bills")}</p>
+        </div>
+        <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-4 space-y-1">
+          <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400">{L("Today's shift end")}</p>
+          <p className="text-xs font-bold text-amber-100">
+            {data
+              ? data.canClose
+                ? L("Open • the cashier can close the day now")
+                : L("Opens at {hour}:00", { hour: cutoff })
+              : "…"}
+          </p>
+          <p className="text-[11px] text-stone-500">
+            {L("The cashier taps it to send the total to your phone. The button disappears after midnight, and the next day starts its own evening window.")}
+          </p>
+          <p className="text-[11px] text-stone-500">
+            {L("If she forgets, the system sends it by itself at {hour}:00.", { hour: notify })}
+          </p>
+        </div>
+      </div>
+
+      {/* THE OWNER PICKS WHEN HIS PHONE RINGS */}
+      <section className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-4 space-y-3 no-print">
+        <div className="flex items-center gap-2">
+          <Clock className="w-4 h-4 text-[#C9A227]" />
+          <div>
+            <p className="text-xs font-black uppercase tracking-wider text-amber-200">{L("When should your phone ring?")}</p>
+            <p className="text-[11px] text-stone-400">
+              {L("The cashier's button appears one hour before this time. If she forgets, the system sends the total by itself.")}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {NOTIFY_HOUR_CHOICES.map((hour) => {
+            const selected = data?.notifyHour === hour;
+            return (
+              <button
+                key={hour}
+                onClick={() => void chooseHour(hour)}
+                disabled={savingHour}
+                className={`text-[11px] font-black uppercase px-4 py-2.5 rounded-xl transition disabled:opacity-50 ${
+                  selected
+                    ? "bg-[#C9A227] text-[#2C1B17]"
+                    : "bg-white/10 hover:bg-white/20 text-amber-200"
+                }`}
+                title={L("Send the daily total at {time}", { time: localLabelForHour(hour) })}
+              >
+                {selected ? "✓ " : ""}
+                {localLabelForHour(hour)}
+              </button>
+            );
+          })}
+          {data && (
+            <span className="text-[11px] text-stone-500">
+              {L("Now: {hour}:00 • the button opens at {cutoff}:00", { hour: String(data.currentHour).padStart(2, "0"), cutoff })}
+            </span>
+          )}
+        </div>
+      </section>
+
       {/* THE OWNER'S PHONE — the ONLY notification left in the cafe */}
       <section className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-4 space-y-3 no-print">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -236,34 +357,8 @@ export default function DailySalesTab() {
         </p>
       </section>
 
-      {/* TODAY + THE CLOSING HOUR */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="bg-gradient-to-br from-[#C9A227] to-[#8C6D18] rounded-2xl p-4 text-[#2C1B17] sm:col-span-2">
-          <p className="text-[10px] font-extrabold uppercase tracking-wider opacity-80">
-            {L("Today • {day}", { day: todayRow ? dayKeyLabel(data?.todayKey || "") : "…" })}
-          </p>
-          <p className="font-serif font-black text-3xl">{todayRow ? formatEtb(todayRow.total) : "…"}</p>
-          <p className="text-[11px] font-bold">
-            {todayRow ? L("{bills} printed bill(s)", { bills: todayRow.bills }) : ""}
-            {todayRow?.closed ? ` • ${L("closed {clock} by {name}", { clock: formatClock(todayRow.closed.at), name: todayRow.closed.by })}` : ""}
-          </p>
-        </div>
-        <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-4">
-          <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400">{L("Today's shift end")}</p>
-          <p className="text-xs font-bold text-amber-100 mt-1">
-            {data
-              ? data.canClose
-                ? L("Open • the cashier can close the day now")
-                : L("Opens at {hour}:00", { hour: String(data.cutoffHour).padStart(2, "0") })
-              : "…"}
-          </p>
-          <p className="text-[11px] text-stone-500 mt-1">
-            {L("The cashier taps it to send today's total to your phone.")}
-          </p>
-        </div>
-      </div>
-
-      {/* THE LIST — one line per date, newest first */}
+      {/* THE LIST — one line per date, newest first (today, yesterday, and
+          every day closed since this feature started) */}
       <section className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-4 space-y-3">
         <h3 className="text-xs font-black uppercase tracking-wider text-amber-200">{L("Total sales by date")}</h3>
         {!data ? (
@@ -288,7 +383,7 @@ export default function DailySalesTab() {
                     {d.closed && (
                       <span className="inline-flex items-center gap-1 ml-2">
                         <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                        {L("closed {clock} by {name}", { clock: formatClock(d.closed.at), name: d.closed.by })}
+                        {L("closed {clock} by {name}", { clock: clockOf(d.closed.at), name: d.closed.by })}
                         {d.closed.total !== d.total ? ` • ${L("sent {value}", { value: staffEtb(d.closed.total) })}` : ""}
                       </span>
                     )}

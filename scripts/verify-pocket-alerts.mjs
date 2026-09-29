@@ -197,6 +197,9 @@ function pass(name, cond) {
   const stationRoute = read("src/app/api/station-items/route.ts");
   const dayCloseRoute = read("src/app/api/reports/daily-sales/route.ts");
   const dayCloseLib = read("src/lib/daily-sales.ts");
+  // The send moved into the shared server module in round 4 (the manual tap
+  // and the automatic send use the same one), so the wiring is asserted there.
+  const dayCloseSender = read("src/lib/day-close.ts");
 
   pass("the ticket route pushes nobody (new orders, top-ups, prints and cancels are silent)",
     !/sendPushTo/.test(tickets) && !/CUSTOMER_ALERT_RING/.test(tickets));
@@ -205,7 +208,8 @@ function pass(name, cond) {
     !/sendPushTo/.test(tableStatus) && !/CUSTOMER_ALERT_RING/.test(tableStatus));
   pass("the station route pushes nobody (a finished dish no longer rings a phone)", !/sendPushTo/.test(stationRoute));
   pass("the owner's day-close total is the ONE push left, and it goes to role admin",
-    /sendPushToRoles\(\["admin"\]/.test(dayCloseRoute) && /dayClosePush\(/.test(dayCloseRoute) &&
+    /sendDayClosePush/.test(dayCloseRoute) &&
+    /sendPushToRoles\(\["admin"\]/.test(dayCloseSender) && /dayClosePush\(/.test(dayCloseSender) &&
     /Today's total sale/.test(dayCloseLib) && /\/admin\?tab=sales/.test(dayCloseLib));
   pass("the guest burst constant survives in push.ts (one ~3s alarm, never repeats)",
     /export const CUSTOMER_ALERT_RING/.test(pushServer) && /repeat: 3/.test(pushServer));

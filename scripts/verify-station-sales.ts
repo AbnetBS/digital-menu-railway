@@ -324,6 +324,33 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
     ["kitchen", "barista", "juice"].every((s) => read(`src/app/(internal)/${s}/page.tsx`).includes("StationApp")));
 }
 
+/* ── 7. THE DONE LINGER (owner, 29 Sept 2026) ─────────────────────────────── */
+/* "make it stay for 3 min before it disappears after it clicked done" — the
+ * kitchen, barista and juice crews. The line stays on the board, struck
+ * through with its countdown, and it is the SERVER stamp that counts, so a
+ * reload shows the same three minutes and a printed bill still clears the
+ * board at once. The buna lane is a different screen; it is not touched. */
+{
+  const screen = read("src/components/rms/StationApp.tsx");
+  pass("the Done tap keeps the line on the board for exactly three minutes",
+    /const DONE_LINGER_MS = 3 \* 60 \* 1000;/.test(screen));
+  pass("the countdown is read from the server stamp, not from a local guess",
+    /const at = item\.stationStatusAt \? Date\.parse\(item\.stationStatusAt\) : NaN;/.test(screen) &&
+    /at \+ DONE_LINGER_MS - now/.test(screen));
+  pass("only a line this screen finished is kept (a print-cleared line can never linger)",
+    /if \(item\.stationStatus !== "done"\) return 0;/.test(screen));
+  pass("the board renders it struck through until its minutes are gone",
+    /\(i\.stationStatus !== "done" \|\| doneLingerLeft\(i\) > 0\)/.test(screen));
+  pass("the badge counts the minutes down (the crew sees how long it stays)",
+    /✓ Done • leaves in \{clock\}/.test(screen) && /lingerClock\(doneLingerLeft\(i\)\)/.test(screen));
+  pass("the board ticks faster while something lingers, so the line really goes on time",
+    /if \(lingeringCount === 0\) return;/.test(screen) && /setInterval\(\(\) => setNow\(Date\.now\(\)\), 5000\)/.test(screen));
+  pass("the linger is a SCREEN rule: the counting module and both APIs carry no linger logic",
+    !/DONE_LINGER_MS|doneLingerLeft/.test(read("src/lib/station-sales.ts")) &&
+    !/DONE_LINGER_MS|doneLingerLeft/.test(read("src/app/api/station-sales/route.ts")) &&
+    !/DONE_LINGER_MS|doneLingerLeft/.test(read("src/app/api/station-items/route.ts")));
+}
+
 if (failures > 0) {
   console.error(`\n❌ ${failures} station-sales check(s) failed`);
   process.exit(1);

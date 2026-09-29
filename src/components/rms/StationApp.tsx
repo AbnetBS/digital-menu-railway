@@ -136,6 +136,18 @@ interface StationTicket {
   items: StationItem[];
 }
 
+/**
+ * THE DONE LINGER (owner, 29 Sept 2026): "make it stay for 3 min before it
+ * disappears after it clicked done" — the crews asked for it on the kitchen,
+ * the barista and the juice screens (the buna lane is a different screen and
+ * keeps its own behaviour). The Done tap used to free the line from this board
+ * in the same second, so the person who tapped it had nothing to point at when
+ * a plate came back. Now the line stays where it was, struck through with its
+ * ✓ Done badge and the minutes it still lingers — this is the person's own
+ * confirmation window, NOT work: every later refresh simply finds it done.
+ */
+const DONE_LINGER_MS = 3 * 60 * 1000;
+
 const STATION_META = {
   barista: { label: phrase("Barista"), icon: Coffee, color: "amber", slug: "barista" as Station, desc: phrase("Machine coffee & cold beverages") },
   kitchen: { label: phrase("Kitchen (Chef)"), icon: CookingPot, color: "emerald", slug: "kitchen" as Station, desc: phrase("Foods, pastries, meals & snacks") },
@@ -276,6 +288,27 @@ export default function StationApp({ station }: { station: Station }) {
   // Ticks every 30s so the "waiting N min" badge on each ticket stays honest
   // even when no new order arrives to trigger a refresh.
   const [now, setNow] = useState(() => Date.now());
+
+  /**
+   * How long THIS line still lingers after its Done tap (0 = gone). Read from
+   * the SERVER stamp (`stationStatusAt`, the same clock the reports use), so a
+   * tablet reloaded right after the tap shows the same countdown and nobody
+   * can keep a finished line on the board forever.
+   */
+  const doneLingerLeft = (item: StationItem): number => {
+    if (item.stationStatus !== "done") return 0;
+    const at = item.stationStatusAt ? Date.parse(item.stationStatusAt) : NaN;
+    if (!Number.isFinite(at)) return 0;
+    return Math.max(0, at + DONE_LINGER_MS - now);
+  };
+  const lingeringCount = tickets.reduce(
+    (n, t) => n + t.items.filter((i) => !i.taken && doneLingerLeft(i) > 0).length,
+    0
+  );
+  const lingerClock = (ms: number) => {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+  };
   const pendingSeenRef = useRef<Set<number>>(new Set());
   // EVERY ROLE EVENT RINGS: the crew also has to hear when a line they are
   // cooking is REMOVED or its quantity is corrected, and when an order they
@@ -368,6 +401,14 @@ export default function StationApp({ station }: { station: Station }) {
     const ticker = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(ticker);
   }, []);
+
+  // While a Done line lingers, the clock must move faster than the 30s ticker:
+  // the countdown has to be honest and the line has to go exactly on time.
+  useEffect(() => {
+    if (lingeringCount === 0) return;
+    const ticker = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(ticker);
+  }, [lingeringCount]);
 
   useEffect(() => {
     const saved = sessionStorage.getItem(`fana_${station}`);
@@ -982,7 +1023,12 @@ export default function StationApp({ station }: { station: Station }) {
    * line, one pair of hands".
    */
   const boardTickets = tickets
-    .map((t) => ({ ...t, boardItems: t.items.filter((i) => i.stationStatus !== "done" && !i.taken) }))
+    .map((t) => ({
+      ...t,
+      boardItems: t.items.filter(
+        (i) => !i.taken && (i.stationStatus !== "done" || doneLingerLeft(i) > 0)
+      ),
+    }))
     .filter((t) => t.boardItems.length > 0);
   /**
    * STANDBY (barista hand-over): my board is empty because the shift is
@@ -1371,8 +1417,8 @@ export default function StationApp({ station }: { station: Station }) {
                       </button>
                     )}
                     {i.stationStatus === "done" && (
-                      <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700">
-                        {L("✓ Done")}
+                      <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700 tabular-nums">
+                        {L("✓ Done • leaves in {clock}", { clock: lingerClock(doneLingerLeft(i)) })}
                       </span>
                     )}
                   </div>

@@ -187,9 +187,13 @@ function pass(name, cond) {
     "the sweep stamps the print itself as the finisher (honest audit, no fake crew name)",
     sweep.includes("'cashier print'") && sweep.includes("COALESCE(t.printed_at, now())")
   );
+  // The version only ever moves FORWARD (a later release may bump it again,
+  // e.g. for another backfill), so the guard asks for the format and for a
+  // stamp at least as new as the one that shipped this sweep.
+  const schemaVersion = /const SCHEMA_VERSION = "([^"]+)"/.exec(migrate)?.[1] || "";
   pass(
     "schema version was bumped so existing databases run the sweep once",
-    migrate.includes('const SCHEMA_VERSION = "2026-09-28-1"')
+    /^\d{4}-\d{2}-\d{2}-\d+$/.test(schemaVersion) && schemaVersion >= "2026-09-28-1"
   );
   pass(
     "the schema documents the decision next to printed_at",

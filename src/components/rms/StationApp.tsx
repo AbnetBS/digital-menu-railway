@@ -71,6 +71,18 @@ interface ShiftMeta {
   seesPending: boolean;
   canAcceptPending: boolean;
   myShift: "morning" | "afternoon" | null;
+  /** A FULL-DAY barista: he kept the morning and continued into the afternoon. */
+  alsoMorning: boolean;
+  /**
+   * Who holds the board away from me right now (null = nothing does). The
+   * standby screen names this person, and after the hard stop the morning man
+   * reads "your shift is over now, {name} will take the afternoon".
+   */
+  blockedBy: { name: string; shift: "morning" | "afternoon" } | null;
+  /** Morning only: I may take the live morning shift with one tap. */
+  canTakeOverMorning: boolean;
+  /** I am the morning owner, the window closed and nobody took the afternoon. */
+  canContinueAfternoon: boolean;
   owners: {
     morning: { name: string; at: string | null } | null;
     afternoon: { name: string; at: string | null } | null;
@@ -153,6 +165,12 @@ export default function StationApp({ station }: { station: Station }) {
   const serverOffsetRef = useRef(0);
   const [handoverLeftMs, setHandoverLeftMs] = useState<number | null>(null);
   const handoverEndFiredRef = useRef(false);
+  // THE SHIFT BUTTONS (owner, 29 Sept 2026): "no, this is my shift, add me"
+  // and "I will continue as afternoon shift". One at a time, so a double tap
+  // can never register twice.
+  const [shiftBusy, setShiftBusy] = useState(false);
+  /** What my own session was the last time this screen looked (taken-shift news). */
+  const prevMyShiftRef = useRef<"morning" | "afternoon" | null>(null);
   const [alertsOn, setAlertsOn] = useState(false);
   // STALE-CLOSURE FIX: the SSE handler is created once (deps [staffName]) and
   // captured whatever `alertsOn` was then. Enabling alerts afterwards never
@@ -415,6 +433,10 @@ export default function StationApp({ station }: { station: Station }) {
     fetch("/api/staff/login", { method: "DELETE" }).catch(() => {});
     setStaffName("");
     setPin("");
+    // A different person is coming: the next login must never read the
+    // previous barista's shift as "mine".
+    prevMyShiftRef.current = null;
+    setShiftMeta(null);
   };
 
   // The staff cookie lives 12 hours (one shift). When it dies mid-service the
@@ -427,6 +449,8 @@ export default function StationApp({ station }: { station: Station }) {
     setPin("");
     setLoginError(tNow("Your session ended. Log in again to keep receiving orders."));
     setStaffName("");
+    prevMyShiftRef.current = null;
+    setShiftMeta(null);
   };
 
   const load = async () => {
@@ -481,6 +505,22 @@ export default function StationApp({ station }: { station: Station }) {
       if (Number.isFinite(parsed)) serverOffsetRef.current = parsed - Date.now();
     }
     setShiftMeta(shiftInfo);
+    // THE SHIFT WAS TAKEN FROM ME (owner's rule, Sept 2026): another barista
+    // tapped "no, this is my shift, add me". My board empties and the standby
+    // screen names him; say it once, out loud, so nobody wonders where the
+    // orders went.
+    if (shiftInfo) {
+      const prev = prevMyShiftRef.current;
+      prevMyShiftRef.current = shiftInfo.myShift;
+      if (
+        initRef.current &&
+        prev === "morning" &&
+        shiftInfo.myShift === null &&
+        shiftInfo.blockedBy?.shift === "morning"
+      ) {
+        showToast(tNow("✗ {name} took the morning shift • you are on standby now", { name: shiftInfo.blockedBy.name }));
+      }
+    }
 
     // HARD STOP (owner, Sept 2026): the moment the hand-over ends, every
     // still-pending line leaves the morning barista's payload at once. Those
@@ -876,6 +916,38 @@ export default function StationApp({ station }: { station: Station }) {
     void refreshTodayUnits();
   };
 
+  /**
+   * THE SHIFT BUTTONS (owner, 29 Sept 2026). Each one is a single POST and
+   * then a reload, so every tablet reflects the new owner in the same second:
+   *   • take-morning       → "no, this is my shift, add me"
+   *   • continue-afternoon → "I will continue as afternoon shift"
+   * The server answers with the reason when it refuses (the shift moved on, or
+   * somebody else registered first), and that reason is what the crew reads.
+   */
+  const runShiftAction = async (action: "take-morning" | "continue-afternoon") => {
+    if (shiftBusy) return;
+    setShiftBusy(true);
+    let expired = false;
+    try {
+      const r = await fetch("/api/station-items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (r.status === 401) {
+        expired = true;
+      } else if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        showToast(d?.error ? Ld(d.error) : tNow("That tap did not go through. Try again."));
+      }
+    } catch {
+      showToast(tNow("Network error. Try again."));
+    }
+    setShiftBusy(false);
+    if (expired) return expireSession();
+    load();
+  };
+
   /* ── LOGIN ── */
   if (!staffName) {
     return (
@@ -946,13 +1018,34 @@ export default function StationApp({ station }: { station: Station }) {
     .filter((t) => t.boardItems.length > 0);
   /**
    * STANDBY (barista hand-over): my board is empty because the shift is
-   * someone else's today — the owner's name goes on the empty screen, so a
-   * second barista knows at a glance why he sees no orders (and who to call).
-   * The morning owner after the hard stop instead reads that his day of
-   * orders is finished and his numbers live under Items sold.
+   * someone else's today. The SERVER names who holds the board away from me
+   * (blockedBy), so the lock screen can say "Barista morning shift is taken by
+   * Eyob" and, while the morning is still live, offer the one-tap takeover
+   * "no, this is my shift, add me". The afternoon is never taken this way.
    */
-  const standbyOwner =
-    shiftMeta && !shiftMeta.myShift ? (shiftMeta.phase === "open" ? shiftMeta.owners.morning : shiftMeta.owners.afternoon) : null;
+  const blockedBy = shiftMeta?.blockedBy ?? null;
+  /**
+   * WHICH LOCK SCREEN the empty board shows (barista hand-over only):
+   *   • "continue"     — the morning owner, window closed, afternoon free:
+   *                      he may keep working all day with one tap.
+   *   • "morning-over" — his shift is finished and somebody else took the
+   *                      afternoon: the note names who takes over.
+   *   • "standby"      — this shift belongs to somebody else today.
+   *   • null           — nothing to lock: a barista whose shift is still live
+   *                      simply has no orders right now (normal "all clear").
+   */
+  const lockScreen: "continue" | "morning-over" | "standby" | null =
+    !shiftMeta || shiftMeta.seesPending
+      ? null
+      : shiftMeta.canContinueAfternoon
+        ? "continue"
+        : shiftMeta.myShift === "morning"
+          ? shiftMeta.phase === "after"
+            ? "morning-over"
+            : null
+          : blockedBy
+            ? "standby"
+            : null;
   /** The pile the crew is looking at right now (accepted / done / combined). */
   const salesPile: StationSalesPile | null = sales?.modes?.[salesMode] ?? null;
 
@@ -972,7 +1065,7 @@ export default function StationApp({ station }: { station: Station }) {
                   everyone can see whose board this is. */}
               {shiftMeta?.myShift && (
                 <span className="ml-1.5 inline-block text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-600/25 border border-emerald-600/60 text-emerald-300 align-middle">
-                  {shiftMeta.myShift === "morning" ? L("Morning") : L("Afternoon")}
+                  {shiftMeta.alsoMorning ? L("Full day") : shiftMeta.myShift === "morning" ? L("Morning") : L("Afternoon")}
                 </span>
               )}
             </p>
@@ -1066,6 +1159,28 @@ export default function StationApp({ station }: { station: Station }) {
         </div>
       )}
 
+      {/* ── KEEP WORKING (owner, Sept 2026) ──
+          The morning man still has drinks to finish, the 20 minutes are over
+          and nobody took the afternoon. He does not have to stand by: while he
+          finishes what he accepted, he may already continue as the day's
+          afternoon barista, and new orders come back to this screen. */}
+      {shiftMeta?.canContinueAfternoon && boardTickets.length > 0 && (
+        <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5">
+          <div className="bg-amber-950/70 border border-[#C9A227] rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-[11px] font-bold text-amber-200 max-w-md">
+              {L("Nobody took the afternoon shift yet. When your accepted drinks are done, tap below to continue as the afternoon barista.")}
+            </p>
+            <button
+              onClick={() => runShiftAction("continue-afternoon")}
+              disabled={shiftBusy}
+              className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] text-xs font-black uppercase disabled:opacity-50"
+            >
+              {L("I will continue as afternoon shift")}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── CANCELLED WORK: the crew's PROOF (owner's decision, Sept 2026) ──
           A cancelled order used to disappear from this list, so a cook who had
           already started it had nothing to point at. Now it stays here in red,
@@ -1142,25 +1257,60 @@ export default function StationApp({ station }: { station: Station }) {
       {/* tickets cards */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5 space-y-4">
         {boardTickets.length === 0 ? (
-          shiftMeta && !shiftMeta.seesPending ? (
-            <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-10 text-center space-y-2">
-              {shiftMeta.myShift === "morning" ? (
+          shiftMeta && lockScreen ? (
+            <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-10 text-center space-y-3">
+              {lockScreen === "continue" ? (
                 <>
                   <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
+                  <p className="text-stone-400 text-xs max-w-md mx-auto">
+                    {L("The counter has ended and nobody took the afternoon shift yet. Continue as the afternoon barista and new orders come back to this screen.")}
+                  </p>
+                  <button
+                    onClick={() => runShiftAction("continue-afternoon")}
+                    disabled={shiftBusy}
+                    className="mx-auto block px-5 py-3 rounded-xl bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] text-xs font-black uppercase disabled:opacity-50"
+                  >
+                    {L("I will continue as afternoon shift")}
+                  </button>
+                </>
+              ) : lockScreen === "morning-over" ? (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
+                  <p className="text-amber-100 text-sm font-black">
+                    {blockedBy
+                      ? L("Your shift is over now • {name} will take the afternoon.", { name: blockedBy.name })
+                      : L("Your shift is over now.")}
+                  </p>
                   <p className="text-stone-400 text-xs">
                     {L("The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.")}
                   </p>
                 </>
-              ) : (
+              ) : lockScreen === "standby" && blockedBy ? (
                 <>
                   <p className="font-serif font-black text-amber-200 text-base">{L("Waiting for your shift")}</p>
+                  <p className="text-amber-100 text-sm font-black">
+                    {blockedBy.shift === "morning"
+                      ? L("Barista morning shift is taken by {name}", { name: blockedBy.name })
+                      : L("Today's afternoon shift is {name}", { name: blockedBy.name })}
+                  </p>
+                  <p className="text-stone-400 text-xs max-w-md mx-auto">
+                    {L("You are not in this shift. Orders show only on {name}'s screen.", { name: blockedBy.name })}
+                  </p>
+                  {shiftMeta.canTakeOverMorning && (
+                    <button
+                      onClick={() => runShiftAction("take-morning")}
+                      disabled={shiftBusy}
+                      className="mx-auto block px-5 py-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black uppercase disabled:opacity-50"
+                    >
+                      {L("No, this is my shift • add me")}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
                   <p className="text-stone-400 text-xs">
-                    {standbyOwner
-                      ? L("{name} is the {shift} shift today. Orders show only on their screen.", {
-                          name: standbyOwner.name,
-                          shift: shiftMeta.phase === "open" ? L("Morning") : L("Afternoon"),
-                        })
-                      : L("Orders show only on the shift owner's screen.")}
+                    {L("The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.")}
                   </p>
                 </>
               )}

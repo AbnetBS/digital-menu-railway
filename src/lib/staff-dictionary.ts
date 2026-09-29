@@ -685,6 +685,28 @@ export const STAFF_AM = {
   "You are the afternoon shift. Shared drinks below belong to whoever accepts them first.": "የከሰዓት ፈረቃ እርስዎ ነዎት። ከታች ያሉት የጋራ መጠጦች መጀመሪያ የሚቀበለውን ሰው ይሆናሉ።",
   "Accept your first drink to register as the afternoon shift.": "የመጀመሪያዎን መጠጥ ይቀበሉ እና የከሰዓት ፈረቃ መሆንዎን ይመዝገቡ።",
   "☀ Hand-over complete": "☀ ርክክቡ ተጠናቋል",
+  /* the shift owner's screen after the window (owner, 29 Sept 2026): the
+     morning man reads that his shift is over, or continues into the afternoon
+     with one tap when nobody else took it; a second barista reads who holds
+     the board and may take the still-live morning from him */
+  "Full day": "ሙሉ ቀን",
+  "Barista morning shift is taken by {name}": "የባሪስታ ጠዋት ፈረቃ በ{name} ተይዟል",
+  "Today's afternoon shift is {name}": "የዛሬው የከሰዓት ፈረቃ {name} ነው",
+  "You are not in this shift. Orders show only on {name}'s screen.": "እርስዎ በዚህ ፈረቃ ውስጥ አይደሉም። ትዕዛዞች በ{name} ስክሪን ብቻ ይታያሉ።",
+  "No, this is my shift • add me": "አይ፣ ይህ የእኔ ፈረቃ ነው • እኔን ጨምር",
+  "✗ {name} took the morning shift • you are on standby now": "✗ የጠዋት ፈረቃውን {name} ወሰደው • አሁን በመጠባበቅ ላይ ነዎት",
+  "Your shift is over now.": "ፈረቃዎ አለቀ።",
+  "Your shift is over now • {name} will take the afternoon.": "ፈረቃዎ አለቀ • ከሰዓቱን {name} ይወስዳል።",
+  "I will continue as afternoon shift": "በከሰዓት ፈረቃ እቀጥላለሁ",
+  "The counter has ended and nobody took the afternoon shift yet. Continue as the afternoon barista and new orders come back to this screen.": "ቆጣሪው አልቋል፤ የከሰዓት ፈረቃውን እስካሁን ማንም አልያዘውም። የከሰዓት ባሪስታ ሆነው ይቀጥሉ፤ አዲስ ትዕዛዞች ወደዚህ ስክሪን ይመለሳሉ።",
+  "Nobody took the afternoon shift yet. When your accepted drinks are done, tap below to continue as the afternoon barista.": "የከሰዓት ፈረቃውን እስካሁን ማንም አልያዘውም። የተቀበሏቸው መጠጦች ሲጠናቀቁ የከሰዓት ባሪስታ ሆነው ለመቀጠል ከታች ይንኩ።",
+  "The morning shift is over • it can not be taken anymore": "የጠዋት ፈረቃው አልቋል • ከእንግዲህ ሊወሰድ አይችልም",
+  "Nobody holds the morning shift yet • accept your first drink": "የጠዋት ፈረቃውን እስካሁን ማንም አልያዘም • የመጀመሪያዎን መጠጥ ይቀበሉ",
+  "Only today's morning barista can continue into the afternoon": "ወደ ከሰዓት መቀጠል የሚችለው የዛሬው የጠዋት ባሪስታ ብቻ ነው",
+  "{name} already holds the afternoon shift": "{name} የከሰዓት ፈረቃውን አስቀድሞ ይዟል",
+  "{name} took the morning shift first": "{name} የጠዋት ፈረቃውን አስቀድሞ ወሰደው",
+  "The morning shift already changed hands": "የጠዋት ፈረቃው አስቀድሞ ተቀይሯል",
+  "The hand-over window is still running • wait for the counter": "የርክክብ ጊዜው አሁንም እየሄደ ነው • ቆጣሪውን ይጠብቁ",
   "The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.": "ቆጣሪው አልቋል። አዲስ ትዕዛዞች ለከሰዓት ባሪስታ ናቸው። ዕለትዎን ለማየት የተሸጡ እቃዎች የሚለውን ይንኩ።",
   "Waiting for your shift": "ፈረቃዎን በመጠበቅ ላይ",
   "{name} is the {shift} shift today. Orders show only on their screen.": "{name} ዛሬ የ{shift} ፈረቃ ነው። ትዕዛዞች በእሱ ስክሪን ብቻ ይታያሉ።",

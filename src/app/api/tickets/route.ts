@@ -13,7 +13,7 @@ import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
 import { canMergeLines } from "@/lib/order-lines";
 import { recordTicketEvent, summarizeSubmissionLines } from "@/lib/ticket-audit";
-import { stationForOrder, stationOf, type StationName } from "@/lib/stations";
+import { mergeCategoryRouting, stationForOrder, stationOf, type StationName } from "@/lib/stations";
 import { isBillSent, isTableReleased, allLinesFinished } from "@/lib/order-release";
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
 import { nextGroupNumberToday, nextGroupNumberInTx, groupLabel } from "@/lib/group-orders";
@@ -567,7 +567,11 @@ export async function POST(request: Request) {
       const { siteSettings } = await import("@/db/schema");
       const { eq: eqSet } = await import("drizzle-orm");
       const rows = await tx.select().from(siteSettings).where(eqSet(siteSettings.key, "category_routing"));
-      if (rows.length > 0 && rows[0].value) routing = JSON.parse(rows[0].value);
+      // MERGE, never replace (the juice bug, 29 Sept 2026): a saved map that
+      // simply does not mention a category must never send it to the kitchen
+      // fallback behind the owner's back — the built-in default for that
+      // category stands. See mergeCategoryRouting in @/lib/stations.
+      if (rows.length > 0 && rows[0].value) routing = mergeCategoryRouting(JSON.parse(rows[0].value));
     } catch {
       /* fallback to defaults */
     }

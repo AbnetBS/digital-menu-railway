@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Coffee, CookingPot, CupSoda, RefreshCw, Save, CheckCircle2, Timer, Minus, Plus } from "lucide-react";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
+import { mergeCategoryRouting } from "@/lib/stations";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import {
   WAITER_SEND_HOLD_DEFAULT_SECONDS,
@@ -32,9 +33,13 @@ export default function StationsTab() {
     }
     if (sRes.ok) {
       const s = await sRes.json();
+      // THE SAME MERGE THE ORDER PATH USES (juice bug, 29 Sept 2026): the dots
+      // on this screen must show exactly where an order will go, so a saved map
+      // that misses a category falls back to that category's default crew —
+      // never to the kitchen behind the owner's back.
       if (s.category_routing) {
         try {
-          setRouting((prev) => ({ ...prev, ...JSON.parse(s.category_routing) }));
+          setRouting(mergeCategoryRouting(JSON.parse(s.category_routing)));
         } catch {}
       }
       setHoldSeconds(waiterSendHoldSeconds(s.waiter_send_hold_seconds));
@@ -63,6 +68,10 @@ export default function StationsTab() {
     } else alert(L("Failed to save routing."));
   };
 
+  // Categories the order engine has no routing for at all: the server sends
+  // them to the Kitchen, so the screen says so instead of showing no dot.
+  const unrouted = categories.filter((c) => !routing[c.slug]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -89,6 +98,15 @@ export default function StationsTab() {
         </div>
       )}
 
+      {unrouted.length > 0 && (
+        /* The visible symptom of the bug that made juice read 0: a category
+           with no dot at all is unrouted, and until the owner taps one it goes
+           to the Kitchen. Say it plainly instead of leaving a silent hole. */
+        <div className="bg-amber-950/60 border border-amber-600 text-amber-100 text-xs p-3 rounded-xl font-bold">
+          {L("⚠ {count} category(ies) have no routing yet • they go to the Kitchen. Tap a dot and Save Routing.", { count: unrouted.length })}
+        </div>
+      )}
+
       <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 p-5 space-y-1">
         <div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 items-center pb-3 border-b border-stone-800 text-[10px] uppercase font-extrabold text-stone-400">
           <span>{L("Category")}</span>
@@ -100,7 +118,18 @@ export default function StationsTab() {
         <div className="divide-y divide-stone-800">
           {categories.map((c) => (
             <div key={c.id} className="grid grid-cols-[1fr_auto_auto_auto] gap-3 items-center py-2.5">
-              <span className="text-xs font-bold text-amber-100">{c.name}</span>
+              <span className="text-xs font-bold text-amber-100 flex flex-wrap items-center gap-2">
+                {c.name}
+                {/* A category the owner sent somewhere OTHER than its default is
+                    marked, so a crew can never quietly lose its work again
+                    (the juice bug: fresh juices were routed to the kitchen and
+                    nothing on this screen said so). */}
+                {DEFAULT_CATEGORY_ROUTING[c.slug] && routing[c.slug] && routing[c.slug] !== DEFAULT_CATEGORY_ROUTING[c.slug] && (
+                  <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-900/60 border border-amber-600/60 text-amber-200">
+                    {L("changed from default")}
+                  </span>
+                )}
+              </span>
               <button
                 onClick={() => setRouting({ ...routing, [c.slug]: "barista" })}
                 className={`w-7 h-7 rounded-full border-2 flex items-center justify-center transition ${

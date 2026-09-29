@@ -49,6 +49,8 @@ import {
   type SalesPeriod,
   type StationSalesItemRow,
 } from "../src/lib/station-sales";
+import { mergeCategoryRouting, stationForOrder } from "../src/lib/stations";
+import { DEFAULT_CATEGORY_ROUTING } from "../src/lib/initial-data";
 import { etDayKey, etStartOfDaysAgo } from "../src/lib/timezone";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -349,6 +351,51 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
     !/DONE_LINGER_MS|doneLingerLeft/.test(read("src/lib/station-sales.ts")) &&
     !/DONE_LINGER_MS|doneLingerLeft/.test(read("src/app/api/station-sales/route.ts")) &&
     !/DONE_LINGER_MS|doneLingerLeft/.test(read("src/app/api/station-items/route.ts")));
+}
+
+/* ── 8. WHY JUICE COULD STILL READ 0,0: A LOST ROUTING KEY (29 Sept 2026) ── */
+/* The owner: "when its for juice the total sale shows 0,0". The taps were
+ * fine; the ROUTING was the hole. The order path did `routing = JSON.parse(
+ * saved)`, so a saved map that never mentioned a category sent that category
+ * to the kitchen fallback — and an older save (from before the juice lane
+ * existed, or keyed with the category's stored capitalisation) did exactly
+ * that for the fresh juices. Every juice went to the kitchen, the juice
+ * maker's board stayed empty and his Items-sold figure could only be 0.
+ * The merge below makes that impossible, and it is the SAME merge the Stations
+ * tab shows, so the dots on that screen are the truth of where an order goes. */
+{
+  const merged = mergeCategoryRouting({});
+  pass("an empty saved map keeps EVERY built-in default (juice categories included)",
+    Object.entries(DEFAULT_CATEGORY_ROUTING).every(([slug, station]) => merged[slug] === station) &&
+    merged.juices === "juice" && merged["juices-fresh"] === "juice");
+
+  const remembered = mergeCategoryRouting({ "hot-drinks": "kitchen", pizza: "kitchen" });
+  pass("the owner's own choice still wins where he made one",
+    remembered["hot-drinks"] === "kitchen" && remembered.pizza === "kitchen");
+  pass("a category the saved map FORGOT keeps its default crew, never the kitchen fallback",
+    remembered.juices === "juice" && remembered["juices-fresh-punches"] === "juice");
+
+  const shouted = mergeCategoryRouting({ Juices: "juice", "SOFT-DRINKS": "juice" });
+  pass("a saved key with different capitalisation still matches (the order path lowercases the slug)",
+    shouted.juices === "juice" && shouted["soft-drinks"] === "juice");
+
+  const junk = mergeCategoryRouting({ juices: "buna", coffee: 7, "   ": "juice", barista: null });
+  pass("junk values are ignored, never routed anywhere",
+    junk.juices === "juice" && junk.coffee === "barista" && junk.barista === undefined &&
+    !Object.prototype.hasOwnProperty.call(junk, ""));
+
+  pass("END TO END: an old saved map can no longer send a fresh juice to the kitchen",
+    stationForOrder(mergeCategoryRouting({ pizza: "kitchen" }), "juices", false) === "juice" &&
+    stationForOrder(mergeCategoryRouting({ Juices: "juice" }), "juices", false) === "juice" &&
+    stationForOrder(mergeCategoryRouting({ juices: "barista" }), "juices", false) === "barista");
+
+  const tickets = read("src/app/api/tickets/route.ts");
+  pass("the order route MERGES the saved routing over the defaults (never replaces them)",
+    /mergeCategoryRouting\(JSON\.parse\(/.test(tickets) && !/routing = JSON\.parse/.test(tickets));
+  const stationsTab = read("src/components/rms/StationsTab.tsx");
+  pass("the Stations tab shows the same merged truth and names any category with no routing",
+    /mergeCategoryRouting\(JSON\.parse/.test(stationsTab) && /const unrouted = categories\.filter/.test(stationsTab) &&
+    /have no routing yet/.test(stationsTab));
 }
 
 if (failures > 0) {

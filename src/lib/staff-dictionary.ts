@@ -1256,6 +1256,7 @@ export const STAFF_AM = {
   "About to send • {count} item(s)": "ሊላክ • {count} እቃ(ዎች)",
   "Sends in": "የመላኪያ ጊዜ",
   "Edit the items above until it runs out": "ጊዜው እስኪያልቅ ድረስ ከላይ ያሉትን እቃዎች ያስተካክሉ",
+  "🚶 Walk away if you must • the order still sends itself at 0:00": "🚶 ከፈለጉ መውጣት ይችላሉ • ትዕዛዙ ራሱ በ0:00 ይላካል",
   "Cancel whole order": "ትዕዛዙን በሙሉ ሰርዝ",
   "Order for {tableName}": "የ{tableName} ትዕዛዝ",
   "It will send automatically, even while you work at another table.": "ሌላ ጠረጴዛ ላይ እየሰሩ ቢሆንም በራስ-ሰር ይላካል።",

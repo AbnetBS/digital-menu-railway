@@ -234,11 +234,54 @@ async function main() {
   } finally {
     Date.now = realNow;
   }
+  // Give the app's own ticker a beat to re-read the real clock, so the hold
+  // started in the next step is measured against a clock that is not skewed.
+  await act(async () => { await new Promise((r) => setTimeout(r, 1100)); });
   await settle();
   pass("when the countdown reaches zero the order sends BY ITSELF", postedTickets() === 2);
   pass("...and only then does she land back on the tables grid", text().includes("Tap a green table"));
 
-  /* ── 6. the phone's Back button walks out one screen at a time ────────── */
+  /* ── 6. SHE MAY WALK AWAY: the order still sends from another table ────
+     The owner's clarification, 30 Sept 2026: "that doesnt mean waiter should be
+     in the page to be sent ... they can clcik back and go to other tables but
+     the order will automatically been sent to the stations". So this presses
+     Back straight after Send and lets the clock expire on the TABLES GRID. */
+  await click(tilesByText("Table 2")[0]);
+  await settle();
+  await click(tilesByText("Cappuccino")[0]);
+  await settle();
+  const deferredPosts = () => calls.filter((c) => c.url === "/api/tickets/deferred" && c.method === "POST").length;
+  const queuedBefore = deferredPosts();
+  await click(buttonsByText("Send Order")[0]);
+  await settle();
+  pass("the sheet says out loud that she may leave",
+    text().includes("🚶 Walk away if you must • the order still sends itself at 0:00"));
+  await back();
+  pass("BACK right after Send takes her to ALL THE TABLES",
+    text().includes("Tap a green table") && !text().includes("Send Order") && !text().includes("Sends in"));
+  pass("...and the table she just sent keeps a live countdown on its tile",
+    text().includes("Waiting to send") && /sends in \d+:\d\d/.test(text()) && buttonsByText("View order").length === 1,
+    `text=${text().slice(0, 400)}`);
+  pass("the order is still queued on the server, not lost by leaving",
+    deferredPosts() === queuedBefore + 1,
+    `calls=${calls.map((c) => `${c.method} ${c.url}`).join(" | ")}`);
+  const beforeWalkAway = postedTickets();
+  const realNow2 = Date.now;
+  Date.now = () => realNow2() + 61_000;
+  try {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1400));
+    });
+  } finally {
+    Date.now = realNow2;
+  }
+  await settle();
+  pass("with her OUT on the tables grid the clock still sends it to the stations",
+    postedTickets() === beforeWalkAway + 1);
+  pass("she is still where she left it — the grid, free to take another table",
+    text().includes("Tap a green table") && !text().includes("Waiting to send") && !text().includes("New order"));
+
+  /* ── 7. the phone's Back button walks out one screen at a time ────────── */
   await click(tilesByText("Table 2")[0]);
   await settle();
   pass("she can open another table", text().includes("New order"));
@@ -258,6 +301,7 @@ async function main() {
   console.log("\n✅ The waiter's send, on the page she tapped it on");
   console.log("   • Send keeps the items, the countdown, Send now and Cancel whole order");
   console.log("   • Cancel whole order deletes the saved order; Send now posts at once");
+  console.log("   • She may walk away: Back to the grid and the clock still sends it");
   console.log("   • Back walks order → tables → login, one screen per press");
 }
 

@@ -2486,6 +2486,15 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                       {sendingPendingKeys.includes(activeHoldKey) ? L("Sending...") : L("Send now")}
                     </button>
                   </div>
+                  {/* She is NOT held on this page (owner, 30 Sept 2026): "like
+                      that doesnt mean waiter should be in the page to be sent
+                      ... they can clcik back and go to other tables but the
+                      order will automatically been sent to the stations". The
+                      queue lives in Postgres and the server worker sends it, so
+                      saying so out loud stops her waiting around. */}
+                  <p className="text-[10px] font-black text-emerald-300 leading-tight">
+                    {L("🚶 Walk away if you must • the order still sends itself at 0:00")}
+                  </p>
                   <button
                     onClick={() => void cancelSendHold()}
                     disabled={sendingPendingKeys.includes(activeHoldKey)}

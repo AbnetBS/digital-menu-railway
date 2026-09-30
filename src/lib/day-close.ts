@@ -3,13 +3,13 @@ import { db } from "@/db";
 import { siteSettings, tickets } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { sendPushToRoles } from "@/lib/push";
-import { etDayKey, etHour, etStartOfDaysAgo } from "@/lib/timezone";
+import { etDayKey, etHour, etMinute, etStartOfDaysAgo } from "@/lib/timezone";
 import {
   AUTO_CLOSE_BY,
   DAY_CLOSE_NOTIFY_KEY,
   DAY_CLOSE_KEY_PREFIX,
   dayCloseCutoffHour,
-  dayCloseNotifyHour,
+  dayCloseNotifyTime,
   dayClosePush,
   dayCloseSettingKey,
   dayKeyFromCloseSetting,
@@ -17,6 +17,7 @@ import {
   isDayCloseDue,
   parseDayCloseValue,
   type DayCloseRecord,
+  type NotifyTime,
 } from "@/lib/daily-sales";
 
 /**
@@ -74,22 +75,35 @@ export async function readPrintedBills(cutoff: Date): Promise<SoldRow[]> {
 export interface DayCloseState {
   /** The owner's chosen notify hour (21:00 default). */
   notifyHour: number;
+  /** The minute of that time (0 until he types one, e.g. 3 for 21:03). */
+  notifyMinute: number;
   /** The hour the cashier's button opens (one hour before the notify time). */
   cutoffHour: number;
+  /** The minute the button opens (one hour before the owner's exact time). */
+  cutoffMinute: number;
   /** Today's close record, if the day was closed (manually or automatically). */
   today: DayCloseRecord | null;
 }
 
 /** The owner's notify hour from settings (never fails: falls back to 21:00). */
 export async function readNotifyHour(): Promise<number> {
+  return (await readNotifyTime()).hour;
+}
+
+/**
+ * The owner's exact notify TIME from settings (never fails: falls back to
+ * 21:00). Since 30 Sept 2026 he picks the minute too — "any time like 3:03" —
+ * so the automatic send compares the wall clock to the minute, not the hour.
+ */
+export async function readNotifyTime(): Promise<NotifyTime> {
   try {
     const rows = await db
       .select()
       .from(siteSettings)
       .where(sql`${siteSettings.key} = ${DAY_CLOSE_NOTIFY_KEY}`);
-    return dayCloseNotifyHour(rows[0]?.value);
+    return dayCloseNotifyTime(rows[0]?.value);
   } catch {
-    return dayCloseNotifyHour(null);
+    return dayCloseNotifyTime(null);
   }
 }
 
@@ -184,9 +198,11 @@ export async function maybeAutoCloseDay(now: Date = new Date()): Promise<
 > {
   try {
     await ensureTablesExist();
-    const notifyHour = await readNotifyHour();
+    const notifyTime = await readNotifyTime();
     const hour = etHour(now);
-    if (!isDayCloseDue(hour, notifyHour)) return "early";
+    // To the MINUTE: the owner picks 3:03 and the total leaves at 3:03, not at
+    // the top of the hour (the worker itself wakes every minute).
+    if (!isDayCloseDue(hour, notifyTime.hour, etMinute(now), notifyTime.minute)) return "early";
 
     const dayKey = etDayKey(now) || "";
     if (!dayKey) return "error";

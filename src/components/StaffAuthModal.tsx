@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   X,
   Lock,
@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
+import { installStaffBackNavigation } from "@/lib/staff-back-navigation";
 
 export type RoleType = "waiter" | "cashier" | "barista" | "kitchen" | "buna" | "juice" | "admin";
 
@@ -75,6 +76,33 @@ export default function StaffAuthModal({ isOpen, onClose }: StaffAuthModalProps)
         .finally(() => setLoading(false));
     }
   }, [selectedRole]);
+
+  /* ── THE PHONE'S BACK BUTTON = ONE STEP BACK (owner's decision, Sept 2026) ──
+   * The owner's phone runs a big system font, and one Back press used to throw
+   * him out of the website while he was still picking a role. The guard is
+   * installed for as long as this page lives, so Back always steps back ONE
+   * layer: the role's login form → the role grid → the portal closed → and only
+   * then does the press leave the site like it always did. */
+  const backStateRef = useRef({ isOpen: false, selectedRole: null as RoleType | null });
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    backStateRef.current = { isOpen, selectedRole };
+    closeRef.current = onClose;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    return installStaffBackNavigation(window, () => {
+      const now = backStateRef.current;
+      if (!now.isOpen) return false; // nothing open: the real Back leaves the site
+      if (now.selectedRole) {
+        setSelectedRole(null);
+        setError("");
+        return true;
+      }
+      closeRef.current();
+      return true;
+    });
+  }, []);
 
   if (!isOpen) return null;
 
@@ -219,8 +247,16 @@ export default function StaffAuthModal({ isOpen, onClose }: StaffAuthModalProps)
   const activeRoleConfig = roles.find((r) => r.id === selectedRole);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="relative w-full max-w-lg bg-[#1C120F] border border-[#C9A227]/40 rounded-3xl p-6 md:p-8 text-white shadow-2xl overflow-hidden">
+    /* EVERY SCREEN SIZE, EVERY FONT SIZE (owner, 30 Sept 2026): his phone runs
+       a big system font, and this modal used to be a fixed-height box with
+       `overflow-hidden` — with 7 roles on the list, "Admin / Owner" fell off
+       the bottom and no amount of scrolling could reach it. The portal is now a
+       scroll region: the card is centred while it fits and simply scrolls when
+       a big font makes it taller than the screen, so the last role is always
+       reachable. */
+    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain bg-black/80 backdrop-blur-md animate-in fade-in duration-200 px-3 py-4 sm:p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        <div className="min-h-full flex items-center justify-center">
+          <div className="relative w-full max-w-lg bg-[#1C120F] border border-[#C9A227]/40 rounded-3xl p-5 sm:p-6 md:p-8 text-white shadow-2xl">
         {/* Close Button */}
         <button
           onClick={onClose}
@@ -232,7 +268,7 @@ export default function StaffAuthModal({ isOpen, onClose }: StaffAuthModalProps)
         <StaffLangToggle compact className="absolute top-4 left-4" />
 
         {/* Modal Header */}
-        <div className="text-center space-y-2 mb-6">
+        <div className="text-center space-y-2 mb-6 pt-10 sm:pt-0">
           <div className="w-12 h-12 rounded-2xl bg-[#C9A227] text-[#2C1B17] flex items-center justify-center mx-auto shadow-lg font-bold">
             <Lock className="w-6 h-6" />
           </div>
@@ -392,7 +428,8 @@ export default function StaffAuthModal({ isOpen, onClose }: StaffAuthModalProps)
             )}
           </div>
         )}
-      </div>
+          </div>
+        </div>
     </div>
   );
 }

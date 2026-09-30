@@ -18,6 +18,7 @@ import BillNotificationCard, { BillNotification } from "@/components/rms/BillNot
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
 import DayCloseButton from "@/components/rms/DayCloseButton";
+import { closeTopBackLayer, installStaffBackNavigation } from "@/lib/staff-back-navigation";
 
 interface StaffLite {
   id: number;
@@ -894,6 +895,39 @@ export default function CashierDashboard() {
       return next;
     });
   };
+
+  /* ── THE PHONE'S BACK BUTTON = ONE STEP BACK (owner's decision, Sept 2026) ──
+   * "1 back button clcik 1 step back not completly take them to the start":
+   * the cashier's screens are pop-ups over one board, so Back closes the TOP
+   * pop-up only — the guest alert, a receipt photo, the item editor, a
+   * composer, the coffee-note panel, the bill — and only when the board is
+   * bare does the press really leave the app. */
+  const closeUrgentAlert = () =>
+    setUrgent((cur) => {
+      if (cur) answeredRef.current.add(cur.id);
+      return null;
+    });
+  const stepBack = () =>
+    closeTopBackLayer([
+      { at: () => !!urgent, close: closeUrgentAlert },
+      { at: () => !!receiptModal, close: () => setReceiptModal(null) },
+      { at: () => !!editTarget && canKeepEditing, close: () => setEditTarget(null) },
+      { at: () => !!addToTicket, close: () => setAddToTicket(null) },
+      { at: () => outdoorComposerOpen, close: () => setOutdoorComposerOpen(false) },
+      { at: () => coffeeNoteOpen, close: () => setCoffeeNoteOpen(false) },
+      { at: () => !!billModal, close: () => setBillModal(null) },
+      // The board itself steps back to her login (a real logout, so the screen
+      // never lies about a live session); only the next press leaves the app.
+      { at: () => !!staffName, close: logout },
+    ]);
+  const stepBackRef = useRef<() => boolean>(() => false);
+  useEffect(() => {
+    stepBackRef.current = stepBack;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    return installStaffBackNavigation(window, () => stepBackRef.current());
+  }, []);
 
   /* ── LOGIN ── */
   if (!staffName) {
@@ -2252,7 +2286,7 @@ export default function CashierDashboard() {
           printed bill needs a cross-check against the EFD receipt). */}
       {billModal && (
         <div
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fana-fit-screen fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
           onClick={() => setBillModal(null)}
         >
           <div
@@ -2385,7 +2419,7 @@ export default function CashierDashboard() {
 
       {/* receipt image modal */}
       {receiptModal && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setReceiptModal(null)}>
+        <div className="fana-fit-screen fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setReceiptModal(null)}>
           <img src={receiptModal} alt={L("Payment receipt")} className="max-h-[85vh] max-w-full rounded-2xl border border-[#C9A227]" />
         </div>
       )}
@@ -2443,7 +2477,7 @@ function EditItemModal({ item, onClose, onSaved }: { item: TicketItem; onClose: 
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fana-fit-screen fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
         className="bg-[#2C1B17] border-2 border-[#C9A227]/50 rounded-2xl w-full max-w-sm p-5 space-y-4"
         onClick={(e) => e.stopPropagation()}

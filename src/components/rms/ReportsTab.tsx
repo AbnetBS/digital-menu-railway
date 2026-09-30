@@ -648,7 +648,7 @@ export default function ReportsTab() {
       )}
 
       {waiterModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print" onClick={() => setWaiterModal(null)}>
+        <div className="fana-fit-screen fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print" onClick={() => setWaiterModal(null)}>
           <div className="bg-[#2C1B17] border-2 border-[#C9A227]/50 rounded-2xl w-full max-w-3xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="sticky top-0 bg-[#2C1B17] border-b border-stone-800 px-5 py-4 flex items-start justify-between gap-3">
               <div>
@@ -702,7 +702,7 @@ export default function ReportsTab() {
           item with name, qty, unit price, line total and the bill total. */}
       {billModal && (
         <div
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print"
+          className="fana-fit-screen fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print"
           onClick={() => setBillModal(null)}
         >
           <div
@@ -780,7 +780,7 @@ export default function ReportsTab() {
       {shiftOpen && <ShiftReport onClose={() => setShiftOpen(false)} logoUrl={brand.logo_url} />}
 
       {receiptModal && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 no-print" onClick={() => setReceiptModal(null)}>
+        <div className="fana-fit-screen fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 no-print" onClick={() => setReceiptModal(null)}>
           <img src={receiptModal} alt={L("Receipt")} className="max-h-[85vh] max-w-full rounded-2xl border border-[#C9A227]" />
         </div>
       )}

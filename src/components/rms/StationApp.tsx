@@ -8,6 +8,7 @@ import { triggerDesktopNotification } from "@/lib/notifications";
 import Link from "next/link";
 import { phrase, useStaffT, tNow, staffEtb } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
+import { closeTopBackLayer, installStaffBackNavigation } from "@/lib/staff-back-navigation";
 import {
   SALES_MODES,
   SALES_MODE_LABELS,
@@ -268,6 +269,7 @@ export default function StationApp({ station }: { station: Station }) {
     showSalesRef.current = showSales;
   }, [salesPeriod, showSales]);
 
+
   // THIS PAGE'S ALARM SOUND (owner's decision, Sept 2026): the juice bar
   // stands next to the kitchen and the one shared alarm made the crews
   // answer each other's calls. Every alarm path on this page (new items,
@@ -481,6 +483,26 @@ export default function StationApp({ station }: { station: Station }) {
     setStaffName("");
     setShiftMeta(null);
   };
+
+  /* ── THE PHONE'S BACK BUTTON = ONE STEP BACK (owner's decision, Sept 2026) ──
+   * "1 back button clcik 1 step back not completly take them to the start":
+   * the crew's Items sold sheet is a full screen of its own, so Back closes
+   * that sheet first; the live board then steps back to this person's login
+   * screen, and only the press after that leaves the app the way a browser
+   * Back always did. */
+  const stepBack = () =>
+    closeTopBackLayer([
+      { at: () => showSales, close: closeSales },
+      { at: () => !!staffName, close: logout },
+    ]);
+  const stepBackRef = useRef<() => boolean>(() => false);
+  useEffect(() => {
+    stepBackRef.current = stepBack;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    return installStaffBackNavigation(window, () => stepBackRef.current());
+  }, []);
 
   const load = async () => {
     // GROUP 10 FIX: used to skip while the tab was hidden — but the kitchen

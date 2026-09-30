@@ -79,7 +79,7 @@ export default function UrgentAlertOverlay({
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/85 backdrop-blur-sm p-6">
+    <div className="fana-fit-screen fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/85 backdrop-blur-sm p-6">
       <button
         onClick={onClose}
         aria-label={L("Close")}

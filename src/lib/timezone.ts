@@ -24,6 +24,10 @@ const hourFmt = new Intl.DateTimeFormat("en-US", {
   hour: "numeric",
   hour12: false,
 });
+const minuteFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: ETHIOPIA_TIME_ZONE,
+  minute: "numeric",
+});
 
 const asDate = (d: Date | string | null | undefined): Date | null => {
   if (!d) return null;
@@ -131,4 +135,17 @@ export function etHour(d: Date | string): number {
   const dt = d instanceof Date ? d : new Date(d);
   // hour12:false renders midnight as "24" on some ICU builds — normalize it.
   return Number(hourFmt.format(dt)) % 24;
+}
+
+/**
+ * Minute of the hour (0-59) on the Ethiopian wall clock.
+ *
+ * The owner chose the exact minute his phone rings ("any time like 3:03"), so
+ * the day-close check compares minutes, not just whole hours — and this is the
+ * only place that reads them, still from the EAT wall clock and never from the
+ * server's own getters.
+ */
+export function etMinute(d: Date | string): number {
+  const dt = d instanceof Date ? d : new Date(d);
+  return Number(minuteFmt.format(dt)) % 60;
 }

@@ -5,13 +5,15 @@
  *
  *   1. WAITER SEND HOLD: when a waiter sends an order FROM HER OWN PHONE, the
  *      order waits `waiter_send_hold_seconds` (default 60) before it reaches
- *      the stations. Tapping Send takes her STRAIGHT BACK to the tables grid
- *      (no top countdown banner): the waiting table glows violet with its own
- *      clock and a View order button, and reopening it loads the queued items
- *      for editing with the timer and "Send now" at the bottom of the editor.
- *      Cancelling the cart cancels the hold. A customer's QR order that she
- *      ACCEPTS is NOT held, and neither is an addition to a bill she already
- *      sent.
+ *      the stations. Tapping Send KEEPS HER ON THE PAGE (owner, 30 Sept 2026 —
+ *      the waiters said being thrown back to the grid slowed them down): the
+ *      items she is about to send stay editable above, and under them sit the
+ *      three controls the owner listed — the COUNTDOWN, SEND NOW on its right,
+ *      and CANCEL WHOLE ORDER below the two. Back still takes her to the grid
+ *      with the countdown alive (the violet tile brings her back in), and a
+ *      send that lands takes her to the grid by itself. A customer's QR order
+ *      that she ACCEPTS is NOT held, and neither is an addition to a bill she
+ *      already sent.
  *   2. THE OWNER CAN CHANGE THE HOLD: the admin Stations tab has a seconds
  *      control (presets 30 sec / 1 min / 2 min / 3 min) saved through
  *      PUT /api/settings as `waiter_send_hold_seconds`, and the value is
@@ -100,12 +102,38 @@ function pass(name, cond) {
   pass("the countdown keeps running across views and sends the saved order at zero",
     /send\.dueAt <= now/.test(waiter) && /sendPendingOrderRef\.current\(send\.idempotencyKey, false\)/.test(waiter)
     && /window\.setInterval\(tick, 1000\)/.test(waiter));
-  // THE HOLD ON THE TILE (owner, Sept 2026): no global countdown banner at
-  // the top. Send leaves the menu at once; the violet tile carries the clock
-  // and the way back in.
-  pass("Send takes the waiter straight back to the tables grid (no top banner)",
-    /const startSendHold = \(\) => \{[\s\S]*?setView\("tables"\);[\s\S]*?\n  \};/.test(waiter)
-    && !waiter.includes('L("Order for {tableName}", { tableName: send.tableName })'));
+  // THE HOLD ON THE PAGE (owner, 30 Sept 2026 — he reversed the "throw her
+  // back to the grid" rule after the waiters said it slowed them down). Send
+  // keeps her where she is, over the items she is about to send, with the
+  // three controls he listed under them: the countdown, Send now on its right,
+  // and Cancel whole order below the two.
+  // Read each handler's OWN body: a lazy [\s\S]*? would happily run past the
+  // closing brace and "prove" something about a different function.
+  const bodyOf = (signature) => (waiter.split(signature)[1] || "").split("\n  };")[0] || "";
+  const startHoldBody = bodyOf("const startSendHold = () => {");
+  const cancelBody = bodyOf("const cancelSendHold = async () => {");
+  const sentBody = bodyOf("const sendPendingOrder = async (key: string, manual = false) => {");
+
+  pass("Send KEEPS the waiter on the page over the items she is about to send",
+    startHoldBody.includes("setActiveHold(idempotencyKey);")
+    && startHoldBody.includes("setHoldLeft(hold);")
+    && !startHoldBody.includes('setView("tables")')
+    && !startHoldBody.includes("setCart([])"));
+  pass("under the items sit the COUNTDOWN, SEND NOW on its right, CANCEL WHOLE ORDER below",
+    waiter.includes('L("Sends in")') && waiter.includes('L("Send now")')
+    && waiter.includes('L("Cancel whole order")')
+    && /formatHoldClock\(holdLeft\)/.test(waiter)
+    && /sendPendingOrderRef\.current\(activeHoldKey, true\)/.test(waiter)
+    && /onClick=\{\(\) => void cancelSendHold\(\)\}/.test(waiter));
+  pass("the waiting list says WHAT it is, so nobody reads it as already sent",
+    /⏳ Waiting to send • \{count\} item\(s\)/.test(waiter) && /About to send • \{count\} item\(s\)/.test(waiter));
+  pass("the items stay editable while it counts (quantity, note, remove)",
+    /max-h-\[30dvh\] overflow-y-auto space-y-2/.test(waiter) && /activeHoldKey !== null \?/.test(waiter));
+  pass("CANCELLING THE WHOLE ORDER clears the cart as well as the saved copy",
+    cancelBody.includes("setCart([]);") && cancelBody.includes("setActiveHold(null);")
+    && cancelBody.includes("method: \"DELETE\""));
+  pass("a send that actually lands still takes her to the tables grid",
+    sentBody.includes("if (activeHoldKeyRef.current === key) {") && sentBody.includes('setView("tables");'));
   pass("the waiting table glows violet with its own countdown and a View order button",
     waiter.includes("Waiting to send") && waiter.includes("View order")
     && /border-violet-500/.test(waiter) && /formatHoldClock\(queuedLeft\)/.test(waiter));

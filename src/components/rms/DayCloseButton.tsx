@@ -39,7 +39,13 @@ interface DayCloseDay {
 
 interface DayCloseState {
   notifyHour: number;
+  notifyMinute: number;
+  /** "21:03" — the exact minute the owner's phone rings. */
+  notifyAt: string;
   cutoffHour: number;
+  cutoffMinute: number;
+  /** "20:03" — the exact minute her button opens. */
+  cutoffAt: string;
   currentHour: number;
   canClose: boolean;
   dueNow: boolean;
@@ -64,7 +70,11 @@ export default function DayCloseButton({ onToast }: { onToast?: (msg: string) =>
       const data = (await r.json()) as DayCloseState;
       setState({
         notifyHour: data.notifyHour,
+        notifyMinute: data.notifyMinute ?? 0,
+        notifyAt: data.notifyAt || `${String(data.notifyHour).padStart(2, "0")}:00`,
         cutoffHour: data.cutoffHour,
+        cutoffMinute: data.cutoffMinute ?? 0,
+        cutoffAt: data.cutoffAt || `${String(data.cutoffHour).padStart(2, "0")}:00`,
         currentHour: data.currentHour,
         canClose: data.canClose,
         dueNow: data.dueNow,
@@ -165,8 +175,10 @@ export default function DayCloseButton({ onToast }: { onToast?: (msg: string) =>
       ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
       : "";
   })();
-  const cutoff = String(state.cutoffHour).padStart(2, "0");
-  const notify = String(state.notifyHour).padStart(2, "0");
+  // The owner picks the exact minute now, so the cashier reads "20:03", not
+  // a whole hour that would be a lie by up to 59 minutes.
+  const cutoff = state.cutoffAt || `${String(state.cutoffHour).padStart(2, "0")}:00`;
+  const notify = state.notifyAt || `${String(state.notifyHour).padStart(2, "0")}:00`;
 
   const closeDay = async () => {
     setBusy(true);
@@ -197,9 +209,9 @@ export default function DayCloseButton({ onToast }: { onToast?: (msg: string) =>
     return (
       <span
         className="text-[10px] font-black px-3 py-1.5 rounded-full bg-stone-800 text-stone-300 border border-stone-700 whitespace-nowrap"
-        title={L("Today's shift end opens at {hour}:00 • the total is sent to the owner's phone", { hour: cutoff })}
+        title={L("Today's shift end opens at {time} • the total is sent to the owner's phone", { time: cutoff })}
       >
-        {L("🌙 Shift end at {hour}:00", { hour: cutoff })}
+        {L("🌙 Shift end at {time}", { time: cutoff })}
       </span>
     );
   }
@@ -236,8 +248,8 @@ export default function DayCloseButton({ onToast }: { onToast?: (msg: string) =>
             </button>
           </div>
           <p className="text-[11px] text-stone-300 leading-snug">
-            {L("Send today's total sale to the owner's phone. The system sends it by itself at {hour}:00 if you forget.", {
-              hour: notify,
+            {L("Send today's total sale to the owner's phone. The system sends it by itself at {time} if you forget.", {
+              time: notify,
             })}
           </p>
           <div className="flex items-center gap-2">

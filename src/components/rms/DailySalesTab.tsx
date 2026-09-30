@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Printer, RefreshCw, BellRing, BellOff, CheckCircle2, Clock } from "lucide-react";
+import { Printer, RefreshCw, BellRing, BellOff, CheckCircle2, Clock, Save } from "lucide-react";
 import PrintLetterhead from "@/components/rms/PrintLetterhead";
 import { useStaffT, tNow, staffEtb } from "@/lib/staff-i18n";
 import {
   dayKeyLabel,
   formatEtb,
   localLabelForHour,
+  localLabelForTime,
+  parseClockTime,
   NOTIFY_HOUR_CHOICES,
   type DayCloseRecord,
 } from "@/lib/daily-sales";
@@ -52,8 +54,16 @@ interface DailySalesDay {
 interface DailySalesData {
   serverTime: string;
   notifyHour: number;
+  /** The minute of the owner's own choosing ("any time like 3:03"). */
+  notifyMinute: number;
+  /** "21:03" — the exact moment his phone rings. */
+  notifyAt: string;
   cutoffHour: number;
+  cutoffMinute: number;
+  /** "20:03" — the exact moment the cashier's button opens. */
+  cutoffAt: string;
   currentHour: number;
+  currentMinute: number;
   canClose: boolean;
   dueNow: boolean;
   todayKey: string;
@@ -150,19 +160,43 @@ export default function DailySalesTab() {
     else showToast(tNow("Test sent • this device should ring now"));
   };
 
-  /** THE OWNER PICKS WHEN HIS PHONE RINGS (default 3:00 local = 21:00 EAT). */
-  const chooseHour = async (hour: number) => {
+  /**
+   * THE OWNER PICKS THE EXACT MINUTE HIS PHONE RINGS (30 Sept 2026).
+   *
+   * "can you make the time change button on the sales cathagory customizable
+   * not only 3 hours 3,4,5 make it look like i can add any time like 3:03 or
+   * any other make it changable to any then add save button on the right after
+   * i change it" — so the field takes any clock time in the evening, the three
+   * old hours are only quick picks that fill the same field, and NOTHING is
+   * stored until he presses Save on its right.
+   *
+   * An empty draft means "unchanged": the input simply shows the saved time, so
+   * the field can never fight the minute-by-minute refresh of this page.
+   */
+  const [draftTime, setDraftTime] = useState("");
+  const savedTime = data ? data.notifyAt : "";
+  const draftValue = draftTime || savedTime;
+  const timeChanged = !!draftTime && draftTime !== savedTime;
+
+  const saveNotifyTime = async () => {
+    const picked = parseClockTime(draftValue);
+    if (!picked) {
+      showToast(tNow("Type a time like 21:03."));
+      return;
+    }
     setSavingHour(true);
     try {
       const r = await fetch("/api/reports/daily-sales", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "set-notify-hour", hour }),
+        body: JSON.stringify({ action: "set-notify-time", hour: picked.hour, minute: picked.minute }),
       });
       const body = await r.json().catch(() => null);
       if (!r.ok) showToast(body?.error ? Ld(body.error) : tNow("Could not save the time. Try again."));
       else {
-        showToast(tNow("✓ Your phone will ring at {time}", { time: localLabelForHour(hour) }));
+        // Snap back to the server's own value: what he reads is what is stored.
+        setDraftTime("");
+        showToast(tNow("✓ Your phone will ring at {time}", { time: localLabelForTime(picked.hour, picked.minute) }));
         await load();
       }
     } catch {
@@ -170,6 +204,9 @@ export default function DailySalesTab() {
     }
     setSavingHour(false);
   };
+
+  /** A quick pick only FILLS the field — Save on the right is what stores it. */
+  const chooseHour = (hour: number) => setDraftTime(`${String(hour).padStart(2, "0")}:00`);
 
   /** "21:04" — the moment a close record was written (the cafe clock). */
   const clockOf = (iso: string | null | undefined) => {
@@ -182,8 +219,12 @@ export default function DailySalesTab() {
   const days = data?.days ?? [];
   const armed = !!pushStatus?.armed;
   const todayRow = data?.today;
-  const cutoff = String(data?.cutoffHour ?? 20).padStart(2, "0");
-  const notify = String(data?.notifyHour ?? 21).padStart(2, "0");
+  // The two exact moments, to the minute the owner chose ("20:03" / "21:03").
+  const cutoff = data?.cutoffAt || `${String(data?.cutoffHour ?? 20).padStart(2, "0")}:00`;
+  const notify = data?.notifyAt || `${String(data?.notifyHour ?? 21).padStart(2, "0")}:00`;
+  const nowClock = data
+    ? `${String(data.currentHour).padStart(2, "0")}:${String(data.currentMinute ?? 0).padStart(2, "0")}`
+    : "";
 
   return (
     <div id="fana-daily-sales" className="space-y-6">
@@ -263,14 +304,14 @@ export default function DailySalesTab() {
             {data
               ? data.canClose
                 ? L("Open • the cashier can close the day now")
-                : L("Opens at {hour}:00", { hour: cutoff })
+                : L("Opens at {time}", { time: cutoff })
               : "…"}
           </p>
           <p className="text-[11px] text-stone-500">
             {L("The cashier taps it to send the total to your phone. The button disappears after midnight, and the next day starts its own evening window.")}
           </p>
           <p className="text-[11px] text-stone-500">
-            {L("If she forgets, the system sends it by itself at {hour}:00.", { hour: notify })}
+            {L("If she forgets, the system sends it by itself at {time}.", { time: notify })}
           </p>
         </div>
       </div>
@@ -282,17 +323,55 @@ export default function DailySalesTab() {
           <div>
             <p className="text-xs font-black uppercase tracking-wider text-amber-200">{L("When should your phone ring?")}</p>
             <p className="text-[11px] text-stone-400">
-              {L("The cashier's button appears one hour before this time. If she forgets, the system sends the total by itself.")}
+              {L("Choose ANY time, down to the minute (for example 9:03 PM). The cashier's button appears one hour before it, and if she forgets the system sends the total by itself at exactly this time. Press Save when you are done.")}
             </p>
           </div>
         </div>
+
+        {/* THE TIME FIELD, WITH SAVE ON ITS RIGHT (owner, 30 Sept 2026) */}
+        <div className="flex flex-wrap items-center gap-3">
+          <label
+            className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition ${
+              timeChanged ? "border-[#C9A227] bg-[#C9A227]/10" : "border-stone-700 bg-black/30"
+            }`}
+          >
+            <Clock className="w-4 h-4 text-[#C9A227] shrink-0" />
+            <input
+              type="time"
+              value={draftValue}
+              min="12:00"
+              max="23:59"
+              step={60}
+              onChange={(e) => setDraftTime(e.target.value)}
+              disabled={savingHour}
+              aria-label={L("Time your phone rings (cafe time, EAT)")}
+              className="bg-transparent text-sm font-black text-amber-100 tabular-nums focus:outline-none disabled:opacity-50"
+            />
+          </label>
+          <span className="text-[11px] text-stone-400 min-w-0">
+            {L("Cafe time (EAT)")}
+            {draftValue ? ` • ${localLabelForTime(Number(draftValue.slice(0, 2)), Number(draftValue.slice(3, 5)))}` : ""}
+          </span>
+          <button
+            onClick={() => void saveNotifyTime()}
+            disabled={savingHour || !timeChanged}
+            className="ml-auto shrink-0 bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase px-5 py-3 rounded-xl flex items-center gap-2 disabled:opacity-40 disabled:hover:bg-[#C9A227]"
+            title={L("Save the time your phone rings")}
+          >
+            <Save className="w-4 h-4" />
+            {savingHour ? L("Saving...") : L("Save")}
+          </button>
+        </div>
+
         <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] text-stone-500">{L("Quick picks:")}</span>
           {NOTIFY_HOUR_CHOICES.map((hour) => {
-            const selected = data?.notifyHour === hour;
+            const pick = `${String(hour).padStart(2, "0")}:00`;
+            const selected = draftValue === pick;
             return (
               <button
                 key={hour}
-                onClick={() => void chooseHour(hour)}
+                onClick={() => chooseHour(hour)}
                 disabled={savingHour}
                 className={`text-[11px] font-black uppercase px-4 py-2.5 rounded-xl transition disabled:opacity-50 ${
                   selected
@@ -308,8 +387,11 @@ export default function DailySalesTab() {
           })}
           {data && (
             <span className="text-[11px] text-stone-500">
-              {L("Now: {hour}:00 • the button opens at {cutoff}:00", { hour: String(data.currentHour).padStart(2, "0"), cutoff })}
+              {L("Now: {now} • the button opens at {cutoff}", { now: nowClock, cutoff })}
             </span>
+          )}
+          {timeChanged && (
+            <span className="text-[11px] font-black text-amber-300">{L("Not saved yet • press Save")}</span>
           )}
         </div>
       </section>

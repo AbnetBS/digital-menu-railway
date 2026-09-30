@@ -329,7 +329,7 @@ export default function OrderHistoryTab() {
 
       {/* receipt modal */}
       {receiptModal && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setReceiptModal(null)}>
+        <div className="fana-fit-screen fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setReceiptModal(null)}>
           <button className="absolute top-4 right-4 text-white"><X className="w-6 h-6" /></button>
           <img src={receiptModal} alt={L("Receipt")} className="max-h-[85vh] max-w-full rounded-2xl border border-[#C9A227]" />
         </div>

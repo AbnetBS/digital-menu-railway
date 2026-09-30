@@ -4,16 +4,19 @@ import { siteSettings } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { sql } from "drizzle-orm";
 import { readAdminSession, readStaffSession, requireStaffOrAdmin } from "@/lib/session";
-import { etDayKey, etHour, etStartOfDaysAgo } from "@/lib/timezone";
+import { etDayKey, etHour, etMinute, etStartOfDaysAgo } from "@/lib/timezone";
 import {
   DAY_CLOSE_NOTIFY_KEY,
-  dayCloseCutoffHour,
-  dayCloseNotifyHour,
+  dayCloseCutoffTime,
+  dayCloseMoment,
+  dayCloseNotifyTime,
   dayCloseSettingKey,
   dayKeyFromCloseSetting,
   isDayCloseDue,
   isDayCloseOpen,
+  isNotifyTime,
   listedDayKeys,
+  notifyTimeValue,
   parseDayCloseValue,
   yesterdayKey,
   type DayCloseRecord,
@@ -22,7 +25,7 @@ import {
   DAILY_SALES_WINDOW_DAYS,
   bucketByDay,
   maybeAutoCloseDay,
-  readNotifyHour,
+  readNotifyTime,
   readPrintedBills,
   recordDayClose,
   sendDayClosePush,
@@ -50,8 +53,12 @@ import {
  *     The cashier's "Today's shift end" tap — refused before the cutoff hour,
  *     because orders are still being served. With auto:true it is the system's
  *     own send (recorded as "auto (system)", exactly once per day).
+ *   { action: "set-notify-time", hour: 21, minute: 3 }
+ *     The OWNER's choice of when his phone rings, to the MINUTE (admin session
+ *     only). "make it look like i can add any time like 3:03 or any other" —
+ *     any clock time in the evening window is accepted and stored as "21:03".
  *   { action: "set-notify-hour", hour: 21|22|23 }
- *     The OWNER's choice of when his phone rings (admin session only).
+ *     The same setting through the three quick picks (minute = 0).
  *
  * Access: the dashboard (admin) reads the page and chooses the hour; the
  * cashier (or an admin acting for her) closes the day.
@@ -59,9 +66,15 @@ import {
 
 /** The day-close state plus the listed days, shared by GET and the worker. */
 async function buildState(now: Date) {
-  const notifyHour = await readNotifyHour();
-  const cutoffHour = dayCloseCutoffHour(notifyHour);
+  // The owner's EXACT time (hour + minute) — he may pick 21:03, not just 21:00.
+  const notifyTime = await readNotifyTime();
+  const cutoff = dayCloseCutoffTime(notifyTime);
+  const notifyHour = notifyTime.hour;
+  const notifyMinute = notifyTime.minute;
+  const cutoffHour = cutoff.hour;
+  const cutoffMinute = cutoff.minute;
   const hour = etHour(now);
+  const minute = etMinute(now);
   const todayKey = etDayKey(now) || "";
   const yKey = yesterdayKey(now);
 
@@ -100,10 +113,17 @@ async function buildState(now: Date) {
   const today = sales.get(todayKey) ?? { total: 0, bills: 0 };
   return {
     notifyHour,
+    notifyMinute,
+    /** "21:03" — the exact moment the owner's phone rings, ready to print. */
+    notifyAt: dayCloseMoment(notifyHour, notifyMinute),
     cutoffHour,
+    cutoffMinute,
+    /** "20:03" — the exact moment the cashier's button opens. */
+    cutoffAt: dayCloseMoment(cutoffHour, cutoffMinute),
     currentHour: hour,
-    canClose: isDayCloseOpen(hour, cutoffHour),
-    dueNow: isDayCloseDue(hour, notifyHour),
+    currentMinute: minute,
+    canClose: isDayCloseOpen(hour, cutoffHour, minute, cutoffMinute),
+    dueNow: isDayCloseDue(hour, notifyHour, minute, notifyMinute),
     todayKey,
     today: { total: today.total, bills: today.bills, closed: closeMap.get(todayKey) || null },
     days,
@@ -148,18 +168,24 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}));
     const action = String(body?.action || "");
 
-    /* ── THE OWNER CHOOSES WHEN HIS PHONE RINGS ─────────────────────────── */
-    if (action === "set-notify-hour") {
+    /* ── THE OWNER CHOOSES WHEN HIS PHONE RINGS (to the minute) ───────────── */
+    if (action === "set-notify-hour" || action === "set-notify-time") {
       if (staff) {
-        // Not the cashier's decision: it is the owner's phone and his hour.
+        // Not the cashier's decision: it is the owner's phone and his time.
         return NextResponse.json({ error: "Only the owner can change this" }, { status: 403 });
       }
-      const hour = dayCloseNotifyHour(body?.hour);
-      if (Number(body?.hour) !== hour) {
-        return NextResponse.json({ error: "Choose 21:00, 22:00 or 23:00" }, { status: 400 });
+      const hour = Math.floor(Number(body?.hour));
+      // "set-notify-hour" is the three quick picks and carries no minute; the
+      // typed value ("any time like 3:03") arrives as "set-notify-time".
+      const minute = action === "set-notify-time" ? Math.floor(Number(body?.minute ?? 0)) : 0;
+      if (!isNotifyTime(hour, minute)) {
+        return NextResponse.json(
+          { error: "Choose a time between 12:00 PM and 11:59 PM EAT, for example 21:03" },
+          { status: 400 },
+        );
       }
       const now = new Date();
-      const value = String(hour);
+      const value = notifyTimeValue({ hour, minute });
       await db
         .insert(siteSettings)
         .values({ key: DAY_CLOSE_NOTIFY_KEY, value, updatedAt: now })
@@ -177,12 +203,13 @@ export async function POST(request: Request) {
     }
 
     const now = new Date();
-    const notifyHour = await readNotifyHour();
-    const cutoffHour = dayCloseCutoffHour(notifyHour);
+    const cutoff = dayCloseCutoffTime(await readNotifyTime());
+    const cutoffHour = cutoff.hour;
     const hour = etHour(now);
+    const minute = etMinute(now);
     const isAuto = body?.auto === true;
 
-    // The system's own send: allowed from the notify hour onwards, exactly
+    // The system's own send: allowed from the notify minute onwards, exactly
     // once per day (the record is written only if it is missing).
     if (isAuto) {
       const result = await maybeAutoCloseDay(now);
@@ -190,11 +217,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: result === "sent", auto: true, result, ...state });
     }
 
-    if (!isDayCloseOpen(hour, cutoffHour)) {
+    if (!isDayCloseOpen(hour, cutoffHour, minute, cutoff.minute)) {
       return NextResponse.json(
         {
-          error: `Today's shift end opens at ${String(cutoffHour).padStart(2, "0")}:00. Orders are still being served.`,
+          error: `Today's shift end opens at ${dayCloseMoment(cutoffHour, cutoff.minute)}. Orders are still being served.`,
           cutoffHour,
+          cutoffAt: dayCloseMoment(cutoffHour, cutoff.minute),
           currentHour: hour,
         },
         { status: 409 }

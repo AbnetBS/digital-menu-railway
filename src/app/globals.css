@@ -149,3 +149,53 @@
     animation: none;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   EVERY SCREEN, EVERY FONT SIZE (owner's decision, 30 Sept 2026).
+
+   "the owner phone font is big and like the role choice parts all roles arent
+   vissible ... the admin page is cut make the system ready for all senarious"
+
+   A phone set to its largest system font makes every staff pop-up taller than
+   the screen. Two CSS facts decide whether the owner can still reach the last
+   button:
+
+   1. a `position: fixed` layer does NOT scroll unless it says so, so anything
+      taller than the screen is simply cut off and unreachable;
+   2. `align-items: center` on an overflowing flex box pushes the overflow out
+      of BOTH ends, so the top of the card can never be scrolled back into
+      view — `safe center` keeps the centring when there is room and falls
+      back to the start edge when there is not.
+
+   `.fana-fit-screen` puts both rules on any full-screen staff overlay, so the
+   whole system survives a big font, a small phone, a landscape tablet and the
+   iPhone home-screen bar without a case-by-case patch per pop-up.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.fana-fit-screen {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  align-items: safe center;
+  justify-content: safe center;
+}
+
+/* A full-screen card that must never be taller than the phone itself: the
+   inside scrolls, the header and the Save button stay where the thumb is. */
+.fana-fit-card {
+  max-height: 100dvh;
+  max-height: min(100dvh, calc(100vh - 1rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Fixed bottom bars sit above the gesture bar / home indicator, never under it. */
+.fana-safe-bottom {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+/* A long Amharic or English word at the largest font must wrap, not push the
+   layout sideways and hide the button behind the screen edge. */
+.fana-staff-shell {
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}

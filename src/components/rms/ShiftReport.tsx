@@ -285,7 +285,7 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
     }`;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm no-print" data-shift-report="panel">
+    <div className="fana-fit-screen fixed inset-0 z-50 bg-black/85 backdrop-blur-sm no-print" data-shift-report="panel">
       <style>{SHIFT_REPORT_CSS}</style>
       {/* THE SCROLLER: only this layer scrolls. The header is part of the
           content, so it scrolls away with everything else (owner, Sept 2026:
@@ -945,7 +945,7 @@ function OrderDetail({
   if (typeof document === "undefined") return null;
   return createPortal(
     <div
-      className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-3 sm:p-6 no-print [touch-action:none]"
+      className="fana-fit-screen fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-3 sm:p-6 no-print [touch-action:none]"
       onClick={onClose}
       data-shift-report="order-backdrop"
     >

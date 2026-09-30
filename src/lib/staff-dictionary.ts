@@ -1248,16 +1248,22 @@ export const STAFF_AM = {
   "Failed to remove the table.": "ጠረጴዛውን መሰረዝ አልተቻለም።",
   "Buna makers who send or accept table and outdoor orders appear here alongside waiters. Bill totals may overlap when two people handle one bill; open the order to cross-check its actions and items.": "የጠረጴዛና የውጪ ትዕዛዞችን የሚልኩ ወይም የሚቀበሉ ቡና አፍዮች ከአስተናጋጆች ጋር እዚህ ይታያሉ። ሁለት ሰዎች አንድ ሂሳብ ሲያስተናግዱ ድምሮቹ ሊደጋገሙ ይችላሉ፤ ተግባራትንና እቃዎችን ለማረጋገጥ ትዕዛዙን ይክፈቱ።",
   /* ─── THE WAITER'S SEND HOLD (owner, Sept 2026) ─── */
-  "Sending in {clock}": "በ{clock} ውስጥ ይላካል",
+  /* The countdown, SEND NOW and CANCEL WHOLE ORDER now sit under the items on
+     the SAME page (owner, 30 Sept 2026) - she is never thrown back to the grid. */
+  "⏳ Waiting to send • {clock} left. Fix anything now, or press Send now.": "⏳ ለመላክ በመጠባበቅ ላይ • {clock} ቀርቷል። አሁን ማስተካከል ይችላሉ፣ ወይም አሁን ላክ ይጫኑ።",
+  "✗ Whole order cancelled • nothing was sent to the kitchen": "✗ ትዕዛዙ በሙሉ ተሰርዟል • ወደ ኩሽና ምንም አልተላከም",
+  "⏳ Waiting to send • {count} item(s)": "⏳ ለመላክ በመጠባበቅ ላይ • {count} እቃ(ዎች)",
+  "About to send • {count} item(s)": "ሊላክ • {count} እቃ(ዎች)",
+  "Sends in": "የመላኪያ ጊዜ",
+  "Edit the items above until it runs out": "ጊዜው እስኪያልቅ ድረስ ከላይ ያሉትን እቃዎች ያስተካክሉ",
+  "Cancel whole order": "ትዕዛዙን በሙሉ ሰርዝ",
   "Order for {tableName}": "የ{tableName} ትዕዛዝ",
   "It will send automatically, even while you work at another table.": "ሌላ ጠረጴዛ ላይ እየሰሩ ቢሆንም በራስ-ሰር ይላካል።",
   "Could not schedule the order. Keep the waiter app open.": "ትዕዛዙን መርሐግብር ማስያዝ አልተቻለም። የአስተናጋጁን መተግበሪያ ክፍት ያቆዩ።",
   "Could not save the order changes. Try again.": "የትዕዛዙን ለውጦች ማስቀመጥ አልተቻለም። እንደገና ይሞክሩ።",
   "Could not cancel the scheduled order. Try again.": "የተመረጠውን ትዕዛዝ መሰረዝ አልተቻለም። እንደገና ይሞክሩ።",
   "This order is already being sent.": "ይህ ትዕዛዝ አስቀድሞ እየተላከ ነው።",
-  "Scheduled order cancelled.": "የተመረጠው ትዕዛዝ ተሰርዟል።",
   "Server schedule unavailable. Keep the waiter app open.": "የአገልጋይ መርሐግብር አልተሳካም። የአስተናጋጁን መተግበሪያ ክፍት ያቆዩ።",
-  "Check the items above • you can still edit, add notes or remove": "ከላይ ያሉትን እቃዎች ይመልከቱ • ማስተካከል፣ ማስታወሻ መጨመር ወይም ማስወግድ ይችላሉ",
   "Send now": "አሁን ላክ",
   /* ─── THE HOLD ON THE TILE (owner, Sept 2026): the countdown lives on the
      violet table tile and at the bottom of the reopened editor, never on a
@@ -1265,7 +1271,6 @@ export const STAFF_AM = {
   "Waiting to send": "ወደ መላክ በመጠባበቅ ላይ",
   "View order": "ትዕዛዙን አሳይ",
   "⏳ {units} item(s) • sends in {clock}": "⏳ {units} እቃ(ዎች) • በ{clock} ውስጥ ይላካል",
-  "✓ Saved • sends in {clock}. Tap the violet table to change it before then.": "✓ ተቀምጧል • በ{clock} ውስጥ ይላካል። ከዚያ በፊት ለመቀየር ሐምራዊውን ጠረጴዛ ይጫኑ።",
   /* ─── THE RELEASE GATE: a guest's own order waits for a human ─── */
   "NEW • not sent to the stations yet": "አዲስ • ገና ወደ ዝግጅት ክፍሎቹ አልተላከም",
   "Guest added 1 item • confirm before the stations get them": "እንግዳ 1 እቃ ጨምሯል • ወደ ዝግጅት ክፍሎቹ ከመላኩ በፊት ያረጋግጡ",
@@ -1340,7 +1345,6 @@ export const STAFF_AM = {
   "closed {clock} by {name}": "በ{clock} በ{name} ተዘግቷል",
   "Today's shift end": "የዛሬ ፈረቃ ማብቂያ",
   "Open • the cashier can close the day now": "ክፍት • ገንዘብ ተቀባይዋ አሁን ቀኑን መዝጋት ትችላለች",
-  "Opens at {hour}:00": "በ{hour}:00 ይከፈታል",
   "The cashier taps it to send today's total to your phone.": "ገንዘብ ተቀባይዋ ስትነካው የዛሬው ጠቅላላ ወደ ስልክዎ ይላካል።",
   "Total sales by date": "ጠቅላላ ሽያጭ በቀን",
   "Loading daily sales...": "የቀን ሽያጭ በመጫን ላይ...",
@@ -1350,8 +1354,6 @@ export const STAFF_AM = {
   "The system could not send today's total by itself. It will try again.": "ሲስተሙ የዛሬውን ጠቅላላ በራሱ ሊልክ አልቻለም። እንደገና ይሞክራል።",
   "Could not close the day. Try again.": "ቀኑን መዝጋት አልተቻለም። እንደገና ይሞክሩ።",
   "✓ Today's total sent to the owner • {value}": "✓ የዛሬው ጠቅላላ ወደ ባለቤቱ ተልኳል • {value}",
-  "Today's shift end opens at {hour}:00 • the total is sent to the owner's phone": "የዛሬ ፈረቃ ማብቂያ በ{hour}:00 ይከፈታል • ጠቅላላው ወደ ባለቤቱ ስልክ ይላካል",
-  "🌙 Shift end at {hour}:00": "🌙 ፈረቃ ማብቂያ በ{hour}:00",
   "Closed {clock} • send the total again if something changed": "በ{clock} ተዘግቷል • አንድ ነገር ከተለወጠ ጠቅላላውን እንደገና ላክ",
   "Send today's total sale to the owner's phone": "የዛሬውን ጠቅላላ ሽያጭ ወደ ባለቤቱ ስልክ ላክ",
   "Total sent • {value}": "ጠቅላላ ተልኳል • {value}",
@@ -1364,17 +1366,28 @@ export const STAFF_AM = {
   "🌙 Today's shift end is available • send today's total to the owner": "🌙 የዛሬ ፈረቃ ማብቂያ ተከፍቷል • የዛሬውን ጠቅላላ ወደ ባለቤቱ ላክ",
   "Today's shift end is open": "የዛሬ ፈረቃ ማብቂያ ተከፍቷል",
   "Later": "በኋላ",
-  "Send today's total sale to the owner's phone. The system sends it by itself at {hour}:00 if you forget.": "የዛሬውን ጠቅላላ ሽያጭ ወደ ባለቤቱ ስልክ ላክ። ካረሱት ሲስተሙ በ{hour}:00 ራሱ ይልከዋል።",
   "✓ Send to the owner now": "✓ አሁን ወደ ባለቤቱ ላክ",
   "Could not save the time. Try again.": "ሰዓቱን ማስቀመጥ አልተቻለም። እንደገና ይሞክሩ።",
   "✓ Your phone will ring at {time}": "✓ ስልክዎ በ{time} ይጠራል",
   "Live • it grows as the cashier prints bills": "ቀጥታ • ገንዘብ ተቀባይዋ ሂሳብ ስታትም ያድጋል",
   "The cashier taps it to send the total to your phone. The button disappears after midnight, and the next day starts its own evening window.": "ገንዘብ ተቀባይዋ ስትነካው ጠቅላላው ወደ ስልክዎ ይላካል። ከእኩለ ሌሊት በኋላ ቁልፉ ይጠፋል፣ ቀጣዩ ቀንም የራሱን የምሽት ጊዜ ይጀምራል።",
-  "If she forgets, the system sends it by itself at {hour}:00.": "ካረሳች ሲስተሙ በ{hour}:00 ራሱ ይልከዋል።",
   "When should your phone ring?": "ስልክዎ መቼ ይጠራ?",
-  "The cashier's button appears one hour before this time. If she forgets, the system sends the total by itself.": "የገንዘብ ተቀባይዋ ቁልፍ ከዚህ ሰዓት አንድ ሰዓት በፊት ይታያል። ካረሳች ሲስተሙ ጠቅላላውን ራሱ ይልካል።",
   "Send the daily total at {time}": "የቀኑን ጠቅላላ በ{time} ላክ",
-  "Now: {hour}:00 • the button opens at {cutoff}:00": "አሁን፦ {hour}:00 • ቁልፉ በ{cutoff}:00 ይከፈታል",
+  "Now: {now} • the button opens at {cutoff}": "አሁን፦ {now} • ቁልፉ በ{cutoff} ይከፈታል",
+  /* ANY minute, not only the three whole hours (owner, 30 Sept 2026): the field
+     takes "21:03", the chips only fill it, and SAVE on the right stores it. */
+  "Choose ANY time, down to the minute (for example 9:03 PM). The cashier's button appears one hour before it, and if she forgets the system sends the total by itself at exactly this time. Press Save when you are done.": "ማንኛውንም ሰዓት ይምረጡ፣ እስከ ደቂቃው (ለምሳሌ 9:03 PM)። የገንዘብ ተቀባይዋ ቁልፍ ከዚህ ሰዓት አንድ ሰዓት በፊት ይታያል፤ ካረሳችም ሲስተሙ ጠቅላላውን በትክክል በዚህ ሰዓት ራሱ ይልካል። ሲጨርሱ አስቀምጥ ይጫኑ።",
+  "Time your phone rings (cafe time, EAT)": "ስልክዎ የሚደውልበት ሰዓት (የካፌ ሰዓት፣ EAT)",
+  "Cafe time (EAT)": "የካፌ ሰዓት (EAT)",
+  "Save the time your phone rings": "ስልክዎ የሚደውልበትን ሰዓት ያስቀምጡ",
+  "Quick picks:": "ፈጣን ምርጫዎች፦",
+  "Not saved yet • press Save": "ገና አልተቀመጠም • አስቀምጥ ይጫኑ",
+  "Type a time like 21:03.": "እንደ 21:03 ያለ ሰዓት ይጻፉ።",
+  "Opens at {time}": "በ{time} ይከፈታል",
+  "If she forgets, the system sends it by itself at {time}.": "ካረሳች ሲስተሙ በ{time} ራሱ ይልከዋል።",
+  "🌙 Shift end at {time}": "🌙 ፈረቃ ማብቂያ በ{time}",
+  "Today's shift end opens at {time} • the total is sent to the owner's phone": "የዛሬ ፈረቃ ማብቂያ በ{time} ይከፈታል • ጠቅላላው ወደ ባለቤቱ ስልክ ይላካል",
+  "Send today's total sale to the owner's phone. The system sends it by itself at {time} if you forget.": "የዛሬውን ጠቅላላ ሽያጭ ወደ ባለቤቱ ስልክ ላክ። ካረሱት ሲስተሙ በ{time} ራሱ ይልከዋል።",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

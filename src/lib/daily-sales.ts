@@ -12,14 +12,18 @@
  *     that counted as next day" — the window closes when the EAT day rolls
  *     over, and the next day starts its own window at 20:00;
  *   • "in that tab add choose time to notify button ... as default I choose 3
- *     lt but he can choose it there" — the notify hour is a setting he picks in
- *     the Daily Sales tab (21:00, 22:00 or 23:00 EAT).
+ *     lt but he can choose it there" — the notify time is a setting he picks in
+ *     the Daily Sales tab, and since 30 Sept 2026 it is ANY minute of the
+ *     evening, not just the three whole hours: "can you make the time change
+ *     button on the sales cathagory customizable not only 3 hours 3,4,5 make it
+ *     look like i can add any time like 3:03 or any other make it changable to
+ *     any then add save button on the right after i change it".
  *
  * So there are exactly two times, and the button opens one hour before the
- * owner's notify time:
+ * owner's notify time — to the minute:
  *
- *   cutoffHour (button opens, alarm + card)  = notifyHour - 1   (20:00 default)
- *   notifyHour (auto-send if she forgot)     = 21:00 default, owner-chosen
+ *   cutoffTime (button opens, alarm + card)  = notifyTime - 1h   (20:00 default)
+ *   notifyTime (auto-send if she forgot)     = 21:00 default, owner-chosen
  *
  * WHAT COUNTS AS A SALE: exactly what the reports count. The money moment is
  * the cashier's ✓ PRINTED tap (tickets.printed_at) — the EFD receipt in her
@@ -36,58 +40,177 @@ import { etDayKey, etDayKeyDaysAgo, etHour, etStartOfDay } from "@/lib/timezone"
 /** The owner's default notify hour: 3:00 local = 21:00 EAT. */
 export const DEFAULT_NOTIFY_HOUR = 21;
 
+/** ...and its default minute: on the hour, until he types one himself. */
+export const DEFAULT_NOTIFY_MINUTE = 0;
+
 /**
- * The hours the owner can choose for his notification (EAT). All three sit
- * AFTER the button appears (20:00) and BEFORE midnight, because after midnight
- * the day belongs to tomorrow ("after that counted as next day").
+ * The QUICK PICKS on the owner's page (EAT hours). They are only a shortcut:
+ * since 30 Sept 2026 he may choose ANY minute of the evening — "make the time
+ * change button on the sales category customizable not only 3 hours 3,4,5 make
+ * it look like i can add any time like 3:03 or any other" — and the three chips
+ * simply fill the same time field the typed value goes into.
  */
 export const NOTIFY_HOUR_CHOICES = [21, 22, 23];
 
-/** The local-clock equivalents the owner reads: 21:00 EAT = 3:00 local. */
+/**
+ * The window the owner may pick inside, in EAT minutes since midnight.
+ *
+ * The day close is an EVENING action and the whole feature assumes it: the
+ * cashier's button opens one hour earlier and disappears at the EAT midnight
+ * roll-over ("after that counted as next day"). A notify time of 00:30 would
+ * therefore close TOMORROW, a day with no sales in it yet — so the earliest
+ * legal pick is 6:00 PM local (12:00 EAT) and the latest 11:59 PM local.
+ */
+export const NOTIFY_MIN_MINUTES = 12 * 60;
+export const NOTIFY_MAX_MINUTES = 23 * 60 + 59;
+
+/** An exact clock time the owner can choose. */
+export interface NotifyTime {
+  hour: number;
+  minute: number;
+}
+
+/** Minutes since midnight — the only sane way to compare two clock times. */
+export function minutesOfDay(hour: number, minute = 0): number {
+  const h = Math.floor(Number(hour));
+  const m = Math.floor(Number(minute));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return NaN;
+  return h * 60 + m;
+}
+
+/** Is this an exact time the owner is allowed to ring at? */
+export function isNotifyTime(hour: number, minute: number): boolean {
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return false;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return false;
+  const mins = minutesOfDay(hour, minute);
+  return mins >= NOTIFY_MIN_MINUTES && mins <= NOTIFY_MAX_MINUTES;
+}
+
+/**
+ * The owner's chosen notify TIME. The setting row holds either a bare hour
+ * ("21", written before minutes existed) or "HH:MM" ("21:03"); anything
+ * missing, malformed or outside the evening window falls back to the default,
+ * so a bad settings row can never silence the daily total.
+ */
+export function dayCloseNotifyTime(value: unknown): NotifyTime {
+  const fallback = { hour: DEFAULT_NOTIFY_HOUR, minute: DEFAULT_NOTIFY_MINUTE };
+  if (value === null || value === undefined) return fallback;
+
+  // An object from a caller that already split the two ({ hour, minute }).
+  if (typeof value === "object") {
+    const raw = value as { hour?: unknown; minute?: unknown };
+    const hour = Math.floor(Number(raw.hour));
+    const minute = Math.floor(Number(raw.minute ?? 0));
+    return isNotifyTime(hour, minute) ? { hour, minute } : fallback;
+  }
+
+  const text = String(value).trim();
+  if (!text) return fallback;
+
+  // "21:03" / "9:03 pm" / "21.03" — a typed clock time.
+  const clock = parseClockTime(text);
+  if (clock) return isNotifyTime(clock.hour, clock.minute) ? clock : fallback;
+
+  // A bare hour ("21" or 21): the shape the setting had before minutes existed.
+  const n = Number(text);
+  if (!Number.isFinite(n)) return fallback;
+  const hour = Math.floor(n);
+  return isNotifyTime(hour, DEFAULT_NOTIFY_MINUTE) ? { hour, minute: DEFAULT_NOTIFY_MINUTE } : fallback;
+}
+
+/** "21:03", "9:03 PM", "9:03pm" → { hour: 21, minute: 3 } (null if unreadable). */
+export function parseClockTime(text: string): NotifyTime | null {
+  const m = /^(\d{1,2}):(\d{2})\s*(am|pm)?$/i.exec(String(text || "").trim());
+  if (!m) return null;
+  let hour = Number(m[1]);
+  const minute = Number(m[2]);
+  const suffix = (m[3] || "").toLowerCase();
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  if (suffix === "pm" && hour < 12) hour += 12;
+  if (suffix === "am" && hour === 12) hour = 0;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute };
+}
+
+/** The owner's chosen notify hour (the hour half of his exact time). */
+export function dayCloseNotifyHour(value: unknown): number {
+  return dayCloseNotifyTime(value).hour;
+}
+
+/** The minute half of the owner's exact time (0 when he never typed one). */
+export function dayCloseNotifyMinute(value: unknown): number {
+  return dayCloseNotifyTime(value).minute;
+}
+
+/** The owner's notify time as minutes since midnight (EAT). */
+export function notifyMinutesOfDay(value: unknown): number {
+  const t = dayCloseNotifyTime(value);
+  return minutesOfDay(t.hour, t.minute);
+}
+
+/** "21:03" — the shape `<input type="time">` and the settings row both use. */
+export function notifyTimeValue(time: NotifyTime | null | undefined): string {
+  const t = dayCloseNotifyTime(time);
+  return `${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")}`;
+}
+
+/** The local-clock equivalents the owner reads: 21:03 EAT = 9:03 PM. */
+export function localLabelForTime(hour: number, minute = 0): string {
+  const t = dayCloseNotifyTime({ hour, minute });
+  const h = (t.hour + 12) % 12 || 12;
+  const ampm = t.hour < 12 ? "AM" : "PM";
+  return `${h}:${String(t.minute).padStart(2, "0")} ${ampm} EAT`;
+}
+
+/** The whole-hour label (kept for the three quick picks). */
 export function localLabelForHour(hour: number): string {
-  const h = ((Number(hour) || 0) + 12) % 12 || 12;
-  const ampm = Number(hour) < 12 ? "AM" : "PM";
-  return `${h}:00 ${ampm} EAT`;
+  return localLabelForTime(hour, DEFAULT_NOTIFY_MINUTE);
 }
 
 /** The hour the button opens: ONE HOUR before the owner's notify time. */
-export function dayCloseCutoffHour(notifyHour: number | null | undefined): number {
-  const notify = dayCloseNotifyHour(notifyHour);
-  return Math.min(23, Math.max(0, notify - 1));
+export function dayCloseCutoffHour(notifyTime: unknown): number {
+  return dayCloseCutoffTime(notifyTime).hour;
+}
+
+/** The minute the button opens: one hour before the owner's exact time. */
+export function dayCloseCutoffTime(notifyTime: unknown): NotifyTime {
+  const mins = Math.max(0, notifyMinutesOfDay(notifyTime) - 60);
+  return { hour: Math.floor(mins / 60), minute: mins % 60 };
 }
 
 /** The default cutoff (20:00 EAT = 2:00 local) — where the button appears. */
 export const DEFAULT_CUTOFF_HOUR = dayCloseCutoffHour(DEFAULT_NOTIFY_HOUR);
 
 /**
- * The owner's chosen notify hour. Only the three offered hours are accepted;
- * anything else (missing setting, junk, an old value) falls back to the
- * default, so a bad settings row can never silence the daily total.
- */
-export function dayCloseNotifyHour(value: number | string | null | undefined): number {
-  const missing = value === null || value === undefined || String(value).trim() === "";
-  const n = missing ? NaN : Number(value);
-  return Number.isInteger(n) && NOTIFY_HOUR_CHOICES.includes(n) ? n : DEFAULT_NOTIFY_HOUR;
-}
-
-/**
- * Is the cashier's button visible? It opens at the cutoff hour and stays
+ * Is the cashier's button visible? It opens at the cutoff time and stays
  * visible until midnight — after midnight the EAT day has rolled over, so the
  * new day's window opens again in the evening and today can no longer be
  * closed ("after that counted as next day").
  */
-export function isDayCloseOpen(hour: number, cutoffHour: number): boolean {
-  return hour >= cutoffHour;
+export function isDayCloseOpen(hour: number, cutoffHour: number, minute = 0, cutoffMinute = 0): boolean {
+  const now = minutesOfDay(hour, minute);
+  const cutoff = minutesOfDay(cutoffHour, cutoffMinute);
+  if (!Number.isFinite(now)) return false;
+  return now >= (Number.isFinite(cutoff) ? cutoff : 0);
 }
 
 /** Has the owner's notify time arrived? (the automatic send if she forgot) */
-export function isDayCloseDue(hour: number, notifyHour: number): boolean {
-  return hour >= dayCloseNotifyHour(notifyHour);
+export function isDayCloseDue(
+  hour: number,
+  notifyHour: number,
+  minute = 0,
+  notifyMinute: number = DEFAULT_NOTIFY_MINUTE,
+): boolean {
+  const now = minutesOfDay(hour, minute);
+  if (!Number.isFinite(now)) return false;
+  return now >= notifyMinutesOfDay({ hour: notifyHour, minute: notifyMinute });
 }
 
 /** The exact minute the auto-send lands / the alarm rings (for the screens). */
-export function dayCloseMoment(hour: number): string {
-  return `${String(Math.max(0, Math.min(23, hour))).padStart(2, "0")}:00`;
+export function dayCloseMoment(hour: number, minute = 0): string {
+  const h = Math.max(0, Math.min(23, Math.floor(Number(hour)) || 0));
+  const m = Math.max(0, Math.min(59, Math.floor(Number(minute)) || 0));
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 /* ─── THE STORED RECORDS ──────────────────────────────────────────────────── */
@@ -97,6 +220,15 @@ export const DAY_CLOSE_KEY_PREFIX = "day_close_";
 
 /** The site_settings key holding the owner's chosen notify hour. */
 export const DAY_CLOSE_NOTIFY_KEY = "day_close_notify_hour";
+
+/**
+ * What that key holds: "HH:MM" EAT ("21:03") since minutes became choosable.
+ * Rows written before then hold a bare hour ("21") and still read correctly —
+ * see dayCloseNotifyTime.
+ */
+export function isNotifyTimeSettingValue(value: unknown): boolean {
+  return /^\d{1,2}:\d{2}$/.test(String(value ?? "").trim());
+}
 
 export function dayCloseSettingKey(dayKey: string): string {
   return `${DAY_CLOSE_KEY_PREFIX}${String(dayKey || "").trim()}`;

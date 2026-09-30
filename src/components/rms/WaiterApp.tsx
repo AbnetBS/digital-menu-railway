@@ -25,6 +25,7 @@ import {
   WAITER_SEND_HOLD_DEFAULT_SECONDS,
 } from "@/lib/send-hold";
 import { heldLines, heldUnits, isTableReleased } from "@/lib/order-release";
+import { closeTopBackLayer, installStaffBackNavigation } from "@/lib/staff-back-navigation";
 
 interface StaffLite {
   id: number;
@@ -1136,13 +1137,19 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   };
 
   /**
-   * Start a saved countdown for this exact table/order, then TAKE THE WAITER
-   * OUT IMMEDIATELY (owner's decision, Sept 2026): tapping Send queues the
-   * order AND lands her back on the tables grid. No lingering on a sent cart
-   * where a stray tap could cancel it — she walks to the next guests. The
-   * hold's only job is letting her FIX a forgotten dish: the table tile turns
-   * violet while it waits, and tapping it (or its View order button) opens
-   * the same editor again with the countdown running at the bottom.
+   * Start the saved countdown for this exact table/order AND STAY ON THIS PAGE
+   * (owner's decision, 30 Sept 2026 — he reversed the earlier "throw her back
+   * to the tables" rule after the waiters told him it slowed them down).
+   *
+   * Tapping Send now keeps her exactly where she is, looking at the items she
+   * is about to send, with the three controls the owner listed under them:
+   *   1. the COUNTDOWN that reads how long the order still waits;
+   *   2. SEND NOW, on the right of that countdown, for the orders that should
+   *      not wait at all;
+   *   3. CANCEL WHOLE ORDER, under the two, when the guests changed everything.
+   * Every line above stays editable (quantity, note, remove) until the clock
+   * runs out, and pressing Back still takes her to the tables with the
+   * countdown alive — the violet tile brings her back into it.
    */
   const startSendHold = () => {
     if (cart.length === 0 || !selectedTable || sending || activeHoldKeyRef.current) return;
@@ -1162,13 +1169,19 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     };
     replacePendingSends([...pendingSendsRef.current, queued]);
     void registerDeferredSend(queued);
-    setSelectedTable(null);
-    setActiveTicket(null);
-    setCart([]);
-    setView("tables");
-    showToast(tNow("✓ Saved • sends in {clock}. Tap the violet table to change it before then.", { clock: formatHoldClock(hold) }));
+    // The countdown belongs to THIS screen now: the same items stay on it, so
+    // the waiter reads them one more time before anything reaches the kitchen.
+    setActiveHold(idempotencyKey);
+    setHoldLeft(hold);
+    showToast(tNow("⏳ Waiting to send • {clock} left. Fix anything now, or press Send now.", { clock: formatHoldClock(hold) }));
   };
 
+  /**
+   * CANCEL WHOLE ORDER (owner, 30 Sept 2026): one tap throws the waiting order
+   * away — the copy saved on the server, the countdown, and the items on the
+   * screen. She stays on this table's page with an empty cart, so starting
+   * over is two taps, and the crews never see a line she cancelled.
+   */
   const cancelSendHold = async () => {
     const key = activeHoldKeyRef.current;
     if (!key) return;
@@ -1191,7 +1204,8 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     replacePendingSends(pendingSendsRef.current.filter((item) => item.idempotencyKey !== key));
     setActiveHold(null);
     setHoldLeft(0);
-    showToast(tNow("Scheduled order cancelled."));
+    setCart([]);
+    showToast(tNow("✗ Whole order cancelled • nothing was sent to the kitchen"));
   };
 
   /**
@@ -1241,6 +1255,41 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     setCart([]);
     setView("tables");
   };
+
+  /* ── THE PHONE'S BACK BUTTON = ONE STEP BACK (owner's decision, Sept 2026) ──
+   * "when they click back button to see the all table it completely return them
+   * to chrome or browser this isnt good programing ... 1 back button clcik 1
+   * step back not completly take them to the start."
+   *
+   * The waiter's screens live in React state, so the browser used to know
+   * nothing about them and one press walked her out of the app mid-service.
+   * Now every press closes the TOP layer only — a guest alert or a composer
+   * first, then payment → the bill → the tables grid → her login screen — and
+   * only from the login screen does the press really leave the app.
+   */
+  const stepBack = () =>
+    closeTopBackLayer([
+      { at: () => !!urgent, close: closeUrgent },
+      { at: () => outdoorPickerOpen, close: () => setOutdoorPickerOpen(false) },
+      { at: () => outdoorComposerOpen, close: () => setOutdoorComposerOpen(false) },
+      { at: () => groupComposerOpen, close: () => setGroupComposerOpen(false) },
+      { at: () => view === "payment", close: () => setView("bill") },
+      { at: () => view === "order" || view === "bill", close: onGoBack },
+      // "…it take them to the all tables then again to login page": the grid
+      // steps back to her login (a real logout, so the screen never lies about
+      // a live session), and only the press after that leaves the app.
+      { at: () => view === "tables", close: logout },
+    ]);
+
+  /** The guard is installed once; it always asks the newest render what to close. */
+  const stepBackRef = useRef<() => boolean>(() => false);
+  useEffect(() => {
+    stepBackRef.current = stepBack;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    return installStaffBackNavigation(window, () => stepBackRef.current());
+  }, []);
 
   /**
    * REOPEN THE WAITING ORDER (owner's decision, Sept 2026): the hold exists
@@ -2374,8 +2423,18 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
           {/* cart bottom sheet */}
           {cart.length > 0 && (
-            <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#2C1B17] border-t-2 border-[#C9A227] p-4 max-w-3xl mx-auto space-y-3">
-              <div className="max-h-40 overflow-y-auto space-y-2">
+            <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#2C1B17] border-t-2 border-[#C9A227] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] max-w-3xl mx-auto space-y-3 max-h-[90dvh] overflow-y-auto">
+              {/* WHAT IS ABOUT TO BE SENT — the heading says so, so the three
+                  controls under the list are never read as "already sent". */}
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-amber-200 min-w-0">
+                  {activeHoldKey !== null
+                    ? L("⏳ Waiting to send • {count} item(s)", { count: cart.length })
+                    : L("About to send • {count} item(s)", { count: cart.length })}
+                </p>
+                <p className="text-[11px] font-black text-[#C9A227] tabular-nums shrink-0">{cartTotal} ETB</p>
+              </div>
+              <div className="max-h-[30dvh] overflow-y-auto space-y-2">
                 {cart.map((c) => (
                   <div key={c.menuItemId} className="bg-[#3D2314] rounded-xl p-2.5 space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
@@ -2397,49 +2456,50 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 ))}
               </div>
               {activeHoldKey !== null ? (
-                /* THE SEND HOLD: the countdown the owner asked for, with the
-                   "Send now" release beside it for the small orders that should
-                   not wait. The cart above stays fully editable while it runs,
-                   so a wrong dish, quantity or note is fixed before anything
-                   reaches the kitchen. */
+                /* THE SEND HOLD, ON THIS PAGE (owner's decision, 30 Sept 2026):
+                   under the items she is about to send sit the three things he
+                   listed — the COUNTDOWN of the time left, SEND NOW on its
+                   right, and CANCEL WHOLE ORDER under the two. The list above
+                   stays fully editable while the clock runs, so a wrong dish,
+                   quantity or note is fixed before anything reaches the
+                   kitchen, and Back still takes her to the tables with the
+                   countdown alive. */
                 <div className="bg-[#3D2314] border-2 border-[#C9A227]/60 rounded-xl p-3 space-y-2.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-black text-amber-200 uppercase tracking-wide">
-                        {L("Sending in {clock}", { clock: formatHoldClock(holdLeft) })}
-                      </p>
-                      <p className="text-[10px] font-bold text-stone-400">
-                        {L("Check the items above • you can still edit, add notes or remove")}
-                      </p>
-                      {activeHoldSend?.lastError ? (
-                        <p className="text-[10px] font-bold text-rose-300">
-                          {activeHoldSend.lastError === "Server schedule unavailable. Keep the waiter app open."
-                            ? L("Server schedule unavailable. Keep the waiter app open.")
-                            : activeHoldSend.lastError}
-                        </p>
-                      ) : null}
-                    </div>
+                  <div className="flex items-center gap-3">
                     <span className="font-serif font-black text-3xl text-[#C9A227] tabular-nums shrink-0">
                       {formatHoldClock(holdLeft)}
                     </span>
-                  </div>
-                  <div className="flex gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-black text-amber-200 uppercase tracking-wide">
+                        {L("Sends in")}
+                      </p>
+                      <p className="text-[10px] font-bold text-stone-400 leading-tight">
+                        {L("Edit the items above until it runs out")}
+                      </p>
+                    </div>
                     <button
                       onClick={() => sendPendingOrderRef.current(activeHoldKey, true)}
                       disabled={sendingPendingKeys.includes(activeHoldKey)}
-                      className="flex-1 bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-sm uppercase py-3 rounded-xl flex items-center justify-center gap-2 shadow-xl disabled:opacity-50"
+                      className="ml-auto shrink-0 bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-xs uppercase px-4 py-3 rounded-xl flex items-center gap-2 shadow-xl disabled:opacity-50"
                     >
                       <Send className="w-4 h-4" />
                       {sendingPendingKeys.includes(activeHoldKey) ? L("Sending...") : L("Send now")}
                     </button>
-                    <button
-                      onClick={cancelSendHold}
-                      disabled={sendingPendingKeys.includes(activeHoldKey)}
-                      className="px-4 bg-white/10 text-stone-200 text-xs font-bold py-3 rounded-xl disabled:opacity-40"
-                    >
-                      {L("Cancel")}
-                    </button>
                   </div>
+                  <button
+                    onClick={() => void cancelSendHold()}
+                    disabled={sendingPendingKeys.includes(activeHoldKey)}
+                    className="w-full bg-rose-900/50 border border-rose-600/70 text-rose-200 font-black text-xs uppercase py-3 rounded-xl disabled:opacity-40"
+                  >
+                    {L("Cancel whole order")}
+                  </button>
+                  {activeHoldSend?.lastError ? (
+                    <p className="text-[10px] font-bold text-rose-300">
+                      {activeHoldSend.lastError === "Server schedule unavailable. Keep the waiter app open."
+                        ? L("Server schedule unavailable. Keep the waiter app open.")
+                        : activeHoldSend.lastError}
+                    </p>
+                  ) : null}
                 </div>
               ) : (
                 <button

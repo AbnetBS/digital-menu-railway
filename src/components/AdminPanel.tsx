@@ -59,6 +59,29 @@ export default function AdminPanel({
   // The daily-sales notification opens /admin?tab=sales, so the tab is read
   // from the URL first (the reports tab stays the default for a bare /admin).
   const [activeTab, setActiveTab] = useState<Tab>(() => readTabFromUrl() || "reports");
+
+  /**
+   * ONE BACK PRESS = ONE STEP BACK (owner's decision, 30 Sept 2026): every tab
+   * he opens is written into the address bar (?tab=…), so the phone's Back
+   * button walks him back through the tabs he actually visited — Password →
+   * Daily Sales → Reports — and only then leaves the dashboard. Before this,
+   * the tabs lived in React state alone and the first Back press threw him out
+   * of the whole admin, back to the browser.
+   */
+  const goTab = (tab: Tab) => {
+    if (tab === activeTab) return;
+    setActiveTab(tab);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", tab);
+      // Next's router state rides along, so the URL change never re-renders the
+      // page tree (the same rule the customer menu's back guard follows).
+      window.history.pushState({ ...window.history.state }, "", url.toString());
+    } catch {
+      /* the tab still switches; only the address bar stays behind */
+    }
+  };
+
   useEffect(() => {
     const onPop = () => setActiveTab(readTabFromUrl() || "reports");
     window.addEventListener("popstate", onPop);
@@ -317,7 +340,7 @@ export default function AdminPanel({
         {tabs.map((t) => (
           <button
             key={t.key}
-            onClick={() => setActiveTab(t.key)}
+            onClick={() => goTab(t.key)}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap ${
               activeTab === t.key ? "bg-[#C9A227] text-[#2C1B17]" : "bg-[#2C1B17] text-stone-300 hover:bg-white/10"
             }`}
@@ -988,7 +1011,7 @@ export default function AdminPanel({
 
       {/* EDIT MENU MODAL */}
       {editingItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+        <div className="fana-fit-screen fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-[#2C1B17] rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 border border-[#C9A227] shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between border-b border-stone-800 pb-3">
               <h3 className="font-serif font-bold text-lg text-amber-100">{editingItem.id ? L("Edit Dish") : L("Add New Dish")}</h3>
@@ -1135,7 +1158,7 @@ export default function AdminPanel({
 
       {/* EDIT GALLERY MODAL */}
       {editingGallery && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+        <div className="fana-fit-screen fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-[#2C1B17] rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 border border-[#C9A227] shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between border-b border-stone-800 pb-3">
               <h3 className="font-serif font-bold text-lg text-amber-100">{editingGallery.id ? L("Edit Gallery Photo") : L("Add Gallery Photo")}</h3>

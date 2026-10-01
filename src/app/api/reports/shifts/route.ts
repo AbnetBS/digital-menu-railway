@@ -35,6 +35,15 @@ async function readSplitHour(): Promise<number> {
   }
 }
 
+async function readPrintQueueMode(): Promise<boolean> {
+  try {
+    const rows = await db.select().from(siteSettings).where(eq(siteSettings.key, "cashier_mode"));
+    return String(rows[0]?.value || "print-queue") !== "full";
+  } catch {
+    return true;
+  }
+}
+
 export async function GET(request: Request) {
   const auth = await requireAdmin();
   if (!auth.ok) return auth.response;
@@ -46,7 +55,7 @@ export async function GET(request: Request) {
   const date: ShiftDate = rawDate && SHIFT_DATES.includes(rawDate) ? rawDate : "today";
 
   try {
-    const splitHour = await readSplitHour();
+    const [splitHour, printQueueMode] = await Promise.all([readSplitHour(), readPrintQueueMode()]);
     const startDaysAgo = SHIFT_DATE_START_DAYS_AGO[date];
     const dayKeys: string[] = [];
     for (let i = 0; i < SHIFT_DATE_LENGTH[date]; i++) {
@@ -95,6 +104,7 @@ export async function GET(request: Request) {
       items,
       events,
       submissions,
+      printQueueMode,
       staffRoles,
       shiftClaims: claims.map((c) => ({
         dayKey: c.dayKey,

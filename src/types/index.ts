@@ -306,9 +306,8 @@ export interface Ticket {
   unprintedStaffSubmissions?: number;
   /**
    * Report archive only (GET /api/reports): how many bill lines were added AFTER
-   * this bill's last EFD print. They are real sales, but they are not on the
-   * receipt paper yet — the cashier still owes them a receipt #2 — so the
-   * cross-check card says so instead of letting the piles disagree silently.
+   * this bill's last EFD print. They are excluded from sales until the cashier
+   * prints receipt #2; the archive surfaces them for follow-up.
    */
   itemsAfterPrint?: number;
   /** ETB value of those not-yet-printed lines. */

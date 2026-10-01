@@ -38,6 +38,7 @@
  * regression test (scripts/verify-station-sales.ts) feeds fixtures in.
  */
 import { etDayKey, etDayKeyDaysAgo, etStartOfDaysAgo } from "@/lib/timezone";
+import { saleLinesForTicket, type SalesItemEventLike } from "@/lib/printed-sales";
 
 /* ─── PERIODS (the date buttons on the crew screen) ───────────────────────── */
 
@@ -163,8 +164,17 @@ export interface StationSalesItemRow {
   price?: number | null;
   quantity?: number | null;
   removed?: boolean | null;
-  /** The bill's status, so a cancelled order never counts as sold. */
+  /** The bill's status, so a cancelled or never-printed order never counts as sold. */
   ticketStatus?: string | null;
+  /** Latest cashier print (or sale time in full-payment mode). */
+  ticketPrintedAt?: Stamp;
+  /** Earlier incremental receipt instants for this ticket. */
+  ticketPrintEvents?: Stamp[];
+  /** Merged quantity increments/decrements for this ticket's item rows. */
+  ticketQuantityEvents?: SalesItemEventLike[];
+  ticketSaleAt?: Stamp;
+  /** When this line was inserted; lines added after the latest print are pending, not sold. */
+  createdAt?: Stamp;
   stationStatus?: string | null;
   stationStatusBy?: string | null;
   stationStatusAt?: Stamp;
@@ -228,6 +238,8 @@ export interface StationSalesReport {
   staff: string | null;
   generatedAt: string;
   modes: Record<SalesMode, StationSalesPile>;
+  /** Whole-station item totals on printed receipts, bucketed by print/sale date. */
+  printed: StationSalesPile;
   /**
    * THE WHOLE STATION'S OWN PILES — the same rows counted for EVERY member of
    * the crew, whoever tapped. Only /api/station-sales adds this, and only for a
@@ -313,6 +325,8 @@ export function buildStationSales(input: {
   rows: StationSalesItemRow[];
   /** Category slug → display name (the owner's wording from the Stations tab). */
   categoryNames?: Record<string, string> | null;
+  /** Match the admin report's print-queue or full-payment sale eligibility. */
+  printQueueMode?: boolean;
   /** When the figures were built (the screen shows it as "updated …"). */
   now?: Date;
 }): StationSalesReport {
@@ -321,12 +335,15 @@ export function buildStationSales(input: {
   const inPeriod = new Set(dayKeys);
   const me = clean(input.staff);
   const names = input.categoryNames || null;
+  const printQueueMode = input.printQueueMode ?? true;
 
   const acc: Record<SalesMode, Map<string, CatAcc>> = {
     accepted: new Map(),
     done: new Map(),
   };
   const billSets: Record<SalesMode, Set<number>> = { accepted: new Set(), done: new Set() };
+  const printedAcc = new Map<string, CatAcc>();
+  const printedBills = new Set<number>();
 
   const onDay = (at: string | null) => {
     const key = at ? etDayKey(at) : null;
@@ -334,38 +351,68 @@ export function buildStationSales(input: {
   };
   /** Whose tap counts: mine, or (admin view) any real member of the crew. */
   const counts = (by: string) => !!by && (me ? by === me : isCrewName(by));
+  const addLine = (
+    cats: Map<string, CatAcc>,
+    bills: Set<number>,
+    row: StationSalesItemRow,
+    category: string,
+    itemName: string,
+    quantity: number,
+    amount: number,
+  ) => {
+    const cat = cats.get(category) || {
+      quantity: 0,
+      amount: 0,
+      lines: 0,
+      bills: new Set<number>(),
+      items: new Map<string, ItemAcc>(),
+    };
+    const item = cat.items.get(itemName) || { quantity: 0, amount: 0, bills: new Set<number>() };
+    item.quantity += quantity;
+    item.amount += amount;
+    item.bills.add(row.ticketId);
+    cat.items.set(itemName, item);
+    cat.quantity += quantity;
+    cat.amount += amount;
+    cat.lines += 1;
+    cat.bills.add(row.ticketId);
+    cats.set(category, cat);
+    bills.add(row.ticketId);
+  };
 
   for (const row of input.rows || []) {
-    // A line the cashier took off the bill was never made, and a cancelled
-    // order was never sold — neither belongs in "items sold".
-    if (row.removed) continue;
-    if (clean(row.ticketStatus).toLowerCase() === "cancelled") continue;
+    // The station screen's sales numbers must be the same receipt-backed sale
+    // the admin report sees: no unprinted orders, removed lines, or additions
+    // made after the latest cashier print. Merged quantity increases are split
+    // between their actual EFD receipts, just like separate added rows.
+    const ticket = { status: row.ticketStatus, printedAt: row.ticketPrintedAt };
+    const soldLines = saleLinesForTicket(
+      ticket,
+      [row],
+      printQueueMode,
+      row.ticketPrintEvents || [],
+      row.ticketQuantityEvents || [],
+    );
+    for (const soldLine of soldLines) {
+      const quantity = Math.max(0, Math.round(Number(soldLine.item.quantity) || 0));
+      const price = Math.max(0, Number(row.price) || 0);
+      const amount = price * quantity;
+      const category = categoryLabel(row.category, names);
+      const itemName = clean(row.name) || "Item";
+      const receiptRow = { ...row, quantity, ticketSaleAt: soldLine.soldAt || row.ticketSaleAt };
 
-    const quantity = Math.max(0, Math.round(Number(row.quantity) || 0));
-    const price = Math.max(0, Number(row.price) || 0);
-    const amount = price * quantity;
-    const attr = lineAttribution(row);
-    const accepted = counts(attr.acceptedBy) && onDay(attr.acceptedAt);
-    const done = counts(attr.doneBy) && onDay(attr.doneAt);
-    if (!accepted && !done) continue;
+      // The station-wide printed pile is bucketed by the particular receipt,
+      // even if the cashier (e.g. Buna) cleared the line after the crew finished.
+      const saleAt = iso(receiptRow.ticketSaleAt || row.ticketPrintedAt);
+      if (onDay(saleAt)) addLine(printedAcc, printedBills, receiptRow, category, itemName, quantity, amount);
 
-    const category = categoryLabel(row.category, names);
-    const itemName = clean(row.name) || "Item";
-    const modes: SalesMode[] = accepted && done ? ["accepted", "done"] : accepted ? ["accepted"] : ["done"];
-    for (const mode of modes) {
-      const cats = acc[mode];
-      const cat = cats.get(category) || { quantity: 0, amount: 0, lines: 0, bills: new Set<number>(), items: new Map<string, ItemAcc>() };
-      const item = cat.items.get(itemName) || { quantity: 0, amount: 0, bills: new Set<number>() };
-      item.quantity += quantity;
-      item.amount += amount;
-      item.bills.add(row.ticketId);
-      cat.items.set(itemName, item);
-      cat.quantity += quantity;
-      cat.amount += amount;
-      cat.lines += 1;
-      cat.bills.add(row.ticketId);
-      cats.set(category, cat);
-      billSets[mode].add(row.ticketId);
+      // Accepted and Done remain the person's action piles. A merged top-up
+      // belongs in its action pile only after that added quantity got printed.
+      const attr = lineAttribution(row);
+      const accepted = counts(attr.acceptedBy) && onDay(attr.acceptedAt);
+      const done = counts(attr.doneBy) && onDay(attr.doneAt);
+      const modes: SalesMode[] = accepted && done ? ["accepted", "done"] : accepted ? ["accepted"] : done ? ["done"] : [];
+      for (const mode of modes) addLine(acc[mode], billSets[mode], receiptRow, category, itemName, quantity, amount);
     }
   }
 
@@ -406,6 +453,7 @@ export function buildStationSales(input: {
     staff: me || null,
     generatedAt: (input.now || new Date()).toISOString(),
     modes,
+    printed: finish(printedAcc, printedBills),
   };
 }
 

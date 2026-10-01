@@ -1,8 +1,9 @@
-import { and, desc, gt, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, or, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { siteSettings, tickets } from "@/db/schema";
+import { siteSettings, ticketEvents, ticketItems, tickets } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { sendPushToRoles } from "@/lib/push";
+import { saleLinesForTicket, type SalesItemEventLike, type SalesStamp } from "@/lib/printed-sales";
 import { etDayKey, etHour, etMinute, etStartOfDaysAgo } from "@/lib/timezone";
 import {
   AUTO_CLOSE_BY,
@@ -41,19 +42,20 @@ import {
 /** How far back the owner's page reads (the list itself is filtered later). */
 export const DAILY_SALES_WINDOW_DAYS = 90;
 
-/** One printed bill, only the columns the totals need. */
+/** One eligible sale line total, placed on the EAT day it was printed/closed. */
 export interface SoldRow {
-  printedAt: Date | null;
+  printedAt: SalesStamp;
+  saleAt?: SalesStamp;
   totalAmount: number | null;
   status: string;
 }
 
-/** Days bucketed by the EAT calendar day of the PRINT (cancelled never counts). */
+/** Days bucketed by the EAT calendar sale day (cancelled never counts). */
 export function bucketByDay(rows: SoldRow[]): Map<string, { total: number; bills: number }> {
   const out = new Map<string, { total: number; bills: number }>();
   for (const row of rows) {
     if (row.status === "cancelled") continue;
-    const day = etDayKey(row.printedAt);
+    const day = etDayKey(row.saleAt || row.printedAt);
     if (!day) continue;
     const cur = out.get(day) ?? { total: 0, bills: 0 };
     cur.total += Number(row.totalAmount) || 0;
@@ -63,13 +65,94 @@ export function bucketByDay(rows: SoldRow[]): Map<string, { total: number; bills
   return out;
 }
 
-/** Every printed bill since the cutoff (newest first). */
+/**
+ * Receipt-backed sales since the cutoff (newest first). Totals are recalculated
+ * from each line's first qualifying receipt, never from a ticket total that can
+ * also contain post-print additions. Reprints cannot move earlier lines into
+ * today's total. Full-payment mode uses its paid/completed rule.
+ */
 export async function readPrintedBills(cutoff: Date): Promise<SoldRow[]> {
-  return db
-    .select({ printedAt: tickets.printedAt, totalAmount: tickets.totalAmount, status: tickets.status })
+  let printQueueMode = true;
+  try {
+    const mode = await db.select({ value: siteSettings.value }).from(siteSettings).where(eq(siteSettings.key, "cashier_mode"));
+    printQueueMode = String(mode[0]?.value || "print-queue") !== "full";
+  } catch {
+    /* unreadable setting → the default print-queue workflow */
+  }
+
+  const candidates = await db
+    .select()
     .from(tickets)
-    .where(and(isNotNull(tickets.printedAt), gt(tickets.printedAt, cutoff)))
-    .orderBy(desc(tickets.printedAt));
+    .where(
+      or(
+        gte(tickets.printedAt, cutoff),
+        gte(tickets.closedAt, cutoff),
+        gte(tickets.updatedAt, cutoff),
+        gte(tickets.createdAt, cutoff)
+      )
+    );
+  if (!candidates.length) return [];
+
+  const ids = candidates.map((ticket) => ticket.id);
+  const [items, printEvents] = await Promise.all([
+    db.select().from(ticketItems).where(inArray(ticketItems.ticketId, ids)),
+    db.select({
+      ticketId: ticketEvents.ticketId,
+      itemId: ticketEvents.itemId,
+      eventType: ticketEvents.eventType,
+      fromValue: ticketEvents.fromValue,
+      toValue: ticketEvents.toValue,
+      createdAt: ticketEvents.createdAt,
+    })
+      .from(ticketEvents)
+      .where(and(inArray(ticketEvents.ticketId, ids), inArray(ticketEvents.eventType, ["ticket_printed", "item_quantity_changed"]))),
+  ]);
+  const itemsByTicket = new Map<number, typeof items>();
+  for (const item of items) {
+    const rows = itemsByTicket.get(item.ticketId) || [];
+    rows.push(item);
+    itemsByTicket.set(item.ticketId, rows);
+  }
+  const printEventsByTicket = new Map<number, SalesStamp[]>();
+  const quantityEventsByTicket = new Map<number, SalesItemEventLike[]>();
+  for (const event of printEvents) {
+    if (event.eventType === "ticket_printed") {
+      const rows = printEventsByTicket.get(event.ticketId) || [];
+      rows.push(event.createdAt);
+      printEventsByTicket.set(event.ticketId, rows);
+    } else if (event.eventType === "item_quantity_changed") {
+      const rows = quantityEventsByTicket.get(event.ticketId) || [];
+      rows.push(event);
+      quantityEventsByTicket.set(event.ticketId, rows);
+    }
+  }
+
+  return candidates.flatMap((ticket) => {
+    const lines = saleLinesForTicket(
+      ticket,
+      itemsByTicket.get(ticket.id) || [],
+      printQueueMode,
+      printEventsByTicket.get(ticket.id) || [],
+      quantityEventsByTicket.get(ticket.id) || [],
+    );
+    // A ticket may have several incremental EFD receipts. Keep each receipt as
+    // its own dated row so earlier lines stay on their original sale day.
+    const receipts = new Map<number, { saleAt: SalesStamp; totalAmount: number }>();
+    for (const line of lines) {
+      if (!line.soldAt) continue;
+      const time = new Date(String(line.soldAt)).getTime();
+      if (!Number.isFinite(time) || time < cutoff.getTime()) continue;
+      const receipt = receipts.get(time) || { saleAt: line.soldAt, totalAmount: 0 };
+      receipt.totalAmount += (Number(line.item.price) || 0) * (Number(line.item.quantity) || 0);
+      receipts.set(time, receipt);
+    }
+    return [...receipts.values()].map((receipt) => ({
+      printedAt: ticket.printedAt,
+      saleAt: receipt.saleAt,
+      totalAmount: receipt.totalAmount,
+      status: ticket.status,
+    }));
+  });
 }
 
 export interface DayCloseState {

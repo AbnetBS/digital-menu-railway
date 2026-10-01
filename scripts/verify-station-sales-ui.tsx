@@ -66,14 +66,14 @@ const eat = (daysAgo: number, hour: number, minute = 0) =>
  * yesterday carries a little, and every line knows its menu category.
  */
 const SALES_ROWS: StationSalesItemRow[] = [
-  { id: 11, ticketId: 501, name: "Kitfo", category: "foods", price: 320, quantity: 2, removed: false, ticketStatus: "printed", stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(0, 9, 5), stationDoneBy: COOK, stationDoneAt: eat(0, 9, 25), stationStatusBy: null, stationStatusAt: null },
-  { id: 12, ticketId: 501, name: "Firfir", category: "foods", price: 180, quantity: 1, removed: false, ticketStatus: "printed", stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(0, 9, 6), stationDoneBy: "Mitke", stationDoneAt: eat(0, 9, 40), stationStatusBy: null, stationStatusAt: null },
-  { id: 13, ticketId: 502, name: "Pastry", category: "pastries", price: 90, quantity: 3, removed: false, ticketStatus: "closed", stationStatus: "done", stationAcceptedBy: "Mitke", stationAcceptedAt: eat(0, 11), stationDoneBy: COOK, stationDoneAt: eat(0, 11, 20), stationStatusBy: null, stationStatusAt: null },
-  { id: 14, ticketId: 503, name: "Kitfo", category: "foods", price: 320, quantity: 1, removed: false, ticketStatus: "paid", stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(1, 13), stationDoneBy: COOK, stationDoneAt: eat(1, 13, 30), stationStatusBy: null, stationStatusAt: null },
-  { id: 15, ticketId: 504, name: "Burger", category: "foods", price: 250, quantity: 4, removed: false, ticketStatus: "paid", stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(2, 12), stationDoneBy: COOK, stationDoneAt: eat(2, 12, 45), stationStatusBy: null, stationStatusAt: null },
+  { id: 11, ticketId: 501, name: "Kitfo", category: "foods", price: 320, quantity: 2, removed: false, ticketStatus: "printed", ticketPrintedAt: eat(0, 9, 30), ticketSaleAt: eat(0, 9, 30), createdAt: eat(0, 9), stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(0, 9, 5), stationDoneBy: COOK, stationDoneAt: eat(0, 9, 25), stationStatusBy: null, stationStatusAt: null },
+  { id: 12, ticketId: 501, name: "Firfir", category: "foods", price: 180, quantity: 1, removed: false, ticketStatus: "printed", ticketPrintedAt: eat(0, 9, 30), ticketSaleAt: eat(0, 9, 30), createdAt: eat(0, 9), stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(0, 9, 6), stationDoneBy: "Mitke", stationDoneAt: eat(0, 9, 40), stationStatusBy: null, stationStatusAt: null },
+  { id: 13, ticketId: 502, name: "Pastry", category: "pastries", price: 90, quantity: 3, removed: false, ticketStatus: "closed", ticketPrintedAt: eat(0, 11, 30), ticketSaleAt: eat(0, 11, 30), createdAt: eat(0, 10, 30), stationStatus: "done", stationAcceptedBy: "Mitke", stationAcceptedAt: eat(0, 11), stationDoneBy: COOK, stationDoneAt: eat(0, 11, 20), stationStatusBy: null, stationStatusAt: null },
+  { id: 14, ticketId: 503, name: "Kitfo", category: "foods", price: 320, quantity: 1, removed: false, ticketStatus: "paid", ticketPrintedAt: eat(1, 13, 30), ticketSaleAt: eat(1, 13, 30), createdAt: eat(1, 12, 30), stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(1, 13), stationDoneBy: COOK, stationDoneAt: eat(1, 13, 30), stationStatusBy: null, stationStatusAt: null },
+  { id: 15, ticketId: 504, name: "Burger", category: "foods", price: 250, quantity: 4, removed: false, ticketStatus: "paid", ticketPrintedAt: eat(2, 12, 30), ticketSaleAt: eat(2, 12, 30), createdAt: eat(2, 11, 30), stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(2, 12), stationDoneBy: COOK, stationDoneAt: eat(2, 12, 45), stationStatusBy: null, stationStatusAt: null },
   // A cancelled order and a removed line: never a sale, whatever was tapped.
-  { id: 16, ticketId: 505, name: "Pizza", category: "foods", price: 400, quantity: 9, removed: false, ticketStatus: "cancelled", stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(0, 12), stationDoneBy: COOK, stationDoneAt: eat(0, 12, 30), stationStatusBy: null, stationStatusAt: null },
-  { id: 17, ticketId: 506, name: "Soup", category: "foods", price: 120, quantity: 7, removed: true, ticketStatus: "printed", stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(0, 12, 10), stationDoneBy: COOK, stationDoneAt: eat(0, 12, 50), stationStatusBy: null, stationStatusAt: null },
+  { id: 16, ticketId: 505, name: "Pizza", category: "foods", price: 400, quantity: 9, removed: false, ticketStatus: "cancelled", ticketPrintedAt: eat(0, 12, 30), ticketSaleAt: eat(0, 12, 30), createdAt: eat(0, 11, 30), stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(0, 12), stationDoneBy: COOK, stationDoneAt: eat(0, 12, 30), stationStatusBy: null, stationStatusAt: null },
+  { id: 17, ticketId: 506, name: "Soup", category: "foods", price: 120, quantity: 7, removed: true, ticketStatus: "printed", ticketPrintedAt: eat(0, 12, 30), ticketSaleAt: eat(0, 12, 30), createdAt: eat(0, 11, 30), stationStatus: "done", stationAcceptedBy: COOK, stationAcceptedAt: eat(0, 12, 10), stationDoneBy: COOK, stationDoneAt: eat(0, 12, 50), stationStatusBy: null, stationStatusAt: null },
 ];
 const CATEGORY_NAMES = { foods: "Foods", pastries: "Pastries" };
 
@@ -187,10 +187,9 @@ async function main() {
   pass("the crew is logged in and sees the live list", text().includes("TABLE 4") && text().includes("Kitfo"));
   const tile = buttonByText("Items sold");
   pass("the 'Items sold' tile is a button the crew can open", !!tile);
-  // Today's DONE pile for this cook: 2 Kitfo + 3 Pastry = 5 units. The Kitfo she
-  // accepted and finished is hers; the Firfir she accepted but Mitke finished is
-  // not (it sits in her Accepted pile, waiting to be seen there).
-  pass("the tile carries today's own unit count before anyone opens it", (tile?.textContent || "").includes("5"), tile?.textContent || "");
+  // The tile starts with the receipt-backed station total: 2 Kitfo + 1 Firfir
+  // + 3 Pastry = 6 units. Accepted and Done remain separate activity views.
+  pass("the tile carries today's receipt-backed unit count before anyone opens it", (tile?.textContent || "").includes("6"), tile?.textContent || "");
   pass("the tile says which day that number is", /Today/.test(tile?.textContent || ""));
 
   /* ── 2. opening the tab: real figures, per category ─────────────── */
@@ -198,28 +197,30 @@ async function main() {
   await click(tile);
   pass("opening the tab asks the server for today's figures", calls.some((c) => c.startsWith("/api/station-sales?period=today")), calls.join(" "));
   pass("the panel shows the person whose sales these are", text().includes(`Items sold • ${COOK}`));
-  pass("the panel OPENS on the Done pile, the number the crew is paid on", /DONE • ITEMS SOLD/.test(text()));
-  pass("the panel shows the units and the money (never a bare 0)", text().includes("5") && text().includes("ETB"));
+  pass("the panel OPENS on receipt-backed EFD sales, while Accepted and Done remain available", /EFD RECEIPT SALES • ITEMS SOLD/.test(text()));
+  pass("the panel shows the receipt-backed units and money (never a bare 0)", text().includes("6") && text().includes("ETB"));
   pass("the panel does NOT read '0 items • 0 ETB' on a day that had work", !/0 items • 0 ETB/.test(text()));
   pass("the figures are grouped by menu category", text().includes("Foods") && text().includes("Pastries"));
   pass("each category carries its items and their quantities", text().includes("Kitfo") && text().includes("Pastry") && /×2/.test(text()));
-  pass("the money is the real price × quantity of what was counted (2 Kitfo + 3 Pastry)",
-    text().includes("910 ETB"), text().slice(0, 400));
+  pass("the EFD total is the real price × receipt quantity (2 Kitfo + 1 Firfir + 3 Pastry)",
+    text().includes("1,090 ETB"), text().slice(0, 400));
   pass("a cancelled order and a removed line are not in the pile", !text().includes("Pizza") && !text().includes("Soup"));
   pass("the panel names how many bills the figures came from", text().includes("2 bill(s)"), text().slice(0, 300));
   pass("the panel prints the dates it covers", /Covers:/.test(text()));
-  pass("the panel ALSO shows the whole station's total for the same period (910 is this cook, 1,090 is the kitchen)",
-    /total: 6 items/.test(text()) && text().includes("1,090 ETB"), text().slice(0, 400));
+  pass("the default EFD view is the whole station's receipt total (6 items, 1,090 ETB)",
+    text().includes("EFD receipts") && text().includes("6") && text().includes("1,090 ETB"), text().slice(0, 400));
   pass("the five date buttons are there", ["Today", "Yesterday", "Day Before Yesterday", "Last 7 Days", "Last 30 Days"].every((l) => !!dateButton(l)));
   pass("the TWO pile tabs are there — and the removed Combined tab is not",
     ["Accepted", "Done"].every((l) => !!modeButton(l)) && !modeButton("Combined"), buttons().map((b) => (b.textContent || "").trim()).join(" | ").slice(0, 300));
-  pass("the counting rule is explained to the crew",
-    /Accepted counts the lines you tapped Accept on, Done the lines you finished, counted once each/.test(text()));
+  pass("the receipt counting rule is explained to the crew",
+    /Each EFD receipt counts only its own lines and quantities once/.test(text()));
 
   /* ── 3. the two tabs: accepted / done ──────────────────────── */
   calls.length = 0;
   await click(modeButton("Accepted"));
   const acceptedText = text();
+  pass("Accepted/Done views explain that only printed activity lines count",
+    /These activity piles include printed lines only/.test(acceptedText));
   pass("the Accepted tab counts the lines the cook accepted today (2 Kitfo + 1 Firfir = 3)",
     /ACCEPTED • ITEMS SOLD/.test(acceptedText) && acceptedText.includes("820 ETB") && acceptedText.includes("Firfir"), acceptedText.slice(0, 300));
   pass("its own tab carries the unit count too (Accepted 3, Done 5)",
@@ -259,7 +260,7 @@ async function main() {
     await flush();
     pass("a device that chose Amharic reads the whole panel in Amharic",
       text().includes("የተሸጡ እቃዎች") && text().includes("ዛሬ") && text().includes("ተጠናቋል"), text().slice(0, 300));
-    pass("the counting rule is explained in Amharic too", /ጨርሻለሁ/.test(text()) && /ፈጽሞ አይቆጠሩም/.test(text()));
+    pass("the activity counting rule is explained in Amharic too", /ያጠናቀቅካቸው/.test(text()) && /ፈጽሞ አይቆጠሩም/.test(text()));
     pass("money keeps its Latin digits and its ETB in Amharic", /910 ETB/.test(text()));
     pass("menu data (item and category names) is never machine-translated",
       text().includes("Kitfo") && text().includes("Foods"));

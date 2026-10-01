@@ -19,9 +19,8 @@
  *     button opens one hour before the chosen time;
  *   • "whenever the owner opens that page it shows him the total price that got
  *     printed up to that time" — live totals, never cached;
- *   • "for now only todays and yesterday total sale ... but starting from
- *     tomorrow it started listed" — today + yesterday + the days closed since
- *     the feature started.
+ *   • keep the daily history available: today, yesterday, every receipt-backed
+ *     sale day loaded from history, and every saved close record.
  *
  * Run with: npx tsx scripts/verify-daily-sales.ts   (wired into `npm test`)
  */
@@ -188,10 +187,9 @@ const read = (p: string) => readFileSync(path.join(ROOT, p), "utf8");
   });
   pass("today and yesterday are ALWAYS listed, newest first",
     listed[0] === "2026-09-29" && listed[1] === "2026-09-28");
-  pass("every day closed since the feature started is kept (the history grows one day at a time)",
-    listed.includes("2026-09-27") && listed.includes("2026-09-20") && listed.length === 4);
-  pass("a day before the feature (sales but never closed) is NOT listed — the rule the owner gave",
-    !listed.includes("2026-09-26"));
+  pass("every saved close record and every loaded receipt-backed sale day is listed",
+    listed.includes("2026-09-27") && listed.includes("2026-09-20") && listed.includes("2026-09-26") && listed.length === 5);
+  pass("the history is not limited to today and yesterday", listed.length > 2 && listed[0] === "2026-09-29");
   pass("junk day keys can never enter the list",
     listedDayKeys({ todayKey: "2026-09-29", yesterdayKey: null, closedKeys: ["garbage", ""] }).length === 1);
   pass("yesterday is computed from the EAT calendar, not the local clock",
@@ -256,8 +254,9 @@ const read = (p: string) => readFileSync(path.join(ROOT, p), "utf8");
     /requireStaffOrAdmin\(\)/.test(route) && /staff\.role !== "cashier"/.test(route));
   pass("before the closing hour the tap is REFUSED, so no total leaves early",
     /if \(!isDayCloseOpen\(hour, cutoffHour, minute, cutoff\.minute\)\)/.test(route) && /status: 409/.test(route));
-  pass("the total is today's PRINTED bills only (the EFD pile never counts a voided bill)",
-    /isNotNull\(tickets\.printedAt\)/.test(logic) && /row\.status === "cancelled"/.test(logic));
+  pass("the total uses receipt-attributed item quantities and excludes cancelled/unprinted work",
+    /saleLinesForTicket\(/.test(logic) && /ticket_printed/.test(logic) && /item_quantity_changed/.test(logic) &&
+      /row\.status === "cancelled"/.test(logic));
   pass("days are bucketed on the EAT wall clock with the shared helper",
     /etDayKey\(/.test(logic) && !/AT TIME ZONE/.test(logic));
   pass("the close is recorded in settings under the EAT day key",
@@ -355,10 +354,17 @@ const read = (p: string) => readFileSync(path.join(ROOT, p), "utf8");
     /window\.print\(\)/.test(tab) && /PrintLetterhead/.test(tab) && /@media print/.test(tab));
   pass("the page explains the money rule (printed EFD bills, cancelled never counted)",
     /prints the bill \(the EFD receipt\)/.test(tab) && /Cancelled orders are never counted/.test(tab));
-  pass("the owner arms HIS phone from this page (the only device that still rings)",
-    /enablePocketAlerts\(\)/.test(tab) && /Arm my phone/.test(tab) && /Test ring now/.test(tab) && /Test ring in 10s/.test(tab));
-  pass("the iPhone rule is spelled out for him (Android rings with the screen off)",
-    /Home Screen/.test(tab) && /screen off/.test(tab));
+  pass("phone setup is reduced to testing the ring and turning notifications on",
+    /enablePocketAlerts\(\)/.test(tab) && /Test ring sound/.test(tab) && /Turn on notifications/.test(tab) &&
+      !/Arm my phone|Test ring now|Test ring in 10s/.test(tab));
+  pass("turning notifications on requests browser permission when needed",
+    /Notification\.requestPermission\(\)/.test(read("src/lib/push-client.ts")) && /enablePocketAlerts\(\)/.test(tab));
+  pass("an open Admin page rings for the push even though its visible OS notification is silent",
+    /armAudioOnFirstGesture\(\)/.test(panel) && /data\?\.type === "fana-push"/.test(panel) && /playAlarm\(\)/.test(panel) &&
+      /document\.visibilityState === "visible" && document\.hasFocus\(\)/.test(panel) && /silent: true/.test(read("public/sw.js")));
+  pass("the note explains shift-end and automatic timing, tap navigation, and device behavior",
+    /cashier ends the shift/.test(tab) && /automatically at \{time\}/.test(tab) && /Admin → Sales/.test(tab) &&
+      /Home Screen/.test(tab) && /screen off/.test(tab));
 }
 
 /* ── 10. The notification can actually reach the owner's phone ───────────── */

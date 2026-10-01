@@ -16,6 +16,7 @@ import DailyBoardTab from "@/components/rms/DailyBoardTab";
 import StationsTab from "@/components/rms/StationsTab";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
+import { armAudioOnFirstGesture, playAlarm } from "@/lib/sound";
 
 interface AdminPanelProps {
   settings: SiteSettings;
@@ -85,12 +86,23 @@ export default function AdminPanel({
   useEffect(() => {
     const onPop = () => setActiveTab(readTabFromUrl() || "reports");
     window.addEventListener("popstate", onPop);
+    // The worker keeps a notification visible but silent while this dashboard
+    // is focused. Unlock the owner's in-app ring on their first gesture and
+    // play it when a push reaches this page, so an open Daily Sales tab is not
+    // quieter than the phone's locked-screen notification.
+    armAudioOnFirstGesture();
     // TAPPING THE DAY-CLOSE NOTIFICATION ON AN OPEN DASHBOARD: the service
     // worker re-uses the window instead of reloading it and only hands the
     // page the URL the notification carried ("fana-push-opened"), so the tab
     // is read from that message — otherwise the owner would land on Reports.
     const onWorkerMessage = (event: MessageEvent) => {
       const data = event.data as { type?: string; url?: string } | null;
+      if (data?.type === "fana-push") {
+        // Match the worker's visible/focused check: avoid doubling the system
+        // ring when the page is backgrounded and the OS notification is loud.
+        if (document.visibilityState === "visible" && document.hasFocus()) playAlarm();
+        return;
+      }
       if (data?.type !== "fana-push-opened" || typeof data.url !== "string") return;
       const wanted = new URLSearchParams(data.url.split("?")[1] || "").get("tab");
       if (wanted && (TAB_KEYS as string[]).includes(wanted)) setActiveTab(wanted as Tab);

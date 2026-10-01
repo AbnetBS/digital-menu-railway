@@ -22,6 +22,7 @@ import {
 } from "@/lib/station-sales";
 
 type Station = "barista" | "kitchen" | "juice";
+type StationSalesView = "printed" | SalesMode;
 
 interface StaffLite {
   id: number;
@@ -195,8 +196,9 @@ export default function StationApp({ station }: { station: Station }) {
   // live in the pure @/lib/station-sales module (the same attribution the shift
   // report uses), served by /api/station-sales, so the two papers agree.
   const [showSales, setShowSales] = useState(false);
+  const [salesVisible, setSalesVisible] = useState(true);
   const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>("today");
-  const [salesMode, setSalesMode] = useState<SalesMode>("done");
+  const [salesView, setSalesView] = useState<StationSalesView>("printed");
   const [sales, setSales] = useState<StationSalesReport | null>(null);
   const [salesLoading, setSalesLoading] = useState(false);
   const [salesError, setSalesError] = useState("");
@@ -219,7 +221,19 @@ export default function StationApp({ station }: { station: Station }) {
       expireSession();
       return null;
     }
+    if (r.status === 403) {
+      const data = await r.json().catch(() => null);
+      if (data?.code === "STATION_SALES_HIDDEN") {
+        setSalesVisible(false);
+        setShowSales(false);
+        showSalesRef.current = false;
+        setSales(null);
+        setTodayUnits(null);
+        return null;
+      }
+    }
     if (!r.ok) throw new Error(`station-sales answered ${r.status}`);
+    setSalesVisible(true);
     return (await r.json()) as StationSalesReport;
   };
 
@@ -232,7 +246,7 @@ export default function StationApp({ station }: { station: Station }) {
         setSales(report);
         setSalesPeriod(report.period);
         salesPeriodRef.current = report.period;
-        if (report.period === "today") setTodayUnits(report.modes?.done?.quantity ?? 0);
+        if (report.period === "today") setTodayUnits(report.printed?.quantity ?? 0);
       }
     } catch {
       setSalesError(tNow("Could not load your sales. Tap refresh to try again."));
@@ -246,7 +260,7 @@ export default function StationApp({ station }: { station: Station }) {
     try {
       const report = await fetchSales("today");
       if (!report) return;
-      setTodayUnits(report.modes?.done?.quantity ?? 0);
+      setTodayUnits(report.printed?.quantity ?? 0);
       if (showSalesRef.current && salesPeriodRef.current === "today") setSales(report);
     } catch {
       /* the tile simply keeps the previous number */
@@ -254,6 +268,7 @@ export default function StationApp({ station }: { station: Station }) {
   };
 
   const openSales = () => {
+    if (!salesVisible) return;
     setShowSales(true);
     showSalesRef.current = true;
     loadSales(salesPeriod);
@@ -893,6 +908,9 @@ export default function StationApp({ station }: { station: Station }) {
       const watchdog = setInterval(() => {
         if (!es || es.readyState === 2) connect();
       }, 30000);
+      // Visibility switches are admin-controlled; refresh the sales permission
+      // periodically so OFF hides the tile and ON restores it without re-login.
+      const salesRefresh = setInterval(() => todayUnitsLoadRef.current(), 60_000);
       // Refresh immediately when the tab becomes visible again (user action).
       const onVisible = () => {
         if (!document.hidden) revive();
@@ -902,6 +920,7 @@ export default function StationApp({ station }: { station: Station }) {
       return () => {
         stopped = true;
         clearInterval(watchdog);
+        clearInterval(salesRefresh);
         es?.close();
         document.removeEventListener("visibilitychange", onVisible);
         window.removeEventListener("online", revive);
@@ -1082,8 +1101,11 @@ export default function StationApp({ station }: { station: Station }) {
           : blockedBy
             ? "standby"
             : null;
-  /** The pile the crew is looking at right now (accepted / done). */
-  const salesPile: StationSalesPile | null = sales?.modes?.[salesMode] ?? null;
+  /** Receipt-backed station sales are the default; personal tap piles remain available. */
+  const salesPile: StationSalesPile | null = salesView === "printed"
+    ? sales?.printed ?? null
+    : sales?.modes?.[salesView] ?? null;
+  const salesViewLabel = salesView === "printed" ? L("EFD receipt sales") : Ld(SALES_MODE_LABELS[salesView]);
 
   return (
     <div className="min-h-screen bg-[#14100C] text-white pb-12">
@@ -1138,7 +1160,7 @@ export default function StationApp({ station }: { station: Station }) {
           2026: the crew asked what they SOLD, not how many tables were open).
           The tile already carries today's own unit count, so the day's work is
           visible without opening the tab. */}
-      <div className="max-w-4xl mx-auto px-4 md:px-6 pt-6 grid grid-cols-3 gap-3 text-center">
+      <div className={`max-w-4xl mx-auto px-4 md:px-6 pt-6 grid ${salesVisible ? "grid-cols-3" : "grid-cols-2"} gap-3 text-center`}>
         <div className="bg-violet-950/60 border border-violet-700 rounded-2xl p-3.5">
           <p className="text-[10px] font-extrabold uppercase text-violet-300">{L("New Incoming")}</p>
           <p className="font-serif font-black text-2xl text-white">{pendingCount}</p>
@@ -1147,16 +1169,18 @@ export default function StationApp({ station }: { station: Station }) {
           <p className="text-[10px] font-extrabold uppercase text-amber-300">{L("Started (Accepted)")}</p>
           <p className="font-serif font-black text-2xl text-white">{acceptedCount}</p>
         </div>
-        <button
-          onClick={openSales}
-          className="bg-[#2C1B17] border border-[#C9A227]/50 hover:border-[#C9A227] hover:bg-[#3D2314] rounded-2xl p-3.5 transition flex flex-col items-center justify-center gap-1"
-          title={L("What you sold, by date and by category")}
-        >
-          <History className="w-5 h-5 text-[#C9A227]" />
-          <p className="text-[10px] font-extrabold uppercase text-amber-200">{L("Items sold")}</p>
-          <p className="font-serif font-black text-2xl text-white">{todayUnits === null ? "…" : todayUnits}</p>
-          <p className="text-[9px] font-extrabold uppercase text-stone-400">{L("Today • tap to open")}</p>
-        </button>
+        {salesVisible && (
+          <button
+            onClick={openSales}
+            className="bg-[#2C1B17] border border-[#C9A227]/50 hover:border-[#C9A227] hover:bg-[#3D2314] rounded-2xl p-3.5 transition flex flex-col items-center justify-center gap-1"
+            title={L("What you sold, by date and by category")}
+          >
+            <History className="w-5 h-5 text-[#C9A227]" />
+            <p className="text-[10px] font-extrabold uppercase text-amber-200">{L("Items sold")}</p>
+            <p className="font-serif font-black text-2xl text-white">{todayUnits === null ? "…" : todayUnits}</p>
+            <p className="text-[9px] font-extrabold uppercase text-stone-400">{L("Today • tap to open")}</p>
+          </button>
+        )}
       </div>
 
       {/* ── THE 20-MINUTE HAND-OVER COUNTDOWN (owner, Sept 2026) ──
@@ -1458,7 +1482,7 @@ export default function StationApp({ station }: { station: Station }) {
           attribution the shift report uses — and are served by
           /api/station-sales, so this screen and the cross-checker's paper can
           never disagree about who sold what. */}
-      {showSales && (
+      {showSales && salesVisible && (
         <div className="fixed inset-0 z-40 bg-[#14100C] overflow-y-auto text-stone-100">
           <div className="sticky top-0 z-10 bg-[#2C1B17]/95 backdrop-blur border-b border-[#C9A227]/30 px-4 md:px-8 py-3.5 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
@@ -1508,22 +1532,24 @@ export default function StationApp({ station }: { station: Station }) {
               </div>
             </div>
 
-            {/* WHICH TAPS COUNT — accepted / done, each with its own unit
-                count so the crew reads both piles at a glance */}
+            {/* Receipt-backed station sales are the default and match the admin
+                report. Personal Accept/Done piles remain available for activity checks. */}
             <div>
-              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-2">{L("Which taps to count")}</p>
-              <div className="grid grid-cols-2 gap-2">
-                {SALES_MODES.map((m) => (
+              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-2">{L("Sales view")}</p>
+              <div className="grid grid-cols-3 gap-2">
+                {(["printed", ...SALES_MODES] as StationSalesView[]).map((view) => (
                   <button
-                    key={m}
-                    onClick={() => setSalesMode(m)}
+                    key={view}
+                    onClick={() => setSalesView(view)}
                     className={`rounded-xl px-3 py-2 text-xs font-black uppercase transition ${
-                      salesMode === m ? "bg-emerald-600 text-white" : "bg-stone-800 text-stone-200 hover:bg-stone-700"
+                      salesView === view ? "bg-emerald-600 text-white" : "bg-stone-800 text-stone-200 hover:bg-stone-700"
                     }`}
                   >
-                    {Ld(SALES_MODE_LABELS[m])}
+                    {view === "printed" ? L("EFD receipts") : Ld(SALES_MODE_LABELS[view])}
                     <span className="block text-[10px] font-bold normal-case opacity-80">
-                      {sales?.modes?.[m] ? sales.modes[m].quantity.toLocaleString("en-US") : "…"}
+                      {view === "printed"
+                        ? sales?.printed?.quantity.toLocaleString("en-US") ?? "…"
+                        : sales?.modes?.[view].quantity.toLocaleString("en-US") ?? "…"}
                     </span>
                   </button>
                 ))}
@@ -1531,7 +1557,9 @@ export default function StationApp({ station }: { station: Station }) {
             </div>
 
             <p className="text-[11px] text-stone-400">
-              {L("Accepted counts the lines you tapped Accept on, Done the lines you finished, counted once each. Removed lines and cancelled orders are never counted.")}
+              {salesView === "printed"
+                ? L("Each EFD receipt counts only its own lines and quantities once. Items and added quantities after the latest print are excluded until they have another receipt; this station total matches the Admin report.")
+                : L("Accepted counts the lines you tapped Accept on, Done the lines you finished. These activity piles include printed lines only; removed lines, unprinted orders, and cancelled orders never count.")}
             </p>
 
             {salesError ? (
@@ -1545,7 +1573,7 @@ export default function StationApp({ station }: { station: Station }) {
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
                     <h2 className="font-black text-amber-200">
-                      {L("{mode} • ITEMS SOLD", { mode: Ld(SALES_MODE_LABELS[salesMode]).toUpperCase() })}
+                      {L("{mode} • ITEMS SOLD", { mode: salesViewLabel.toUpperCase() })}
                     </h2>
                     <p className="text-[11px] text-stone-400 mt-0.5">
                       {L("Covers: {rangeText}", { rangeText: salesRangeText(sales.range) })}
@@ -1555,12 +1583,12 @@ export default function StationApp({ station }: { station: Station }) {
                         member of this crew counted — so a tablet signed in as
                         somebody who did not tap, or lines the cashier's print
                         closed, can never leave the crew reading a lone 0,0. */}
-                    {sales.lane?.[salesMode] && (
+                    {salesView !== "printed" && sales.lane?.[salesView] && (
                       <p className="text-[11px] font-bold text-amber-200/80 mt-1">
                         {L("{station} total: {n} items • {amount}", {
                           station: Ld(meta.label),
-                          n: sales.lane[salesMode].quantity.toLocaleString("en-US"),
-                          amount: staffEtb(sales.lane[salesMode].amount),
+                          n: sales.lane[salesView].quantity.toLocaleString("en-US"),
+                          amount: staffEtb(sales.lane[salesView].amount),
                         })}
                       </p>
                     )}

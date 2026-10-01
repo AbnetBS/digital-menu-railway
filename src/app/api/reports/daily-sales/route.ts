@@ -39,8 +39,9 @@ import {
  *   The owner's Daily Sales page, LIVE: today's figure is recomputed from the
  *   printed bills on every read ("whenever the owner opens that page it shows
  *   him the total price that got printed up to that time"). The list shows
- *   TODAY and YESTERDAY plus every day that was closed since this feature
- *   started — the days before it were never fully recorded.
+ *   every day with a recent receipt-backed sale plus every saved close record,
+ *   so dates before yesterday (including last week) stay available. Older close
+ *   records supply their saved totals after they age out of live recalculation.
  *
  *   The answer also carries the two moments: the cutoff hour (the cashier's
  *   button appears, 20:00 default) and the owner's notify hour (the automatic
@@ -103,12 +104,18 @@ async function buildState(now: Date) {
     yesterdayKey: yKey,
     closedKeys: closeMap.keys(),
     salesKeys: sales.keys(),
-  }).map((dayKey) => ({
-    dayKey,
-    total: sales.get(dayKey)?.total ?? 0,
-    bills: sales.get(dayKey)?.bills ?? 0,
-    closed: closeMap.get(dayKey) || null,
-  }));
+  }).map((dayKey) => {
+    const closed = closeMap.get(dayKey) || null;
+    const live = sales.get(dayKey);
+    return {
+      dayKey,
+      // Older sales are preserved by the day-close record even after they age
+      // out of the live recalculation window. Recent days always use live lines.
+      total: live?.total ?? closed?.total ?? 0,
+      bills: live?.bills ?? closed?.bills ?? 0,
+      closed,
+    };
+  });
 
   const today = sales.get(todayKey) ?? { total: 0, bills: 0 };
   return {

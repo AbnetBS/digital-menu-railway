@@ -312,6 +312,9 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
                     { split: pad(split), local: ethiopianHour(split) }
                   )}
                 </p>
+                <p className="text-[11px] text-amber-200/80 mt-1">
+                  {t("Shift sales use only units already on an EFD receipt (or paid lines in full-payment mode). New items and added quantities wait until a later receipt; each earlier receipt is counted once.")}
+                </p>
               </div>
               <div className="flex flex-wrap justify-end gap-2 shrink-0">
                 <StaffLangToggle compact />
@@ -725,12 +728,12 @@ function PersonSales({ ids, data, role, person, i18n }: { ids: number[]; data: R
     if (!order) continue;
     let counted = false;
     for (const item of order.items) {
-      if (item.removed || (role !== "waiter" && item.stationName !== role)) continue;
+      if (item.removed || !item.saleEligible || item.saleQuantity <= 0 || (role !== "waiter" && item.stationName !== role)) continue;
       // Station ownership is the Accept/Done audit, not the waiter who sent the bill.
       if (role !== "waiter" && item.acceptedBy !== person && item.doneBy !== person) continue;
       const row = pile.get(item.name) || { quantity: 0, amount: 0 };
-      row.quantity += item.quantity;
-      row.amount += item.price * item.quantity;
+      row.quantity += item.saleQuantity;
+      row.amount += item.price * item.saleQuantity;
       pile.set(item.name, row);
       counted = true;
     }
@@ -1002,6 +1005,14 @@ function OrderDetail({
                   <p className="font-semibold text-stone-300">
                     {i.quantity} × {staffEtb(i.price)} • {td(i.stationName || "kitchen")} • {t("added {time}", { time: formatClock(i.createdAt) })}
                   </p>
+                  {i.saleQuantity !== i.quantity && (
+                    <p className="font-black text-amber-200">
+                      {t("EFD: {printed} unit(s) printed • {pending} waiting", {
+                        printed: i.saleQuantity,
+                        pending: Math.max(0, i.quantity - i.saleQuantity),
+                      })}
+                    </p>
+                  )}
                   {i.notes && <p className="italic text-amber-300">📝 {i.notes}</p>}
                   {i.acceptedBy && (
                     <p className="font-bold text-sky-300">
@@ -1234,13 +1245,21 @@ function ShiftPrintSheet({
                       .map((i) => (
                         <tr key={i.id}>
                           <td>
-                            {i.quantity} × {i.name}
+                            {i.saleQuantity} × {i.name}
                             {i.notes ? ` (${i.notes})` : ""}
+                            {i.saleQuantity !== i.quantity && (
+                              <div style={{ fontSize: "10px" }}>
+                                {t("EFD: {printed} unit(s) printed • {pending} waiting", {
+                                  printed: i.saleQuantity,
+                                  pending: Math.max(0, i.quantity - i.saleQuantity),
+                                })}
+                              </div>
+                            )}
                           </td>
                           <td>
                             {i.doneBy ? t("✓ Done by {name}", { name: i.doneBy }) : i.acceptedBy ? t("▶ Accepted by {name}", { name: i.acceptedBy }) : ""}
                           </td>
-                          <td className="num">{staffEtb(i.price * i.quantity)}</td>
+                          <td className="num">{staffEtb(i.price * i.saleQuantity)}</td>
                         </tr>
                       ))}
                   </tbody>

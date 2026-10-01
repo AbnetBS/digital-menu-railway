@@ -28,10 +28,9 @@ import {
  *   • "whenever the owner opens that page it shows him the total price that got
  *     printed up to that time" — the figure is LIVE (recomputed on every read,
  *     never cached) and this tab refreshes itself every minute while he looks;
- *   • "for now only todays and yesterday total sale because before that it isnt
- *     full report but starting from tomorrow it started listed" — the list
- *     shows TODAY and YESTERDAY, plus every day closed since this feature
- *     started, so the daily history grows one day at a time;
+ *   • the date list includes recent daily sales and every saved day-close record,
+ *     so the owner can inspect dates before yesterday (including last week) and
+ *     keep the history as it accumulates;
  *   • "in that tab add choose time to notify button ... as default I choose 3
  *     lt but he can choose it there" — the notify-hour chooser sits on this
  *     page (21:00 / 22:00 / 23:00 EAT), and the cashier's button appears one
@@ -150,13 +149,12 @@ export default function DailySalesTab() {
     else showToast(tNow("✓ Phone alerts armed on this device"));
   };
 
-  const testPhone = async (delaySeconds: number) => {
+  const testPhone = async () => {
     setPushBusy(true);
-    const res = await sendTestPush(delaySeconds);
+    const res = await sendTestPush(0);
     await refreshPushStatus();
     setPushBusy(false);
     if (!res.ok) showToast(Ld(res.error) || tNow("The test could not be sent."));
-    else if (delaySeconds > 0) showToast(tNow("Test sent • lock the phone now, it rings in {seconds} seconds", { seconds: delaySeconds }));
     else showToast(tNow("Test sent • this device should ring now"));
   };
 
@@ -412,35 +410,28 @@ export default function DailySalesTab() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
+              onClick={() => void testPhone()}
+              disabled={pushBusy}
+              className="text-[11px] font-black uppercase px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-amber-200 disabled:opacity-50"
+            >
+              {L("Test ring sound")}
+            </button>
+            <button
               onClick={() => void armPhone()}
-              disabled={pushBusy}
-              className={`text-[11px] font-black uppercase px-4 py-2.5 rounded-xl disabled:opacity-50 ${armed ? "bg-emerald-700 hover:bg-emerald-600 text-white" : "bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17]"}`}
+              disabled={pushBusy || armed}
+              className={`text-[11px] font-black uppercase px-4 py-2.5 rounded-xl disabled:opacity-50 ${armed ? "bg-emerald-700 text-white" : "bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17]"}`}
             >
-              {armed ? L("✓ Phone alerts on") : L("🔔 Arm my phone")}
-            </button>
-            <button
-              onClick={() => void testPhone(0)}
-              disabled={pushBusy}
-              className="text-[11px] font-black uppercase px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-amber-200 disabled:opacity-50"
-            >
-              {L("Test ring now")}
-            </button>
-            <button
-              onClick={() => void testPhone(10)}
-              disabled={pushBusy}
-              className="text-[11px] font-black uppercase px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-amber-200 disabled:opacity-50"
-            >
-              {L("Test ring in 10s (lock your phone)")}
+              {armed ? L("✓ Notifications on") : L("Turn on notifications")}
             </button>
           </div>
         </div>
-        <p className="text-[11px] text-stone-500">
-          {L("Android rings with the screen off. iPhone must be added to the Home Screen first (Share → Add to Home Screen).")}
+        <p className="text-[11px] text-stone-400">
+          {L("Turn on notifications asks for browser permission if needed. The daily total arrives when the cashier ends the shift, or automatically at {time} if nobody closes; tapping it opens Admin → Sales. Android can ring with the screen off. On iPhone, add this page to the Home Screen first.", { time: notify })}
         </p>
       </section>
 
-      {/* THE LIST — one line per date, newest first (today, yesterday, and
-          every day closed since this feature started) */}
+      {/* THE LIST — one line per date, newest first (recent sales plus every
+          saved day-close record, including dates before yesterday) */}
       <section className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-4 space-y-3">
         <h3 className="text-xs font-black uppercase tracking-wider text-amber-200">{L("Total sales by date")}</h3>
         {!data ? (

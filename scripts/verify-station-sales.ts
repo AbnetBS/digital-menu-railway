@@ -53,6 +53,13 @@ import {
 } from "../src/lib/station-sales";
 import { mergeCategoryRouting, stationForOrder } from "../src/lib/stations";
 import { DEFAULT_CATEGORY_ROUTING } from "../src/lib/initial-data";
+import {
+  DEFAULT_STATION_SALES_VISIBILITY,
+  isStationSalesVisible,
+  parseStationSalesVisibility,
+  STATION_SALES_STATIONS,
+  STATION_SALES_VISIBILITY_KEY,
+} from "../src/lib/station-sales-visibility";
 import { etDayKey, etStartOfDaysAgo } from "../src/lib/timezone";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -84,6 +91,9 @@ const I = (o: Partial<StationSalesItemRow> = {}): StationSalesItemRow => ({
   quantity: 1,
   removed: false,
   ticketStatus: "printed",
+  ticketPrintedAt: eat(0, 12),
+  ticketSaleAt: eat(0, 12),
+  createdAt: eat(0, 11),
   stationStatus: "done",
   stationStatusBy: null,
   stationStatusAt: null,
@@ -260,8 +270,16 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
   const base = { stationAcceptedBy: "Abnet", stationAcceptedAt: eat(0, 9), stationDoneBy: "Abnet", stationDoneAt: eat(0, 9, 20) };
   pass("RUNTIME: a line the cashier removed is never a sale", pile("today", [I({ ...base, removed: true })], "done").lines === 0);
   pass("RUNTIME: a CANCELLED order is never a sale", pile("today", [I({ ...base, ticketStatus: "cancelled" })], "done").lines === 0);
-  pass("RUNTIME: a paid, printed or still-open bill all count the same",
-    ["paid", "printed", "confirmed", "closed", null].every((s) => pile("today", [I({ ...base, ticketStatus: s })], "done").lines === 1));
+  pass("RUNTIME: printed, closed and paid EFD bills count; non-sale statuses do not",
+    ["paid", "printed", "closed"].every((s) => pile("today", [I({ ...base, ticketStatus: s })], "done").lines === 1) &&
+    ["confirmed", null].every((s) => pile("today", [I({ ...base, ticketStatus: s })], "done").lines === 0));
+  pass("RUNTIME: a printed status without an actual print stamp is not a sale",
+    pile("today", [I({ ...base, ticketStatus: "printed", ticketPrintedAt: null })], "done").lines === 0);
+  const fullModePaid = buildStationSales({
+    period: "today", station: "barista", staff: "Abnet", categoryNames: CATEGORY_NAMES,
+    printQueueMode: false, rows: [I({ ...base, ticketStatus: "paid", ticketPrintedAt: null })],
+  });
+  pass("RUNTIME: full-payment mode still counts a paid line without an EFD print", fullModePaid.modes.done.lines === 1);
   pass("RUNTIME: a line nobody tapped is not a sale", pile("today", [I({ name: "Tea" })], "done").lines === 0);
   pass("RUNTIME: a tap outside the chosen date is not in it",
     pile("yesterday", [I({ ...base })], "done").lines === 0 && pile("today", [I({ ...base })], "done").lines === 1);
@@ -277,13 +295,60 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
     pile("today", [I({ stationStatus: "done", stationStatusBy: "Abnet", stationStatusAt: eat(0, 8) })], "done").lines === 1);
 }
 
-/* ── 5. THE API ROUTE ─────────────────────────────────────────────────────── */
+/* ── 5. INCREMENTAL EFD RECEIPTS ─────────────────────────────────────────── */
 {
-  pass("a crew screen also gets the whole lane's piles (never a lone zero)",
-    /lane = staff \? buildStationSales\(\{ period, station, staff: null, rows, categoryNames \}\)\.modes/.test(route) &&
+  const merged = I({
+    id: 700, ticketId: 700, name: "Macchiato", price: 60, quantity: 2,
+    createdAt: eat(1, 21), ticketStatus: "printed", ticketPrintedAt: eat(0, 10), ticketSaleAt: eat(0, 10),
+    ticketPrintEvents: [eat(1, 22), eat(0, 10)],
+    ticketQuantityEvents: [{ itemId: 700, eventType: "item_quantity_changed", fromValue: "1", toValue: "2", createdAt: eat(0, 9, 30) }],
+  });
+  const today = buildStationSales({ period: "today", station: "barista", staff: null, rows: [merged], categoryNames: CATEGORY_NAMES });
+  const yesterday = buildStationSales({ period: "yesterday", station: "barista", staff: null, rows: [merged], categoryNames: CATEGORY_NAMES });
+  pass("RUNTIME: a merged top-up on receipt #2 counts only the new quantity today",
+    today.printed.quantity === 1 && today.printed.amount === 60 && today.printed.bills === 1);
+  pass("RUNTIME: receipt #1 remains on yesterday, not duplicated onto receipt #2",
+    yesterday.printed.quantity === 1 && yesterday.printed.amount === 60);
+}
+
+/* ── 6. ADMIN-CONTROLLED STATION-SALES VISIBILITY ────────────────────────── */
+{
+  const allVisible = parseStationSalesVisibility(undefined);
+  const hiddenKitchen = parseStationSalesVisibility(JSON.stringify({ kitchen: false }));
+  pass("sales views default ON for all three stations and malformed settings stay safe",
+    STATION_SALES_STATIONS.every((station) => DEFAULT_STATION_SALES_VISIBILITY[station] && allVisible[station]) &&
+    STATION_SALES_STATIONS.every((station) => parseStationSalesVisibility("not json")[station]));
+  pass("an admin can hide one station without changing the others",
+    !hiddenKitchen.kitchen && hiddenKitchen.barista && hiddenKitchen.juice &&
+    !isStationSalesVisible(hiddenKitchen, "kitchen") && isStationSalesVisible(hiddenKitchen, "barista"));
+  pass("turning a hidden station back on restores its view",
+    isStationSalesVisible({ ...hiddenKitchen, kitchen: true }, "kitchen"));
+
+  const stationsTab = read("src/components/rms/StationsTab.tsx");
+  const stationApp = read("src/components/rms/StationApp.tsx");
+  pass("the Stations tab exposes persistent ON/OFF switches for Barista, Kitchen, and Juice",
+    STATION_SALES_STATIONS.length === 3 && stationsTab.includes("STATION_SALES_STATIONS.map") &&
+    ["Barista", "Kitchen", "Juice"].every((label) => stationsTab.includes(`"${label}"`)) &&
+    stationsTab.includes("role=\"switch\"") && stationsTab.includes("aria-checked={enabled}") &&
+    stationsTab.includes("station_sales_visibility: JSON.stringify(next)"));
+  pass("the saved setting uses one key and switching OFF is explicitly non-destructive",
+    STATION_SALES_VISIBILITY_KEY === "station_sales_visibility" &&
+    /does not affect admin reports or order work/.test(stationsTab) && /OFF hides the Items sold button/.test(stationsTab));
+  pass("a hidden crew panel disappears, and a later ON response restores access",
+    /data\?\.code === "STATION_SALES_HIDDEN"/.test(stationApp) &&
+    /setSalesVisible\(false\)/.test(stationApp) && /setSalesVisible\(true\)/.test(stationApp) &&
+    /showSales && salesVisible/.test(stationApp) && /salesRefresh = setInterval/.test(stationApp));
+}
+
+/* ── 7. THE API ROUTE ─────────────────────────────────────────────────────── */
+{
+  pass("a crew screen also gets the whole lane's activity piles (never a lone zero)",
+    /lane = staff\s*\? buildStationSales\(\{ period, station, staff: null, rows: salesRows, categoryNames, printQueueMode \}\)\.modes/.test(route) &&
     /lane \? \{ \.\.\.report, lane \} : report/.test(route));
-  pass("the route asks the pure builder for the figures (no counting of its own)",
-    /buildStationSales\(\{ period, station, staff: person, rows, categoryNames \}\)/.test(route));
+  pass("the route asks the pure builder for both receipt sales and activity figures",
+    /buildStationSales\(\{ period, station, staff: person, rows: salesRows, categoryNames, printQueueMode \}\)/.test(route) &&
+    /ticketPrintEvents: printEventsByTicket\.get\(row\.ticketId\)/.test(route) &&
+    /ticketQuantityEvents: quantityEventsByTicket\.get\(row\.ticketId\)/.test(route));
   pass("the route never builds a day window from a negative day count (the 0,0 bug)",
     !/etStartOfDaysAgo\(\s*-/.test(route) && !/etStartOfDaysAgo\(\s*-/.test(lib));
   pass("the route takes the period from the shared list and defaults to today",
@@ -292,6 +357,8 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
     /salesPeriodCutoff\(period\)/.test(route) && /gte\(ticketItems\.stationAcceptedAt, cutoff\)/.test(route));
   pass("the route also picks up lines that only carry the LAST-tap stamp",
     /gte\(ticketItems\.stationStatusAt, cutoff\)/.test(route));
+  pass("crew visibility is enforced server-side, while admins can still inspect every lane",
+    /STATION_SALES_VISIBILITY_KEY/.test(route) && /staff && !isStationSalesVisible\(visibilityRaw, station\)/.test(route));
   pass("a waiter or cashier session has no lane here", /isStationName\(staff\.role\)/.test(route));
   pass("a crew member only ever reads their OWN station and their OWN taps",
     /station = staff\.role;/.test(route) && /person = staff\.name \|\| null/.test(route));
@@ -311,12 +378,12 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
 {
   pass("the screen builds its date buttons from the shared period list",
     /SALES_PERIODS\.map/.test(ui) && /SALES_PERIOD_LABELS\[p\]/.test(ui));
-  pass("the screen builds its two tabs from the shared mode list",
-    /SALES_MODES\.map/.test(ui) && /SALES_MODE_LABELS\[m\]/.test(ui));
+  pass("the screen builds EFD, Accepted, and Done views from the shared modes",
+    /\["printed", \.\.\.SALES_MODES\]/.test(ui) && /SALES_MODE_LABELS\[view\]/.test(ui));
   pass("every date button reloads that period", /onClick=\{\(\) => loadSales\(p\)\}/.test(ui));
-  pass("the two tabs switch the pile without another request", /onClick=\{\(\) => setSalesMode\(m\)\}/.test(ui));
-  pass("the screen reads the report's piles, not the old flat record",
-    /sales\?\.modes\?\.\[salesMode\]/.test(ui) && !/sales\[salesMode\]/.test(ui));
+  pass("the three views switch the pile without another request", /onClick=\{\(\) => setSalesView\(view\)\}/.test(ui));
+  pass("the screen reads receipt totals or the report's activity piles",
+    /sales\?\.printed/.test(ui) && /sales\?\.modes\?\.\[salesView\]/.test(ui));
   pass("the figures are listed per category on the screen", /salesPile\.categories\.map/.test(ui));
   pass("the screen prints the dates the figures cover", /salesRangeText\(sales\.range\)/.test(ui) && /Covers: \{rangeText\}/.test(ui));
   pass("money goes through the staff money helper (ETB is never translated)", /staffEtb\(/.test(ui));
@@ -324,9 +391,10 @@ const pile = (period: SalesPeriod, rows: StationSalesItemRow[], mode: SalesMode,
     /Could not load your sales/.test(ui) && /salesError/.test(ui));
   pass("an expired session sends the crew back to the login screen",
     /r\.status === 401/.test(ui) && /expireSession\(\)/.test(ui));
-  pass("the closed screen's tile already carries today's own count",
-    /todayUnits/.test(ui) && /refreshTodayUnits\(\)/.test(ui));
-  pass("the tile number follows an Accept/Done tap", /load\(\);\s*\n\s*\/\/ The tap the crew just made[\s\S]{0,200}void refreshTodayUnits\(\);/.test(ui));
+  pass("the closed screen's tile already carries today's receipt-backed total",
+    /todayUnits/.test(ui) && /report\.printed\?\.quantity/.test(ui) && /refreshTodayUnits\(\)/.test(ui));
+  pass("a station tap refreshes the tile without counting unprinted work",
+    /todayUnitsLoadRef\.current\(\);/.test(ui) && /report\.printed\?\.quantity/.test(ui));
   pass("the empty day still reads as an explained empty list", /No items for this selection\./.test(ui));
   pass("the old zero-only sales shape is gone from the screen",
     !/Record<string, Array<\{name: string; quantity: number; amount: number; bills: number\}>>/.test(ui));

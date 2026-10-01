@@ -1355,6 +1355,9 @@ export async function PUT(request: Request) {
           actorRole,
           fromValue: cur.printedAt ? "reprint" : "first_print",
           toValue: "printed",
+          // Keep the audit instant aligned with printed_at so incremental
+          // receipts can assign each line to exactly one print in sales reports.
+          createdAt: updated[0].printedAt ? new Date(updated[0].printedAt) : new Date(),
           details:
             updated[0].orderType === "outdoor"
               ? "Cashier printed the outdoor order receipt"

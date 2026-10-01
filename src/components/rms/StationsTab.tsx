@@ -1,9 +1,16 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Coffee, CookingPot, CupSoda, RefreshCw, Save, CheckCircle2, Timer, Minus, Plus } from "lucide-react";
+import { Coffee, CookingPot, CupSoda, Save, CheckCircle2, Timer, Minus, Plus, Eye, EyeOff } from "lucide-react";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { mergeCategoryRouting } from "@/lib/stations";
+import {
+  DEFAULT_STATION_SALES_VISIBILITY,
+  STATION_SALES_STATIONS,
+  parseStationSalesVisibility,
+  type StationSalesStation,
+  type StationSalesVisibility,
+} from "@/lib/station-sales-visibility";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import {
   WAITER_SEND_HOLD_DEFAULT_SECONDS,
@@ -22,7 +29,9 @@ export default function StationsTab() {
   // waits before it is released to the stations. She can still edit it while
   // it counts down, and a "Send now" button releases it immediately.
   const [holdSeconds, setHoldSeconds] = useState(WAITER_SEND_HOLD_DEFAULT_SECONDS);
+  const [salesVisibility, setSalesVisibility] = useState<StationSalesVisibility>({ ...DEFAULT_STATION_SALES_VISIBILITY });
   const [saving, setSaving] = useState(false);
+  const [visibilitySaving, setVisibilitySaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
 
   const load = async () => {
@@ -43,12 +52,35 @@ export default function StationsTab() {
         } catch {}
       }
       setHoldSeconds(waiterSendHoldSeconds(s.waiter_send_hold_seconds));
+      setSalesVisibility(parseStationSalesVisibility(s.station_sales_visibility));
     }
   };
 
   useEffect(() => {
     load();
   }, []);
+
+  const toggleSalesVisibility = async (station: StationSalesStation) => {
+    if (visibilitySaving) return;
+    const previous = salesVisibility;
+    const next = { ...previous, [station]: !previous[station] };
+    setSalesVisibility(next);
+    setVisibilitySaving(true);
+    const res = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ station_sales_visibility: JSON.stringify(next) }),
+    }).catch(() => null);
+    setVisibilitySaving(false);
+    if (!res?.ok) {
+      setSalesVisibility(previous);
+      setSavedMsg(tNow("Could not update station sales visibility. Try again."));
+      setTimeout(() => setSavedMsg(""), 3500);
+      return;
+    }
+    setSavedMsg(tNow("✓ Station sales visibility updated"));
+    setTimeout(() => setSavedMsg(""), 3500);
+  };
 
   const save = async () => {
     setSaving(true);
@@ -58,12 +90,13 @@ export default function StationsTab() {
       body: JSON.stringify({
         category_routing: JSON.stringify(routing),
         waiter_send_hold_seconds: String(holdSeconds),
+        station_sales_visibility: JSON.stringify(salesVisibility),
       }),
     }).catch(() => null);
     setSaving(false);
     if (!res) return alert(L("Network error. Try again."));
     if (res.ok) {
-      setSavedMsg(tNow("✓ Stations routing and send hold saved • new orders will split correctly by station"));
+      setSavedMsg(tNow("✓ Station routing and send hold saved"));
       setTimeout(() => setSavedMsg(""), 3500);
     } else alert(L("Failed to save routing."));
   };
@@ -87,7 +120,7 @@ export default function StationsTab() {
           className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase px-5 py-3 rounded-xl flex items-center gap-2 disabled:opacity-40"
         >
           <Save className="w-4 h-4" />
-          {saving ? L("Saving...") : L("Save Routing")}
+          {saving ? L("Saving...") : L("Save Station Settings")}
         </button>
       </div>
 
@@ -173,6 +206,57 @@ export default function StationsTab() {
           )}
         </div>
       </div>
+
+      {/* ── STATION SALES VISIBILITY ──
+          The owner decides which crews see the Items sold tile. The control
+          saves immediately; hiding the tile also blocks the station sales API,
+          while admin Reports remain available as usual. */}
+      <section className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 p-5 space-y-3">
+        <div>
+          <h3 className="text-sm font-bold text-amber-200">{L("Station Sales Visibility")}</h3>
+          <p className="text-[11px] text-stone-400 mt-1">
+            {L("Turn a station's sales panel on or off. OFF hides the Items sold button and sales figures from that crew; it does not affect admin reports or order work.")}
+          </p>
+        </div>
+        <div className="divide-y divide-stone-800">
+          {STATION_SALES_STATIONS.map((station) => {
+            const enabled = salesVisibility[station];
+            const label = station === "barista" ? "Barista" : station === "kitchen" ? "Kitchen" : "Juice";
+            const icon = station === "barista"
+              ? <Coffee className="w-4 h-4 text-amber-300" />
+              : station === "kitchen"
+                ? <CookingPot className="w-4 h-4 text-emerald-300" />
+                : <CupSoda className="w-4 h-4 text-lime-300" />;
+            return (
+              <div key={station} className="flex items-center justify-between gap-4 py-3">
+                <div className="flex items-center gap-2.5">
+                  {icon}
+                  <span className="text-xs font-bold text-amber-100">{L(label)}</span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={enabled}
+                  aria-label={L("Show sales to {station}", { station: L(label) })}
+                  onClick={() => void toggleSalesVisibility(station)}
+                  disabled={visibilitySaving}
+                  className={`min-w-24 inline-flex items-center justify-between gap-2 rounded-full px-2 py-1.5 border transition disabled:opacity-50 ${
+                    enabled
+                      ? "bg-emerald-900/70 border-emerald-500 text-emerald-100"
+                      : "bg-stone-900 border-stone-600 text-stone-300"
+                  }`}
+                >
+                  <span className={`w-5 h-5 rounded-full flex items-center justify-center ${enabled ? "bg-emerald-400" : "bg-stone-600"}`}>
+                    {enabled ? <Eye className="w-3 h-3 text-emerald-950" /> : <EyeOff className="w-3 h-3 text-white" />}
+                  </span>
+                  <span className="text-[10px] font-black uppercase">{enabled ? L("ON") : L("OFF")}</span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {visibilitySaving && <p className="text-[10px] font-bold text-amber-300">{L("Saving visibility...")}</p>}
+      </section>
 
       {/* ── THE WAITER'S SEND HOLD (owner, Sept 2026) ──
           The kitchen kept receiving an order and a correction a minute later,

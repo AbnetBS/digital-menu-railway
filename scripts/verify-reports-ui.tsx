@@ -13,7 +13,7 @@
  *      days the paper covers and that nothing is deleted.
  *   3. The Printed Bills pile says out loud that cancelled orders are never
  *      listed or added, and warns when lines were added to a bill AFTER its
- *      print (sold, counted here, but not on an EFD receipt yet).
+ *      print (visible for follow-up, excluded from sales until an EFD receipt).
  *
  * Requires the `jsdom` devDependency (no browser, no database, no server).
  * Run with: npx tsx scripts/verify-reports-ui.tsx   (wired into `npm test`)
@@ -67,7 +67,7 @@ function reportFor(period: Period) {
   const start = START_DAYS_AGO[period];
   const length = LENGTH_DAYS[period];
   // One printed bill for the single-day periods; it carries a line that was
-  // added AFTER the print (sold, but still waiting for its EFD receipt #2).
+  // added AFTER the print (visible for follow-up, excluded until EFD receipt #2).
   const printedAt = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
   const bill = {
     id: 900 + start,
@@ -211,7 +211,9 @@ async function main() {
 
   /* ── 3. the EFD pile: cancelled orders out, added-after-print lines named ── */
   pass("the archive states cancelled orders are never listed or added", /Cancelled orders are never listed or added here: only bills the cashier tapped ✓ PRINTED/.test(text()));
-  pass("a line added after the print is called out with its ETB", /bill\(s\) received 1 item line\(s\)/.test(text()) && /not on an EFD receipt yet/.test(text()));
+  pass("a line added after the print is called out with its ETB and excluded until receipt #2",
+    /bill\(s\) received 1 item line\(s\) \(4,120 ETB\) AFTER their last print/.test(text()) &&
+      /excluded from sales until the cashier prints receipt #2/.test(text()));
   pass("the bill card itself carries the not-printed-yet badge", /line\(s\) •/.test(text()) && /ETB not printed yet/.test(text()));
 
   /* ── 4. tapping the new card switches EVERY section to that one day ──────── */

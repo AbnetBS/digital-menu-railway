@@ -286,12 +286,9 @@ export function isNotifyHourSettingKey(key: string): boolean {
 /**
  * The days the owner reads, NEWEST FIRST.
  *
- * "for now only todays and yesterday total sale because before that it isnt
- * full report but starting from tomorrow it started listed" (owner, 29 Sept
- * 2026): TODAY and YESTERDAY are always listed, and from today onward every day
- * that was ever closed is kept in the list — so the daily history grows one day
- * at a time, while the years before this feature (whose figures were never
- * complete) never appear.
+ * TODAY and YESTERDAY are always listed. Every day with a receipt-backed sale
+ * in the loaded history window and every day with a saved close record is also
+ * retained, so the owner can review the prior week and older completed days.
  */
 export function listedDayKeys(input: {
   todayKey: string;
@@ -305,11 +302,10 @@ export function listedDayKeys(input: {
   if (input.todayKey) out.add(input.todayKey);
   if (input.yesterdayKey) out.add(input.yesterdayKey);
   for (const key of input.closedKeys) if (/^\d{4}-\d{2}-\d{2}$/.test(key)) out.add(key);
-  // A day with sales is only listed when it is today or yesterday (the rule
-  // above already added those); older sales-only days stay out on purpose.
-  const yesterday = input.yesterdayKey;
+  // Every receipt-backed day in the loaded history is available, not just
+  // today/yesterday. Closed keys remain available indefinitely via settings.
   for (const key of input.salesKeys ?? []) {
-    if (key === input.todayKey || key === yesterday) out.add(key);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(key)) out.add(key);
   }
   return [...out].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
 }

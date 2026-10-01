@@ -48,6 +48,7 @@ const pass = (name: string, cond: boolean) => {
 };
 
 const reports = read("src/app/api/reports/route.ts");
+const printedSales = read("src/lib/printed-sales.ts");
 const reportsUi = read("src/components/rms/ReportsTab.tsx");
 const timezone = read("src/lib/timezone.ts");
 const types = read("src/types/index.ts");
@@ -61,7 +62,7 @@ const historyUi = read("src/components/rms/OrderHistoryTab.tsx");
   pass("the API accepts ?period=dayBefore", /rawPeriod === "dayBefore"/.test(reports));
   pass("the API labels it \"Day Before Yesterday\"", /dayBefore: "Day Before Yesterday"/.test(reports));
   pass("the API computes that day's revenue and bill count", /dayBeforeRevenue/.test(reports) && /dayBeforeOrders: dayBeforeTickets\.length/.test(reports));
-  pass("that day's bills come from the SOLD bills of exactly that EAT day", /dayBeforeTickets = revenueTickets\.filter\(\(t\) => isDayBeforeYesterdayET\(soldAt\(t\)\)\)/.test(reports));
+  pass("that day's bills come from receipt lines sold on exactly that EAT day", /dayBeforeTickets = ticketsSoldDuring\(isDayBeforeYesterdayET\)/.test(reports));
   pass("the selected period can BE that day (every section follows it)", /period === "dayBefore" \? dayBeforeTickets/.test(reports) && /period === "dayBefore" \? isDayBeforeYesterdayET/.test(reports));
   pass("the shared type knows the period", /export type ReportPeriod = "today" \| "yesterday" \| "dayBefore" \| "week" \| "month"/.test(types));
   pass("the ReportData type carries the new pair", /dayBeforeRevenue\?: number/.test(types) && /dayBeforeOrders\?: number/.test(types));
@@ -88,8 +89,8 @@ const historyUi = read("src/components/rms/OrderHistoryTab.tsx");
 {
   pass("the window helpers are calendar-day based, never N × 24 hours", /export function isWithinEtDays/.test(timezone) && /export function etStartOfDaysAgo/.test(timezone));
   pass("the old 24-hour window helper is gone from the report", !/function isWithinDays\(/.test(reports) && !/isWithinDays\(/.test(reports));
-  pass("Last 30 Days = today + the 29 EAT days before it", /monthTickets = revenueTickets\.filter\(\(t\) => isWithinEtDays\(soldAt\(t\), PERIOD_LENGTH_DAYS\.month\)\)/.test(reports) && /month: 29/.test(reports) && /month: 30/.test(reports));
-  pass("Last 7 Days = today + the 6 EAT days before it", /weekTickets = revenueTickets\.filter\(\(t\) => isWithinEtDays\(soldAt\(t\), PERIOD_LENGTH_DAYS\.week\)\)/.test(reports) && /week: 6/.test(reports) && /week: 7/.test(reports));
+  pass("Last 30 Days = today + the 29 EAT days before it", /monthTickets = ticketsSoldDuring\(\(date\) => isWithinEtDays\(date, PERIOD_LENGTH_DAYS\.month\)\)/.test(reports) && /month: 29/.test(reports) && /month: 30/.test(reports));
+  pass("Last 7 Days = today + the 6 EAT days before it", /weekTickets = ticketsSoldDuring\(\(date\) => isWithinEtDays\(date, PERIOD_LENGTH_DAYS\.week\)\)/.test(reports) && /week: 6/.test(reports) && /week: 7/.test(reports));
   pass("the SQL cutoff starts at EAT midnight 29 days back (not 30 × 24h ago)", /const cutoff = etStartOfDaysAgo\(PERIOD_START_DAYS_AGO\.month\)/.test(reports) && !/cutoff\.setDate\(cutoff\.getDate\(\) - 30\)/.test(reports));
   pass("a bill printed inside the window is loaded even if it was opened before it", /gt\(tickets\.printedAt, cutoff\)/.test(reports));
   pass("the response says which exact dates it covers", /periodRange/.test(reports) && /dayKeys/.test(reports) && /periodRange\?: \{ from: string \| null; to: string \| null; days: number \}/.test(types));
@@ -132,10 +133,10 @@ const historyUi = read("src/components/rms/OrderHistoryTab.tsx");
 
 /* ── 4. THE EFD PILE IS THE ONLY MONEY ────────────────────────────────────── */
 {
-  pass("a sale is the cashier's ✓ PRINTED tap (print-queue mode)", /function isSold\(t: \{ status: string; printedAt: Date \| string \| null \}, printQueueMode: boolean\)/.test(reports) && /return printQueueMode \? !!t\.printedAt : true/.test(reports));
+  pass("a sale is based on printed receipt lines in print-queue mode", /saleLinesForTicket\(/.test(reports) && /isSaleTicket\(ticket, printQueueMode\)/.test(printedSales) && /const latestPrint = milliseconds\(ticket\.printedAt\)/.test(printedSales));
   pass("the report reads the owner's cashier_mode switch", /siteSettings\.key, "cashier_mode"/.test(reports) && /printQueueMode = String\(modeRows\[0\]\?\.value \|\| "print-queue"\) !== "full"/.test(reports));
-  pass("CANCELLED bills are never a sale", /if \(t\.status === "cancelled"\) return false/.test(reports));
-  pass("CANCELLED bills are never in the Printed Bills archive", /t\.status !== "cancelled" && t\.printedAt && inScopeDay\(t\.printedAt\)/.test(reports));
+  pass("CANCELLED bills are never a sale", /if \(status === "cancelled"\) return false/.test(printedSales));
+  pass("CANCELLED bills are never in the Printed Bills archive", /ticket\.status !== "cancelled" && receiptPrintTimes\(ticket/.test(reports));
   pass("an UNPRINTED bill never joins the archive in print-queue mode", /const paidTodayIds = printQueueMode\s*\?\s*\[\]\s*: scopeTickets\.filter\(\(t\) => !t\.printedAt/.test(reports));
   pass("the screen says cancelled orders are excluded", /Cancelled orders are never listed or added here/.test(reportsUi));
   pass("the printed paper says cancelled orders are excluded", /Cancelled \(voided\) orders are excluded from both sides/.test(reportsUi));

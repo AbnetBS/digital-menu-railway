@@ -272,13 +272,13 @@ const day = etDayKey(at("10:00"))!;
     createdAt: at("09:00"), ...o,
   });
   const tickets = [
-    T(1, {}), // Abel alone: macchiato x2 + tea
-    T(2, {}), // SHARED: Abel's latte (accepted 13:55, done inside the window) + Biniam's first drink at 14:03
-    T(3, {}), // Biniam alone: milk
+    T(1, { printedBy: "Sara", printedAt: at("10:30") }), // Abel alone: macchiato x2 + tea
+    T(2, { printedBy: "Sara", printedAt: at("14:20") }), // SHARED: Abel's latte + Biniam's first drink
+    T(3, { printedBy: "Sara", printedAt: at("15:50") }), // Biniam alone: milk
     T(4, { status: "cancelled" }), // cancelled: Abel accepted it, but nothing was sold
     T(5, {}), // Abel's line here was REMOVED off the bill: never a sale
-    T(6, {}), // Abel finished late (14:50 accept, 15:05 done): still MORNING by owner
-    T(7, {}), // Abel accepted, the CASHIER PRINT finished it: the marker is not a person
+    T(6, { printedBy: "Sara", printedAt: at("15:10") }), // Abel finished late: still MORNING by owner
+    T(7, { printedBy: "Sara", printedAt: at("12:30") }), // Abel accepted, the CASHIER PRINT finished it
   ];
   const items = [
     I(10, 1, { name: "Macchiato", price: 70, quantity: 2, stationAcceptedBy: "Abel", stationAcceptedAt: at("09:10"), stationDoneBy: "Abel", stationDoneAt: at("09:25") }),
@@ -334,7 +334,15 @@ const day = etDayKey(at("10:00"))!;
   for (const [person, row] of [["Abel", abel], ["Biniam", biniam]] as const) {
     const sales = buildStationSales({
       period: "today", station: "barista", staff: person,
-      rows: items.map((it) => ({ ...it, ticketStatus: tickets.find((t) => t.id === it.ticketId)?.status }) as StationSalesItemRow),
+      rows: items.map((it) => {
+        const ticket = tickets.find((t) => t.id === it.ticketId);
+        return {
+          ...it,
+          ticketStatus: ticket?.status,
+          ticketPrintedAt: ticket?.printedAt,
+          ticketSaleAt: ticket?.printedAt,
+        } as StationSalesItemRow;
+      }),
       now: at("18:00"),
     });
     assert.equal(row.amount, sales.modes.accepted.amount, `${person}: shift report must equal Items sold`);

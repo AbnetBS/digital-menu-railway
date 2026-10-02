@@ -1270,6 +1270,14 @@ export const STAFF_AM = {
   "{value}{reduce} item(s) • {totalAmount} ETB": "{value}{reduce} እቃ(ዎች) • {totalAmount} ETB",
   "Could not cancel this order. Try again.": "ይህን ትዕዛዝ መሰረዝ አልተቻለም። እንደገና ይሞክሩ።",
   "✓ Order cancelled • the stations were told": "✓ ትዕዛዝ ተሰርዟል • ማዕከሎቹ ተነግረዋል",
+  "Attendance": "አቴንዳንስ",
+  "Attendance System": "የአቴንዳንስ ሲስተም",
+  "FPC1020A + ESP32 WROOM - Fingerprint attendance like paper sheet, but digital": "FPC1020A + ESP32 WROOM - የጣት አሻራ አቴንዳንስ ልክ እንደ ወረቀት ግን ዲጂታል",
+  "Today Live": "ዛሬ በቀጥታ",
+  "Paper Sheet View": "የወረቀት ቅጽ እይታ",
+  "Staff Fingerprints": "የሰራተኞች የጣት አሻራ",
+  "Open Kiosk /attendance": "ኪዮስክ /attendance ክፈት",
+  "Enroll New Fingerprint (FPC1020A)": "አዲስ የጣት አሻራ መዝግብ (FPC1020A)",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

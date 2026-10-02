@@ -406,4 +406,6 @@ export interface ReportData {
   archiveCapped?: boolean;
   /** How many printed bills the selected period has in total (before any cap). */
   archiveTotal?: number;
+  /** Last 7 days daily sales - sliding window, 7th day removed when new day starts */
+  last7DaysSales?: Array<{ date: string; dayKey: string; label: string; revenue: number; orders: number }>;
 }

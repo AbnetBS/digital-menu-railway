@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Users, Clock, Plus, Trash2, RefreshCw, Calendar, CheckCircle2, AlertCircle, LogOut, Fingerprint, Settings } from "lucide-react";
+import { Users, Clock, Plus, Trash2, RefreshCw, Calendar, CheckCircle2, AlertCircle, LogOut, Fingerprint, Settings, Printer } from "lucide-react";
 import { useStaffT } from "@/lib/staff-i18n";
 
 interface StaffUser {
@@ -311,7 +311,7 @@ export default function AttendanceTab() {
       {/* PAPER SHEET VIEW - Like the photo you sent */}
       {activeView === "sheet" && (
         <div className="space-y-4">
-          <div className="bg-[#2C1B17] p-4 rounded-2xl border border-[#C9A227]/30 flex flex-wrap gap-3 items-end">
+          <div className="bg-[#2C1B17] p-4 rounded-2xl border border-[#C9A227]/30 flex flex-wrap gap-3 items-end print:hidden">
             <div>
               <label className="block text-[10px] font-bold text-amber-200 mb-1">From Date</label>
               <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
@@ -321,11 +321,16 @@ export default function AttendanceTab() {
               <input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white" />
             </div>
             <button onClick={loadSheet} className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs px-5 py-2.5 rounded-xl">Load Sheet</button>
-            <p className="text-[11px] text-stone-400">Shows like your paper: Employee Name | Date | IN Time & Finger | OUT Time & Finger | Total Hours</p>
+            {sheetData && (
+              <button onClick={() => window.print()} className="bg-[#3D2314] hover:bg-white/10 border border-[#C9A227]/40 text-amber-200 font-black text-xs px-5 py-2.5 rounded-xl flex items-center gap-2">
+                <Printer className="w-4 h-4" /> Print Hard Copy
+              </button>
+            )}
+            <p className="text-[11px] text-stone-400">Shows like your paper: Employee Name | Date | IN Time & Finger | OUT Time & Finger | Total Hours • Print button creates hard copy like normal paper.</p>
           </div>
 
           {sheetData && (
-            <div className="bg-white text-black rounded-2xl overflow-hidden shadow-xl">
+            <div id="attendance-print-area" className="bg-white text-black rounded-2xl overflow-hidden shadow-xl print:shadow-none print:rounded-none print:border print:border-black">
               <div className="p-4 bg-[#1C120F] text-white text-center border-b-4 border-[#C9A227]">
                 <h2 className="font-serif font-black text-lg">FANA CAFÉ & RESTAURANT</h2>
                 <p className="text-xs text-amber-200">Attendance Sheet - {fromDate} to {toDate}</p>
@@ -479,6 +484,33 @@ export default function AttendanceTab() {
           </div>
         </div>
       )}
+
+      {/* Print styles for hard copy like paper sheet */}
+      <style jsx global>{`
+        @media print {
+          body * {
+            visibility: hidden;
+          }
+          #attendance-print-area,
+          #attendance-print-area * {
+            visibility: visible;
+          }
+          #attendance-print-area {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            background: white !important;
+            color: black !important;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          @page {
+            size: landscape;
+            margin: 10mm;
+          }
+        }
+      `}</style>
     </div>
   );
 }

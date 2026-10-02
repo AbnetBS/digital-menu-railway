@@ -1,6 +1,9 @@
 /*
  * FANA CAFE & RESTAURANT - Attendance System
+ * GitHub: hardware/fana_attendance_esp32/fana_attendance_esp32.ino (keep updated here for copy-paste upload)
+ * Branch: arena/01a0e384-digital-menu-railway -> main after merge
  * Hardware: ESP32 WROOM Wifi Board 1,750 Br + FPC1020A 4,500 Br + 0.96" OLED + Buzzer + LEDs
+ * Total: 8,720 Br core, 16 wires exact (8 Female-Female for modules, 8 Male-Male for ESP32/buzzer/LEDs)
  * 
  * Wiring:
  * FPC1020A VCC (Red)    -> ESP32 3.3V (or 5V if module needs 5V)
@@ -23,6 +26,9 @@
  * - WiFiManager by tzapu (for easy WiFi config)
  * - ArduinoJson
  * 
+ * Setup: copy from GitHub, edit serverURL to Coolify domain, upload
+ * Features: Print hard copy button in admin, last 7 days sales sliding window
+ */
  * Setup:
  * 1. Install libraries
  * 2. Select Board: ESP32 Dev Module

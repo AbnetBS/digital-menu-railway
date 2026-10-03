@@ -230,18 +230,32 @@ const read = (p: string) => readFileSync(path.join(ROOT, p), "utf8");
       /const POLL_MS = 60_000/.test(logic));
   pass("the worker starts with the server (same startup hook as the waiter send queue)",
     /startDayCloseWorker\(\)/.test(instr) && /startDeferredTicketWorker\(\)/.test(instr));
-  pass("a page load is a second safety net (the owner opening his tab also sends it)",
-    /void maybeAutoCloseDay\(\)\.catch\(\(\) => \{\}\)/.test(route));
-  pass("the check waits for the owner's hour and stops once the day is closed",
+  pass("a page load is a second safety net (the owner opening his tab also sends it), AWAITED so the page is never a moment behind",
+    /await maybeAutoCloseDay\(\)\.catch\(\(\) => \{\}\)/.test(route));
+  pass("the check waits for the owner's hour, and the day's own latch is the only thing that stops it",
     /isDayCloseDue\(hour, notifyTime\.hour, etMinute\(now\), notifyTime\.minute\)/.test(logic) &&
-      /if \(await readTodayClose\(dayKey\)\) return "closed"/.test(logic));
+      /if \(!\(await claimAutoSendDay\(dayKey, now\)\)\) return "closed"/.test(logic) &&
+      // A close record must NOT block the send any more: the cashier tapping
+      // early does not end the day, so the automatic time carries the bigger
+      // final number the owner reconciles against the drawer.
+      !/if \(await readTodayClose\(dayKey\)\) return "closed"/.test(logic));
 
-  pass("the automatic send writes the day record ONLY if it is missing (exactly once)",
-    /onConflictDoNothing\(\{ target: siteSettings\.key \}\)/.test(logic) && /returning\(\{ key: siteSettings\.key \}\)/.test(logic));
+  pass("the automatic send is latched once a day by its OWN marker row (exactly once)",
+    /onConflictDoNothing\(\{ target: siteSettings\.key \}\)/.test(logic) && /returning\(\{ key: siteSettings\.key \}\)/.test(logic) &&
+      /claimAutoSendDay/.test(logic) && /dayCloseAutoSentKey/.test(logic));
+  pass("the latch is claimed AFTER the bills are added up, so a hiccup retries instead of burning the day",
+    /const totals = await todayTotals\(dayKey\);\s*\n\s*if \(!\(await claimAutoSendDay/.test(logic));
+  pass("a send that reached no phone hands the day back, so a phone armed later still gets the total",
+    /await releaseAutoSendDay\(dayKey\)/.test(logic) && /if \(push\.sent > 0\) return "sent"/.test(logic) &&
+      /export async function releaseAutoSendDay/.test(logic));
   pass("the notification leaves only when its own insert won the race",
-    /if \(!written\) return "raced"/.test(logic) && /sendDayClosePush\(dayKey, record\.total, record\.bills\)/.test(logic));
+    /sendDayClosePush\(dayKey, record\.total, record\.bills\)/.test(logic));
+  pass("EVERY send is awaited and reports how many phones answered (3 Oct 2026)",
+    /export async function sendDayClosePush/.test(logic) && /Promise<PushSendResult>/.test(logic) &&
+      /const push = await sendDayClosePush/.test(route) && /const push = await sendDayClosePush/.test(logic) &&
+      /was NOT delivered to any owner phone/.test(logic));
   pass("the cashier's own tap always writes (a correction can be sent again) and always notifies",
-    /onConflictDoUpdate\(\{ target: siteSettings\.key/.test(logic) && /sendDayClosePush\(todayKey, record\.total, record\.bills\)/.test(route));
+    /onConflictDoUpdate\(\{ target: siteSettings\.key/.test(logic) && /await sendDayClosePush\(todayKey, record\.total, record\.bills\)/.test(route));
   pass("the record says whether it was the automatic send or the cashier",
     /by: input\.mode === "auto" \? AUTO_CLOSE_BY : input\.by/.test(logic));
 }
@@ -311,7 +325,17 @@ const read = (p: string) => readFileSync(path.join(ROOT, p), "utf8");
   pass("the alarm and card fire ONCE per day (a reload at 20:30 must not ring again)",
     /localStorage\.setItem\(announceKey, "1"\)/.test(button) && /localStorage\.getItem\(announceKey\)/.test(button));
   pass("the screen also runs the automatic send when the owner's hour lands (safety net beside the worker)",
-    /action: "day-close", auto: true/.test(button) && /if \(dueNow && !closed\) void autoSend\(\)/.test(button));
+    /action: "day-close", auto: true/.test(button) && /if \(dueNow\)/.test(button) &&
+      /localStorage\.setItem\(autoKey, "1"\)/.test(button) &&
+      // It must NOT be skipped because a close record already exists: an early
+      // tap does not end the day, so the automatic time still carries the
+      // final total.
+      !/if \(dueNow && !closed\)/.test(button));
+  pass("the card tells the cashier the tap is a snapshot, not a lock (owner's words, 3 Oct 2026)",
+    /This sends the total up to now\. Orders placed after it keep counting/.test(button) &&
+      /This sends the total up to now\. Orders placed after it keep counting/.test(read("src/lib/staff-dictionary.ts")));
+  pass("a tap only says 'sent' when a phone actually accepted it",
+    /!r\.ok \|\| data\?\.ok === false/.test(button) && /data\?\.ok === false/.test(button));
   pass("the card carries one-action button and a way to postpone it",
     /✓ Send to the owner now/.test(button) && /Later/.test(button));
 }
@@ -370,13 +394,56 @@ const read = (p: string) => readFileSync(path.join(ROOT, p), "utf8");
 /* ── 10. The notification can actually reach the owner's phone ───────────── */
 {
   const subscribe = read("src/app/api/push/subscribe/route.ts");
+  const resubscribe = read("src/app/api/push/resubscribe/route.ts");
   const testRoute = read("src/app/api/push/test/route.ts");
+  const pushServer = read("src/lib/push.ts");
+  const client = read("src/lib/push-client.ts");
+  const tab = read("src/components/rms/DailySalesTab.tsx");
+  const route = read("src/app/api/reports/daily-sales/route.ts");
+
   pass("the dashboard's device can subscribe as the admin (role + name from the session)",
-    /readAdminSession\(\)/.test(subscribe) && /role = "admin"/.test(subscribe) && /name = "Owner"/.test(subscribe));
+    /readAdminSession\(\)/.test(subscribe) && /adminSession \? "admin"/.test(subscribe) && /adminSession \? "Owner"/.test(subscribe));
+  // "I allowed notifications and received nothing": one phone can hold BOTH
+  // cookies, and the staff one used to win, so the owner's phone subscribed as
+  // a crew member and the total (sent to role "admin") had nowhere to go.
+  pass("the ADMIN session wins over a staff one, so the owner's phone is never filed as a crew device",
+    /const role = adminSession \? "admin" : staffSession!\.role/.test(subscribe) &&
+      /const name = adminSession \? "Owner" : staffSession!\.name/.test(subscribe));
   pass("the subscription route still refuses an anonymous caller",
     /Unauthorized/.test(subscribe) && /status: 401/.test(subscribe) && !/body\?\.role/.test(subscribe));
-  pass("the owner can test his phone for real (the button on the sales page)",
-    /readAdminSession\(\)/.test(testRoute) && /delaySeconds/.test(testRoute));
+  // The rotated-endpoint path used to be staff-only, so the owner's phone
+  // went deaf for good while the page still said "Notifications on".
+  pass("a ROTATED subscription on the owner's phone is repaired, not refused with a 401",
+    /readAdminSession\(\)/.test(resubscribe) && /adminSession \? "admin"/.test(resubscribe) &&
+      !/requireStaff\(\)\.ok\)\s*return/.test(resubscribe));
+  pass("the off-duty switch never silences the OWNER's daily total",
+    /if \(s\.role === "admin"\) return true/.test(pushServer) &&
+      /const staff = subs\.filter\(\(s\) => s\.role !== "admin"\)/.test(pushServer));
+  pass("the send reports instead of vanishing into a silent catch",
+    /export interface PushSendResult/.test(pushServer) && /result\.sent \+=/.test(pushServer) &&
+      /\[push\] delivery failed/.test(pushServer) && /was NOT delivered to any owner phone/.test(read("src/lib/day-close.ts")));
+
+  pass("the sales page RE-SYNCS this device with the server (mount, visibility, online, timer)",
+    /ensurePocketAlerts\(\)/.test(tab) && /visibilitychange/.test(tab) && /"online"/.test(tab) &&
+      /setInterval\(heal, 5 \* 60 \* 1000\)/.test(tab));
+  pass("'Notifications on' means the SERVER has this device, not just the browser",
+    /let lastSyncOk = false/.test(client) && /const registered = lastSyncOk && !lastSyncError/.test(client) &&
+      /const armed = permission === "granted" && subscribed && registered/.test(client) &&
+      /allowedButUnregistered/.test(tab));
+  pass("the owner can demand the total on his phone right now, and is told what happened",
+    /action: "send-total"/.test(tab) && /action === "send-total"/.test(route) &&
+      /Nothing is registered to receive it/.test(route) && /Nothing is registered to receive it/.test(read("src/lib/staff-dictionary.ts")));
+  pass("that button writes no close record and touches no latch (a test cannot bend the day's numbers)",
+    /if \(action === "send-total"\)/.test(route) && !/mode: "auto"/.test(route.split('if (action === "send-total")')[1].split("if (action !==")[0]));
+  pass("the page says sending the total does not close the day (owner's words, 3 Oct 2026)",
+    /Sending the total does not close the day\. Sales after that moment keep counting/.test(tab) &&
+      /Sending the total does not close the day\. Sales after that moment keep counting/.test(read("src/lib/staff-dictionary.ts")));
+  pass("the page can show that the system already sent today's total by itself",
+    /autoSentAt/.test(route) && /autoSentAt/.test(tab) && /The system already sent today's total by itself at \{time\}/.test(read("src/lib/staff-dictionary.ts")));
+
+  pass("the owner can test his phone for real, and the test reports DELIVERY",
+    /readAdminSession\(\)/.test(testRoute) && /delaySeconds/.test(testRoute) &&
+      /const result = await sendPushToRoles/.test(testRoute) && /result\.sent === 0/.test(testRoute));
 }
 
 /* ── 11. The owner's words are the comments the next reader will trust ───── */

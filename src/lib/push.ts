@@ -112,6 +112,32 @@ export const CUSTOMER_ALERT_RING = { urgent: true as const, repeat: 3, gapMs: 11
 type PushSub = typeof pushSubscriptions.$inferSelect;
 
 /**
+ * WHAT A SEND ACTUALLY DID (owner, 3 Oct 2026).
+ *
+ * Every push failure used to disappear into a bare `catch {}`, so "the owner
+ * allowed notifications but never received the total" had no answer at all:
+ * no number in the response, nothing in the log, nothing on the screen. The
+ * owner's phone is now the ONE phone this system rings, and the one number
+ * that matters at the end of the day, so a send REPORTS: how many devices
+ * were tried, how many the push service accepted, how many it refused and
+ * how many dead endpoints were pruned. The owner page turns that into words.
+ */
+export interface PushSendResult {
+  /** Devices we tried to reach. */
+  attempted: number;
+  /** The push service ACCEPTED the message for this many devices. */
+  sent: number;
+  /** The push service refused it (rotated keys, a gone endpoint, 429...). */
+  failed: number;
+  /** Dead rows (404/410) removed from the table. */
+  removed: number;
+  /** Nobody at all is subscribed under this role. */
+  noSubscribers: boolean;
+}
+
+const EMPTY_SEND: PushSendResult = { attempted: 0, sent: 0, failed: 0, removed: 0, noSubscribers: true };
+
+/**
  * POCKET OFF-DUTY SWITCH (owner's decision, Sept 2026): staff phones kept
  * ringing at home after the shift ended. A staff member who tapped "Off duty"
  * in their app must not be rung anywhere. The switch is per PERSON
@@ -122,9 +148,20 @@ type PushSub = typeof pushSubscriptions.$inferSelect;
  * that matches no staff record, or a database hiccup still rings. A missed
  * order alarm is far worse than one extra ring - only a person who
  * EXPLICITLY switched off is skipped.
+ *
+ * THE OWNER IS NEVER MUTED (fixed 3 Oct 2026). The off-duty switch is about
+ * STAFF phones ringing at home; the daily total is the one notification the
+ * owner asked to receive, and it is sent to role "admin". Matching it by name
+ * was a trap: /api/push/subscribe stores the name "Owner" for a dashboard
+ * device, so any staff record that happened to carry that name (or the owner
+ * himself signing in as staff on the same phone and switching off) silently
+ * ate the end-of-day total with no error anywhere. Role "admin" is now
+ * exempt from the switch.
  */
 async function dropMutedSubs(subs: PushSub[]): Promise<PushSub[]> {
   try {
+    const staff = subs.filter((s) => s.role !== "admin");
+    if (staff.length === 0) return subs;
     const muted = await db
       .select({ name: staffUsers.name })
       .from(staffUsers)
@@ -137,6 +174,8 @@ async function dropMutedSubs(subs: PushSub[]): Promise<PushSub[]> {
     );
     if (off.size === 0) return subs;
     return subs.filter((s) => {
+      // The owner's own dashboard device is never touched by the staff switch.
+      if (s.role === "admin") return true;
       const n = (s.name || "").trim().toLowerCase();
       // A device we cannot attribute to a person can never be muted.
       return !n || !off.has(n);
@@ -148,13 +187,16 @@ async function dropMutedSubs(subs: PushSub[]): Promise<PushSub[]> {
 }
 
 /** Deliver one payload to an already-fetched subscription list. */
-async function deliverToSubs(subs: PushSub[], payload: PushPayload): Promise<void> {
+async function deliverToSubs(subs: PushSub[], payload: PushPayload): Promise<PushSendResult> {
+  const result: PushSendResult = { attempted: 0, sent: 0, failed: 0, removed: 0, noSubscribers: false };
+  if (subs.length === 0) return result;
   try {
     // Off-duty staff first: their devices must hear nothing at home.
     const live = await dropMutedSubs(subs);
-    if (live.length === 0) return;
+    result.attempted = live.length;
+    if (live.length === 0) return result;
     const keys = await getVapidKeys();
-    if (!keys) return;
+    if (!keys) return result;
     webpush.setVapidDetails("mailto:owner@fanacafe.example", keys.publicKey, keys.privateKey);
 
     await Promise.all(
@@ -183,39 +225,57 @@ async function deliverToSubs(subs: PushSub[], payload: PushPayload): Promise<voi
               TTL: 900,
             }
           );
+          result.sent += 1;
         } catch (err) {
           const status = (err as { statusCode?: number }).statusCode;
+          result.failed += 1;
           // Gone / not found → the subscription expired (app uninstalled,
           // browser cleaned up). Remove it so the table stays small.
           if (status === 404 || status === 410) {
+            result.removed += 1;
             try {
               await db.delete(pushSubscriptions).where(eq(pushSubscriptions.id, sub.id));
             } catch {
               /* best effort */
             }
           }
-          // 429 (too many requests) and network errors: just skip this one.
+          // 401/403 is the VAPID or the subscription keys being wrong (the
+          // server's keypair was regenerated): the row stays, because the
+          // CLIENT repairs it on its next visit (push-client re-subscribes on a
+          // key mismatch) - but the failure is written down, because this is
+          // exactly what "the owner allowed notifications and heard nothing"
+          // looks like from the inside.
+          console.warn(
+            `[push] delivery failed (status ${status ?? "network"}) role=${sub.role} name=${sub.name || "-"}: ${String(err)}`,
+          );
         }
       })
     );
-  } catch {
+  } catch (error) {
     // push must never take the order flow down with it
+    console.warn(`[push] send aborted: ${String(error)}`);
   }
+  return result;
 }
 
 /**
  * Fire-and-forget push to every device subscribed under the given roles.
  * NEVER throws and never blocks the caller — a push outage must not slow down
  * or fail an order. Dead endpoints (410/404) are pruned automatically.
+ *
+ * It REPORTS what happened (see PushSendResult) so the one sender that matters
+ * to the owner can tell him whether his phone was actually reached.
  */
-export async function sendPushToRoles(roles: string[], payload: PushPayload): Promise<void> {
-  if (roles.length === 0) return;
+export async function sendPushToRoles(roles: string[], payload: PushPayload): Promise<PushSendResult> {
+  if (roles.length === 0) return EMPTY_SEND;
   try {
     const subs = await db.select().from(pushSubscriptions).where(inArray(pushSubscriptions.role, roles));
-    if (subs.length === 0) return;
-    await deliverToSubs(subs, payload);
-  } catch {
+    if (subs.length === 0) return { ...EMPTY_SEND };
+    return await deliverToSubs(subs, payload);
+  } catch (error) {
     // push must never take the order flow down with it
+    console.warn(`[push] lookup failed for roles ${roles.join(",")}: ${String(error)}`);
+    return { ...EMPTY_SEND };
   }
 }
 
@@ -240,7 +300,7 @@ export async function sendPushToNamedStaff(
   role: string,
   staffName: string | null | undefined,
   payload: PushPayload
-): Promise<void> {
+): Promise<PushSendResult> {
   const name = (staffName || "").trim();
   if (!name) return sendPushToRoles([role], payload);
   try {
@@ -260,8 +320,8 @@ export async function sendPushToNamedStaff(
     }
     const matches = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.name, name));
     if (matches.length === 0) return sendPushToRoles([role], payload);
-    await deliverToSubs(matches, payload);
+    return await deliverToSubs(matches, payload);
   } catch {
-    await sendPushToRoles([role], payload).catch(() => {});
+    return await sendPushToRoles([role], payload).catch(() => ({ ...EMPTY_SEND }));
   }
 }

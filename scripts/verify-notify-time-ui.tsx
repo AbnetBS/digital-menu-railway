@@ -19,7 +19,12 @@
  *   3. a quick pick only FILLS the field (the owner still presses Save);
  *   4. the two moments on the page read to the minute (20:03 / 21:03), so the
  *      cashier's button and the automatic send are never a lie;
- *   5. the whole tab reads in Amharic too.
+ *   5. the whole tab reads in Amharic too;
+ *   6. the owner's own phone: the on-demand "send today's total to my phone"
+ *      button asks the server for exactly that, confirms it, and says plainly
+ *      when nothing is registered to receive it (owner, 3 Oct 2026: "I already
+ *      allow notification on my site but still he did not receive total sale"),
+ *      next to the note that sending the total does not close the day.
  *
  * Run with: npx tsx scripts/verify-notify-time-ui.tsx   (wired into `npm test`)
  */
@@ -43,6 +48,8 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 /* ── the fake server: one stored setting, exactly like site_settings ─────── */
 
 let stored = "21:00"; // what day_close_notify_hour holds
+/** Flip to make the owner's on-demand send come back "nothing is registered". */
+let sendReachesNobody = false;
 const posts: Array<Record<string, unknown>> = [];
 
 const state = () => {
@@ -75,7 +82,20 @@ const fakeFetch = async (url: string, init?: RequestInit) => {
     if (body.action === "set-notify-time") {
       stored = `${String(Number(body.hour)).padStart(2, "0")}:${String(Number(body.minute)).padStart(2, "0")}`;
     }
-    return { ok: true, status: 200, json: async () => ({ ok: true, ...state() }) };
+    // The owner's on-demand send: when no phone is registered the server
+    // answers ok:false with a reason, and the page must say so out loud.
+    if (body.action === "send-total" && sendReachesNobody) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: false,
+          error: "Nothing is registered to receive it. Turn on notifications on this page, then send again.",
+          ...state(),
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true, total: 12450, ...state() }) };
   }
   if (u.startsWith("/api/reports/daily-sales")) {
     return { ok: true, status: 200, json: async () => state() };
@@ -177,6 +197,38 @@ async function main() {
     /[\u1200-\u139F]/.test(text()) && text().includes("ፈጣን ምርጫዎች"), text().slice(0, 120));
   setStaffLang("en");
 
+  /* ── 5. the owner's phone: prove it works, and never lie about "on" ──── */
+  // The complaint this guards (owner, 3 Oct 2026): "I already allow
+  // notification on my site but still he did not receive total sale."
+  await act(async () => {
+    root.render(React.createElement(DailySalesTab));
+    await new Promise((r) => setTimeout(r, 5));
+  });
+  await settle();
+
+  const beforeSend = posts.length;
+  pass("the page says sending the total does not close the day (sales keep counting after it)",
+    text().includes("Sending the total does not close the day. Sales after that moment keep counting, and the total can be sent again."));
+  pass("the page shows what today's total is right now, next to the send button",
+    text().includes("Right now that is 12,450 ETB"), text().slice(0, 200));
+
+  await click(buttonsByText("Send today's total to my phone")[0]);
+  await settle();
+  pass("'Send today's total to my phone' asks the server for exactly that",
+    posts.length === beforeSend + 1 && posts[posts.length - 1].action === "send-total",
+    JSON.stringify(posts[posts.length - 1]));
+  pass("...and the page confirms the total is on his phone",
+    text().includes("Today's total is on your phone"), text().slice(0, 200));
+
+  // The same button when the server has no phone to send to.
+  sendReachesNobody = true;
+  await click(buttonsByText("Send today's total to my phone")[0]);
+  await settle();
+  pass("when no phone is registered the page says so instead of a false success",
+    text().includes("Nothing is registered to receive it. Turn on notifications on this page, then send again."),
+    text().slice(0, 240));
+  sendReachesNobody = false;
+
   await act(async () => root.unmount());
 
   if (failures > 0) {
@@ -186,6 +238,7 @@ async function main() {
   console.log("\n✅ The owner picks ANY minute on the sales page, and Save is what stores it");
   console.log("   • 21:03 posts { action: set-notify-time, hour: 21, minute: 3 }");
   console.log("   • the quick picks only fill the field; both moments read to the minute");
+  console.log("   • he can demand the total on his phone now, and is told if no phone is armed");
 }
 
 main().catch((error) => {

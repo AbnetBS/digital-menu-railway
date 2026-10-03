@@ -42,6 +42,18 @@ export interface PocketAlertsStatus {
   subscribed: boolean;
   /** True when the device is fully armed: permission granted + live subscription. */
   armed: boolean;
+  /**
+   * True when the SERVER has this device's row (3 Oct 2026).
+   *
+   * Permission + a local subscription is NOT enough: the server can have
+   * pruned the row after a 410, the VAPID keys can have been regenerated, or
+   * the owner can be signed in with an expired session - and the browser still
+   * reports "allowed" and "subscribed", so a green "Notifications on" chip was
+   * a lie that left the owner waiting for a total that had nowhere to go. The
+   * chip is only green once a sync with the server has actually succeeded in
+   * this session.
+   */
+  registered: boolean;
   /** iPhone/iPad that must be installed to the Home Screen first. */
   needsIosInstall: boolean;
   reason: string;
@@ -122,12 +134,26 @@ function keyMatches(sub: PushSubscription, publicKey: string): boolean {
  * silence with no symptom.
  */
 let lastSyncError = "";
+/**
+ * Has the server accepted this device in THIS page session? It starts false
+ * on purpose: the owner's page used to decide "armed" from the browser alone,
+ * so a phone that had permission but no server row showed a green "on" that
+ * meant nothing. The Daily Sales tab now syncs on mount, and only a success
+ * turns the light on.
+ */
+let lastSyncOk = false;
 
 async function subscribeAndStore(reg: ServiceWorkerRegistration): Promise<PushEnableResult> {
   const keyRes = await fetch("/api/push/public-key", { cache: "no-store" });
-  if (!keyRes.ok) return "error";
-  const { publicKey } = await keyRes.json();
-  if (!publicKey) return "error";
+  if (!keyRes.ok) {
+    lastSyncOk = false;
+    return "error";
+  }
+  const { publicKey } = await keyRes.json().catch(() => ({}));
+  if (!publicKey) {
+    lastSyncOk = false;
+    return "error";
+  }
 
   let sub = await reg.pushManager.getSubscription();
 
@@ -158,18 +184,22 @@ async function subscribeAndStore(reg: ServiceWorkerRegistration): Promise<PushEn
   });
   if (res.status === 401) {
     lastSyncError = "Your staff session expired. Log in again so alerts keep reaching this phone.";
+    lastSyncOk = false;
     return "error";
   }
   if (!res.ok) {
     lastSyncError = "The server did not accept this device. Check the internet connection.";
+    lastSyncOk = false;
     return "error";
   }
   const data = await res.json().catch(() => ({}));
   if (data && data.success === false) {
     lastSyncError = "The server did not accept this device. Check the internet connection.";
+    lastSyncOk = false;
     return "error";
   }
   lastSyncError = "";
+  lastSyncOk = true;
   return "subscribed";
 }
 
@@ -224,6 +254,7 @@ export async function pocketAlertsStatus(): Promise<PocketAlertsStatus> {
       permission: "unsupported",
       subscribed: false,
       armed: false,
+      registered: false,
       needsIosInstall,
       reason: needsIosInstall
         ? "Add Fana to your Home Screen first (Share → Add to Home Screen)."
@@ -238,12 +269,17 @@ export async function pocketAlertsStatus(): Promise<PocketAlertsStatus> {
   } catch {
     /* ignore */
   }
-  const armed = permission === "granted" && subscribed && !lastSyncError;
+  // "Armed" now means all three: the browser allows it, a live subscription
+  // exists, AND the server has this device on file. The third part is what
+  // turns a green light from a guess into a fact.
+  const registered = lastSyncOk && !lastSyncError;
+  const armed = permission === "granted" && subscribed && registered;
   return {
     supported: true,
     permission,
     subscribed,
     armed,
+    registered,
     needsIosInstall,
     reason: lastSyncError
       ? lastSyncError
@@ -253,7 +289,9 @@ export async function pocketAlertsStatus(): Promise<PocketAlertsStatus> {
         ? "Notifications are BLOCKED for this site. Open the browser's site settings and allow notifications."
         : permission === "default"
           ? "Tap to allow notifications so this phone rings in your pocket."
-          : "Tap to arm pocket alerts on this device.",
+          : subscribed
+            ? "The server has not registered this device yet. Tap to arm it again."
+            : "Tap to arm pocket alerts on this device.",
   };
 }
 

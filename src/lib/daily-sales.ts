@@ -29,6 +29,24 @@
  * the cashier's ✓ PRINTED tap (tickets.printed_at) — the EFD receipt in her
  * hand. Cancelled bills never count.
  *
+ * ─── "SENDING THE TOTAL DOES NOT CLOSE THE DAY" (owner, 3 Oct 2026) ────────
+ * The owner's own correction of a misunderstanding that made the feature look
+ * broken: "when the cashier click end shift doesnt mean after that time no
+ * sale will be place but to send notification to the owners".
+ *
+ * So the tap is a SNAPSHOT, not a lock. The bills printed up to that moment
+ * are added up and sent; the cafe keeps selling; anything printed afterwards
+ * keeps counting towards today's live total, and the same button sends the
+ * bigger number whenever it is pressed again. Nothing in the system ever
+ * refuses a sale because the day was "closed".
+ *
+ * The automatic send follows the same rule and now means "the day's FINAL
+ * number": it goes out at the owner's chosen time even when the cashier
+ * already tapped the button hours earlier, because that later total is the
+ * one he actually reconciles against the drawer. It is latched once a day by
+ * its own marker (DAY_CLOSE_AUTO_KEY_PREFIX), so it never becomes a stream
+ * of notifications.
+ *
  * This module is deliberately PURE: no database, no Next.js, no React. The API
  * route and the background worker feed data in; scripts/verify-daily-sales.ts
  * feeds fixtures in.
@@ -217,6 +235,31 @@ export function dayCloseMoment(hour: number, minute = 0): string {
 
 /** The site_settings key holding one day's close record. */
 export const DAY_CLOSE_KEY_PREFIX = "day_close_";
+
+/**
+ * The site_settings key that records "the system's own send already went out
+ * for this day" (owner's rule, 3 Oct 2026).
+ *
+ * WHY IT IS NOT THE CLOSE RECORD: the close record answers "what did the day
+ * add up to when it was closed", and it is rewritten on every tap. The
+ * automatic send is a different question - "has the system already told the
+ * owner the final number today?" - and it must keep its own once-a-day latch,
+ * because the automatic send now happens even when the cashier closed the day
+ * earlier (see the note at the top of this file). Sharing one row would let a
+ * later manual tap re-open the automatic send, and the owner would get a
+ * second, larger number he never asked for.
+ */
+export const DAY_CLOSE_AUTO_KEY_PREFIX = "day_close_auto_";
+
+/** The marker key for one EAT day. */
+export function dayCloseAutoSentKey(dayKey: string): string {
+  return `${DAY_CLOSE_AUTO_KEY_PREFIX}${String(dayKey || "").trim()}`;
+}
+
+/** True when this value is the automatic-send marker key for one EAT day. */
+export function isAutoSentSettingKey(key: string): boolean {
+  return String(key || "").startsWith(DAY_CLOSE_AUTO_KEY_PREFIX);
+}
 
 /** The site_settings key holding the owner's chosen notify hour. */
 export const DAY_CLOSE_NOTIFY_KEY = "day_close_notify_hour";

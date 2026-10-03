@@ -28,6 +28,15 @@ import { triggerDesktopNotification } from "@/lib/notifications";
  * moment — the paper the owner counts against the drawer) and sends ONE normal
  * notification to the owner's phone. Tapping that notification opens the Daily
  * Sales page in his dashboard.
+ *
+ * THE TAP IS A SNAPSHOT, NOT A LOCK (owner's own words, 3 Oct 2026: "when the
+ * cashier click end shift doesnt mean after that time no sale will be place
+ * but to send notification to the owners"). Sales keep coming in afterwards,
+ * the total keeps growing, and this same button sends the new number whenever
+ * she presses it again. For the same reason the automatic send at her owner's
+ * chosen time is no longer skipped just because a record already exists: it is
+ * the day's FINAL number, and it is the one the owner reconciles against the
+ * drawer.
  */
 
 interface DayCloseDay {
@@ -55,6 +64,8 @@ interface DayCloseState {
 }
 
 const ANNOUNCE_PREFIX = "fana_day_close_announced_";
+/** This screen's own once-a-day latch for the automatic send (3 Oct 2026). */
+const AUTO_ATTEMPT_PREFIX = "fana_day_close_auto_";
 
 export default function DayCloseButton({ onToast }: { onToast?: (msg: string) => void }) {
   const { t: L, td: Ld } = useStaffT();
@@ -108,10 +119,12 @@ export default function DayCloseButton({ onToast }: { onToast?: (msg: string) =>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "day-close", auto: true }),
       });
-      // A refusal is spoken out loud: the cashier must know the owner's total
-      // did not leave, and that the server keeps trying every minute.
-      if (!r.ok) {
-        const data = await r.json().catch(() => null);
+      const data = await r.json().catch(() => null);
+      // The answer is a real delivery report now (3 Oct 2026), not a hopeful
+      // "posted". A refusal is spoken out loud: the cashier must know the
+      // owner's total did not leave, because the total is the one number the
+      // owner reconciles against the drawer.
+      if (!r.ok || data?.ok === false) {
         onToast?.(
           data?.error
             ? Ld(data.error)
@@ -132,6 +145,7 @@ export default function DayCloseButton({ onToast }: { onToast?: (msg: string) =>
     const canClose = state.canClose;
     const dueNow = state.dueNow;
     const announceKey = `${ANNOUNCE_PREFIX}${state.todayKey}`;
+    const autoKey = `${AUTO_ATTEMPT_PREFIX}${state.todayKey}`;
     // A timer keeps setState out of the synchronous effect body
     // (react-hooks/set-state-in-effect): the alarm, the card and the automatic
     // send all belong to the same tick.
@@ -158,8 +172,29 @@ export default function DayCloseButton({ onToast }: { onToast?: (msg: string) =>
         }
       }
       if (closed) setCardOpen(false);
-      // The automatic send when the owner's hour arrives and nobody tapped.
-      if (dueNow && !closed) void autoSend();
+      // THE AUTOMATIC SEND, once per day on this screen (3 Oct 2026). It used
+      // to be skipped whenever the day already had a close record, which meant
+      // a cashier who tapped early silenced the owner's FINAL number for the
+      // whole evening: sales kept coming in, the total kept growing, and the
+      // phone stayed quiet. Sending the total does not close the day, so this
+      // screen now asks the server once, and the server's own latch decides
+      // whether anything is still due.
+      if (dueNow) {
+        let tried = false;
+        try {
+          tried = localStorage.getItem(autoKey) === "1";
+        } catch {
+          /* storage blocked: ask once per mount, the server is idempotent */
+        }
+        if (!tried) {
+          try {
+            localStorage.setItem(autoKey, "1");
+          } catch {
+            /* ignore */
+          }
+          void autoSend();
+        }
+      }
     }, 0);
     return () => clearTimeout(tick);
   }, [state, autoSend]);
@@ -189,8 +224,15 @@ export default function DayCloseButton({ onToast }: { onToast?: (msg: string) =>
         body: JSON.stringify({ action: "day-close" }),
       });
       const data = await r.json().catch(() => null);
-      if (!r.ok) {
-        onToast?.(data?.error ? Ld(data.error) : tNow("Could not close the day. Try again."));
+      // "Sent" is only claimed when a phone actually accepted it (3 Oct 2026).
+      // Saying "sent to the owner" for a push that reached nobody is how the
+      // owner ended up waiting for a total that was never delivered.
+      if (!r.ok || data?.ok === false) {
+        onToast?.(
+          data?.error
+            ? Ld(data.error)
+            : tNow("Could not close the day. Try again.")
+        );
       } else {
         setCardOpen(false);
         onToast?.(
@@ -251,6 +293,13 @@ export default function DayCloseButton({ onToast }: { onToast?: (msg: string) =>
             {L("Send today's total sale to the owner's phone. The system sends it by itself at {time} if you forget.", {
               time: notify,
             })}
+          </p>
+          {/* THE OWNER'S OWN WORDS (3 Oct 2026): "when the cashier click end
+              shift doesnt mean after that time no sale will be place but to
+              send notification to the owners". The tap is a snapshot, not a
+              lock, and the cashier is the one who has to understand that. */}
+          <p className="text-[11px] text-stone-400 leading-snug">
+            {L("This sends the total up to now. Orders placed after it keep counting, and the button can send the new total again.")}
           </p>
           <div className="flex items-center gap-2">
             <button

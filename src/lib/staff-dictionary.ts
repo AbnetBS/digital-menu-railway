@@ -1389,6 +1389,20 @@ export const STAFF_AM = {
   "🌙 Shift end at {time}": "🌙 ፈረቃ ማብቂያ በ{time}",
   "Today's shift end opens at {time} • the total is sent to the owner's phone": "የዛሬ ፈረቃ ማብቂያ በ{time} ይከፈታል • ጠቅላላው ወደ ባለቤቱ ስልክ ይላካል",
   "Send today's total sale to the owner's phone. The system sends it by itself at {time} if you forget.": "የዛሬውን ጠቅላላ ሽያጭ ወደ ባለቤቱ ስልክ ላክ። ካረሱት ሲስተሙ በ{time} ራሱ ይልከዋል።",
+  /* The tap is a snapshot, not a lock (owner, 3 Oct 2026): sales after it keep
+     counting and the same button sends the bigger, later total. */
+  "This sends the total up to now. Orders placed after it keep counting, and the button can send the new total again.": "እስከ አሁን ያለውን ጠቅላላ ይልካል። ከዚያዚያ በኋላ የተቀማጁ ትዕዛዞች ቀጥለው ይቆጠራሉ፤ አዲሱን ጠቅላላም ለመላክ ቁልፉ ማያገኘት ይችላል።",
+  "Today's total is saved, but no phone is armed to receive it. Ask the owner to turn notifications on.": "የዛሬው ጠቅላላ ተቀምጧል፤ ግን የሚቀበል ስልክ አልተዘጋጀም። ባለቤቱ ማሳወቂያ እንዲከፍት ይጠይቁ።",
+  /* the owner's own phone: prove it works, and never lie about "on"
+     (owner, 3 Oct 2026: "I already allow notification on my site but still he
+     did not receive total sale") */
+  "Send today's total to my phone": "የዛሬውን ጠቅላላ ወደ ስልክዬ ላክ",
+  "✓ Today's total is on your phone • {value}": "✓ የዛሬው ጠቅላላ በስልክዎ ላይ ነው • {value}",
+  "Right now that is {value}.": "አሁን ያለው {value} ነው።",
+  "Nothing is registered to receive it. Turn on notifications on this page, then send again.": "የመቀበል ምንም የተመዘገበ የለም። በዚህ ገጽ ማሳወቂያዎችን አብረው እንደገና ይላኩ።",
+  "This device is not registered on the server, so the total cannot reach it.": "ይህ መሳሪያ በሲርቨሩ ላይ አልተመዘገበም፤ ጠቅላላውም ስለማይደርስ አይችልም።",
+  "Sending the total does not close the day. Sales after that moment keep counting, and the total can be sent again.": "ጠቅላላውን ማስተላል ቀኑን አያጠፋም። ከዚያዚያ በኋላ የሚታያጠኑ ግብይቶች ቀጥለው ይቆጠራሉ፤ ጠቅላላውንም እንደገና መላክ ይችላል።",
+  "The system already sent today's total by itself at {time}.": "ሲስተሙ የዛሬውን ጠቅላላ በ{time} በራሱ አስተልኳል።",
 
   /* ── EFD receipt-backed sales and owner phone setup ── */
   "Test ring sound": "የደወል ድምፅን ሞክር",

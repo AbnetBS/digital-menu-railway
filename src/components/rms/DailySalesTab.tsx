@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Printer, RefreshCw, BellRing, BellOff, CheckCircle2, Clock, Save } from "lucide-react";
+import { Printer, RefreshCw, BellRing, BellOff, CheckCircle2, Clock, Save, Send } from "lucide-react";
 import PrintLetterhead from "@/components/rms/PrintLetterhead";
 import { useStaffT, tNow, staffEtb } from "@/lib/staff-i18n";
 import {
@@ -15,6 +15,7 @@ import {
 } from "@/lib/daily-sales";
 import {
   enablePocketAlerts,
+  ensurePocketAlerts,
   pocketAlertsStatus,
   pushSupported,
   sendTestPush,
@@ -41,6 +42,20 @@ import {
  * This page also holds the ONLY phone-alert switch left in the cafe: every
  * staff notification was removed, so arming this device is how he hears the
  * daily total.
+ *
+ * "I ALLOWED NOTIFICATIONS BUT NEVER RECEIVED THE TOTAL" (owner, 3 Oct 2026).
+ * Three things were wrong with that, and all three are fixed here:
+ *   1. this page never re-synced the device with the server, so a pruned row,
+ *      a rotated endpoint or a regenerated VAPID key left a green
+ *      "Notifications on" chip over a phone the server could not reach. It now
+ *      syncs on mount, on visibility, on reconnect and every 5 minutes, and
+ *      "on" means the server acknowledged this device;
+ *   2. there was no way to try it without waiting for the evening. The "send
+ *      today's total to my phone" button runs the real send on demand and
+ *      reports how many phones the push service accepted;
+ *   3. the page never said that sending the total does not CLOSE the day: the
+ *      bills printed after the tap keep counting and the same button sends the
+ *      bigger number. It says so now.
  */
 
 interface DailySalesDay {
@@ -67,6 +82,8 @@ interface DailySalesData {
   dueNow: boolean;
   todayKey: string;
   today: { total: number; bills: number; closed: DayCloseRecord | null };
+  /** When the system already sent today's final number by itself (or null). */
+  autoSentAt?: string | null;
   days: DailySalesDay[];
 }
 
@@ -123,9 +140,52 @@ export default function DailySalesTab() {
       /* ignore */
     }
   }, []);
+
+  /**
+   * SELF-HEAL, so "Notifications on" is a fact and not a hope (3 Oct 2026).
+   *
+   * This page is the ONLY place in the cafe that arms a phone, so it is also
+   * the only place that can REPAIR one. Having browser permission is not
+   * enough: the server pruned the row after a 410, the push service rotated
+   * the endpoint, the VAPID keys were regenerated with a fresh database, or the
+   * admin session expired. The staff hook has re-synced on mount, visibility,
+   * reconnect and a timer for years; this page never did, so an owner's phone
+   * could sit on a green "Notifications on" and still never receive the total.
+   */
   useEffect(() => {
-    const t = setTimeout(() => void refreshPushStatus(), 0);
-    return () => clearTimeout(t);
+    if (!pushSupported()) {
+      // Browsers that cannot do push at all still get an honest status card.
+      const t = setTimeout(() => void refreshPushStatus(), 0);
+      return () => clearTimeout(t);
+    }
+    let cancelled = false;
+    const heal = async () => {
+      if (cancelled) return;
+      try {
+        await ensurePocketAlerts();
+      } catch {
+        /* offline: keep the last known state */
+      }
+      if (!cancelled) void refreshPushStatus();
+    };
+    // A timer keeps setState out of the synchronous effect body
+    // (react-hooks/set-state-in-effect): the first sync is a network round trip.
+    const first = setTimeout(() => void heal(), 0);
+    const timer = setInterval(heal, 5 * 60 * 1000);
+    const onVisible = () => {
+      if (!document.hidden) void heal();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", heal);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      cancelled = true;
+      clearTimeout(first);
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", heal);
+      window.removeEventListener("focus", onVisible);
+    };
   }, [refreshPushStatus]);
 
   /**
@@ -156,6 +216,43 @@ export default function DailySalesTab() {
     setPushBusy(false);
     if (!res.ok) showToast(Ld(res.error) || tNow("The test could not be sent."));
     else showToast(tNow("Test sent • this device should ring now"));
+  };
+
+  /**
+   * SEND TODAY'S TOTAL TO MY PHONE, RIGHT NOW (owner, 3 Oct 2026).
+   *
+   * "I already allowed notification on my site but still he did not receive
+   * total sale." This button is the answer he can act on: it runs the exact
+   * same server send as the cashier's tap and reports what the push service
+   * did, so the screen says "reached your phone" or "no phone is registered
+   * for this login" instead of leaving him to guess. It writes nothing: no
+   * close record, no automatic-send latch, so using it never changes the
+   * day's numbers.
+   */
+  const sendTotalToMyPhone = async () => {
+    setPushBusy(true);
+    try {
+      const r = await fetch("/api/reports/daily-sales", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "send-total" }),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) {
+        showToast(body?.error ? Ld(body.error) : tNow("Network error. Try again."));
+      } else if (body?.ok) {
+        showToast(tNow("✓ Today's total is on your phone • {value}", { value: staffEtb(Number(body?.total || 0)) }));
+      } else {
+        showToast(
+          Ld(body?.error) ||
+            tNow("Nothing is registered to receive it. Turn on notifications on this page, then send again."),
+        );
+        await refreshPushStatus();
+      }
+    } catch {
+      showToast(tNow("Network error. Try again."));
+    }
+    setPushBusy(false);
   };
 
   /**
@@ -216,6 +313,9 @@ export default function DailySalesTab() {
 
   const days = data?.days ?? [];
   const armed = !!pushStatus?.armed;
+  // Permission alone is not armed: the SERVER must hold this device too.
+  const allowedButUnregistered =
+    !!pushStatus?.supported && pushStatus.permission === "granted" && !!pushStatus.subscribed && !pushStatus.registered;
   const todayRow = data?.today;
   // The two exact moments, to the minute the owner chose ("20:03" / "21:03").
   const cutoff = data?.cutoffAt || `${String(data?.cutoffHour ?? 20).padStart(2, "0")}:00`;
@@ -223,6 +323,8 @@ export default function DailySalesTab() {
   const nowClock = data
     ? `${String(data.currentHour).padStart(2, "0")}:${String(data.currentMinute ?? 0).padStart(2, "0")}`
     : "";
+  // "21:04" — when the system sent today's final number by itself, if it did.
+  const autoSentClock = data?.autoSentAt ? clockOf(data.autoSentAt) : "";
 
   return (
     <div id="fana-daily-sales" className="space-y-6">
@@ -311,6 +413,11 @@ export default function DailySalesTab() {
           <p className="text-[11px] text-stone-500">
             {L("If she forgets, the system sends it by itself at {time}.", { time: notify })}
           </p>
+          {autoSentClock && (
+            <p className="text-[11px] text-emerald-300 font-bold">
+              {L("The system already sent today's total by itself at {time}.", { time: autoSentClock })}
+            </p>
+          )}
         </div>
       </div>
 
@@ -425,6 +532,35 @@ export default function DailySalesTab() {
             </button>
           </div>
         </div>
+
+        {/* THE HONEST WARNING (3 Oct 2026): the browser says "allowed" and this
+            device says "subscribed", but if the server does not hold the row
+            the total has nowhere to go. Say so instead of showing green. */}
+        {allowedButUnregistered && (
+          <p className="text-[11px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/40 rounded-xl p-2.5">
+            {L("This device is not registered on the server, so the total cannot reach it.")}
+          </p>
+        )}
+
+        {/* SEND IT NOW: the same send the cashier's button makes, on demand,
+            so the owner can prove the pipeline without waiting for the
+            evening (and without touching the day's close record). */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => void sendTotalToMyPhone()}
+            disabled={pushBusy}
+            className="flex items-center gap-2 text-[11px] font-black uppercase px-4 py-2.5 rounded-xl bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] disabled:opacity-50"
+          >
+            <Send className="w-3.5 h-3.5" />
+            {L("Send today's total to my phone")}
+          </button>
+          <span className="text-[11px] text-stone-400 min-w-0">
+            {todayRow ? L("Right now that is {value}.", { value: staffEtb(todayRow.total) }) : ""}
+          </span>
+        </div>
+        <p className="text-[11px] text-stone-400">
+          {L("Sending the total does not close the day. Sales after that moment keep counting, and the total can be sent again.")}
+        </p>
         <p className="text-[11px] text-stone-400">
           {L("Turn on notifications asks for browser permission if needed. The daily total arrives when the cashier ends the shift, or automatically at {time} if nobody closes; tapping it opens Admin → Sales. Android can ring with the screen off. On iPhone, add this page to the Home Screen first.", { time: notify })}
         </p>

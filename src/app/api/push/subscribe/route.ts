@@ -20,19 +20,28 @@ import { readAdminSession, readStaffSession, requireStaffOrAdmin } from "@/lib/s
  * the request body: a device can only ever subscribe as the person who is
  * signed in on it.
  *
+ * THE ADMIN SESSION WINS OVER A STAFF ONE (fixed 3 Oct 2026). The two cookies
+ * live on the same origin, so one phone can easily hold both: the owner signed
+ * into /admin with his password and also signs in as a crew member on the same
+ * device. This route used to prefer the STAFF session, so his dashboard
+ * subscribed as "cashier" or "waiter" - and the daily total, which is sent to
+ * role "admin", had nowhere to go. He had allowed notifications, the page said
+ * "on", and the total never arrived. Preferring the admin cookie is safe: the
+ * admin cookie is signed with SESSION_SECRET and is only ever issued by
+ * /api/admin/login, so a crew member can never obtain role "admin" this way.
+ *
  * DELETE /api/push/subscribe?endpoint=... — unregister a device (logout of
  * alerts without logging out of the app).
  */
 export async function POST(request: Request) {
   const staffSession = await readStaffSession();
-  let role = "admin";
-  let name = "Owner";
-  if (staffSession) {
-    role = staffSession.role;
-    name = staffSession.name;
-  } else if (!(await readAdminSession())) {
+  const adminSession = await readAdminSession();
+  if (!staffSession && !adminSession) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // Owner first (see the note above), then the signed-in crew member.
+  const role = adminSession ? "admin" : staffSession!.role;
+  const name = adminSession ? "Owner" : staffSession!.name;
   await ensureTablesExist();
   try {
     const body = await request.json();

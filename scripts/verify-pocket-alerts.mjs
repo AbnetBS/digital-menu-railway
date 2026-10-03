@@ -181,7 +181,21 @@ function pass(name, cond) {
   pass("the role comes from the SESSION (staff device) or is the owner's admin device",
     /readStaffSession\(\)/.test(subscribe) && /readAdminSession\(\)/.test(subscribe) && !/body\?\.role/.test(subscribe));
   pass("public-key route is staff-only", /requireStaffOrAdmin/.test(publicKeyRoute));
-  pass("resubscribe route also trusts the session only", /requireStaff\(\)/.test(resubscribe));
+  // The resubscribe route used to REQUIRE a staff session. The only phone this
+  // cafe rings today is the OWNER's (his dashboard subscribes with the admin
+  // session), so when the push service rotated the keys on his phone the
+  // repair was refused with a 401 and the device was never registered again:
+  // allowed notifications, green chip, no total, ever.
+  pass("resubscribe route also trusts the session only, and serves the OWNER's device too",
+    /readAdminSession\(\)/.test(resubscribe) && /readStaffSession\(\)/.test(resubscribe) &&
+      /adminSession \? "admin"/.test(resubscribe) && !/body\?\.role/.test(resubscribe));
+  pass("the ADMIN session wins over a staff one when a device subscribes (both cookies on one phone)",
+    /adminSession \? "admin" : staffSession!\.role/.test(subscribe) && /adminSession \? "Owner" : staffSession!\.name/.test(subscribe));
+  pass("the staff off-duty switch can never silence the owner's daily total",
+    /if \(s\.role === "admin"\) return true/.test(pushServer));
+  pass("a send REPORTS what the push service did (the silence had no number anywhere)",
+    /export interface PushSendResult/.test(pushServer) && /result\.sent \+=/.test(pushServer) &&
+      /\[push\] delivery failed/.test(pushServer));
   pass("dead endpoints are pruned (404/410)", /410/.test(pushServer) && /404/.test(pushServer));
   pass("push never blocks or fails an order", /sendPushToRoles/.test(pushServer) && /must never/i.test(pushServer));
 }

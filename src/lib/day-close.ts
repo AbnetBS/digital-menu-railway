@@ -2,13 +2,14 @@ import { and, eq, gte, inArray, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { siteSettings, ticketEvents, ticketItems, tickets } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { sendPushToRoles } from "@/lib/push";
+import { sendPushToRoles, type PushSendResult } from "@/lib/push";
 import { saleLinesForTicket, type SalesItemEventLike, type SalesStamp } from "@/lib/printed-sales";
 import { etDayKey, etHour, etMinute, etStartOfDaysAgo } from "@/lib/timezone";
 import {
   AUTO_CLOSE_BY,
   DAY_CLOSE_NOTIFY_KEY,
   DAY_CLOSE_KEY_PREFIX,
+  dayCloseAutoSentKey,
   dayCloseCutoffHour,
   dayCloseNotifyTime,
   dayClosePush,
@@ -22,18 +23,34 @@ import {
 } from "@/lib/daily-sales";
 
 /**
- * THE DAY CLOSE, server side (owner's decisions, 29 Sept 2026).
+ * THE DAY CLOSE, server side (owner's decisions, 29 Sept 2026; the snapshot
+ * rule below from 3 Oct 2026).
  *
  * ONE implementation of "add up today's printed bills, record the close and
  * ring the owner's phone", used by:
  *   • POST /api/reports/daily-sales (the cashier's "Today's shift end" tap),
  *   • the background worker (the automatic send when she forgot).
  *
- * THE AUTOMATIC SEND IS SAFE TO REPEAT: it inserts the day's record with
- * ON CONFLICT DO NOTHING and only sends the notification when its own INSERT
- * was the one that won. Two workers, a worker and a page load, or a worker and
- * the cashier tapping at the same second therefore produce exactly ONE record
- * and exactly ONE notification.
+ * SENDING THE TOTAL DOES NOT CLOSE THE DAY (owner, 3 Oct 2026): "when the
+ * cashier click end shift doesnt mean after that time no sale will be place
+ * but to send notification to the owners". Both sends are therefore
+ * SNAPSHOTS of the printed bills up to that moment. The cashier's tap can be
+ * repeated (a later, larger total replaces the earlier one), and the automatic
+ * send is the day's FINAL number, which is why it now goes out even when the
+ * cashier already closed the day earlier. No sale is ever refused because a
+ * close record exists.
+ *
+ * THE AUTOMATIC SEND IS SAFE TO REPEAT: it claims the day with a marker row
+ * inserted ON CONFLICT DO NOTHING and only notifies when its own INSERT was
+ * the one that won. Two workers, a worker and a page load, or a worker and
+ * the cashier tapping at the same second therefore produce exactly ONE
+ * automatic notification. A send that reaches NO phone hands the day straight
+ * back, so a phone armed five minutes later still gets the total.
+ *
+ * EVERY SEND REPORTS (3 Oct 2026): sendDayClosePush returns how many devices
+ * the push service accepted, and the route hands that to the screen. "The
+ * owner allowed notifications and received nothing" is now a number the owner
+ * can read, not a silence.
  *
  * WHAT COUNTS: printed bills (tickets.printed_at) of that EAT day, cancelled
  * bills excluded — the EFD pile the owner counts against the drawer.
@@ -213,12 +230,13 @@ export async function todayTotals(dayKey: string): Promise<{ total: number; bill
  * RECORD THE CLOSE.
  *
  * `mode: "manual"` — the cashier (or the owner acting for her) tapped the
- * button. Always writes, so a late correction can be sent again, and always
- * notifies.
+ * button. Always writes, so a late correction can be sent again, and the
+ * caller always notifies.
  *
- * `mode: "auto"` — the system's own send when the notify hour arrived. Writes
- * ONLY if the day has no record yet, and notifies only when its write won: that
- * is what makes the automatic send exactly-once.
+ * `mode: "auto"` — the system's own send. It also always writes: the owner's
+ * snapshot rule means the automatic send carries the day's FINAL number, so
+ * its record must replace whatever total an earlier tap produced. The
+ * once-a-day latch is `claimAutoSendDay` below, not this write.
  */
 export async function recordDayClose(input: {
   dayKey: string;
@@ -237,15 +255,6 @@ export async function recordDayClose(input: {
   const key = dayCloseSettingKey(input.dayKey);
   const value = JSON.stringify(record);
 
-  if (input.mode === "auto") {
-    const inserted = await db
-      .insert(siteSettings)
-      .values({ key, value, updatedAt: at })
-      .onConflictDoNothing({ target: siteSettings.key })
-      .returning({ key: siteSettings.key });
-    return { written: inserted.length > 0, record };
-  }
-
   await db
     .insert(siteSettings)
     .values({ key, value, updatedAt: at })
@@ -253,10 +262,72 @@ export async function recordDayClose(input: {
   return { written: true, record };
 }
 
-/** The ONE phone notification left in the cafe: the owner's daily total. */
-export function sendDayClosePush(dayKey: string, total: number, bills: number): void {
+/**
+ * THE ONCE-A-DAY LATCH FOR THE AUTOMATIC SEND (3 Oct 2026).
+ *
+ * The marker row is inserted ON CONFLICT DO NOTHING, so of everything that
+ * notices the notify time arriving in the same second (the minute worker, a
+ * page load, the cashier's own screen) exactly ONE insert wins and only that
+ * one notifies. It is deliberately NOT the close record: the cashier's taps
+ * rewrite that row, and the automatic send has to survive them.
+ */
+export async function claimAutoSendDay(dayKey: string, now: Date = new Date()): Promise<boolean> {
+  const inserted = await db
+    .insert(siteSettings)
+    .values({ key: dayCloseAutoSentKey(dayKey), value: now.toISOString(), updatedAt: now })
+    .onConflictDoNothing({ target: siteSettings.key })
+    .returning({ key: siteSettings.key });
+  return inserted.length > 0;
+}
+
+/**
+ * GIVE THE DAY BACK WHEN NOBODY ANSWERED (3 Oct 2026).
+ *
+ * A latch that is consumed by a send which reached no phone would leave the
+ * owner waiting all evening for a total that had nowhere to go - and the fix
+ * for "my phone is not armed yet" is something he does minutes later. So when
+ * the send reaches nobody the marker is removed and the next minute tries
+ * again: the system keeps asking until a phone answers, and latches only once
+ * one does. That is also why this is safe: a phone that is armed for a moment
+ * gets exactly one notification, because that one attempt succeeds and latches.
+ */
+export async function releaseAutoSendDay(dayKey: string): Promise<void> {
+  try {
+    await db.delete(siteSettings).where(sql`${siteSettings.key} = ${dayCloseAutoSentKey(dayKey)}`);
+  } catch (error) {
+    // Worst case the day stays latched and the owner's own button still works.
+    console.warn(`[day-close] could not release the automatic send for ${dayKey}: ${String(error)}`);
+  }
+}
+
+/** Has the system's own send already gone out for this EAT day? */
+export async function autoSentForDay(dayKey: string): Promise<string | null> {
+  try {
+    const rows = await db
+      .select()
+      .from(siteSettings)
+      .where(sql`${siteSettings.key} = ${dayCloseAutoSentKey(dayKey)}`);
+    return rows[0]?.value ? String(rows[0].value) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The ONE phone notification left in the cafe: the owner's daily total.
+ *
+ * It now RETURNS what the push service did. The caller (the cashier's tap, the
+ * worker, the owner's own "send it to my phone now" button) waits for it and
+ * can tell the reader the truth: "sent to 1 phone" or "no phone is armed yet",
+ * instead of a cheerful success message for a push that went nowhere.
+ */
+export async function sendDayClosePush(
+  dayKey: string,
+  total: number,
+  bills: number,
+): Promise<PushSendResult> {
   const push = dayClosePush(dayKey, total, bills);
-  void sendPushToRoles(["admin"], {
+  const result = await sendPushToRoles(["admin"], {
     title: push.title,
     body: push.body,
     tag: push.tag,
@@ -266,7 +337,23 @@ export function sendDayClosePush(dayKey: string, total: number, bills: number): 
     // away — it is not one of the old "stays on the lock screen" staff alerts.
     urgent: false,
     repeat: 0,
-  }).catch(() => {});
+  }).catch(() => ({ attempted: 0, sent: 0, failed: 0, removed: 0, noSubscribers: true }));
+
+  if (result.sent > 0) {
+    console.log(
+      `[day-close] ${dayKey}: ${total} ETB on ${bills} bill(s) sent to ${result.sent} owner phone(s)`,
+    );
+  } else {
+    // THE MOST IMPORTANT LOG LINE IN THE APP: allowed notifications, nothing
+    // arrived. It is written on every miss so the cause is in the server log
+    // instead of nowhere.
+    console.warn(
+      `[day-close] ${dayKey}: ${total} ETB on ${bills} bill(s) was NOT delivered to any owner phone ` +
+        `(tried ${result.attempted}, failed ${result.failed}, pruned ${result.removed}). ` +
+        `The owner must open the Daily Sales page and press "Turn on notifications" on that phone.`,
+    );
+  }
+  return result;
 }
 
 /**
@@ -275,9 +362,14 @@ export function sendDayClosePush(dayKey: string, total: number, bills: number): 
  *
  * Called every minute by the background worker and, as a safety net, whenever
  * the Daily Sales page is loaded. Returns what it did, so the caller can log it.
+ *
+ * "closed" is a DONE answer, not a failure: it means the system's own send
+ * already went out today (someone else won the latch). "unarmed" is the one
+ * that needs a human: the total was added up and recorded, but no phone was
+ * registered to hear it.
  */
 export async function maybeAutoCloseDay(now: Date = new Date()): Promise<
-  "early" | "closed" | "sent" | "raced" | "error"
+  "early" | "closed" | "sent" | "unarmed" | "error"
 > {
   try {
     await ensureTablesExist();
@@ -289,20 +381,31 @@ export async function maybeAutoCloseDay(now: Date = new Date()): Promise<
 
     const dayKey = etDayKey(now) || "";
     if (!dayKey) return "error";
-    if (await readTodayClose(dayKey)) return "closed";
 
+    // THE DAY'S FINAL NUMBER (owner, 3 Oct 2026). Note what is NOT checked
+    // here any more: a close record from an earlier tap no longer blocks the
+    // send. The cashier tapping at 20:03 does not end the day, so the total
+    // at 21:03 can be bigger, and that bigger number is the one the owner
+    // reconciles against the drawer. The latch below keeps it to one a day.
+    //
+    // ORDER MATTERS: the bills are added up BEFORE the day is claimed, so a
+    // database hiccup here leaves the latch free and the next minute retries.
     const totals = await todayTotals(dayKey);
-    const { written, record } = await recordDayClose({
+    if (!(await claimAutoSendDay(dayKey, now))) return "closed"; // another process sent it
+
+    const { record } = await recordDayClose({
       dayKey,
       by: AUTO_CLOSE_BY,
       total: totals.total,
       bills: totals.bills,
       mode: "auto",
     });
-    if (!written) return "raced"; // the cashier (or another process) closed it
-
-    sendDayClosePush(dayKey, record.total, record.bills);
-    return "sent";
+    const push = await sendDayClosePush(dayKey, record.total, record.bills);
+    if (push.sent > 0) return "sent";
+    // No phone answered: hand the day back so the system keeps asking until
+    // the owner has armed one (see releaseAutoSendDay).
+    await releaseAutoSendDay(dayKey);
+    return "unarmed";
   } catch (error) {
     console.error("[day-close] automatic send failed", String(error));
     return "error";
@@ -323,8 +426,9 @@ const workerGlobal = globalThis as DayCloseWorkerGlobal;
 /**
  * The minute-by-minute check behind the automatic send. Started once from
  * @/instrumentation (the same pattern the waiter send-hold worker uses), and
- * safe if the process is replaced: the day's record lives in the database, so
- * a late start still sees whether the day was already closed.
+ * safe if the process is replaced: the once-a-day latch lives in the database,
+ * so a late start still sees whether the system already sent today's final
+ * number.
  */
 export function startDayCloseWorker(): void {
   if (workerGlobal.__fanaDayCloseWorkerStarted) return;
@@ -337,6 +441,12 @@ export function startDayCloseWorker(): void {
       const result = await maybeAutoCloseDay();
       if (result === "sent") {
         console.log(`[day-close] automatic send at ${dayKeyLabel(etDayKey(new Date()) || "")}`);
+      } else if (result === "unarmed") {
+        // sendDayClosePush already logged the detail; this is the "nobody is
+        // listening" marker, once a day, on the owner's own daily total.
+        console.warn(
+          `[day-close] automatic send had no armed phone at ${dayKeyLabel(etDayKey(new Date()) || "")}`,
+        );
       }
     } finally {
       workerGlobal.__fanaDayCloseWorkerBusy = false;
@@ -350,4 +460,10 @@ export function startDayCloseWorker(): void {
 }
 
 /** Re-exported for the route + verifier (one import site for the day keys). */
-export { DAY_CLOSE_KEY_PREFIX, dayCloseCutoffHour, dayCloseSettingKey, dayKeyFromCloseSetting };
+export {
+  DAY_CLOSE_KEY_PREFIX,
+  dayCloseAutoSentKey,
+  dayCloseCutoffHour,
+  dayCloseSettingKey,
+  dayKeyFromCloseSetting,
+};

@@ -86,11 +86,29 @@ export async function POST(request: Request) {
       setTimeout(() => {
         void sendPushToRoles([role], payload);
       }, delaySeconds * 1000);
-    } else {
-      void sendPushToRoles([role], payload);
+      return NextResponse.json({ success: true, sent: subs.length, delaySeconds, role });
     }
 
-    return NextResponse.json({ success: true, sent: subs.length, delaySeconds, role });
+    // The result is the DELIVERY result, not the row count (3 Oct 2026). This
+    // button used to answer "success" before a single byte had been sent to the
+    // push service, which is exactly how "the test works but the total never
+    // arrives" stayed a mystery for so long.
+    const result = await sendPushToRoles([role], payload);
+    if (result.sent === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          sent: 0,
+          push: result,
+          error:
+            result.attempted === 0
+              ? "The server has no device registered for this login. Turn notifications on again on this page."
+              : "The push service refused the test. Open the Daily Sales page and turn notifications on again on this phone.",
+        },
+        { status: 502 }
+      );
+    }
+    return NextResponse.json({ success: true, sent: result.sent, push: result, delaySeconds, role });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

@@ -73,11 +73,21 @@ async function main() {
     T(5, { confirmedBy: "Alem", confirmedAt: at("17:00") }), // never printed → Need a look
     T(8, { tableName: "Table 8", orderNumber: "FANA-2431", createdBy: "yeshi", printedBy: "Sara", printedAt: at("10:05"), totalAmount: 480 }),
   ];
-  const items = [8, 1, 3, 5].map((ticketId, i) => ({
-    id: 100 + i, ticketId, name: i === 0 ? "Macchiato" : `Item ${i}`, price: 240, quantity: 2, notes: null, removed: false,
-    stationName: "barista", stationStatus: "done", stationStatusBy: null, stationStatusAt: null,
-    stationAcceptedBy: null, stationAcceptedAt: null, stationDoneBy: "Mitke", stationDoneAt: at("10:03"), createdAt: at("10:00"),
-  }));
+  const items = [
+    ...[8, 1, 3, 5].map((ticketId, i) => ({
+      id: 100 + i, ticketId, name: i === 0 ? "Macchiato" : `Item ${i}`, price: 240, quantity: 2, notes: null, removed: false,
+      stationName: "barista", stationStatus: "done", stationStatusBy: null, stationStatusAt: null,
+      stationAcceptedBy: null, stationAcceptedAt: null, stationDoneBy: "Mitke", stationDoneAt: at("10:03"),
+      createdAt: ticketId === 1 ? at("09:00") : ticketId === 3 ? at("13:00") : at("10:00"),
+    })),
+    // A cashier-queue addition after yeshi's EFD print must stay out of her
+    // sales total until a later receipt, despite the current ticket quantity.
+    {
+      id: 104, ticketId: 8, name: "Pending add-on", price: 999, quantity: 1, notes: null, removed: false,
+      stationName: "barista", stationStatus: "pending", stationStatusBy: null, stationStatusAt: null,
+      stationAcceptedBy: null, stationAcceptedAt: null, stationDoneBy: null, stationDoneAt: null, createdAt: at("10:06"),
+    },
+  ];
   const events: Row["events"] = [
     { ticketId: 8, eventType: "ticket_created", actorName: "yeshi", actorRole: "waiter", toValue: null, details: "New staff order created", createdAt: at("10:00") },
     { ticketId: 8, eventType: "ticket_sent", actorName: "yeshi", actorRole: "waiter", toValue: null, details: "Waiter sent a new order to the stations", createdAt: at("10:00") },
@@ -177,7 +187,8 @@ async function main() {
   pass("the page behind the panel never scrolls", doc.body.style.overflow === "hidden");
   const ptext = squash(popup?.textContent);
   pass("a waiter's own order says Sent by yeshi (not ACCEPTED BY n/a)", /Sent by\s*yeshi/.test(ptext) && !/Accepted by\s*n\/a/i.test(ptext), ptext.slice(0, 300));
-  pass("the popup keeps Table 8, #FANA-2431 and the ETB total", /Table 8/.test(ptext) && /#FANA-2431/.test(ptext) && /480 ETB/.test(ptext));
+  pass("the popup keeps Table 8, #FANA-2431 and the receipt-backed ETB total", /Table 8/.test(ptext) && /#FANA-2431/.test(ptext) && /480 ETB/.test(ptext));
+  pass("a post-print addition is shown as waiting, not sold", /Pending add-on/.test(ptext) && /EFD: 0 unit\(s\) printed • 1 waiting/.test(ptext) && /added after the print: not on the EFD receipt yet/.test(ptext), ptext.slice(ptext.indexOf("Pending add-on"), ptext.indexOf("Pending add-on") + 220));
   pass("\"Legacy ... backfill\" is not shown, plain words instead", !/legacy|backfill/i.test(ptext) && /Printed \(EFD\)/.test(ptext), ptext);
   pass("focus moves into the popup (its close button)", doc.activeElement === popup?.querySelector('[data-shift-report="order-close"]'));
   await click(popup?.querySelector("p"));
@@ -211,7 +222,8 @@ async function main() {
   const heads = [...(sheet()?.querySelectorAll("table")[0]?.querySelectorAll("th") || [])].map((th) => squash(th.textContent));
   pass("Totals per person table (Name, Role, Shift, Orders, Total)", /Totals per person/.test(stext()) && heads.join("|") === "#|Name|Role|Shift|Orders|Total", heads.join("|"));
   const firstRow = [...(sheet()?.querySelectorAll("table")[0]?.querySelectorAll("tbody tr")[0]?.querySelectorAll("td") || [])].map((td) => squash(td.textContent));
-  pass("one line per person per shift: Abel • Waiter • Morning • 2 • 2,500 ETB", firstRow.join("|") === "1|Abel|Waiter|Morning|2|2,500 ETB", firstRow.join("|"));
+  pass("shift totals use the two printed receipts only: Abel • Waiter • Morning • 2 • 960 ETB", firstRow.join("|") === "1|Abel|Waiter|Morning|2|960 ETB", firstRow.join("|"));
+  pass("the print shows yeshi's post-print addition as pending, while her sales stay at the receipt total", /Pending add-on/.test(stext()) && /added after the print/.test(stext()) && stext().includes("480 ETB"), stext().slice(stext().indexOf("Pending add-on"), stext().indexOf("Pending add-on") + 180));
   pass("a total per shift", /Morning total/.test(stext()) && /Afternoon total/.test(stext()) && /Combined total/.test(stext()));
   pass("Need a look orders with their warning tags", /Need a look \(\d+\)/.test(stext()) && /Table 5 • #FANA-2425/.test(stext()) && /⚠ Never printed \(not on the EFD\)/.test(stext()), stext().slice(stext().indexOf("Need a look ("), stext().indexOf("Need a look (") + 400));
   pass("Prepared by and Checked by sign lines", /Prepared by: \.+/.test(stext()) && /Checked by: \.+/.test(stext()) && /Name and signature/.test(stext()));

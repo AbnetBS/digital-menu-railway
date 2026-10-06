@@ -3,21 +3,18 @@
 import { useState, useEffect, useMemo } from "react";
 import {
   Coffee, Plus, Minus, Send, ArrowLeft, RefreshCw, CreditCard,
-  Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing, Receipt,
+  Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing, Receipt, PencilLine,
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable, TableStatus } from "@/types";
-import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
-import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import GroupComposer from "@/components/rms/GroupComposer";
 import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
-import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
 import { effectivePrice } from "@/lib/price";
 import { ticketOwner } from "@/lib/alerts";
 import { unlockAudio, playAlarm, playDing, speakTableReady } from "@/lib/sound";
-import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { useRef } from "react";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
@@ -28,6 +25,7 @@ import {
   WAITER_SEND_HOLD_DEFAULT_SECONDS,
 } from "@/lib/send-hold";
 import { heldLines, heldUnits, isTableReleased } from "@/lib/order-release";
+import { closeTopBackLayer, installStaffBackNavigation } from "@/lib/staff-back-navigation";
 
 interface StaffLite {
   id: number;
@@ -457,17 +455,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     localStorage.setItem(alertsKey, "1");
     setAlertsOn(true);
     alertsOnRef.current = true;
-    // Also (re)subscribe this phone to pocket alerts and ring a sample so the
-    // waiter KNOWS the device is armed, then refresh the status chip.
-    if (pushSupported()) {
-      const res = await enablePocketAlerts();
-      void pocket.refreshStatus();
-      if (res === "denied") {
-        showToast(tNow("Notifications are blocked. Allow them in your browser settings."));
-      }
-    }
+    // Staff phones are no longer notified (owner's decision, 29 Sept 2026):
+    // this button only unlocks the audio engine, allows the desktop pop-up and
+    // rings a sample so the waiter knows the alarm really works.
     playAlarm();
-    showToast(tNow("🔔 Alerts ON • pocket notifications armed"));
+    showToast(tNow("🔔 Alerts ON • the alarm is ready"));
   };
 
   /** Plain-language line for a status somebody else moved the ticket to. */
@@ -893,14 +885,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     loadTablesRef.current = loadTables;
   });
 
-  // POCKET MODE: keeps this phone subscribed (self-healing, no login needed),
-  // and turns every push that lands while the app is open into the loud in-app
-  // alarm plus an instant refresh, even if the SSE stream was frozen.
-  const pocket = usePocketAlerts({
-    active: !!staffName,
-    onAlert: () => loadTablesRef.current(),
-  });
-
   const login = async () => {
     setLoginError("");
     // A LOGIN tap with no answer at all (offline, server restarting) used to do
@@ -919,19 +903,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       setStaffName(d.staff.name);
       sessionStorage.setItem(sessionKey, JSON.stringify(d.staff));
       setView("tables");
-      // GROUP 10: the login tap is the ONE user gesture browsers demand —
-      // unlock the loud alarm AND arm pocket notifications right here, so the
-      // waiter never has to find a separate "enable" button.
+      // The login tap is the gesture browsers demand, so the loud alarm is
+      // unlocked right here (staff phones are no longer notified).
       unlockAudio();
       localStorage.setItem(alertsKey, "1");
       setAlertsOn(true);
       alertsOnRef.current = true;
-      void enablePocketAlerts().then((res) => {
-        void pocket.refreshStatus();
-        if (res === "denied") {
-          showToast(tNow("Notifications blocked. Allow them in the browser to hear pocket alerts."));
-        }
-      });
     } else {
       setLoginError(tNow("Wrong name or PIN. Ask admin for your PIN."));
     }
@@ -998,6 +975,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   };
 
   const openTable = async (t: CafeTable) => {
+    // A violet "waiting to send" table reopens the QUEUED order itself
+    // (owner, Sept 2026): editing the forgotten items is the whole point
+    // of the hold, and leaving the cart starts no new order over it.
+    const queuedForTable = pendingSendsRef.current.find((send) => send.tableId === t.id && !send.groupRound);
+    if (queuedForTable) return openQueuedSend(queuedForTable);
     setSelectedTable(t);
     setCart([]);
     if (t.activeTicketId) {
@@ -1035,6 +1017,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
    * round merge, and the isGroup flag so the send path uses the group flow.
    */
   const openGroup = (t: Ticket) => {
+    // Same rule as tables: a queued round for this group reopens for editing.
+    const queuedForGroup = pendingSendsRef.current.find((send) => send.groupRound && send.targetTicketId === t.id);
+    if (queuedForGroup) return openQueuedSend(queuedForGroup);
     setSelectedTable({
       id: t.tableId,
       name: t.tableName,
@@ -1086,6 +1071,8 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   };
 
   const cartTotal = cart.reduce((s, c) => s + c.price * c.quantity, 0);
+  /** The queued send the editor is currently working on (null on a fresh cart). */
+  const activeHoldSend = activeHoldKey ? pendingSends.find((send) => send.idempotencyKey === activeHoldKey) || null : null;
 
   const deferredTicketPayload = (send: PendingWaiterSend) => ({
     ...(send.groupRound
@@ -1150,13 +1137,24 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   };
 
   /**
-   * Start a saved countdown for this exact table/order. The queued copy is
-   * edited along with the cart until the waiter leaves the order screen; from
-   * then on, navigation cannot discard or change the scheduled submission.
+   * Start the saved countdown for this exact table/order AND STAY ON THIS PAGE
+   * (owner's decision, 30 Sept 2026 — he reversed the earlier "throw her back
+   * to the tables" rule after the waiters told him it slowed them down).
+   *
+   * Tapping Send now keeps her exactly where she is, looking at the items she
+   * is about to send, with the three controls the owner listed under them:
+   *   1. the COUNTDOWN that reads how long the order still waits;
+   *   2. SEND NOW, on the right of that countdown, for the orders that should
+   *      not wait at all;
+   *   3. CANCEL WHOLE ORDER, under the two, when the guests changed everything.
+   * Every line above stays editable (quantity, note, remove) until the clock
+   * runs out, and pressing Back still takes her to the tables with the
+   * countdown alive — the violet tile brings her back into it.
    */
   const startSendHold = () => {
     if (cart.length === 0 || !selectedTable || sending || activeHoldKeyRef.current) return;
-    const dueAt = Date.now() + Math.max(1, holdSeconds) * 1000;
+    const hold = Math.max(1, holdSeconds);
+    const dueAt = Date.now() + hold * 1000;
     const idempotencyKey = newSubmissionKey();
     const groupRound = selectedTable.isGroup === true && !!selectedTable.activeTicketId;
     const queued: PendingWaiterSend = {
@@ -1171,10 +1169,19 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     };
     replacePendingSends([...pendingSendsRef.current, queued]);
     void registerDeferredSend(queued);
+    // The countdown belongs to THIS screen now: the same items stay on it, so
+    // the waiter reads them one more time before anything reaches the kitchen.
     setActiveHold(idempotencyKey);
-    setHoldLeft(Math.max(1, Math.ceil((dueAt - Date.now()) / 1000)));
+    setHoldLeft(hold);
+    showToast(tNow("⏳ Waiting to send • {clock} left. Fix anything now, or press Send now.", { clock: formatHoldClock(hold) }));
   };
 
+  /**
+   * CANCEL WHOLE ORDER (owner, 30 Sept 2026): one tap throws the waiting order
+   * away — the copy saved on the server, the countdown, and the items on the
+   * screen. She stays on this table's page with an empty cart, so starting
+   * over is two taps, and the crews never see a line she cancelled.
+   */
   const cancelSendHold = async () => {
     const key = activeHoldKeyRef.current;
     if (!key) return;
@@ -1197,7 +1204,8 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     replacePendingSends(pendingSendsRef.current.filter((item) => item.idempotencyKey !== key));
     setActiveHold(null);
     setHoldLeft(0);
-    showToast(tNow("Scheduled order cancelled."));
+    setCart([]);
+    showToast(tNow("✗ Whole order cancelled • nothing was sent to the kitchen"));
   };
 
   /**
@@ -1215,8 +1223,13 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     }
     const signature = JSON.stringify(cart);
     let currentKey = key;
+    // Reopening the waiting order loads identical items into the cart: that
+    // is not an edit, so it never re-saves to the server.
+    let changed = false;
     const updated = pendingSendsRef.current.map((send) => {
       if (send.idempotencyKey !== key) return send;
+      if (JSON.stringify(send.items) === signature) return send;
+      changed = true;
       const editedAfterAttempt = !!send.lastSubmittedSignature && send.lastSubmittedSignature !== signature;
       currentKey = editedAfterAttempt ? newSubmissionKey() : send.idempotencyKey;
       return {
@@ -1228,7 +1241,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     });
     replacePendingSends(updated);
     const updatedSend = updated.find((send) => send.idempotencyKey === currentKey);
-    if (updatedSend?.serverScheduled) {
+    if (changed && updatedSend?.serverScheduled) {
       void updateDeferredItems(currentKey, updatedSend.items);
     }
     if (currentKey !== key) setActiveHold(currentKey);
@@ -1243,9 +1256,78 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     setView("tables");
   };
 
+  /* ── THE PHONE'S BACK BUTTON = ONE STEP BACK (owner's decision, Sept 2026) ──
+   * "when they click back button to see the all table it completely return them
+   * to chrome or browser this isnt good programing ... 1 back button clcik 1
+   * step back not completly take them to the start."
+   *
+   * The waiter's screens live in React state, so the browser used to know
+   * nothing about them and one press walked her out of the app mid-service.
+   * Now every press closes the TOP layer only — a guest alert or a composer
+   * first, then payment → the bill → the tables grid → her login screen — and
+   * only from the login screen does the press really leave the app.
+   */
+  const stepBack = () =>
+    closeTopBackLayer([
+      { at: () => !!urgent, close: closeUrgent },
+      { at: () => outdoorPickerOpen, close: () => setOutdoorPickerOpen(false) },
+      { at: () => outdoorComposerOpen, close: () => setOutdoorComposerOpen(false) },
+      { at: () => groupComposerOpen, close: () => setGroupComposerOpen(false) },
+      { at: () => view === "payment", close: () => setView("bill") },
+      { at: () => view === "order" || view === "bill", close: onGoBack },
+      // "…it take them to the all tables then again to login page": the grid
+      // steps back to her login (a real logout, so the screen never lies about
+      // a live session), and only the press after that leaves the app.
+      { at: () => view === "tables", close: logout },
+    ]);
+
+  /** The guard is installed once; it always asks the newest render what to close. */
+  const stepBackRef = useRef<() => boolean>(() => false);
+  useEffect(() => {
+    stepBackRef.current = stepBack;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    return installStaffBackNavigation(window, () => stepBackRef.current());
+  }, []);
+
+  /**
+   * REOPEN THE WAITING ORDER (owner's decision, Sept 2026): the hold exists
+   * so a forgotten dish gets FIXED, not so anyone sits watching a timer. A
+   * tap on the violet table (or its View order button) loads the queued
+   * items back into the normal order page — the menu grid on top, the cart
+   * at the bottom with the countdown and the Send now button, fully
+   * editable (add, remove, change quantity or notes) until the clock runs
+   * out. A send already flying to the server is not reopenable.
+   */
+  const openQueuedSend = (send: PendingWaiterSend) => {
+    if (!staffName || sendingPendingRef.current.has(send.idempotencyKey)) return;
+    setSelectedTable({
+      id: send.tableId,
+      name: send.tableName,
+      status: "waiting",
+      activeTicketId: send.targetTicketId ?? null,
+      activeTicketTotal: 0,
+      activeTicketBy: "",
+      activeTicketAt: null,
+      isGroup: send.groupRound,
+    });
+    setActiveTicket(null);
+    setActiveHold(send.idempotencyKey);
+    // Initial clock from the ticking state (never Date.now: the purity rule
+    // reads handler bodies as render code). The every-second ticker fixes any
+    // one-second drift right away.
+    setHoldLeft(clockNow > 0 ? Math.max(0, Math.ceil((send.dueAt - clockNow) / 1000)) : Math.max(1, holdSeconds));
+    setCart(send.items.map((item) => ({ ...item })));
+    setView("order");
+  };
+
   const sendPendingOrder = async (key: string, manual = false) => {
     const queued = pendingSendsRef.current.find((send) => send.idempotencyKey === key);
     if (!queued || sendingPendingRef.current.has(key) || !staffName) return;
+    // Retry backoff: a time read inside what is really an event handler (the
+    // ref indirection hides it from the purity rule, so let eslint know).
+    // eslint-disable-next-line react-hooks/purity
     if (!manual && queued.nextAttemptAt && queued.nextAttemptAt > Date.now()) return;
 
     sendingPendingRef.current.add(key);
@@ -1750,15 +1832,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <PocketAlertsChip
-            status={pocket.status}
-            busy={pocket.busy}
-            onArm={pocket.arm}
-            onTest={pocket.test}
-            onToast={showToast}
-            notificationsEnabled={pocket.notificationsEnabled}
-            onSetNotificationsEnabled={pocket.setNotificationsEnabled}
-          />
           <button
             onClick={enableAlerts}
             className={`p-2 rounded-xl transition ${alertsOn ? "bg-emerald-600 text-white" : "bg-[#C9A227] text-[#2C1B17] animate-pulse"}`}
@@ -1776,30 +1849,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
         </div>
       </div>
 
-      {/* A queued order stays visible and actionable even after leaving its table/menu. */}
-      {pendingSends.filter((send) => view !== "order" || send.idempotencyKey !== activeHoldKey).map((send) => {
-        const left = Math.max(0, Math.ceil((send.dueAt - clockNow) / 1000));
-        const isSending = sendingPendingKeys.includes(send.idempotencyKey);
-        return (
-          <div key={send.idempotencyKey} className="max-w-3xl mx-auto px-4 pt-3">
-            <div className="bg-[#3D2314] border-2 border-[#C9A227]/70 rounded-xl p-3 flex items-center gap-3">
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-black text-amber-200">{L("Order for {tableName}", { tableName: send.tableName })} • {isSending ? L("Sending...") : formatHoldClock(left)}</p>
-                <p className="text-[10px] text-stone-300">{send.lastError === "Server schedule unavailable. Keep the waiter app open."
-                  ? L("Server schedule unavailable. Keep the waiter app open.")
-                  : send.lastError || L("It will send automatically, even while you work at another table.")}</p>
-              </div>
-              <button
-                onClick={() => sendPendingOrderRef.current(send.idempotencyKey, true)}
-                disabled={isSending}
-                className="shrink-0 bg-[#C9A227] text-[#2C1B17] font-black text-xs px-3 py-2.5 rounded-lg disabled:opacity-50"
-              >
-                <span className="flex items-center gap-1.5"><Send className="w-3.5 h-3.5" />{isSending ? L("Sending...") : L("Send now")}</span>
-              </button>
-            </div>
-          </div>
-        );
-      })}
+      {/* NO TOP BANNER (owner, Sept 2026): queued sends live on their violet
+          table tiles further down — a global countdown row at the top was more
+          noise than help. The countdown and Send now sit at the bottom of the
+          editor the waiter reopens from the tile. */}
 
       {/* Full-screen guest alert (new order / added items / bill request) */}
       <UrgentAlertOverlay alert={urgent} onClose={closeUrgent} />
@@ -1891,8 +1944,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       {/* ── TABLES VIEW ── */}
       {view === "tables" && (
         <div className="p-4 space-y-4 max-w-3xl mx-auto">
-          <PocketAlertsHint />
-
           {/* ── MY BUNA ── the makers' own work, above the table grid ── */}
           {isBuna && <div className="bg-[#2C1B17] border border-amber-700/50 rounded-2xl p-4 space-y-3">
             <div className="flex justify-between items-center gap-2"><h2 className="text-amber-200 font-black">{L("🫖 Buna today • all makers")}</h2><button onClick={() => { void loadBunaStats(); void loadBunaLane(); }} aria-label={L("Refresh buna totals")} className="text-amber-200"><RefreshCw className="w-4 h-4" /></button></div>
@@ -2066,7 +2117,16 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {tables.map((t) => (
+            {tables.map((t) => {
+              // THE VIOLET "WAITING TO SEND" TILE (owner, Sept 2026): a table
+              // whose order is inside its hold glows violet with its own
+              // countdown, and offers a View order button that reopens the
+              // order for last-second fixes. When the send flies it paints
+              // like every busy table again.
+              const queuedForTable = pendingSends.find((send) => send.tableId === t.id && !send.groupRound);
+              const queuedLeft = queuedForTable ? Math.max(0, Math.ceil((queuedForTable.dueAt - clockNow) / 1000)) : 0;
+              const queuedUnits = queuedForTable ? queuedForTable.items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0) : 0;
+              return (
               <div
                 key={t.id}
                 role="button"
@@ -2078,8 +2138,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     openTable(t);
                   }
                 }}
-                className={`rounded-2xl p-5 text-left border-2 transition active:scale-95 relative cursor-pointer ${
-                  t.status === "available"
+                className={`rounded-2xl p-5 ${queuedForTable ? "pb-12" : ""} text-left border-2 transition active:scale-95 relative cursor-pointer ${
+                  queuedForTable
+                    ? "border-violet-500/80 bg-violet-950/50 ring-1 ring-violet-400/40"
+                    : t.status === "available"
                     ? "border-emerald-500/60 bg-emerald-950/40"
                     : t.status === "ready-for-payment"
                     ? "border-amber-400 bg-amber-950/40"
@@ -2107,8 +2169,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 ) : null}
 
                 <p className="font-serif font-bold text-lg text-amber-100 pr-20">{t.name}</p>
-                <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(t.status)}`}>
-                  {printQueueMode
+                <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
+                  queuedForTable ? "bg-violet-500/25 text-violet-100 border border-violet-400/70" : statusChip(t.status)
+                }`}>
+                  {queuedForTable
+                    ? L("Waiting to send")
+                    : printQueueMode
                     ? t.status === "available"
                       ? L("Available")
                       : t.status === "waiting"
@@ -2140,13 +2206,39 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 {t.activeTicketReceiptRequestedAt ? (
                   <p className="text-[11px] text-emerald-300 mt-1 font-black">{L("🧾 bill requested")}</p>
                 ) : null}
+                {queuedForTable ? (
+                  <p className="text-[11px] font-black text-violet-300 mt-1">
+                    {L("⏳ {units} item(s) • sends in {clock}", { units: queuedUnits, clock: formatHoldClock(queuedLeft) })}
+                  </p>
+                ) : null}
+                {queuedForTable && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openQueuedSend(queuedForTable);
+                    }}
+                    className="absolute bottom-3 right-3 z-10 px-2.5 py-1.5 rounded-xl bg-violet-500 text-white border border-violet-300 font-black text-[11px] flex items-center gap-1.5 shadow-md active:scale-95"
+                    title={L("View order")}
+                  >
+                    <PencilLine className="w-3 h-3 shrink-0" />
+                    <span>{L("View order")}</span>
+                  </button>
+                )}
               </div>
-            ))}
+              );
+            })}
 
             {/* ── GROUP ORDERS: open groups sit in the grid like tables.
                 Tap → the same bill view a table gets: add items, request
                 payment, settle. The 👥 GROUP card is the only difference. ── */}
-            {groupTickets.map((g) => (
+            {groupTickets.map((g) => {
+              // A queued round for this group paints violet while it waits,
+              // exactly like a real table's waiting tile.
+              const queuedForGroup = pendingSends.find((send) => send.groupRound && send.targetTicketId === g.id);
+              const queuedLeft = queuedForGroup ? Math.max(0, Math.ceil((queuedForGroup.dueAt - clockNow) / 1000)) : 0;
+              const queuedUnits = queuedForGroup ? queuedForGroup.items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0) : 0;
+              return (
               <div
                 key={`group-${g.id}`}
                 role="button"
@@ -2158,7 +2250,11 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     openGroup(g);
                   }
                 }}
-                className="rounded-2xl p-5 text-left border-2 border-emerald-400/70 bg-emerald-950/40 transition active:scale-95 relative cursor-pointer"
+                className={`rounded-2xl p-5 ${queuedForGroup ? "pb-12" : ""} text-left border-2 transition active:scale-95 relative cursor-pointer ${
+                  queuedForGroup
+                    ? "border-violet-500/80 bg-violet-950/50 ring-1 ring-violet-400/40"
+                    : "border-emerald-400/70 bg-emerald-950/40"
+                }`}
               >
                 {g.status !== "pending_waiter" && (
                   <button
@@ -2182,8 +2278,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 <p className="font-serif font-bold text-lg text-emerald-200 flex items-center gap-1.5 pr-20">
                   <Users className="w-4 h-4 shrink-0" /> {g.tableName}
                 </p>
-                <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(groupTableStatus(g))}`}>
-                  {tableStatusLabel(groupTableStatus(g))}
+                <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
+                  queuedForGroup ? "bg-violet-500/25 text-violet-100 border border-violet-400/70" : statusChip(groupTableStatus(g))
+                }`}>
+                  {queuedForGroup ? L("Waiting to send") : tableStatusLabel(groupTableStatus(g))}
                 </span>
                 <p className="text-xs font-bold text-stone-200 mt-1">{L("{totalAmount} ETB open", { totalAmount: g.totalAmount })}</p>
                 {g.createdAt ? (
@@ -2191,8 +2289,28 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     {L("🕒 since {clock} • {waitingLabel}", { clock: formatClock(g.createdAt), waitingLabel: Ld(waitingLabel(g.createdAt)) })}
                   </p>
                 ) : null}
+                {queuedForGroup ? (
+                  <p className="text-[11px] font-black text-violet-300 mt-1">
+                    {L("⏳ {units} item(s) • sends in {clock}", { units: queuedUnits, clock: formatHoldClock(queuedLeft) })}
+                  </p>
+                ) : null}
+                {queuedForGroup && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openQueuedSend(queuedForGroup);
+                    }}
+                    className="absolute bottom-3 right-3 z-10 px-2.5 py-1.5 rounded-xl bg-violet-500 text-white border border-violet-300 font-black text-[11px] flex items-center gap-1.5 shadow-md active:scale-95"
+                    title={L("View order")}
+                  >
+                    <PencilLine className="w-3 h-3 shrink-0" />
+                    <span>{L("View order")}</span>
+                  </button>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-4">
@@ -2305,8 +2423,18 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
           {/* cart bottom sheet */}
           {cart.length > 0 && (
-            <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#2C1B17] border-t-2 border-[#C9A227] p-4 max-w-3xl mx-auto space-y-3">
-              <div className="max-h-40 overflow-y-auto space-y-2">
+            <div className="fixed bottom-0 left-0 right-0 z-40 bg-[#2C1B17] border-t-2 border-[#C9A227] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] max-w-3xl mx-auto space-y-3 max-h-[90dvh] overflow-y-auto">
+              {/* WHAT IS ABOUT TO BE SENT — the heading says so, so the three
+                  controls under the list are never read as "already sent". */}
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] font-black uppercase tracking-wide text-amber-200 min-w-0">
+                  {activeHoldKey !== null
+                    ? L("⏳ Waiting to send • {count} item(s)", { count: cart.length })
+                    : L("About to send • {count} item(s)", { count: cart.length })}
+                </p>
+                <p className="text-[11px] font-black text-[#C9A227] tabular-nums shrink-0">{cartTotal} ETB</p>
+              </div>
+              <div className="max-h-[30dvh] overflow-y-auto space-y-2">
                 {cart.map((c) => (
                   <div key={c.menuItemId} className="bg-[#3D2314] rounded-xl p-2.5 space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
@@ -2328,42 +2456,59 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 ))}
               </div>
               {activeHoldKey !== null ? (
-                /* THE SEND HOLD: the countdown the owner asked for, with the
-                   "Send now" release beside it for the small orders that should
-                   not wait. The cart above stays fully editable while it runs,
-                   so a wrong dish, quantity or note is fixed before anything
-                   reaches the kitchen. */
+                /* THE SEND HOLD, ON THIS PAGE (owner's decision, 30 Sept 2026):
+                   under the items she is about to send sit the three things he
+                   listed — the COUNTDOWN of the time left, SEND NOW on its
+                   right, and CANCEL WHOLE ORDER under the two. The list above
+                   stays fully editable while the clock runs, so a wrong dish,
+                   quantity or note is fixed before anything reaches the
+                   kitchen, and Back still takes her to the tables with the
+                   countdown alive. */
                 <div className="bg-[#3D2314] border-2 border-[#C9A227]/60 rounded-xl p-3 space-y-2.5">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-black text-amber-200 uppercase tracking-wide">
-                        {L("Sending in {clock}", { clock: formatHoldClock(holdLeft) })}
-                      </p>
-                      <p className="text-[10px] font-bold text-stone-400">
-                        {L("Check the items above • you can still edit, add notes or remove")}
-                      </p>
-                    </div>
+                  <div className="flex items-center gap-3">
                     <span className="font-serif font-black text-3xl text-[#C9A227] tabular-nums shrink-0">
                       {formatHoldClock(holdLeft)}
                     </span>
-                  </div>
-                  <div className="flex gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-black text-amber-200 uppercase tracking-wide">
+                        {L("Sends in")}
+                      </p>
+                      <p className="text-[10px] font-bold text-stone-400 leading-tight">
+                        {L("Edit the items above until it runs out")}
+                      </p>
+                    </div>
                     <button
                       onClick={() => sendPendingOrderRef.current(activeHoldKey, true)}
                       disabled={sendingPendingKeys.includes(activeHoldKey)}
-                      className="flex-1 bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-sm uppercase py-3 rounded-xl flex items-center justify-center gap-2 shadow-xl disabled:opacity-50"
+                      className="ml-auto shrink-0 bg-gradient-to-r from-[#C9A227] to-[#B8921F] text-[#2C1B17] font-black text-xs uppercase px-4 py-3 rounded-xl flex items-center gap-2 shadow-xl disabled:opacity-50"
                     >
                       <Send className="w-4 h-4" />
                       {sendingPendingKeys.includes(activeHoldKey) ? L("Sending...") : L("Send now")}
                     </button>
-                    <button
-                      onClick={cancelSendHold}
-                      disabled={sendingPendingKeys.includes(activeHoldKey)}
-                      className="px-4 bg-white/10 text-stone-200 text-xs font-bold py-3 rounded-xl disabled:opacity-40"
-                    >
-                      {L("Cancel")}
-                    </button>
                   </div>
+                  {/* She is NOT held on this page (owner, 30 Sept 2026): "like
+                      that doesnt mean waiter should be in the page to be sent
+                      ... they can clcik back and go to other tables but the
+                      order will automatically been sent to the stations". The
+                      queue lives in Postgres and the server worker sends it, so
+                      saying so out loud stops her waiting around. */}
+                  <p className="text-[10px] font-black text-emerald-300 leading-tight">
+                    {L("🚶 Walk away if you must • the order still sends itself at 0:00")}
+                  </p>
+                  <button
+                    onClick={() => void cancelSendHold()}
+                    disabled={sendingPendingKeys.includes(activeHoldKey)}
+                    className="w-full bg-rose-900/50 border border-rose-600/70 text-rose-200 font-black text-xs uppercase py-3 rounded-xl disabled:opacity-40"
+                  >
+                    {L("Cancel whole order")}
+                  </button>
+                  {activeHoldSend?.lastError ? (
+                    <p className="text-[10px] font-bold text-rose-300">
+                      {activeHoldSend.lastError === "Server schedule unavailable. Keep the waiter app open."
+                        ? L("Server schedule unavailable. Keep the waiter app open.")
+                        : activeHoldSend.lastError}
+                    </p>
+                  ) : null}
                 </div>
               ) : (
                 <button

@@ -215,7 +215,7 @@ export default function DailyBoardTab() {
 
       {/* Edit modal */}
       {editing && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+        <div className="fana-fit-screen fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-[#2C1B17] rounded-3xl max-w-md w-full p-6 border border-[#C9A227] space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-stone-800 pb-3">
               <h3 className="font-serif font-bold text-lg text-amber-100 flex items-center gap-2">

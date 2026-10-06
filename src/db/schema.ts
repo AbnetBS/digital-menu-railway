@@ -153,6 +153,10 @@ export const tickets = pgTable("tickets", {
   verifiedAt: timestamp("verified_at"),
   // Print-queue mode: the cashier keyed this bill into the government EFD/POS
   // and printed the order paper. Re-printed (updated) whenever additions arrive.
+  // THE PRINT SERVES THE FOOD (owner's decision, Sept 2026): this tap means
+  // the order is done and served, so it also finishes every released line on
+  // the bill — the items leave the kitchen/barista/juice/buna dashboards the
+  // same second instead of lingering until somebody taps Done.
   printedAt: timestamp("printed_at"),
   printedBy: varchar("printed_by", { length: 100 }),
   // Print-queue mode: the waiter physically cleared the table, closing the
@@ -258,6 +262,29 @@ export const ticketItems = pgTable("ticket_items", {
   createdAt: timestamp("created_at").defaultNow(),
   // Shared by all rows of one order submission (see tickets.idempotencyKey).
   idempotencyKey: varchar("idempotency_key", { length: 64 }),
+});
+
+// ─── THE BARISTA HAND-OVER (owner's decision, Sept 2026) ────────────────────
+// One row per registered SHIFT OWNER on a station lane, per Ethiopian day.
+// A barista becomes the morning (or afternoon) owner the moment he presses
+// ACCEPT on his first line of that shift — logging in alone registers
+// nothing, so a mistaken login never blocks the real barista. The unique
+// (station, day_key, shift) index makes the registration race-safe: two
+// baristas accepting in the same second can never both own the afternoon.
+// The admin shift report reads these rows so its barista morning/afternoon
+// buckets follow the OWNER (not the raw clock) and match the crew's own
+// Items-sold tab one to one. See @/lib/shift-handover.
+export const stationShiftClaims = pgTable("station_shift_claims", {
+  id: serial("id").primaryKey(),
+  /** Today only "barista"; the column keeps the door open for other crews. */
+  station: varchar("station", { length: 20 }).notNull(),
+  /** EAT calendar day ("2026-09-28") — claims reset every morning. */
+  dayKey: varchar("day_key", { length: 10 }).notNull(),
+  /** morning | afternoon */
+  shiftName: varchar("shift_name", { length: 10 }).notNull(),
+  staffName: varchar("staff_name", { length: 100 }).notNull(),
+  /** The first accept stamp — when this person registered as the owner. */
+  claimedAt: timestamp("claimed_at").defaultNow(),
 });
 
 // ─── COFFEE NOTE (owner's decision, Sept 2026) ──────────────────────────────

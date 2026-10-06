@@ -43,12 +43,16 @@ const tickets = [
 const items = [
   I(10, 3, { stationAcceptedBy: "Abnet", stationAcceptedAt: at("13:57"), stationDoneBy: "Mitke", stationDoneAt: at("14:20") }),
   I(11, 1, { stationAcceptedBy: "Abnet", stationAcceptedAt: at("09:15"), stationDoneBy: "Abnet", stationDoneAt: at("09:30") }),
+  // Hana's ticket also needs at least one item that reached its EFD receipt;
+  // an order with no printed items is not a sale/person row in the report.
+  I(13, 2, { name: "Hana printed item", price: 100, createdAt: at("10:58") }),
   I(12, 4, { stationStatus: "accepted", stationAcceptedBy: "Mitke", stationAcceptedAt: at("16:05") }),
 ];
 const base = { date: "today" as const, dayKeys: [day], tickets, items, events: [], submissions: [], staffRoles };
 
 const w = buildShiftReport({ ...base, role: "waiter" });
 assert.deepEqual(w.morning.map((p) => p.name).sort(), ["Abel", "Hana"]);
+assert.equal(w.orders[2].totalAmount, 100, "Hana's shift ticket has a printed item-backed total");
 assert.deepEqual(w.afternoon.map((p) => p.name).sort(), ["Alem"]);
 assert.equal(w.combined.length, 1);
 assert.equal(w.combined[0].label, "Abel - Alem");
@@ -63,9 +67,13 @@ const bunaFloor = buildShiftReport({ ...base, role: "waiter",
   tickets: [...tickets,
     T(20, { tableName: "OUTDOOR • gate", orderType: "outdoor", createdBy: "Tigist", printedBy: "Sara", printedAt: at("12:30"), totalAmount: 220 }),
     T(21, { tableName: "Table 21", confirmedBy: "Tigist", confirmedAt: at("12:20"), printedBy: "Sara", printedAt: at("12:35") }),
-    T(22, { tableName: "Table 22", confirmedBy: "Tigist", confirmedAt: at("13:55"), closedBy: "Abel", closedAt: at("15:00") }),
+    T(22, { tableName: "Table 22", confirmedBy: "Tigist", confirmedAt: at("13:55"), closedBy: "Abel", closedAt: at("15:00"), status: "closed", printedBy: "Sara", printedAt: at("14:58") }),
   ],
-  items: [...items, I(20, 20, { name: "Sandwich", stationName: "kitchen", price: 220 })],
+  items: [...items,
+    I(20, 20, { name: "Sandwich", stationName: "kitchen", price: 220 }),
+    I(21, 21, { name: "Pasta", stationName: "kitchen", price: 180 }),
+    I(22, 22, { name: "Soup", stationName: "kitchen", price: 90 }),
+  ],
   submissions: [{ ticketId: 20, source: "staff", waiterName: "Tigist", lines: 1, createdAt: at("12:00") }],
 });
 assert.deepEqual(bunaFloor.morning.find((p) => p.name === "Tigist")?.ticketIds, [22, 21, 20]);
@@ -86,6 +94,33 @@ assert.ok(k.orders[4].flags.some((f) => /never marked done/.test(f)));
 const k10 = buildShiftReport({ ...base, role: "kitchen", splitHour: 10 });
 assert.ok(k10.afternoon.some((p) => p.name === "Abnet")); // custom shift change hour
 
+// The shift sheet reconstructs each item's sold quantity from its receipts:
+// the first print's two units stay on receipt #1, the two-unit increase is
+// added only on receipt #2, and a post-print increase remains pending.
+const receiptShift = buildShiftReport({
+  role: "barista", date: "today", dayKeys: [day], staffRoles: { Abnet: "barista", Sara: "cashier" },
+  tickets: [
+    T(30, { printedBy: "Sara", printedAt: at("10:20") }),
+    T(31, { printedBy: "Sara", printedAt: at("09:20") }),
+  ],
+  items: [
+    I(30, 30, { name: "Macchiato", price: 60, quantity: 4, stationName: "barista", stationAcceptedBy: "Abnet", stationAcceptedAt: at("10:25"), stationDoneBy: "Abnet", stationDoneAt: at("10:30"), createdAt: at("09:00") }),
+    I(31, 31, { name: "Tea", price: 60, quantity: 2, stationName: "barista", stationAcceptedBy: "Abnet", stationAcceptedAt: at("09:22"), stationDoneBy: "Abnet", stationDoneAt: at("09:30"), createdAt: at("09:00") }),
+  ],
+  events: [
+    { ticketId: 30, eventType: "ticket_printed", actorName: "Sara", actorRole: "cashier", toValue: "printed", details: null, createdAt: at("09:20") },
+    { ticketId: 30, itemId: 30, eventType: "item_quantity_changed", actorName: "Sara", actorRole: "cashier", fromValue: "2", toValue: "4", details: null, createdAt: at("10:10") },
+    { ticketId: 31, itemId: 31, eventType: "item_quantity_changed", actorName: "Sara", actorRole: "cashier", fromValue: "1", toValue: "2", details: null, createdAt: at("09:30") },
+  ],
+  submissions: [],
+});
+assert.equal(receiptShift.orders[30].items.find((item) => item.id === 30)?.saleQuantity, 4);
+assert.equal(receiptShift.orders[30].totalAmount, 240);
+assert.equal(receiptShift.orders[31].items.find((item) => item.id === 31)?.saleQuantity, 1);
+assert.equal(receiptShift.orders[31].items.find((item) => item.id === 31)?.afterPrint, true);
+assert.equal(receiptShift.orders[31].totalAmount, 60);
+assert.equal(receiptShift.morning.find((person) => person.name === "Abnet")?.amount, 300);
+
 // ── "ACCEPTED BY n/a" (owner, Sept 2026) ─────────────────────────────────
 // A waiter's own order goes straight to the stations and is never
 // "accepted", so confirmedBy stays empty. The card must name the waiter who
@@ -102,6 +137,7 @@ const sentReport = buildShiftReport({
   role: "waiter",
   staffRoles: { ...staffRoles, yeshi: "waiter" },
   tickets: [...tickets, t8],
+  items: [...items, I(80, 8, { name: "Macchiato", price: 240, quantity: 2, createdAt: at("10:01") })],
   submissions: [S({})],
   events: [
     E({ eventType: "ticket_created", actorName: "yeshi", actorRole: "waiter", details: "New staff order created" }),

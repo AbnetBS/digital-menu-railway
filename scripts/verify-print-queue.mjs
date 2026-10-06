@@ -22,6 +22,12 @@
  *   7. INSTANT RELEASE (owner's decision, Sept 2026): the SEND releases the
  *      food, never the print. A waiter's order AND anything added later land
  *      on the crew's lists the same second; the print is EFD audit only.
+ *   8. THE PRINT SERVES THE FOOD (owner's decision, Sept 2026): the ✓ PRINTED
+ *      tap means the order is done and served, so it finishes every released
+ *      line on the bill and those lines leave every station dashboard the
+ *      same second (it used to be buna only; kitchen/barista/juice items
+ *      lingered on the boards overnight whenever nobody tapped Done). Held
+ *      guest additions are untouched — they are real work when confirmed.
  *
  * Run with: node scripts/verify-print-queue.mjs  (wired into `npm test`)
  */
@@ -191,34 +197,63 @@ function pass(name, cond) {
     && stationsApi.includes("@/lib/order-release") && stationsApi.includes("isLineHeld") && orderRelease.includes("isLineHeld"));
   pass("a bill with nothing released stays off every crew list",
     stationsApi.includes("if (released.length === 0) continue;") && stationsApi.includes(".filter((t) => t.items.length > 0)"));
-  pass("normal stations have no per-line print cutoff (additions never wait for a print)",
+  pass("no stray per-line send cutoff (the release gate is bill-level, named helpers only)",
     !/releaseCutoff/.test(stationsApi) && !/prevStamp/.test(stationsApi) && !/prevStamp/.test(tickets));
   const releaseHelper = (stationsApi.split("const releasedItems = (")[1] || "").split("};")[0] || "";
-  pass("the shared release gate is bill-level; the buna print-clear filter is separate",
+  pass("the shared release gate is bill-level; the print-served filter is separate",
     !/createdAt/.test(releaseHelper) && /liveItemsForStation/.test(stationsApi));
-  pass("buna live requests clear from the makers' dashboard after the cashier prints",
-    /station !== "buna"/.test(stationsApi) && /it\.stationStatus === "done"/.test(stationsApi) && /createdMs > printedMs/.test(stationsApi));
+  /* THE PRINT SERVES THE FOOD (owner's decision, Sept 2026): the cashier's
+   * ✓ PRINTED tap means the order is done and served, so every line finished
+   * on or before the print leaves EVERY crew's live list (kitchen, barista,
+   * juice and buna alike — it used to be buna only, and the other crews'
+   * items lingered on their dashboards overnight). The shared pure rule is
+   * isLineServedByPrint in @/lib/order-release. */
+  pass("every station's live list still drops lines served by the cashier's print",
+    /isLineServedByPrint/.test(stationsApi) && /isLineServedByPrint/.test(orderRelease)
+    && /station === "buna" && it\.stationStatus === "done"/.test(stationsApi));
   pass("the acceptance stamp is written and self-heals on old databases", /updates\.confirmedAt = new Date\(\)/.test(tickets) && /confirmedAt: timestamp\("confirmed_at"\)/.test(schema) && /confirmed_at: \{ type: "timestamp", dropNotNull: true \}/.test(migrate));
   pass("a ticket with zero released items disappears from the station list", /\.filter\(\(t\) => t\.items\.length > 0\)/.test(stationsApi));
   pass("accepting rings ONLY the crews with items on the bill, plus the cashier", /case "confirmed"/.test(alerts) && /t\.stations/.test(alerts) && /fana-cook-\$\{t\.id\}-\$\{station\}/.test(alerts) && /New order to cook/.test(alerts));
-  pass("the route tells the matrix which crews the bill actually involves", /stations: billStations/.test(tickets) && /crewRows\.map\(\(r\) => stationOf\(r\.stationName\)\)/.test(tickets));
+  /* The routing itself stays: every submitted line is still stamped with the
+   * crew whose screen must show it. Only the phone ring was removed. */
+  pass("every submitted line is still stamped with the crew that must see it",
+    /submissionStations\.add\(stationName\)/.test(tickets) && /stationForOrder\(/.test(tickets) && /stationOf\(r\.stationName\)/.test(tickets));
   pass("the waiter's button says where the order goes", /Accept & Send → Stations & Cashier/.test(waiter));
   pass("the cashier's button says plain ✓ PRINTED (the print sends nothing — instant release)",
     /<Printer className="w-5 h-5" \/> \{L\("✓ PRINTED"\)\}/.test(cashier) && !/PRINTED & SEND/.test(cashier));
-  pass("cashier printing auto-clears pending buna station lines", /body\.status === "printed"/.test(tickets) && /eq\(ticketItems\.stationName, "buna"\)/.test(tickets) && /stationStatus: "done"/.test(tickets));
+  /* The shift lock (owner, 29 Sept 2026) turned this around on the write side:
+   * the print may not go out until every released, visible kitchen / barista /
+   * juice line is Done, and then it finishes the BUNA lane only (the buna makers
+   * have no buttons). HELD guest additions never block it and are never
+   * stamped, because the crews never received them. */
+  pass("cashier printing is GATED by the stations, then finishes the buna lane only",
+    /body\.status === "printed"/.test(tickets) && /must tap Done first/.test(tickets) && /status: 409/.test(tickets)
+    && /trim\(coalesce\(\$\{ticketItems\.stationName\}, ''\)\) <> 'buna'/.test(tickets)
+    && /eq\(ticketItems\.stationName, "buna"\)/.test(tickets)
+    && /stationStatus: "done"/.test(tickets) && /COALESCE\(\$\{ticketItems\.released\}, true\) = true/.test(tickets));
   pass("the buna makers' lane is read-only (no Accept or Done buttons)", /Cashier prints to clear/.test(waiter) && !/setBunaStatus/.test(waiter));
   pass("her addition card still shows ONLY the new items", /isNewUnprinted/.test(cashier) && /new items only/.test(cashier));
   /* The print is EFD audit only — it never wakes a crew. The ONE station push
    * left in the PUT is the release of guest additions somebody just confirmed. */
-  pass("the print NEVER pushes the crews; only releasing confirmed guest lines does",
-    countOf(putHalf, "fana-station-add-") === 1 && countOf(putHalf, "sendPushToRoles(releasedStations") === 1
-    && putHalf.includes("if (releasedStations.length > 0)"));
-  pass("only the stations with NEW lines in the submission are rung (no idle re-ring)",
-    /submissionStations/.test(postHalf) && /newStations\.length > 0/.test(postHalf));
-  pass("the crew push fires only for a SENT bill (pending and held bills stay silent)",
-    /billSent/.test(postHalf) && /pushed\.status !== "pending_waiter"/.test(postHalf));
-  pass("each submission rings as its own event (distinct station tag)", /fana-station-add-\$\{pushed\.id\}/.test(postHalf));
-  pass("adding food to a sent bill wakes the crews with new lines (instant release)", /fana-station-add-/.test(postHalf));
+  /* OWNER'S DECISION (29 Sept 2026): every STAFF phone notification is gone.
+   * No bill tap rings a crew any more — printing, accepting, releasing and
+   * cancelling all update the screens and the in-app alarm; none of them wakes
+   * a pocket. The only phone that still rings is the owner's, for the daily
+   * total (see scripts/verify-daily-sales.ts). */
+  pass("no bill tap in the PUT rings a staff phone any more",
+    !/sendPushTo/.test(putHalf) && !/fana-station-add-/.test(putHalf) && !/lib\/push/.test(putHalf));
+  /* A submitted bill rings nobody either: the crews read their new lines from
+   * their own screens (and the cashier's own card updates), silently. */
+  pass("a submitted bill rings no staff phone (same owner decision)",
+    /submissionStations/.test(postHalf) && !/sendPushTo/.test(postHalf) && !/fana-station-add-/.test(postHalf));
+  /* The picker itself is untouched — removing the ring must not have loosened
+   * who the crews may see. The whole tickets API is push-free now, both verbs. */
+  pass("the tickets API imports no push helper at all",
+    !/lib\/push/.test(tickets) && !/push-client/.test(tickets) && !/sendPushTo/.test(tickets));
+  pass("a guest top-up on a sent bill is still held from the crews (the hold gate survived the ring removal)",
+    /const holdNewLines = isCustomer && billAlreadySent;/.test(tickets) && /released: !holdNewLines/.test(tickets));
+  pass("the print still finishes + records the EFD pile (silent, seen on the screens)",
+    /body\.status === "printed"/.test(tickets) && /updates\.printedAt = new Date\(\)/.test(tickets) && /stationStatus: "done"/.test(tickets));
   pass("every crew only ever sees its OWN items", /eq\(ticketItems\.stationName, station\)/.test(stationsApi));
   pass("the cashier still records the EFD print (audit + daily count)", /body\.status === "printed"/.test(tickets) && /updates\.printedAt = new Date\(\)/.test(tickets));
 }
@@ -237,7 +272,9 @@ function pass(name, cond) {
   pass("held cards have their own section with the CONFIRM & SEND button", /✓ CONFIRM & SEND/.test(cashier) && /confirmAndSend/.test(cashier));
   pass("CONFIRM & SEND hits the send action with her name", /body: JSON\.stringify\(\{ id: t\.id, send: true, confirmedBy: staffName \|\| "\(cashier\)" \}\)/.test(cashier));
   pass("the route stamps the release on send but NOT on a cashier's plain accept", /const sendRequested = body\.send === true;/.test(tickets) && /holdAfterConfirm/.test(tickets) && /if \(!holdAfterConfirm\) updates\.confirmedAt = new Date\(\);/.test(tickets));
-  pass("the send fires the release alerts; a held accept fires nobody", /const releasedBySend = sendRequested && !cur\.confirmedAt && !cur\.printedAt;/.test(tickets) && /alertStatus && !\(alertStatus === "confirmed" && holdAfterConfirm\)/.test(tickets));
+  /* The release still happens and is still audited — only the ring is gone. */
+  pass("the send still releases the held lines and records the audit; a held accept releases nothing",
+    /const releasesTheBill =/.test(tickets) && /\.set\(\{ released: true \}\)/.test(tickets) && /additions_released/.test(tickets));
   pass("a guest top-up on a sent bill is inserted HELD (released = false)",
     tickets.includes("released: !holdNewLines") && tickets.includes("const holdNewLines = isCustomer && billAlreadySent;"));
   pass("a held top-up never folds into an already-released row (the new units stay visibly pending)",
@@ -245,7 +282,9 @@ function pass(name, cond) {
   pass("waiter AND cashier can both release the held lines (PUT send:true / confirmed)",
     tickets.includes("sendRequested") && tickets.includes("additions_released"));
   pass("staff submissions are SENT at creation (release stamp lands after the items)", /if \(!isCustomer && activeTickets\.length === 0\)/.test(tickets) && /\.set\(\{ confirmedAt: new Date\(\) \}\)/.test(tickets));
-  pass("guest additions to a HELD bill tell the cashier, not the crews", /held bill is now/.test(tickets));
+  /* The cashier still SEES held guest additions: her card counts the waiting
+   * submissions (an in-system badge, no phone ring). */
+  pass("guest additions on a held bill still reach the cashier's screen", /unprintedCustomerSubmissions/.test(tickets));
   pass("migration backfills pre-hold released bills so in-flight work stays visible", /QR HOLD FLOW backfill/.test(migrate) && /COALESCE\(created_by, ''\) <> 'Customer \(QR\)'/m.test(migrate));
   pass("another device answering dismisses the full-page alarm everywhere", /ANOTHER DEVICE ANSWERED/.test(cashier) && /cur\.ticketId == null/.test(cashier));
   pass("the waiter's bill view tells held from sent", /held until the cashier sends it/.test(waiter));
@@ -261,8 +300,11 @@ console.log("   • cashier: key into EFD → print → tap ✓ PRINTED (one cli
 console.log("   • waiter: guests leave → clear table → table turns green");
 console.log("   • payments stay in the EFD/POS — full mode still available via Settings");
 console.log("   • INSTANT RELEASE: one waiter tap (or the cashier's CONFIRM & SEND on");
-console.log("     a held QR order) reaches the crews that have items on it (kitchen /");
-console.log("     barista / buna / juice) and the cashier at once — and food ADDED");
-console.log("     later lands on the crew's lists the same second too");
-console.log("   • the print is EFD audit only: it keys receipt #2 for new items but");
-console.log("     never gates or re-rings the crews");
+console.log("     a held QR order) puts the bill on the crews' screens that have items");
+console.log("     on it (kitchen / barista / buna / juice), and food ADDED later lands");
+console.log("     there the same second too");
+console.log("   • NO STAFF PHONE RINGS (owner, 29 Sept 2026): every one of those steps");
+console.log("     shows up on the screens and the in-app alarm only; the single phone");
+console.log("     notification left in the cafe is the owner's daily total");
+console.log("   • the print is EFD audit only: it keys receipt #2 for new items and");
+console.log("     finishes the served lines, silently");

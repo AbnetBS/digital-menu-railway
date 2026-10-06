@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-02-1";
+const SCHEMA_VERSION = "2026-10-06-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -364,6 +364,22 @@ const RMS_CREATES: Array<[string, string]> = [
       notes text,
       created_at timestamp DEFAULT now(),
       updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    // THE BARISTA HAND-OVER (owner's decision, Sept 2026): one row per
+    // registered shift owner per station per Ethiopian day. A barista's FIRST
+    // accept of the shift writes it (logging in alone registers nothing);
+    // the unique index in the migration body makes the first-accept race
+    // safe. See @/lib/shift-handover and the station-items route.
+    "station_shift_claims",
+    `CREATE TABLE IF NOT EXISTS station_shift_claims (
+      id serial PRIMARY KEY,
+      station varchar(20) NOT NULL,
+      day_key varchar(10) NOT NULL,
+      shift_name varchar(10) NOT NULL,
+      staff_name varchar(100) NOT NULL,
+      claimed_at timestamp DEFAULT now()
     )`,
   ],
 ];
@@ -721,6 +737,42 @@ async function runFullMigrate(force: boolean) {
   //    could not apply the default (very old Postgres): re-run safe.
   await run(`UPDATE ticket_items SET released = true WHERE released IS NULL`);
 
+  //  • PRINT SERVES THE FOOD backfill (owner's decision, Sept 2026). The
+  //    cashier's ✓ PRINTED tap means the order is done and served, so from now
+  //    on the print itself stamps every released line of the bill done (see
+  //    the PUT in tickets/route.ts) and the station live list hides it. Bills
+  //    printed BEFORE that rule existed never got that stamp, so their items
+  //    kept sitting on the kitchen / barista / juice / buna dashboards for
+  //    days. This one-time sweep finishes exactly those lines — released (the
+  //    crews had received them), not removed, not done yet, and created on or
+  //    before the print (so a still-unprinted addition stays live work) —
+  //    stamped as finished by the print itself. Re-run safe: done rows are
+  //    skipped.
+  await run(`
+    UPDATE ticket_items ti
+    SET station_status = 'done',
+        station_status_by = 'cashier print',
+        station_status_at = COALESCE(t.printed_at, now()),
+        station_done_by = 'cashier print',
+        station_done_at = COALESCE(t.printed_at, now())
+    FROM tickets t
+    WHERE t.id = ti.ticket_id
+      AND t.printed_at IS NOT NULL
+      AND COALESCE(ti.released, true) = true
+      AND COALESCE(ti.removed, false) = false
+      AND COALESCE(ti.station_status, 'pending') <> 'done'
+      AND ti.created_at <= t.printed_at
+  `);
+
+  //  • CREW-LINE STATUS backfill (owner's bug report, 29 Sept 2026). A line's
+  //    station_status only ever reads "pending", "accepted" or "done";
+  //    everything else is work nobody has taken yet. Rows written before the
+  //    column existed carry NULL, and SQL that compares station_status to
+  //    'pending' never matched them: the barista hand-over treated them as
+  //    "not pending", so they leaked onto a second barista's board. Make the
+  //    data say what every screen already assumes. Re-run safe.
+  await run(`UPDATE ticket_items SET station_status = 'pending' WHERE station_status IS NULL OR trim(station_status) = ''`);
+
   //  • GROUP 5 — one active bill per table, enforced at the DATABASE level.
   //    Before creating the partial unique index, repair any duplicate active
   //    tickets left by the old check-then-insert race: move the newer tickets'
@@ -821,6 +873,13 @@ async function runFullMigrate(force: boolean) {
   // Group 10 (pocket-mode alerts): one row per device — re-subscribing the same
   // device replaces its row instead of duplicating it.
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint_key ON push_subscriptions (endpoint)`);
+
+  //   12. station_shift_claims(station, day_key, shift_name): ONE registered
+  //       owner per shift per station per day — the barista hand-over (owner,
+  //       Sept 2026). The first accept of the shift inserts the row; a second
+  //       barista racing the same shift loses on this index, never silently.
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS station_shift_claims_owner_key ON station_shift_claims (station, day_key, shift_name)`);
+  await run(`CREATE INDEX IF NOT EXISTS station_shift_claims_station_day_idx ON station_shift_claims (station, day_key)`);
 
   //  • payment_status backfill: existing paid/completed bills get a concrete
   //    status derived from their stored method so reports/history stay correct

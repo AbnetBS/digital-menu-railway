@@ -1,13 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Settings, Utensils, Star, Lock, Plus, Trash2, Edit3, CheckCircle2, Save, LogOut, RefreshCw,
-  Eye, EyeOff, Upload, Image as ImageIcon, Camera, TrendingUp, Users, QrCode, CreditCard, Monitor,
+  Eye, EyeOff, Upload, Image as ImageIcon, Camera, TrendingUp, Users, QrCode, CreditCard, Monitor, Wallet,
 } from "lucide-react";
 import { MenuItem, SiteSettings, Review, Category, GalleryItem } from "@/types";
 import { compressImage } from "@/lib/image-utils";
 import ReportsTab from "@/components/rms/ReportsTab";
+import DailySalesTab from "@/components/rms/DailySalesTab";
 import StaffTab from "@/components/rms/StaffTab";
 import TablesQrTab from "@/components/rms/TablesQrTab";
 import OrderHistoryTab from "@/components/rms/OrderHistoryTab";
@@ -16,6 +17,7 @@ import StationsTab from "@/components/rms/StationsTab";
 import AttendanceTab from "@/components/rms/AttendanceTab";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
+import { armAudioOnFirstGesture, playAlarm } from "@/lib/sound";
 
 interface AdminPanelProps {
   settings: SiteSettings;
@@ -27,7 +29,24 @@ interface AdminPanelProps {
   onLogout: () => void;
 }
 
-type Tab = "reports" | "attendance" | "menu" | "board" | "stations" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
+type Tab = "reports" | "sales" | "attendance" | "menu" | "board" | "stations" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
+
+const TAB_KEYS: Tab[] = ["reports", "sales", "attendance", "menu", "board", "stations", "tables", "staff", "gallery", "reviews", "history", "settings", "security"];
+
+/**
+ * ?tab=sales is the URL the day-close notification opens. Reading it here is
+ * what makes "tap the notification → the sales page" work; an unknown value
+ * simply falls back to the default tab.
+ */
+function readTabFromUrl(): Tab | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    return wanted && (TAB_KEYS as string[]).includes(wanted) ? (wanted as Tab) : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function AdminPanel({
   settings,
@@ -39,7 +58,66 @@ export default function AdminPanel({
   onLogout,
 }: AdminPanelProps) {
   const { t: L, rich: Lr, td: Ld } = useStaffT();
-  const [activeTab, setActiveTab] = useState<Tab>("reports");
+  // The daily-sales notification opens /admin?tab=sales, so the tab is read
+  // from the URL first (the reports tab stays the default for a bare /admin).
+  const [activeTab, setActiveTab] = useState<Tab>(() => readTabFromUrl() || "reports");
+
+  /**
+   * ONE BACK PRESS = ONE STEP BACK (owner's decision, 30 Sept 2026): every tab
+   * he opens is written into the address bar (?tab=…), so the phone's Back
+   * button walks him back through the tabs he actually visited — Password →
+   * Daily Sales → Reports — and only then leaves the dashboard. Before this,
+   * the tabs lived in React state alone and the first Back press threw him out
+   * of the whole admin, back to the browser.
+   */
+  const goTab = (tab: Tab) => {
+    if (tab === activeTab) return;
+    setActiveTab(tab);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", tab);
+      // Next's router state rides along, so the URL change never re-renders the
+      // page tree (the same rule the customer menu's back guard follows).
+      window.history.pushState({ ...window.history.state }, "", url.toString());
+    } catch {
+      /* the tab still switches; only the address bar stays behind */
+    }
+  };
+
+  useEffect(() => {
+    const onPop = () => setActiveTab(readTabFromUrl() || "reports");
+    window.addEventListener("popstate", onPop);
+    // The worker keeps a notification visible but silent while this dashboard
+    // is focused. Unlock the owner's in-app ring on their first gesture and
+    // play it when a push reaches this page, so an open Daily Sales tab is not
+    // quieter than the phone's locked-screen notification.
+    armAudioOnFirstGesture();
+    // TAPPING THE DAY-CLOSE NOTIFICATION ON AN OPEN DASHBOARD: the service
+    // worker re-uses the window instead of reloading it and only hands the
+    // page the URL the notification carried ("fana-push-opened"), so the tab
+    // is read from that message — otherwise the owner would land on Reports.
+    const onWorkerMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; url?: string } | null;
+      if (data?.type === "fana-push") {
+        // Match the worker's visible/focused check: avoid doubling the system
+        // ring when the page is backgrounded and the OS notification is loud.
+        if (document.visibilityState === "visible" && document.hasFocus()) playAlarm();
+        return;
+      }
+      if (data?.type !== "fana-push-opened" || typeof data.url !== "string") return;
+      const wanted = new URLSearchParams(data.url.split("?")[1] || "").get("tab");
+      if (wanted && (TAB_KEYS as string[]).includes(wanted)) setActiveTab(wanted as Tab);
+    };
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener("message", onWorkerMessage);
+    }
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+        navigator.serviceWorker.removeEventListener("message", onWorkerMessage);
+      }
+    };
+  }, []);
 
   const [settingsForm, setSettingsForm] = useState({
     cafe_name: settings.cafe_name || "Fana Cafe & Restaurant",
@@ -230,6 +308,7 @@ export default function AdminPanel({
 
   const tabs: Array<{ key: Tab; label: string; icon: React.ReactNode }> = [
     { key: "reports", label: L("Reports"), icon: <TrendingUp className="w-4 h-4" /> },
+    { key: "sales", label: L("Daily Sales"), icon: <Wallet className="w-4 h-4" /> },
     { key: "attendance", label: L("Attendance"), icon: <Users className="w-4 h-4" /> },
     { key: "menu", label: L("Menu ({length})", { length: menuItems.length }), icon: <Utensils className="w-4 h-4" /> },
     { key: "board", label: L("Daily Board"), icon: <TrendingUp className="w-4 h-4" /> },
@@ -275,7 +354,7 @@ export default function AdminPanel({
         {tabs.map((t) => (
           <button
             key={t.key}
-            onClick={() => setActiveTab(t.key)}
+            onClick={() => goTab(t.key)}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-bold transition whitespace-nowrap ${
               activeTab === t.key ? "bg-[#C9A227] text-[#2C1B17]" : "bg-[#2C1B17] text-stone-300 hover:bg-white/10"
             }`}
@@ -289,6 +368,9 @@ export default function AdminPanel({
       <div className="max-w-7xl mx-auto">
         {/* REPORTS */}
         {activeTab === "reports" && <ReportsTab />}
+
+        {/* DAILY SALES — where the day-close notification lands */}
+        {activeTab === "sales" && <DailySalesTab />}
 
         {/* ATTENDANCE */}
         {activeTab === "attendance" && <AttendanceTab />}
@@ -946,7 +1028,7 @@ export default function AdminPanel({
 
       {/* EDIT MENU MODAL */}
       {editingItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+        <div className="fana-fit-screen fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-[#2C1B17] rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 border border-[#C9A227] shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between border-b border-stone-800 pb-3">
               <h3 className="font-serif font-bold text-lg text-amber-100">{editingItem.id ? L("Edit Dish") : L("Add New Dish")}</h3>
@@ -1093,7 +1175,7 @@ export default function AdminPanel({
 
       {/* EDIT GALLERY MODAL */}
       {editingGallery && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+        <div className="fana-fit-screen fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
           <div className="bg-[#2C1B17] rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 border border-[#C9A227] shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between border-b border-stone-800 pb-3">
               <h3 className="font-serif font-bold text-lg text-amber-100">{editingGallery.id ? L("Edit Gallery Photo") : L("Add Gallery Photo")}</h3>

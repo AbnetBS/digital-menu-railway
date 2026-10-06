@@ -17,8 +17,22 @@
  * A person appears in BOTH shifts when they acted in both. Nothing here reads
  * the database or React: the API route feeds rows in, the regression test
  * feeds fixtures in.
+ *
+ * THE BARISTA HAND-OVER (owner's decision, Sept 2026): the barista lane alone
+ * reports by REGISTERED OWNER and by LINE, because that is what the barista's
+ * own "Items sold" tab counts (see @/lib/shift-handover and
+ * @/lib/station-sales). For the barista role:
+ *   • an action belongs to the shift of its day's registered OWNER — the
+ *     morning man's Done at 14:35 (finishing through the 20-minute window) is
+ *     still morning work, never afternoon;
+ *   • a person's ORDERS and AMOUNT are the exact lines he accepted or
+ *     finished on sellable bills — the same figure his own tablet shows.
+ * Every other role keeps the original whole-bill / whole-order attribution,
+ * untouched.
  */
 import { etHour, etDayKey } from "@/lib/timezone";
+import { actionShiftByClaims, claimsByDayMap } from "@/lib/shift-handover";
+import { saleLinesForTicket, sumSaleItems, type SalesItemEventLike } from "@/lib/printed-sales";
 
 export type ShiftRole = "waiter" | "cashier" | "kitchen" | "barista" | "juice" | "buna";
 export const SHIFT_ROLES: ShiftRole[] = ["waiter", "cashier", "kitchen", "barista", "juice", "buna"];
@@ -89,9 +103,11 @@ export interface ShiftItemRow {
 }
 export interface ShiftEventRow {
   ticketId: number;
+  itemId?: number | null;
   eventType: string;
   actorName: string | null;
   actorRole: string | null;
+  fromValue?: string | null;
   toValue: string | null;
   details: string | null;
   createdAt: Stamp;
@@ -119,7 +135,10 @@ export interface ShiftOrderCard {
   orderNumber: string | null;
   orderType: string;
   status: string;
+  /** Receipt-backed amount (or paid-line amount in full-payment mode). */
   totalAmount: number;
+  /** True when at least one active item line belongs to a valid sale. */
+  saleEligible: boolean;
   serviceNote: string | null;
   createdAt: string | null;
   confirmedBy: string | null;
@@ -157,6 +176,10 @@ export interface ShiftOrderCard {
     createdAt: string | null;
     /** Added after the cashier's last print (not on the EFD paper yet). */
     afterPrint: boolean;
+    /** Units from this line that are present on one or more EFD receipts. */
+    saleQuantity: number;
+    /** This active line is included in the ticket's receipt-backed sale total. */
+    saleEligible: boolean;
     /** Line of the selected station (for station roles). */
     mine: boolean;
   }>;
@@ -183,6 +206,8 @@ export interface ShiftReport {
   combined: Array<{ names: string[]; label: string; orders: number; amount: number; ticketIds: number[] }>;
   orders: Record<number, ShiftOrderCard>;
   totals: { orders: number; amount: number; flagged: number; people: number };
+  /** Barista hand-over: the registered owners of the days in the window. */
+  shiftClaims?: Array<{ dayKey: string; shift: ShiftName; staffName: string; claimedAt: string | null }>;
 }
 
 const iso = (d: Stamp): string | null => {
@@ -191,6 +216,18 @@ const iso = (d: Stamp): string | null => {
   return Number.isNaN(x.getTime()) ? null : x.toISOString();
 };
 const clean = (s: string | null | undefined) => String(s || "").trim();
+
+/**
+ * THE PRINT IS NOT A PERSON. The cashier's ✓ PRINTED signs the buna lane off
+ * with this marker (see the tickets PUT), and nothing else ever writes it.
+ * Owner, 29 Sept 2026: "i dont want to see cashier printed on the admin shift
+ * report" — so no crew sheet may show it as a member with money next to the
+ * name, and no item card may read "Done by cashier print" as if a person did
+ * it. The honest provenance stays on the ticket (printedBy) and in the audit
+ * trail, where the admin order history already badges it.
+ */
+export const PRINT_MARKER = "cashier print";
+export const isPrintMarker = (name: string | null | undefined) => /^cashier print$/i.test(clean(name));
 
 export function shiftOf(at: Stamp, splitHour = DEFAULT_SHIFT_SPLIT_HOUR): ShiftName {
   const d = at instanceof Date ? at : new Date(String(at));
@@ -207,8 +244,17 @@ export interface BuildInput {
   items: ShiftItemRow[];
   events: ShiftEventRow[];
   submissions: ShiftSubmissionRow[];
+  /** Match the owner's cashier workflow setting (defaults to print-queue). */
+  printQueueMode?: boolean;
   /** name → role from the staff accounts. */
   staffRoles: Record<string, string>;
+  /**
+   * BARISTA HAND-OVER: registered shift owners for the days in the window
+   * (station_shift_claims). When present for the barista role, shift buckets
+   * follow the OWNER rather than the raw clock, so a Done pressed while
+   * finishing through the 20-minute window still lands in the morning.
+   */
+  shiftClaims?: Array<{ dayKey: string; shift: ShiftName; staffName: string; claimedAt?: Stamp }>;
 }
 
 const EVENT_TEXT: Record<string, string> = {
@@ -330,11 +376,44 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
     return r === role || (role === "waiter" && r === "buna");
   };
 
+  const printQueueMode = input.printQueueMode ?? true;
   const itemsByTicket = new Map<number, ShiftItemRow[]>();
   for (const it of input.items) {
     const a = itemsByTicket.get(it.ticketId) || [];
     a.push(it);
     itemsByTicket.set(it.ticketId, a);
+  }
+  const printEventsByTicket = new Map<number, Stamp[]>();
+  const quantityEventsByTicket = new Map<number, SalesItemEventLike[]>();
+  for (const event of input.events) {
+    if (event.eventType === "ticket_printed") {
+      const rows = printEventsByTicket.get(event.ticketId) || [];
+      rows.push(event.createdAt);
+      printEventsByTicket.set(event.ticketId, rows);
+    } else if (event.eventType === "item_quantity_changed") {
+      const rows = quantityEventsByTicket.get(event.ticketId) || [];
+      rows.push(event);
+      quantityEventsByTicket.set(event.ticketId, rows);
+    }
+  }
+  const saleAmounts = new Map<number, number>();
+  const saleTicketIds = new Set<number>();
+  const saleItemIds = new Set<number>();
+  const saleQuantityByItem = new Map<number, number>();
+  for (const ticket of input.tickets) {
+    const eligible = saleLinesForTicket(
+      ticket,
+      itemsByTicket.get(ticket.id) || [],
+      printQueueMode,
+      printEventsByTicket.get(ticket.id) || [],
+      quantityEventsByTicket.get(ticket.id) || [],
+    );
+    saleAmounts.set(ticket.id, sumSaleItems(eligible.map((line) => line.item)));
+    if (eligible.length) saleTicketIds.add(ticket.id);
+    for (const line of eligible) {
+      saleItemIds.add(line.item.id);
+      saleQuantityByItem.set(line.item.id, (saleQuantityByItem.get(line.item.id) || 0) + (Number(line.item.quantity) || 0));
+    }
   }
   const eventsByTicket = new Map<number, ShiftEventRow[]>();
   for (const e of input.events) {
@@ -370,17 +449,24 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
     };
 
     if (station) {
+      // THE PRINT IS NOT A PERSON (owner, 29 Sept 2026: "i dont want to see
+      // cashier printed on the admin shift report"). The marker must never
+      // stand as a crew member with money next to its name on ANY lane — the
+      // crew's own Items-sold tab counts real names only, and these sheets must
+      // match it one to one. (Since the shift lock the print only ever touches
+      // the buna lane anyway, so its rows are the only ones this can meet.)
+      const skipMarker = (n: string) => isPrintMarker(n);
       for (const it of items) {
         if (it.stationName !== role) continue;
         const acc = clean(it.stationAcceptedBy);
         const done = clean(it.stationDoneBy);
-        if (acc && isRole(acc, role)) push(acc, it.stationAcceptedAt, `Accepted ${it.name}`, it.id);
-        if (done && isRole(done, role)) push(done, it.stationDoneAt, `Done ${it.name}`, it.id);
+        if (acc && isRole(acc, role) && !skipMarker(acc)) push(acc, it.stationAcceptedAt, `Accepted ${it.name}`, it.id);
+        if (done && isRole(done, role) && !skipMarker(done)) push(done, it.stationDoneAt, `Done ${it.name}`, it.id);
         // Lines stamped before the accept/done columns existed only know the
         // LAST tap: still show it, so older days are not empty.
         if (!acc && !done) {
           const last = clean(it.stationStatusBy);
-          if (last && isRole(last, role)) {
+          if (last && isRole(last, role) && !skipMarker(last)) {
             push(last, it.stationStatusAt, `${it.stationStatus === "done" ? "Done" : "Accepted"} ${it.name}`, it.id);
           }
         }
@@ -427,6 +513,9 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
     const people = [...new Set(actions.map((a) => a.name))];
 
     const printedMs = t.printedAt ? new Date(String(t.printedAt)).getTime() : 0;
+    // A card never carries the print marker as a person either: a buna line the
+    // receipt cleaned keeps its timestamps but shows no "Done by cashier print".
+    const markless = (n: string | null | undefined): string | null => (isPrintMarker(n) ? null : n || null);
     const cardItems = items.map((it) => ({
       id: it.id,
       name: it.name,
@@ -436,12 +525,14 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
       removed: !!it.removed,
       stationName: it.stationName,
       stationStatus: it.stationStatus,
-      acceptedBy: it.stationAcceptedBy || (!it.stationDoneBy && it.stationStatus === "accepted" ? it.stationStatusBy : null),
+      acceptedBy: markless(it.stationAcceptedBy || (!it.stationDoneBy && it.stationStatus === "accepted" ? it.stationStatusBy : null)),
       acceptedAt: iso(it.stationAcceptedAt) || (!it.stationDoneBy && it.stationStatus === "accepted" ? iso(it.stationStatusAt) : null),
-      doneBy: it.stationDoneBy || (it.stationStatus === "done" ? it.stationStatusBy : null),
+      doneBy: markless(it.stationDoneBy || (it.stationStatus === "done" ? it.stationStatusBy : null)),
       doneAt: iso(it.stationDoneAt) || (it.stationStatus === "done" ? iso(it.stationStatusAt) : null),
       createdAt: iso(it.createdAt),
-      afterPrint: !!printedMs && !!it.createdAt && new Date(String(it.createdAt)).getTime() > printedMs,
+      afterPrint: !!printedMs && Math.max(0, (Number(it.quantity) || 0) - (saleQuantityByItem.get(it.id) || 0)) > 0,
+      saleQuantity: saleQuantityByItem.get(it.id) || 0,
+      saleEligible: saleItemIds.has(it.id),
       mine: station ? it.stationName === role : true,
     }));
 
@@ -453,8 +544,8 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
       const notDone = mine.filter((i) => i.stationStatus !== "done").length;
       if (notDone > 0 && t.status !== "cancelled") flags.push(`${notDone} line(s) never marked done`);
     } else {
-      if (!t.printedAt && t.status !== "cancelled") flags.push("Never printed (not on the EFD)");
-      const after = live.filter((i) => i.afterPrint).length;
+      if (printQueueMode && !t.printedAt && t.status !== "cancelled") flags.push("Never printed (not on the EFD)");
+      const after = printQueueMode ? live.filter((i) => i.afterPrint).length : 0;
       if (after > 0 && t.status !== "cancelled") flags.push(`${after} line(s) added after the print`);
     }
     if (cardItems.some((i) => i.removed)) flags.push("Line(s) removed");
@@ -473,7 +564,10 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
       orderNumber: t.orderNumber,
       orderType: t.orderType,
       status: t.status,
-      totalAmount: t.totalAmount || 0,
+      totalAmount: saleAmounts.get(t.id) || 0,
+      saleEligible: station
+        ? cardItems.some((item) => item.mine && !item.removed && item.saleEligible)
+        : saleTicketIds.has(t.id),
       serviceNote: t.serviceNote,
       createdAt: iso(t.createdAt),
       confirmedBy: t.confirmedBy,
@@ -496,24 +590,67 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
   // Station amount = value of the station's own lines; floor roles = bill total.
   const amountOf = (o: ShiftOrderCard) =>
     station
-      ? o.items.filter((i) => i.mine && !i.removed).reduce((s, i) => s + i.price * i.quantity, 0)
+      ? o.items.filter((item) => item.mine && !item.removed && item.saleEligible).reduce((s, item) => s + item.price * item.saleQuantity, 0)
       : o.totalAmount;
 
+  // ── THE BARISTA HAND-OVER (owner, Sept 2026) ──
+  // Registered owners per day, for owner-based shift buckets.
+  const claimsByDay = role === "barista" ? claimsByDayMap((input.shiftClaims || []).map((c) => ({ dayKey: c.dayKey, shift: c.shift, staffName: c.staffName }))) : null;
+  // Per-line lookup for barista person figures: which bill, how much, and is
+  // it sellable at all (removed lines and cancelled bills are never a sale —
+  // the exact rule the barista's own Items-sold tab uses, so both papers
+  // always agree).
+  const baristaLine = new Map<number, { amount: number; ticketId: number; sellable: boolean }>();
+  if (role === "barista") {
+    const ticketById = new Map(input.tickets.map((t) => [t.id, t] as const));
+    for (const it of input.items) {
+      if (it.stationName !== role) continue;
+      const cancelled = clean(ticketById.get(it.ticketId)?.status).toLowerCase() === "cancelled";
+      baristaLine.set(it.id, {
+        amount: (it.price || 0) * (saleQuantityByItem.get(it.id) || 0),
+        ticketId: it.ticketId,
+        sellable: (saleQuantityByItem.get(it.id) || 0) > 0 && !cancelled,
+      });
+    }
+  }
+
   const bucket = (shift: ShiftName): ShiftPersonRow[] => {
-    const map = new Map<string, { ids: Set<number>; ats: string[] }>();
+    const map = new Map<string, { ids: Set<number>; ats: string[]; itemIds: Set<number> }>();
     for (const o of Object.values(orders)) {
+      if (!o.saleEligible) continue;
       for (const a of o.actions) {
-        if (a.shift !== shift) continue;
-        const cur = map.get(a.name) || { ids: new Set<number>(), ats: [] };
+        // A station action on a post-print addition is production history, not
+        // receipt-backed sales, so keep it out of the shift's sales total.
+        if (station && typeof a.itemId === "number" && !saleItemIds.has(a.itemId)) continue;
+        // Barista: the OWNER decides the bucket, not the minute on the clock.
+        const aShift = claimsByDay ? actionShiftByClaims({ name: a.name, at: a.at, fallback: a.shift, claimsByDay }) : a.shift;
+        if (aShift !== shift) continue;
+        const cur = map.get(a.name) || { ids: new Set<number>(), ats: [], itemIds: new Set<number>() };
         cur.ids.add(o.ticketId);
+        if (typeof a.itemId === "number") cur.itemIds.add(a.itemId);
         cur.ats.push(a.at);
         map.set(a.name, cur);
       }
     }
     return [...map.entries()]
       .map(([name, v]) => {
-        const ids = [...v.ids].sort((a, b) => b - a);
         const ats = v.ats.sort();
+        if (role === "barista") {
+          // Line-for-line what his own tablet counts as sold: each line he
+          // accepted or finished once, sellable bills only. If nothing he
+          // touched survived (all removed/cancelled), he sold nothing.
+          let amount = 0;
+          const soldIds = new Set<number>();
+          for (const itemId of v.itemIds) {
+            const line = baristaLine.get(itemId);
+            if (!line || !line.sellable) continue;
+            amount += line.amount;
+            soldIds.add(line.ticketId);
+          }
+          const ids = [...soldIds].sort((a, b) => b - a);
+          return { name, orders: ids.length, amount, ticketIds: ids, firstAt: ats[0] || null, lastAt: ats[ats.length - 1] || null };
+        }
+        const ids = [...v.ids].sort((a, b) => b - a);
         return {
           name,
           orders: ids.length,
@@ -523,12 +660,16 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
           lastAt: ats[ats.length - 1] || null,
         };
       })
+      // A barista who only ever touched removed lines sold nothing: his row
+      // would read "0 orders • 0 ETB", so it is left out (the order cards
+      // below still carry the cancelled/removed proof).
+      .filter((p) => role !== "barista" || p.orders > 0 || p.amount > 0)
       .sort((a, b) => b.orders - a.orders || a.name.localeCompare(b.name));
   };
 
   const combinedMap = new Map<string, { names: string[]; ids: number[] }>();
   for (const o of Object.values(orders)) {
-    if (!o.combined) continue;
+    if (!o.combined || !o.saleEligible) continue;
     const key = o.people.join(" - ");
     const cur = combinedMap.get(key) || { names: o.people, ids: [] };
     cur.ids.push(o.ticketId);
@@ -554,10 +695,20 @@ export function buildShiftReport(input: BuildInput): ShiftReport {
     combined,
     orders,
     totals: {
-      orders: all.length,
-      amount: all.reduce((s, o) => s + amountOf(o), 0),
-      flagged: all.filter((o) => o.flags.length > 0).length,
-      people: new Set(all.flatMap((o) => o.people)).size,
+      orders: new Set(all.filter((order) => order.saleEligible).map((order) => order.ticketId)).size,
+      amount: all.reduce((s, order) => s + amountOf(order), 0),
+      flagged: all.filter((order) => order.flags.length > 0).length,
+      people: new Set(all.filter((order) => order.saleEligible).flatMap((order) => order.people)).size,
     },
+    ...(role === "barista" && input.shiftClaims?.length
+      ? {
+          shiftClaims: input.shiftClaims.map((c) => ({
+            dayKey: c.dayKey,
+            shift: c.shift,
+            staffName: c.staffName,
+            claimedAt: iso(c.claimedAt ?? null),
+          })),
+        }
+      : {}),
   };
 }

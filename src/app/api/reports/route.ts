@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { tickets, ticketItems, categories, orderSubmissions, ticketEvents, staffUsers, siteSettings } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { inArray, or, gt, eq } from "drizzle-orm";
+import { and, inArray, or, gt, eq } from "drizzle-orm";
 import { requireAdmin } from "@/lib/session";
 import { isLegacyAuditNote } from "@/lib/shift-report";
 import { stationOf, STATION_NAMES, type StationName } from "@/lib/stations";
+import { receiptPrintTimes, saleLinesForTicket, sumSaleItems, type SalesItemEventLike } from "@/lib/printed-sales";
 import {
   isTodayET,
   isYesterdayET,
@@ -22,49 +23,7 @@ import {
 // Every window here is a CALENDAR window (isWithinEtDays / isOnEtDayDaysAgo),
 // so "Last 30 Days" is exactly 30 Ethiopian days — today plus the 29 before it
 // — and slides forward one day at a time instead of resetting each month.
-/**
- * WHEN was this bill SOLD in the real world?
- *
- * The cafe runs the EFD print-queue workflow: a bill is a sale the moment the
- * cashier keys it into the government EFD/POS and prints the receipt
- * (tickets.printedAt) — it may stay open for hours while the guests eat and is
- * later "closed" by the waiter clearing the table, but the MONEY moment was the
- * print. Full-payment deployments mark bills paid/completed instead, so both
- * count. This is why the old report (paid/completed only) read as "not
- * working": in print-queue mode no bill ever reached those statuses.
- */
-function soldAt(t: { printedAt: Date | string | null; closedAt: Date | string | null; updatedAt: Date | string | null; createdAt: Date | string | null }): Date | string | null {
-  return t.printedAt || t.closedAt || t.updatedAt || t.createdAt;
-}
 
-/**
- * True when this bill counts as a sale.
- *
- * PRINT-QUEUE MODE (Fana's real flow): the ONLY money moment is the cashier's
- * ✓ PRINTED tap, so a bill counts when it carries that print stamp — whatever
- * happened to it afterwards (still open, table cleared, even later marked
- * paid). A bill that was never keyed into the EFD has no receipt paper and
- * must never enter the report: the cross-checker adds the EFD pile and the
- * numbers have to agree with the paper in her hand.
- *
- * FULL-PAYMENT MODE (the owner's Settings switch): nothing is ever printed, so
- * there the paid/completed mark IS the money moment.
- *
- * Cancelled bills NEVER count in either mode: a voided order is not a sale and
- * must not sit in any total the cross-checker reads.
- */
-function isSold(t: { status: string; printedAt: Date | string | null }, printQueueMode: boolean): boolean {
-  if (t.status === "cancelled") return false;
-  // Print-queue workflow: printed (still open) or closed (table cleared).
-  if ((t.status === "printed" || t.status === "closed") && !!t.printedAt) return true;
-  if (t.status === "paid" || t.status === "completed") {
-    // Born-paid sales (the Coffee Note's outdoor bill) are keyed into the EFD
-    // and stamped printedAt, so they count in print-queue mode too; an
-    // UNPRINTED paid bill only counts where nobody prints at all.
-    return printQueueMode ? !!t.printedAt : true;
-  }
-  return false;
-}
 
 /**
  * PERIOD REPORTS (owner, Sept 2026): ?period=today (default) | yesterday |
@@ -377,24 +336,99 @@ export async function GET(request: Request) {
         )
       );
 
-    const [cats, waiters, recentStaffSubmissions] = await Promise.all([
+    type ItemRow = typeof ticketItems.$inferSelect;
+    type EventRow = typeof ticketEvents.$inferSelect;
+    const ticketIds = allTickets.map((ticket) => ticket.id);
+    const emptyItems: ItemRow[] = [];
+    const emptyEvents: EventRow[] = [];
+    const [cats, waiters, recentStaffSubmissions, allItems, receiptEvents] = await Promise.all([
       db.select().from(categories),
       db.select().from(staffUsers),
       db.select().from(orderSubmissions).where(gt(orderSubmissions.createdAt, cutoff)),
+      ticketIds.length
+        ? db.select().from(ticketItems).where(inArray(ticketItems.ticketId, ticketIds))
+        : Promise.resolve(emptyItems),
+      ticketIds.length
+        ? db.select({
+            ticketId: ticketEvents.ticketId,
+            itemId: ticketEvents.itemId,
+            eventType: ticketEvents.eventType,
+            fromValue: ticketEvents.fromValue,
+            toValue: ticketEvents.toValue,
+            createdAt: ticketEvents.createdAt,
+          })
+            .from(ticketEvents)
+            .where(and(inArray(ticketEvents.ticketId, ticketIds), inArray(ticketEvents.eventType, ["ticket_printed", "item_quantity_changed"])))
+        : Promise.resolve(emptyEvents),
     ]);
 
-    // A bill counts as sold when it was PRINTED into the EFD (print-queue
-    // workflow — the cashier's ✓ PRINTED tap) or, in full-payment mode, marked
-    // paid/completed. Cancelled bills never count.
-    const revenueTickets = allTickets.filter((t) => isSold(t, printQueueMode));
+    const itemsByTicket = new Map<number, ItemRow[]>();
+    for (const item of allItems) {
+      if (!itemsByTicket.has(item.ticketId)) itemsByTicket.set(item.ticketId, []);
+      itemsByTicket.get(item.ticketId)!.push(item);
+    }
+    const printEventsByTicket = new Map<number, Array<Date | string | null>>();
+    const quantityEventsByTicket = new Map<number, SalesItemEventLike[]>();
+    for (const event of receiptEvents) {
+      if (event.eventType === "ticket_printed") {
+        const events = printEventsByTicket.get(event.ticketId) || [];
+        events.push(event.createdAt);
+        printEventsByTicket.set(event.ticketId, events);
+      } else if (event.eventType === "item_quantity_changed") {
+        const events = quantityEventsByTicket.get(event.ticketId) || [];
+        events.push(event);
+        quantityEventsByTicket.set(event.ticketId, events);
+      }
+    }
 
-    const todayTickets = revenueTickets.filter((t) => isTodayET(soldAt(t)));
-    const yesterdayTickets = revenueTickets.filter((t) => isYesterdayET(soldAt(t)));
-    const dayBeforeTickets = revenueTickets.filter((t) => isDayBeforeYesterdayET(soldAt(t)));
-    const weekTickets = revenueTickets.filter((t) => isWithinEtDays(soldAt(t), PERIOD_LENGTH_DAYS.week));
-    const monthTickets = revenueTickets.filter((t) => isWithinEtDays(soldAt(t), PERIOD_LENGTH_DAYS.month));
+    type ReceiptLine = { item: ItemRow; soldAt: Date | string | null | undefined };
+    const saleLinesByTicket = new Map<number, ReceiptLine[]>();
+    for (const ticket of allTickets) {
+      const lines = saleLinesForTicket(
+        ticket,
+        itemsByTicket.get(ticket.id) || [],
+        printQueueMode,
+        printEventsByTicket.get(ticket.id) || [],
+        quantityEventsByTicket.get(ticket.id) || [],
+      );
+      saleLinesByTicket.set(ticket.id, lines);
+    }
+    const soldQuantityByTicket = new Map<number, Map<number, number>>();
+    for (const [ticketId, lines] of saleLinesByTicket) {
+      const quantities = new Map<number, number>();
+      for (const line of lines) {
+        quantities.set(line.item.id, (quantities.get(line.item.id) || 0) + (Number(line.item.quantity) || 0));
+      }
+      soldQuantityByTicket.set(ticketId, quantities);
+    }
 
-    const sumOf = (rows: typeof revenueTickets) => rows.reduce((s, t) => s + (t.totalAmount || 0), 0);
+    // A separate receipt is a separate sale moment. Group each ticket's lines
+    // by the first cashier print at/after the line was added; a reprint of new
+    // additions never moves or recounts the original receipt lines.
+    type PeriodSaleTicket = (typeof allTickets)[number] & {
+      saleAmount: number;
+      saleLines: ReceiptLine[];
+      saleItems: ItemRow[];
+    };
+    const ticketsSoldDuring = (inDate: (date: Date | string | null | undefined) => boolean): PeriodSaleTicket[] =>
+      allTickets.flatMap((ticket) => {
+        const lines = (saleLinesByTicket.get(ticket.id) || []).filter((line) => line.soldAt && inDate(line.soldAt));
+        if (!lines.length) return [];
+        const saleItems = lines.map((line) => line.item);
+        return [{
+          ...ticket,
+          saleAmount: sumSaleItems(saleItems),
+          saleLines: lines,
+          saleItems,
+        }];
+      });
+    const todayTickets = ticketsSoldDuring(isTodayET);
+    const yesterdayTickets = ticketsSoldDuring(isYesterdayET);
+    const dayBeforeTickets = ticketsSoldDuring(isDayBeforeYesterdayET);
+    const weekTickets = ticketsSoldDuring((date) => isWithinEtDays(date, PERIOD_LENGTH_DAYS.week));
+    const monthTickets = ticketsSoldDuring((date) => isWithinEtDays(date, PERIOD_LENGTH_DAYS.month));
+
+    const sumOf = (rows: PeriodSaleTicket[]) => rows.reduce((sum, ticket) => sum + ticket.saleAmount, 0);
     const todayRevenue = sumOf(todayTickets);
     const yesterdayRevenue = sumOf(yesterdayTickets);
     const dayBeforeRevenue = sumOf(dayBeforeTickets);
@@ -457,7 +491,7 @@ export async function GET(request: Request) {
     //  • order history needs items of the newest 200 closed tickets only
     //  • the printed-bills archive (the admin's copy of the cashier's daily
     //    cross-check list) needs items of every bill printed in the period
-    const scopeTicketIds = new Set(scopeTickets.map((t) => t.id));
+    const saleAmountByTicketInScope = new Map(scopeTickets.map((ticket) => [ticket.id, ticket.saleAmount]));
 
     // ── PRINTED ARCHIVE (the paper world's receipt pile, registered as history) ──
     // Every bill the cashier keyed into the EFD in the selected period, whatever
@@ -468,12 +502,17 @@ export async function GET(request: Request) {
     // the payload) but the TOTAL below always covers the whole period.
     const ARCHIVE_CAP = 60;
     const printedPeriodTickets = allTickets
-      .filter((t) => t.status !== "cancelled" && t.printedAt && inScopeDay(t.printedAt))
+      .filter((ticket) => ticket.status !== "cancelled" && receiptPrintTimes(ticket, printEventsByTicket.get(ticket.id) || []).some(inScopeDay))
       .sort((a, b) => new Date(b.printedAt || 0).getTime() - new Date(a.printedAt || 0).getTime());
     const archiveCapped = printedPeriodTickets.length > ARCHIVE_CAP;
     const printedTodayTickets = archiveCapped ? printedPeriodTickets.slice(0, ARCHIVE_CAP) : printedPeriodTickets;
     const printedTodayIds = printedTodayTickets.map((t) => t.id);
-    const printedTodayTotal = printedPeriodTickets.reduce((s, t) => s + (t.totalAmount || 0), 0);
+    const printedTodayTotal = printedPeriodTickets.reduce((sum, ticket) => {
+      const receiptItems = (saleLinesByTicket.get(ticket.id) || [])
+        .filter((line) => line.soldAt && inScopeDay(line.soldAt))
+        .map((line) => line.item);
+      return sum + sumSaleItems(receiptItems);
+    }, 0);
 
     // Full-payment deployments never print, so there the paid/completed bills of
     // the period ARE the archive. In PRINT-QUEUE mode the archive is the EFD
@@ -491,27 +530,11 @@ export async function GET(request: Request) {
       .slice(0, 200);
     const historyTicketIds = orderHistoryTickets.map((t) => t.id);
 
-    const itemTicketIds = [...new Set([...scopeTicketIds, ...printedTodayIds, ...paidTodayIds, ...historyTicketIds])];
-    type ItemRow = typeof ticketItems.$inferSelect;
-    type EventRow = typeof ticketEvents.$inferSelect;
-    const emptyItems: ItemRow[] = [];
-    const emptyEvents: EventRow[] = [];
-    const [scopedItems, historyItems, historyEvents] = await Promise.all([
-      itemTicketIds.length > 0
-        ? db.select().from(ticketItems).where(inArray(ticketItems.ticketId, itemTicketIds))
-        : Promise.resolve(emptyItems),
-      historyTicketIds.length > 0
-        ? db.select().from(ticketItems).where(inArray(ticketItems.ticketId, historyTicketIds))
-        : Promise.resolve(emptyItems),
-      historyTicketIds.length > 0
-        ? db.select().from(ticketEvents).where(inArray(ticketEvents.ticketId, historyTicketIds))
-        : Promise.resolve(emptyEvents),
-    ]);
-    const itemsByTicket = new Map<number, ItemRow[]>();
-    for (const it of scopedItems) {
-      if (!itemsByTicket.has(it.ticketId)) itemsByTicket.set(it.ticketId, []);
-      itemsByTicket.get(it.ticketId)!.push(it);
-    }
+    const historySet = new Set(historyTicketIds);
+    const historyItems = allItems.filter((item) => historySet.has(item.ticketId));
+    const historyEvents = historyTicketIds.length
+      ? await db.select().from(ticketEvents).where(inArray(ticketEvents.ticketId, historyTicketIds))
+      : emptyEvents;
     const historyEventsByTicket = new Map<number, EventRow[]>();
     for (const event of historyEvents) {
       if (!historyEventsByTicket.has(event.ticketId)) historyEventsByTicket.set(event.ticketId, []);
@@ -525,17 +548,25 @@ export async function GET(request: Request) {
       orders: 0,
       revenue: 0,
     }));
-    for (const t of scopeTickets) {
-      const h = etHour(soldAt(t) as Date);
-      hourAgg[h].orders += 1;
-      hourAgg[h].revenue += t.totalAmount || 0;
+    const ticketIdsByHour = Array.from({ length: 24 }, () => new Set<number>());
+    for (const ticket of scopeTickets) {
+      for (const line of ticket.saleLines) {
+        if (!line.soldAt) continue;
+        const hour = etHour(line.soldAt as Date);
+        ticketIdsByHour[hour].add(ticket.id);
+        hourAgg[hour].revenue += (Number(line.item.price) || 0) * (Number(line.item.quantity) || 0);
+      }
+    }
+    for (let hour = 0; hour < hourAgg.length; hour += 1) {
+      hourAgg[hour].orders = ticketIdsByHour[hour].size;
     }
     const hourlySales = hourAgg.filter((h) => h.orders > 0);
     const peakHour =
       hourlySales.length > 0 ? hourlySales.reduce((a, b) => (b.revenue > a.revenue ? b : a), hourlySales[0]) : null;
 
-    // Popular items (from the period's sold tickets, non-removed)
-    const todayItems = [...scopeTicketIds].flatMap((id) => (itemsByTicket.get(id) || []).filter((it) => !it.removed));
+    // Popular items, categories, and station totals use exactly the active lines
+    // included in each ticket's printed receipt (or paid lines in full mode).
+    const todayItems = scopeTickets.flatMap((ticket) => ticket.saleItems);
     const totalItems = todayItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
     const itemAgg = new Map<string, { quantity: number; revenue: number }>();
     for (const it of todayItems) {
@@ -608,7 +639,7 @@ export async function GET(request: Request) {
       const m = t.paymentMethod || "cash";
       const cur = payAgg.get(m) || { count: 0, revenue: 0 };
       cur.count += 1;
-      cur.revenue += t.totalAmount || 0;
+      cur.revenue += t.saleAmount;
       payAgg.set(m, cur);
     }
     const paymentStats = Array.from(payAgg.entries()).map(([method, v]) => ({
@@ -654,7 +685,7 @@ export async function GET(request: Request) {
         orderType: ticket.orderType,
         serviceNote: ticket.serviceNote,
         status: ticket.status,
-        totalAmount: ticket.totalAmount || 0,
+        totalAmount: saleAmountByTicketInScope.get(ticket.id) || 0,
         happenedAt: toIso(ticket.confirmedAt),
         createdAt: toIso(ticket.createdAt),
         confirmedAt: toIso(ticket.confirmedAt),
@@ -677,7 +708,7 @@ export async function GET(request: Request) {
           orderType: ticket.orderType,
           serviceNote: ticket.serviceNote,
           status: ticket.status,
-          totalAmount: ticket.totalAmount || 0,
+          totalAmount: saleAmountByTicketInScope.get(ticket.id) || 0,
           happenedAt: toIso(submission.createdAt),
           createdAt: toIso(ticket.createdAt),
           confirmedAt: toIso(ticket.confirmedAt),
@@ -710,7 +741,7 @@ export async function GET(request: Request) {
         id: t.id,
         tableName: t.tableName,
         method: t.paymentMethod || "online",
-        totalAmount: t.totalAmount || 0,
+        totalAmount: t.saleAmount,
         closedAt: t.closedAt ? String(t.closedAt) : null,
       }))
       .slice(0, 30);
@@ -721,37 +752,45 @@ export async function GET(request: Request) {
     // appended, because nothing there is ever printed. Long periods show the
     // newest ARCHIVE_CAP bills; the total above still covers everything.)
     //
-    // ADDED-AFTER-PRINT (owner's decision, Sept 2026): a bill the waiter topped
-    // up after the cashier's print is a sale of ALL its lines, but only the
-    // lines that existed at print time are on the EFD paper in her hand — the
-    // rest wait for receipt #2 in her TO PRINT queue. Counting them here but
-    // hiding that fact is exactly what makes the piles disagree, so each card
-    // says how many lines and how many ETB are not on an EFD receipt yet, and
-    // the section total shows the same figure once for the whole period.
-    const printedAtMs = (t: { printedAt: Date | string | null }) => new Date(t.printedAt || 0).getTime();
-    const afterPrintOf = (t: { printedAt: Date | string | null }, items: ItemRow[]) => {
+    // Post-print additions remain visible for the cross-checker, but are not
+    // sale lines until a later print gives them an EFD receipt of their own.
+    const afterPrintOf = (t: { id: number; printedAt: Date | string | null }, items: ItemRow[]) => {
       if (!printQueueMode || !t.printedAt) return { count: 0, amount: 0 };
-      const at = printedAtMs(t);
-      const pending = items.filter(
-        (it) => !it.removed && !!it.createdAt && new Date(it.createdAt).getTime() > at
-      );
+      const soldQuantities = soldQuantityByTicket.get(t.id) || new Map<number, number>();
+      const pending = items.flatMap((item) => {
+        if (item.removed) return [];
+        const quantity = Math.max(0, (Number(item.quantity) || 0) - (soldQuantities.get(item.id) || 0));
+        return quantity > 0 ? [{ item, quantity }] : [];
+      });
       return {
         count: pending.length,
-        amount: pending.reduce((s, it) => s + (it.price || 0) * (it.quantity || 0), 0),
+        amount: pending.reduce((sum, line) => sum + (Number(line.item.price) || 0) * line.quantity, 0),
       };
     };
 
     const printedToday = printedTodayTickets.map((t) => {
       const items = itemsByTicket.get(t.id) || [];
       const pending = afterPrintOf(t, items);
-      return { ...t, items, itemsAfterPrint: pending.count, itemsAfterPrintAmount: pending.amount };
+      return {
+        ...t,
+        totalAmount: saleAmountByTicketInScope.get(t.id) || 0,
+        items,
+        itemsAfterPrint: pending.count,
+        itemsAfterPrintAmount: pending.amount,
+      };
     });
     for (const id of paidTodayIds) {
       const t = scopeTickets.find((x) => x.id === id);
       if (t) {
         const items = itemsByTicket.get(id) || [];
         const pending = afterPrintOf(t, items);
-        printedToday.push({ ...t, items, itemsAfterPrint: pending.count, itemsAfterPrintAmount: pending.amount });
+        printedToday.push({
+          ...t,
+          totalAmount: saleAmountByTicketInScope.get(t.id) || 0,
+          items,
+          itemsAfterPrint: pending.count,
+          itemsAfterPrintAmount: pending.amount,
+        });
       }
     }
     // "Not on an EFD receipt yet" figure for the bills whose lines were actually

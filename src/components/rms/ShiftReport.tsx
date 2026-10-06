@@ -264,13 +264,28 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
       ]
     : [];
 
+  // BARISTA HAND-OVER (owner, Sept 2026): the registered owners of the days
+  // in view, named right under the shift title — "Morning Shift • before
+  // 14:00 • Abel". The first accepted drink of the shift is who registered,
+  // and their per-line figures match the barista's own Items-sold tab.
+  const claimOwners = (key: "morning" | "afternoon"): string => {
+    if (role !== "barista" || !data?.shiftClaims?.length) return "";
+    const keys = new Set(data.dayKeys || []);
+    const names = [...new Set(data.shiftClaims.filter((c) => c.shift === key && keys.has(c.dayKey)).map((c) => c.staffName))];
+    return names.join(", ");
+  };
+  const ownerSuffix = (key: "morning" | "afternoon") => {
+    const names = claimOwners(key);
+    return names ? ` • ${names}` : "";
+  };
+
   const pill = (active: boolean) =>
     `px-3 py-2 rounded-xl text-xs font-black uppercase tracking-wide transition active:scale-95 ${
       active ? "bg-[#C9A227] text-[#2C1B17]" : "bg-black/30 border border-stone-700 text-stone-300 hover:border-[#C9A227]/60"
     }`;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm no-print" data-shift-report="panel">
+    <div className="fana-fit-screen fixed inset-0 z-50 bg-black/85 backdrop-blur-sm no-print" data-shift-report="panel">
       <style>{SHIFT_REPORT_CSS}</style>
       {/* THE SCROLLER: only this layer scrolls. The header is part of the
           content, so it scrolls away with everything else (owner, Sept 2026:
@@ -296,6 +311,9 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
                     "Who handled which order, per shift. Morning = before {split} ({local} local), Afternoon = from {split}. Orders handled by 2+ people of the same role are listed under Combined.",
                     { split: pad(split), local: ethiopianHour(split) }
                   )}
+                </p>
+                <p className="text-[11px] text-amber-200/80 mt-1">
+                  {t("Shift sales use only units already on an EFD receipt (or paid lines in full-payment mode). New items and added quantities wait until a later receipt; each earlier receipt is counted once.")}
                 </p>
               </div>
               <div className="flex flex-wrap justify-end gap-2 shrink-0">
@@ -379,7 +397,7 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
                   <ShiftSection
                     icon={<Sun className="w-4 h-4 text-amber-300" />}
                     title={t("Morning Shift")}
-                    subtitle={t("before {time}", { time: pad(split) })}
+                    subtitle={t("before {time}", { time: pad(split) }) + ownerSuffix("morning")}
                     rows={data.morning}
                     prefix="m"
                     open={open}
@@ -396,7 +414,7 @@ export default function ShiftReport({ onClose, logoUrl }: { onClose: () => void;
                   <ShiftSection
                     icon={<Sunset className="w-4 h-4 text-orange-400" />}
                     title={t("Afternoon Shift")}
-                    subtitle={t("from {time}", { time: pad(split) })}
+                    subtitle={t("from {time}", { time: pad(split) }) + ownerSuffix("afternoon")}
                     rows={data.afternoon}
                     prefix="a"
                     open={open}
@@ -710,12 +728,12 @@ function PersonSales({ ids, data, role, person, i18n }: { ids: number[]; data: R
     if (!order) continue;
     let counted = false;
     for (const item of order.items) {
-      if (item.removed || (role !== "waiter" && item.stationName !== role)) continue;
+      if (item.removed || !item.saleEligible || item.saleQuantity <= 0 || (role !== "waiter" && item.stationName !== role)) continue;
       // Station ownership is the Accept/Done audit, not the waiter who sent the bill.
       if (role !== "waiter" && item.acceptedBy !== person && item.doneBy !== person) continue;
       const row = pile.get(item.name) || { quantity: 0, amount: 0 };
-      row.quantity += item.quantity;
-      row.amount += item.price * item.quantity;
+      row.quantity += item.saleQuantity;
+      row.amount += item.price * item.saleQuantity;
       pile.set(item.name, row);
       counted = true;
     }
@@ -930,7 +948,7 @@ function OrderDetail({
   if (typeof document === "undefined") return null;
   return createPortal(
     <div
-      className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-3 sm:p-6 no-print [touch-action:none]"
+      className="fana-fit-screen fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-3 sm:p-6 no-print [touch-action:none]"
       onClick={onClose}
       data-shift-report="order-backdrop"
     >
@@ -987,6 +1005,14 @@ function OrderDetail({
                   <p className="font-semibold text-stone-300">
                     {i.quantity} × {staffEtb(i.price)} • {td(i.stationName || "kitchen")} • {t("added {time}", { time: formatClock(i.createdAt) })}
                   </p>
+                  {i.saleQuantity !== i.quantity && (
+                    <p className="font-black text-amber-200">
+                      {t("EFD: {printed} unit(s) printed • {pending} waiting", {
+                        printed: i.saleQuantity,
+                        pending: Math.max(0, i.quantity - i.saleQuantity),
+                      })}
+                    </p>
+                  )}
                   {i.notes && <p className="italic text-amber-300">📝 {i.notes}</p>}
                   {i.acceptedBy && (
                     <p className="font-bold text-sky-300">
@@ -1219,13 +1245,21 @@ function ShiftPrintSheet({
                       .map((i) => (
                         <tr key={i.id}>
                           <td>
-                            {i.quantity} × {i.name}
+                            {i.saleQuantity} × {i.name}
                             {i.notes ? ` (${i.notes})` : ""}
+                            {i.saleQuantity !== i.quantity && (
+                              <div style={{ fontSize: "10px" }}>
+                                {t("EFD: {printed} unit(s) printed • {pending} waiting", {
+                                  printed: i.saleQuantity,
+                                  pending: Math.max(0, i.quantity - i.saleQuantity),
+                                })}
+                              </div>
+                            )}
                           </td>
                           <td>
                             {i.doneBy ? t("✓ Done by {name}", { name: i.doneBy }) : i.acceptedBy ? t("▶ Accepted by {name}", { name: i.acceptedBy }) : ""}
                           </td>
-                          <td className="num">{staffEtb(i.price * i.quantity)}</td>
+                          <td className="num">{staffEtb(i.price * i.saleQuantity)}</td>
                         </tr>
                       ))}
                   </tbody>

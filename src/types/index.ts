@@ -227,6 +227,22 @@ export interface TicketItem {
   stationStatusBy?: string | null;
   /** WHEN they pressed it (crew-action audit). */
   stationStatusAt?: string | null;
+  /**
+   * WHO tapped Accept on this line (shift-report audit). Null when the line
+   * was never started by the crew.
+   */
+  stationAcceptedBy?: string | null;
+  /** WHEN the crew tapped Accept on this line. */
+  stationAcceptedAt?: string | null;
+  /**
+   * WHO tapped Done on this line. "cashier print" (not a person) marks a line
+   * finished by the cashier's ✓ PRINTED — the receipt served the food, the
+   * crew never clicked Done (the owner reads exactly that in the admin
+   * report). Null = the line was never finished.
+   */
+  stationDoneBy?: string | null;
+  /** WHEN the line was finished (crew Done tap, or the cashier's print). */
+  stationDoneAt?: string | null;
   createdAt?: string;
   idempotencyKey?: string | null;
 }
@@ -290,9 +306,8 @@ export interface Ticket {
   unprintedStaffSubmissions?: number;
   /**
    * Report archive only (GET /api/reports): how many bill lines were added AFTER
-   * this bill's last EFD print. They are real sales, but they are not on the
-   * receipt paper yet — the cashier still owes them a receipt #2 — so the
-   * cross-check card says so instead of letting the piles disagree silently.
+   * this bill's last EFD print. They are excluded from sales until the cashier
+   * prints receipt #2; the archive surfaces them for follow-up.
    */
   itemsAfterPrint?: number;
   /** ETB value of those not-yet-printed lines. */

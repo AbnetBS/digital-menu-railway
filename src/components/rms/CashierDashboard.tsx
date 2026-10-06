@@ -10,16 +10,15 @@ import { Ticket, TicketItem, CafeTable } from "@/types";
 import { triggerDesktopNotification } from "@/lib/notifications";
 import { formatClock, formatDateTime, groupOrderLines, type OrderLine, waitingLabel } from "@/lib/order-lines";
 import { unlockAudio, playDing, playAlarm } from "@/lib/sound";
-import { enablePocketAlerts, pushSupported } from "@/lib/push-client";
-import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
-import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
+
 import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
 import CoffeeNotePanel from "@/components/rms/CoffeeNotePanel";
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import BillNotificationCard, { BillNotification } from "@/components/rms/BillNotificationCard";
-import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
+import DayCloseButton from "@/components/rms/DayCloseButton";
+import { closeTopBackLayer, installStaffBackNavigation } from "@/lib/staff-back-navigation";
 
 interface StaffLite {
   id: number;
@@ -109,6 +108,12 @@ export default function CashierDashboard() {
   // never reached it and the counter tablet stayed silent. Reads use the ref.
   const alertsOnRef = useRef(false);
   const [toast, setToast] = useState("");
+  // THE STATION GATE (owner, 29 Sept 2026): "the stations must accept and done
+  // for the printed button in cashier to work". When the server refuses a print
+  // (409: a crew has not tapped Done yet) the reason stays ON THE CARD, under
+  // the button, until a later print of that bill succeeds — the 4-second toast
+  // alone was too easy to miss on a busy screen.
+  const [printBlocked, setPrintBlocked] = useState<Record<number, string>>({});
 
   // ── GUEST EVENTS TAKE OVER THE SCREEN ──
   // The tablet lives behind the counter, often face down or asleep. A guest
@@ -187,14 +192,10 @@ export default function CashierDashboard() {
     localStorage.setItem("fana_alerts", "1");
     setAlertsOn(true);
     alertsOnRef.current = true;
-    // (Re)arm pocket alerts too, then ring a sample so she KNOWS the device is
-    // armed instead of guessing.
-    if (pushSupported()) {
-      await enablePocketAlerts();
-      void pocket.refreshStatus();
-    }
+    // Staff phones are no longer notified (owner's decision, 29 Sept 2026):
+    // this button just unlocks the audio engine and proves the alarm works.
     playAlarm();
-    triggerDesktopNotification({ title: tNow("Fana Cafe • Cashier"), message: tNow("🔔 Ring bell + desktop + pocket alerts are now ON for this device!") });
+    triggerDesktopNotification({ title: tNow("Fana Cafe • Cashier"), message: tNow("🔔 Ring bell + desktop alerts are now ON for this device!") });
   };
 
   const customerAddsOf = (t: Ticket) => t.unprintedCustomerSubmissions || 0;
@@ -211,23 +212,24 @@ export default function CashierDashboard() {
   const outdoorBadge = (t: Ticket) => (isGroup(t) ? L("👥 Group") : L("Outdoor"));
   /**
    * An outdoor order is ready when every live line that needs crew completion is
-   * done. Buna is the exception: the buna makers use a read-only request list,
-   * so the cashier's ✓ PRINTED tap clears their line instead of waiting for a
-   * station Done tap. This lets a buna-only outdoor order show Mark Delivered
-   * as soon as it is printed, and mixed orders wait only for the other crews.
+   * done. THE PRINT SERVES THE FOOD (owner's decision, Sept 2026): a line that
+   * was on the printed receipt is served — the cashier's ✓ PRINTED tap stamps
+   * it done for every crew (this also covers bills printed before that rule
+   * existed), so the order can show Mark Delivered the moment it is printed
+   * even if nobody tapped Done. A HELD guest addition is the exception: the
+   * crews never received it, so it is ready only when it is genuinely done.
    */
   const outdoorReady = (t: Ticket) => {
     const live = (t.items || []).filter((item) => !item.removed);
     if (live.length === 0) return false;
+    const printedMs = t.printedAt ? new Date(t.printedAt).getTime() || 0 : 0;
     return live.every((item) => {
-      if (item.stationName === "buna") {
-        if (item.stationStatus === "done") return true;
-        if (!t.printedAt) return false;
-        const printedMs = new Date(t.printedAt).getTime() || 0;
-        const createdMs = item.createdAt ? new Date(item.createdAt).getTime() || 0 : 0;
-        return printedMs > 0 && createdMs <= printedMs;
-      }
-      return item.stationStatus === "done";
+      if (item.stationStatus === "done") return true;
+      // Held = the stations have not been told about this line yet.
+      if (item.released === false) return false;
+      if (!printedMs) return false;
+      const createdMs = item.createdAt ? new Date(item.createdAt).getTime() || 0 : 0;
+      return createdMs <= printedMs;
     });
   };
   const isGuestTopUp = (t: Ticket) =>
@@ -556,16 +558,6 @@ export default function CashierDashboard() {
     loadHistoryRef.current = loadHistory;
   });
 
-  // POCKET MODE: keeps this device subscribed (self-healing) and rings the
-  // alarm the moment a push lands, even if the SSE stream was frozen.
-  const pocket = usePocketAlerts({
-    active: !!staffName,
-    onAlert: () => {
-      loadAllRef.current();
-      loadHistoryRef.current();
-    },
-  });
-
   useEffect(() => {
     if (staffName) {
       loadAll();
@@ -639,19 +631,12 @@ export default function CashierDashboard() {
     if (r.ok && d?.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem("fana_cashier", JSON.stringify(d.staff));
-      // GROUP 10: the login tap unlocks audio AND arms pocket notifications —
-      // the cashier's phone/tablet rings even when the browser is closed.
+      // The login tap unlocks the audio engine, so the alarm rings loudly on
+      // this device (staff phones are no longer notified).
       unlockAudio();
       localStorage.setItem("fana_alerts", "1");
       setAlertsOn(true);
       alertsOnRef.current = true;
-      void enablePocketAlerts().then((res) => {
-        void pocket.refreshStatus();
-        if (res === "denied") {
-          // notifications blocked in the browser — the in-app alarm still works
-          console.warn("Pocket notifications blocked by the browser settings");
-        }
-      });
     } else {
       setLoginError(tNow("Wrong name or PIN. Ask admin for your PIN."));
     }
@@ -793,8 +778,19 @@ export default function CashierDashboard() {
     if (r.status === 401) return expireSession();
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      showToast(d?.error || tNow("Could not mark this bill printed. Try again."));
+      const why = d?.error || tNow("Could not mark this bill printed. Try again.");
+      // A gated print (409) leaves the card in her queue with the reason on it.
+      setPrintBlocked((prev) => ({ ...prev, [t.id]: why }));
+      showToast(why);
+      loadAll();
+      return;
     }
+    setPrintBlocked((prev) => {
+      if (!(t.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[t.id];
+      return next;
+    });
     loadAll();
     loadHistory();
   };
@@ -899,6 +895,39 @@ export default function CashierDashboard() {
       return next;
     });
   };
+
+  /* ── THE PHONE'S BACK BUTTON = ONE STEP BACK (owner's decision, Sept 2026) ──
+   * "1 back button clcik 1 step back not completly take them to the start":
+   * the cashier's screens are pop-ups over one board, so Back closes the TOP
+   * pop-up only — the guest alert, a receipt photo, the item editor, a
+   * composer, the coffee-note panel, the bill — and only when the board is
+   * bare does the press really leave the app. */
+  const closeUrgentAlert = () =>
+    setUrgent((cur) => {
+      if (cur) answeredRef.current.add(cur.id);
+      return null;
+    });
+  const stepBack = () =>
+    closeTopBackLayer([
+      { at: () => !!urgent, close: closeUrgentAlert },
+      { at: () => !!receiptModal, close: () => setReceiptModal(null) },
+      { at: () => !!editTarget && canKeepEditing, close: () => setEditTarget(null) },
+      { at: () => !!addToTicket, close: () => setAddToTicket(null) },
+      { at: () => outdoorComposerOpen, close: () => setOutdoorComposerOpen(false) },
+      { at: () => coffeeNoteOpen, close: () => setCoffeeNoteOpen(false) },
+      { at: () => !!billModal, close: () => setBillModal(null) },
+      // The board itself steps back to her login (a real logout, so the screen
+      // never lies about a live session); only the next press leaves the app.
+      { at: () => !!staffName, close: logout },
+    ]);
+  const stepBackRef = useRef<() => boolean>(() => false);
+  useEffect(() => {
+    stepBackRef.current = stepBack;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    return installStaffBackNavigation(window, () => stepBackRef.current());
+  }, []);
 
   /* ── LOGIN ── */
   if (!staffName) {
@@ -1088,15 +1117,8 @@ export default function CashierDashboard() {
               <span className="text-[9px] text-stone-500 mt-0.5">{L("last updated {lastUpdated}", { lastUpdated })}</span>
             )}
           </div>
-          <PocketAlertsChip
-            status={pocket.status}
-            busy={pocket.busy}
-            onArm={pocket.arm}
-            onTest={pocket.test}
-            onToast={showToast}
-            notificationsEnabled={pocket.notificationsEnabled}
-            onSetNotificationsEnabled={pocket.setNotificationsEnabled}
-          />
+          {/* TODAY'S SHIFT END — sends today's total to the owner's phone */}
+          <DayCloseButton onToast={showToast} />
           {/* RING BELL enable button — click once on each cashier device */}
           <button
             onClick={enableAlerts}
@@ -1194,9 +1216,6 @@ export default function CashierDashboard() {
       )}
 
       <div className="max-w-[1700px] mx-auto p-4 md:p-6 space-y-8">
-        {/* iPhone pocket-mode instruction (Android needs nothing) */}
-        <PocketAlertsHint />
-
         <section className="bg-[#2C1B17] border border-violet-500/30 rounded-3xl p-4 md:p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -1328,6 +1347,11 @@ export default function CashierDashboard() {
                         >
                           {L("✓ Printed")}
                         </button>
+                      )}
+                      {printBlocked[t.id] && (
+                        <p className="w-full text-[11px] font-bold text-rose-200 bg-rose-950/60 border border-rose-800 rounded-lg px-2 py-1.5">
+                          {"🚫"}{" "}{printBlocked[t.id]}
+                        </p>
                       )}
                       {t.status === "printed" && outdoorReady(t) && (
                         <button
@@ -1935,6 +1959,14 @@ export default function CashierDashboard() {
                             </button>
                           )}
                         </div>
+                        {/* THE STATION GATE (owner, 29 Sept 2026): the print is
+                            refused until every crew has tapped Done. The reason
+                            stays on the card until a later print succeeds. */}
+                        {printBlocked[t.id] && (
+                          <p className="text-[11px] font-bold text-rose-200 bg-rose-950/60 border border-rose-800 rounded-xl px-3 py-2">
+                            {"🚫"}{" "}{printBlocked[t.id]}
+                          </p>
+                        )}
                         {!orderLocked && problem && (
                           <div className="bg-rose-950/40 border border-rose-800 rounded-xl px-3 py-2 text-[11px] text-rose-200 space-y-2">
                             <p>{Lr("Use <b>Remove</b> on an item above if it is unavailable, or cancel the whole order:", { b: (s) => <strong>{s}</strong> })}</p>
@@ -2254,7 +2286,7 @@ export default function CashierDashboard() {
           printed bill needs a cross-check against the EFD receipt). */}
       {billModal && (
         <div
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fana-fit-screen fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
           onClick={() => setBillModal(null)}
         >
           <div
@@ -2387,7 +2419,7 @@ export default function CashierDashboard() {
 
       {/* receipt image modal */}
       {receiptModal && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setReceiptModal(null)}>
+        <div className="fana-fit-screen fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setReceiptModal(null)}>
           <img src={receiptModal} alt={L("Payment receipt")} className="max-h-[85vh] max-w-full rounded-2xl border border-[#C9A227]" />
         </div>
       )}
@@ -2445,7 +2477,7 @@ function EditItemModal({ item, onClose, onSaved }: { item: TicketItem; onClose: 
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fana-fit-screen fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
         className="bg-[#2C1B17] border-2 border-[#C9A227]/50 rounded-2xl w-full max-w-sm p-5 space-y-4"
         onClick={(e) => e.stopPropagation()}

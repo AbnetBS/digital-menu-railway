@@ -122,6 +122,8 @@ const STAFF_FILES = [
   "src/components/StaffAuthModal.tsx",
   "src/app/(internal)/admin/page.tsx",
   "src/components/rms/ReportsTab.tsx",
+  "src/components/rms/DailySalesTab.tsx",
+  "src/components/rms/DayCloseButton.tsx",
   "src/components/rms/ShiftReport.tsx",
   "src/components/rms/WaiterApp.tsx",
   "src/components/rms/CashierDashboard.tsx",

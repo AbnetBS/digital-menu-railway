@@ -5,13 +5,10 @@ import { Coffee, CookingPot, CupSoda, RefreshCw, LogOut, CheckCircle2, BellRing,
 import { unlockAudio, playAlarm, playDing, setStationBell } from "@/lib/sound";
 import { formatClock, formatDayMonthYear, minutesSince, waitingLabel } from "@/lib/order-lines";
 import { triggerDesktopNotification } from "@/lib/notifications";
-import { enablePocketAlerts } from "@/lib/push-client";
-import PocketAlertsHint from "@/components/rms/PocketAlertsHint";
-import PocketAlertsChip from "@/components/rms/PocketAlertsChip";
-import { usePocketAlerts } from "@/lib/use-pocket-alerts";
 import Link from "next/link";
 import { phrase, useStaffT, tNow, staffEtb } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
+import { closeTopBackLayer, installStaffBackNavigation } from "@/lib/staff-back-navigation";
 import {
   SALES_MODES,
   SALES_MODE_LABELS,
@@ -25,6 +22,7 @@ import {
 } from "@/lib/station-sales";
 
 type Station = "barista" | "kitchen" | "juice";
+type StationSalesView = "printed" | SalesMode;
 
 interface StaffLite {
   id: number;
@@ -46,6 +44,46 @@ interface StationItem {
   stationStatusAt?: string | null;
   /** When THIS line arrived — a later "2 Tea" is newer work than the first one. */
   createdAt?: string | null;
+  /**
+   * BARISTA HAND-OVER (shadow line): another barista owns this line now.
+   * The server keeps it in the payload so this screen can follow it SILENTLY
+   * (a line walking off to its owner is never the "removed, stop preparing"
+   * alarm), but the board, the counters and the buttons never show it.
+   */
+  taken?: boolean;
+}
+
+/**
+ * BARISTA HAND-OVER meta (owner, Sept 2026): the server tells the barista's
+ * screen where the day stands — who owns which shift (the first ACCEPTED
+ * drink of the shift registers the owner, a bare login registers nothing),
+ * whether this pair of eyes may still see and accept pending drinks, and the
+ * exact end of the 20-minute hand-over window for the countdown. Other lanes
+ * get no such block (their board stays shared, untouched).
+ */
+interface ShiftMeta {
+  phase: "open" | "handover" | "after";
+  splitHour: number;
+  windowStart: string;
+  windowEnd: string;
+  seesPending: boolean;
+  canAcceptPending: boolean;
+  myShift: "morning" | "afternoon" | null;
+  /** A FULL-DAY barista: he kept the morning and continued into the afternoon. */
+  alsoMorning: boolean;
+  /**
+   * Who holds the board away from me right now (null = nothing does). The
+   * standby screen names this person: "Barista morning shift is taken by
+   * Eyob" (afternoon: "Today's afternoon shift is Ermias"). A registered
+   * shift is locked, morning and afternoon alike, so there is no button here.
+   */
+  blockedBy: { name: string; shift: "morning" | "afternoon" } | null;
+  /** I am the morning owner, the window closed and nobody took the afternoon. */
+  canContinueAfternoon: boolean;
+  owners: {
+    morning: { name: string; at: string | null } | null;
+    afternoon: { name: string; at: string | null } | null;
+  };
 }
 
 /**
@@ -100,6 +138,18 @@ interface StationTicket {
   items: StationItem[];
 }
 
+/**
+ * THE DONE LINGER (owner, 29 Sept 2026): "make it stay for 3 min before it
+ * disappears after it clicked done" — the crews asked for it on the kitchen,
+ * the barista and the juice screens (the buna lane is a different screen and
+ * keeps its own behaviour). The Done tap used to free the line from this board
+ * in the same second, so the person who tapped it had nothing to point at when
+ * a plate came back. Now the line stays where it was, struck through with its
+ * ✓ Done badge and the minutes it still lingers — this is the person's own
+ * confirmation window, NOT work: every later refresh simply finds it done.
+ */
+const DONE_LINGER_MS = 3 * 60 * 1000;
+
 const STATION_META = {
   barista: { label: phrase("Barista"), icon: Coffee, color: "amber", slug: "barista" as Station, desc: phrase("Machine coffee & cold beverages") },
   kitchen: { label: phrase("Kitchen (Chef)"), icon: CookingPot, color: "emerald", slug: "kitchen" as Station, desc: phrase("Foods, pastries, meals & snacks") },
@@ -117,6 +167,16 @@ export default function StationApp({ station }: { station: Station }) {
   const [pin, setPin] = useState("");
   const [loginError, setLoginError] = useState("");
   const [tickets, setTickets] = useState<StationTicket[]>([]);
+  // BARISTA HAND-OVER: where my shift stands (null for the kitchen/juice
+  // lanes — no envelope, no change). The server clock offset keeps the
+  // 20-minute countdown honest even when the tablet's own clock is wrong.
+  const [shiftMeta, setShiftMeta] = useState<ShiftMeta | null>(null);
+  const serverOffsetRef = useRef(0);
+  const [handoverLeftMs, setHandoverLeftMs] = useState<number | null>(null);
+  const handoverEndFiredRef = useRef(false);
+  // THE SHIFT BUTTON (owner, 29 Sept 2026): "I will continue as afternoon
+  // shift". One tap at a time, so a double tap can never register twice.
+  const [shiftBusy, setShiftBusy] = useState(false);
   const [alertsOn, setAlertsOn] = useState(false);
   // STALE-CLOSURE FIX: the SSE handler is created once (deps [staffName]) and
   // captured whatever `alertsOn` was then. Enabling alerts afterwards never
@@ -130,14 +190,15 @@ export default function StationApp({ station }: { station: Station }) {
 
   // ── ITEMS SOLD (the crew's own tab) ──
   // What THIS cook / barista / juice maker sold, grouped by menu category, for
-  // the date they tap and the pile they choose (accepted / done / combined).
+  // the date they tap and the pile they choose (accepted / done).
   // The owner replaced the old "Today's History" counter with it: the crew
   // asked what they SOLD, not how many tables were open. All counting rules
   // live in the pure @/lib/station-sales module (the same attribution the shift
   // report uses), served by /api/station-sales, so the two papers agree.
   const [showSales, setShowSales] = useState(false);
+  const [salesVisible, setSalesVisible] = useState(true);
   const [salesPeriod, setSalesPeriod] = useState<SalesPeriod>("today");
-  const [salesMode, setSalesMode] = useState<SalesMode>("combined");
+  const [salesView, setSalesView] = useState<StationSalesView>("printed");
   const [sales, setSales] = useState<StationSalesReport | null>(null);
   const [salesLoading, setSalesLoading] = useState(false);
   const [salesError, setSalesError] = useState("");
@@ -160,7 +221,19 @@ export default function StationApp({ station }: { station: Station }) {
       expireSession();
       return null;
     }
+    if (r.status === 403) {
+      const data = await r.json().catch(() => null);
+      if (data?.code === "STATION_SALES_HIDDEN") {
+        setSalesVisible(false);
+        setShowSales(false);
+        showSalesRef.current = false;
+        setSales(null);
+        setTodayUnits(null);
+        return null;
+      }
+    }
     if (!r.ok) throw new Error(`station-sales answered ${r.status}`);
+    setSalesVisible(true);
     return (await r.json()) as StationSalesReport;
   };
 
@@ -173,7 +246,7 @@ export default function StationApp({ station }: { station: Station }) {
         setSales(report);
         setSalesPeriod(report.period);
         salesPeriodRef.current = report.period;
-        if (report.period === "today") setTodayUnits(report.modes?.combined?.quantity ?? 0);
+        if (report.period === "today") setTodayUnits(report.printed?.quantity ?? 0);
       }
     } catch {
       setSalesError(tNow("Could not load your sales. Tap refresh to try again."));
@@ -187,7 +260,7 @@ export default function StationApp({ station }: { station: Station }) {
     try {
       const report = await fetchSales("today");
       if (!report) return;
-      setTodayUnits(report.modes?.combined?.quantity ?? 0);
+      setTodayUnits(report.printed?.quantity ?? 0);
       if (showSalesRef.current && salesPeriodRef.current === "today") setSales(report);
     } catch {
       /* the tile simply keeps the previous number */
@@ -195,6 +268,7 @@ export default function StationApp({ station }: { station: Station }) {
   };
 
   const openSales = () => {
+    if (!salesVisible) return;
     setShowSales(true);
     showSalesRef.current = true;
     loadSales(salesPeriod);
@@ -209,6 +283,7 @@ export default function StationApp({ station }: { station: Station }) {
     salesPeriodRef.current = salesPeriod;
     showSalesRef.current = showSales;
   }, [salesPeriod, showSales]);
+
 
   // THIS PAGE'S ALARM SOUND (owner's decision, Sept 2026): the juice bar
   // stands next to the kitchen and the one shared alarm made the crews
@@ -230,6 +305,27 @@ export default function StationApp({ station }: { station: Station }) {
   // Ticks every 30s so the "waiting N min" badge on each ticket stays honest
   // even when no new order arrives to trigger a refresh.
   const [now, setNow] = useState(() => Date.now());
+
+  /**
+   * How long THIS line still lingers after its Done tap (0 = gone). Read from
+   * the SERVER stamp (`stationStatusAt`, the same clock the reports use), so a
+   * tablet reloaded right after the tap shows the same countdown and nobody
+   * can keep a finished line on the board forever.
+   */
+  const doneLingerLeft = (item: StationItem): number => {
+    if (item.stationStatus !== "done") return 0;
+    const at = item.stationStatusAt ? Date.parse(item.stationStatusAt) : NaN;
+    if (!Number.isFinite(at)) return 0;
+    return Math.max(0, at + DONE_LINGER_MS - now);
+  };
+  const lingeringCount = tickets.reduce(
+    (n, t) => n + t.items.filter((i) => !i.taken && doneLingerLeft(i) > 0).length,
+    0
+  );
+  const lingerClock = (ms: number) => {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+  };
   const pendingSeenRef = useRef<Set<number>>(new Set());
   // EVERY ROLE EVENT RINGS: the crew also has to hear when a line they are
   // cooking is REMOVED or its quantity is corrected, and when an order they
@@ -242,6 +338,11 @@ export default function StationApp({ station }: { station: Station }) {
   >(new Map());
   /** Ticket id -> table name, so a vanished order can still be named. */
   const ticketNameRef = useRef<Map<number, string>>(new Map());
+  // THE DONE TAP FREES THE BOARD (owner's decision, Sept 2026): ticket id ->
+  // how many OPEN lines (pending / accepted) it still had on the last load.
+  // When that number hits zero the card leaves the dashboard, announced once
+  // with a quiet ✓ instead of an alarm.
+  const boardOpenRef = useRef<Map<number, number>>(new Map());
   // NEW marker on a row that already existed: when a waiter adds more of the
   // same pending line, the DB folds it into that line and only the quantity
   // grows. Keep the +N here until the crew accepts it, so they can see "this
@@ -318,6 +419,14 @@ export default function StationApp({ station }: { station: Station }) {
     return () => clearInterval(ticker);
   }, []);
 
+  // While a Done line lingers, the clock must move faster than the 30s ticker:
+  // the countdown has to be honest and the line has to go exactly on time.
+  useEffect(() => {
+    if (lingeringCount === 0) return;
+    const ticker = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(ticker);
+  }, [lingeringCount]);
+
   useEffect(() => {
     const saved = sessionStorage.getItem(`fana_${station}`);
     // A restored crew session means someone is on shift: alerts default to ON.
@@ -357,13 +466,11 @@ export default function StationApp({ station }: { station: Station }) {
     if (r.ok && d?.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem(`fana_${station}`, JSON.stringify(d.staff));
-      // GROUP 10: the login tap is the gesture browsers need — unlock the loud
-      // alarm AND arm pocket notifications for this crew tablet/phone.
+      // The login tap is the gesture browsers need to unlock the loud alarm.
       unlockAudio();
       localStorage.setItem(`fana_alerts_${station}`, "1");
       setAlertsOn(true);
       alertsOnRef.current = true;
-      void enablePocketAlerts().then(() => pocket.refreshStatus());
     } else {
       setLoginError(tNow("Wrong name or PIN. Ask admin for your {label} PIN.", { label: tNow(meta.label) }));
     }
@@ -374,6 +481,9 @@ export default function StationApp({ station }: { station: Station }) {
     fetch("/api/staff/login", { method: "DELETE" }).catch(() => {});
     setStaffName("");
     setPin("");
+    // A different person is coming: the next login must never show the
+    // previous barista's shift envelope.
+    setShiftMeta(null);
   };
 
   // The staff cookie lives 12 hours (one shift). When it dies mid-service the
@@ -386,7 +496,28 @@ export default function StationApp({ station }: { station: Station }) {
     setPin("");
     setLoginError(tNow("Your session ended. Log in again to keep receiving orders."));
     setStaffName("");
+    setShiftMeta(null);
   };
+
+  /* ── THE PHONE'S BACK BUTTON = ONE STEP BACK (owner's decision, Sept 2026) ──
+   * "1 back button clcik 1 step back not completly take them to the start":
+   * the crew's Items sold sheet is a full screen of its own, so Back closes
+   * that sheet first; the live board then steps back to this person's login
+   * screen, and only the press after that leaves the app the way a browser
+   * Back always did. */
+  const stepBack = () =>
+    closeTopBackLayer([
+      { at: () => showSales, close: closeSales },
+      { at: () => !!staffName, close: logout },
+    ]);
+  const stepBackRef = useRef<() => boolean>(() => false);
+  useEffect(() => {
+    stepBackRef.current = stepBack;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    return installStaffBackNavigation(window, () => stepBackRef.current());
+  }, []);
 
   const load = async () => {
     // GROUP 10 FIX: used to skip while the tab was hidden — but the kitchen
@@ -409,10 +540,51 @@ export default function StationApp({ station }: { station: Station }) {
     }
     const cancelledTicketIds = new Set(cancelledFeed.filter((c) => c.wholeOrder).map((c) => c.id));
 
+    // ── PRINT-CLEARED (owner's decision, Sept 2026) ──
+    // The cashier's ✓ PRINTED tap means the order is done and served: the
+    // bill's lines leave the live list below the same second. A card that
+    // vanishes for THAT reason is good news — NOT the "stop preparing"
+    // alarm. This feed names the bills she printed in the last 15 minutes
+    // (that carried this crew's lines), so the detectors below can tell a
+    // print-clear apart from a cancellation or a removal.
+    let printClearedFeed: Array<{ id: number; tableName: string }> = [];
+    try {
+      const pr = await fetch(`/api/station-items?station=${station}&printCleared=1`, { cache: "no-store" });
+      if (pr.status === 401) return expireSession();
+      if (pr.ok) printClearedFeed = (await pr.json()) as Array<{ id: number; tableName: string }>;
+    } catch {
+      /* the live list below must still load */
+    }
+    const printClearedIds = new Set(printClearedFeed.map((p) => p.id));
+
     const r = await fetch(`/api/station-items?station=${station}`);
     if (r.status === 401) return expireSession();
     if (!r.ok) return;
-    const data: StationTicket[] = await r.json();
+    // BARISTA HAND-OVER: the barista lane answers with an envelope
+    // ({tickets, serverTime, shift}); the other lanes (and the UI self-test)
+    // still answer with the plain array. Both are read here.
+    const raw = await r.json();
+    const data: StationTicket[] = (Array.isArray(raw) ? raw : Array.isArray(raw?.tickets) ? raw.tickets : []) as StationTicket[];
+    const shiftInfo: ShiftMeta | null = !Array.isArray(raw) && raw?.shift ? (raw.shift as ShiftMeta) : null;
+    if (!Array.isArray(raw) && raw?.serverTime) {
+      const parsed = Date.parse(String(raw.serverTime));
+      if (Number.isFinite(parsed)) serverOffsetRef.current = parsed - Date.now();
+    }
+    setShiftMeta(shiftInfo);
+
+    // HARD STOP (owner, Sept 2026): the moment the hand-over ends, every
+    // still-pending line leaves the morning barista's payload at once. Those
+    // lines were never his: forget them silently BEFORE the change detectors
+    // run, or the board would scream "removed, stop preparing" for drinks
+    // that simply moved to the afternoon shift.
+    if (shiftInfo && !shiftInfo.seesPending) {
+      for (const [id, seen] of [...itemSigRef.current.entries()]) {
+        if (seen.stationStatus === "pending") {
+          itemSigRef.current.delete(id);
+          delete newPendingBadgesRef.current[id];
+        }
+      }
+    }
 
     const nowPendingIds = new Set<number>();
     for (const t of data) for (const i of t.items) if (i.stationStatus === "pending") nowPendingIds.add(i.id);
@@ -450,6 +622,13 @@ export default function StationApp({ station }: { station: Station }) {
     for (const t of data) {
       ticketNameRef.current.set(t.id, t.tableName);
       for (const i of t.items) {
+        if (i.taken) {
+          // A shadow: the other barista accepted or finished this line. It is
+          // never mine to watch — forget it silently so it can never raise
+          // the "removed, stop preparing" alarm on MY screen.
+          itemSigRef.current.delete(i.id);
+          continue;
+        }
         liveIds.add(i.id);
         const prev = itemSigRef.current.get(i.id);
         itemSigRef.current.set(i.id, {
@@ -479,11 +658,16 @@ export default function StationApp({ station }: { station: Station }) {
       itemSigRef.current.delete(id);
       delete nextNewPendingBadges[id];
       // The line disappeared while its bill is still open => it was removed.
-      // (A bill that left the list entirely is reported once, below.)
-      if (initRef.current && nowTicketIds.has(seen.ticketId)) {
+      // (A bill that left the list entirely is reported once, below.) The ONE
+      // exception: the cashier just printed the bill — the receipt SERVED the
+      // line, so it leaving is good news, not a removal.
+      if (initRef.current && nowTicketIds.has(seen.ticketId) && !printClearedIds.has(seen.ticketId)) {
         removed.push({ tableName: seen.tableName, name: seen.name });
       }
     }
+    // A print-cleared bill that still has OTHER live lines (a brand-new
+    // addition) is named once, quietly, below.
+    const printClearedQuiet: string[] = [];
     for (const [id, name] of [...ticketNameRef.current.entries()]) {
       if (nowTicketIds.has(id)) continue;
       ticketNameRef.current.delete(id);
@@ -491,6 +675,12 @@ export default function StationApp({ station }: { station: Station }) {
       // A whole cancelled order is reported by the cancelled feed instead:
       // it rings there, with a red record the crew can read and dismiss.
       if (cancelledTicketIds.has(id)) continue;
+      // The cashier printed it: the food is served and it leaves the boards —
+      // good news, said quietly with a ✓ instead of the stop-work alarm.
+      if (printClearedIds.has(id)) {
+        printClearedQuiet.push(name);
+        continue;
+      }
       // Only a ticket with work still on the fire is worth an alarm.
       if ((prevOpenWork.get(id) || 0) > 0) gone.push(name);
       else closedQuiet.push(name);
@@ -522,10 +712,56 @@ export default function StationApp({ station }: { station: Station }) {
       closedQuiet.length > 0 &&
       removed.length === 0 &&
       gone.length === 0 &&
-      changed.length === 0
+      changed.length === 0 &&
+      printClearedQuiet.length === 0
     ) {
       const tableName = closedQuiet[0];
       showToast(tNow("✓ {tableName}: bill closed • all your items were done", { tableName }));
+    }
+
+    // THE PRINT SERVES THE FOOD: a card that left because the cashier printed
+    // the bill is answered with a quiet ✓, never the alarm — the food is done
+    // and served, there is nothing to stop preparing.
+    if (
+      initRef.current &&
+      printClearedQuiet.length > 0 &&
+      removed.length === 0 &&
+      gone.length === 0 &&
+      changed.length === 0
+    ) {
+      const tableName = printClearedQuiet[0];
+      showToast(tNow("✓ {tableName}: printed & served • cleared from your list", { tableName }));
+    }
+
+    // THE DONE TAP FREES THE BOARD (owner's decision, Sept 2026): an item the
+    // crew marks Done leaves the dashboard at once — it used to linger
+    // crossed-out until the bill was printed or cleared, so finished work
+    // piled up on the screen all day (that is exactly what the owner kept
+    // seeing). When a table's LAST open line is finished, the whole card
+    // leaves the board; say it once, quietly.
+    const justFinishedAll: string[] = [];
+    for (const t of data) {
+      // Shadow lines (the other barista's) are not MY open work: the board
+      // frees when the last of MY lines is done.
+      const open = t.items.filter((i) => i.stationStatus !== "done" && !i.taken).length;
+      const prevOpen = boardOpenRef.current.get(t.id) ?? 0;
+      boardOpenRef.current.set(t.id, open);
+      if (initRef.current && prevOpen > 0 && open === 0) justFinishedAll.push(t.tableName);
+    }
+    for (const id of [...boardOpenRef.current.keys()]) {
+      if (!nowTicketIds.has(id)) boardOpenRef.current.delete(id);
+    }
+    if (
+      initRef.current &&
+      justFinishedAll.length > 0 &&
+      removed.length === 0 &&
+      gone.length === 0 &&
+      changed.length === 0 &&
+      printClearedQuiet.length === 0 &&
+      closedQuiet.length === 0
+    ) {
+      const tableName = justFinishedAll[0];
+      showToast(tNow("✓ {tableName}: all your items are done", { tableName }));
     }
 
     // ── THE CANCELLATION ALARM ──
@@ -589,15 +825,53 @@ export default function StationApp({ station }: { station: Station }) {
     todayUnitsLoadRef.current = refreshTodayUnits;
   });
 
-  // POCKET MODE: keeps this tablet/phone subscribed (self-healing) and rings
-  // the loud alarm the moment a push lands, even if SSE was frozen.
-  const pocket = usePocketAlerts({
-    active: !!staffName,
-    onAlert: () => loadRef.current(),
-  });
+  // THE 20-MINUTE HAND-OVER COUNTDOWN (owner, Sept 2026): a medium counter
+  // both barista screens watch during the shift-change window. It ticks
+  // against the SERVER clock (a tablet's own clock is often wrong), and the
+  // moment it reaches zero the board reloads once — the hard stop (morning
+  // can no longer accept) lands on time, not whenever the next order arrives.
+  useEffect(() => {
+    if (!shiftMeta || shiftMeta.phase !== "handover") {
+      handoverEndFiredRef.current = false;
+      // handoverLeftMs may go stale here on purpose: the banner also gates on
+      // the phase, so a stale number can never paint, and the next window's
+      // first tick replaces it.
+      return;
+    }
+    const end = Date.parse(shiftMeta.windowEnd);
+    if (!Number.isFinite(end)) return;
+    handoverEndFiredRef.current = false;
+    const tick = () => {
+      const left = Math.max(0, end - (Date.now() + serverOffsetRef.current));
+      setHandoverLeftMs(left);
+      if (left === 0 && !handoverEndFiredRef.current) {
+        handoverEndFiredRef.current = true;
+        loadRef.current();
+      }
+    };
+    // All ticks run through timers: setState stays out of the synchronous
+    // effect body (react-hooks/set-state-in-effect).
+    const first = setTimeout(tick, 0);
+    const iv = setInterval(tick, 1000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(iv);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shiftMeta?.phase, shiftMeta?.windowEnd]);
+
+  const handoverClock = (() => {
+    if (handoverLeftMs === null) return null;
+    const total = Math.ceil(handoverLeftMs / 1000);
+    return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+  })();
 
   useEffect(() => {
     if (staffName) {
+      // Both loaders are async to their core — every setState inside them
+      // sits behind a fetch. The lint rule cannot see through the function
+      // boundary, so the false positive here gets a one-line pardon.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       load();
       // The "Items sold" tile shows today's own figures the moment the crew
       // logs in, so the number is already there before anyone opens the tab.
@@ -634,6 +908,9 @@ export default function StationApp({ station }: { station: Station }) {
       const watchdog = setInterval(() => {
         if (!es || es.readyState === 2) connect();
       }, 30000);
+      // Visibility switches are admin-controlled; refresh the sales permission
+      // periodically so OFF hides the tile and ON restores it without re-login.
+      const salesRefresh = setInterval(() => todayUnitsLoadRef.current(), 60_000);
       // Refresh immediately when the tab becomes visible again (user action).
       const onVisible = () => {
         if (!document.hidden) revive();
@@ -643,6 +920,7 @@ export default function StationApp({ station }: { station: Station }) {
       return () => {
         stopped = true;
         clearInterval(watchdog);
+        clearInterval(salesRefresh);
         es?.close();
         document.removeEventListener("visibilitychange", onVisible);
         window.removeEventListener("online", revive);
@@ -650,15 +928,19 @@ export default function StationApp({ station }: { station: Station }) {
     }
   }, [staffName]);
 
+  /**
+   * THE ALARM SWITCH (owner's decision, 29 Sept 2026: "only the alarm is
+   * enough"). Staff phones are no longer notified, so this button no longer
+   * arms pocket alerts: it unlocks the audio engine (browsers demand a tap),
+   * allows the desktop pop-up on this device and rings a sample so the crew
+   * knows the alarm really works.
+   */
   const enableAlerts = async () => {
     unlockAudio();
     if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
     localStorage.setItem(`fana_alerts_${station}`, "1");
     setAlertsOn(true);
     alertsOnRef.current = true;
-    // (Re)arm pocket alerts + a sample ring so the crew knows it works.
-    await enablePocketAlerts();
-    void pocket.refreshStatus();
     playAlarm();
   };
 
@@ -683,6 +965,37 @@ export default function StationApp({ station }: { station: Station }) {
     // The tap the crew just made is what the "Items sold" figures count, so the
     // tile (and an open panel on today) follows it right away.
     void refreshTodayUnits();
+  };
+
+  /**
+   * THE SHIFT BUTTON (owner, 29 Sept 2026): "I will continue as afternoon
+   * shift". A single POST and then a reload, so every tablet reflects the new
+   * owner in the same second. The server answers with the reason when it
+   * refuses (somebody else registered first, or the window is still running),
+   * and that reason is what the crew reads.
+   */
+  const runShiftAction = async (action: "continue-afternoon") => {
+    if (shiftBusy) return;
+    setShiftBusy(true);
+    let expired = false;
+    try {
+      const r = await fetch("/api/station-items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (r.status === 401) {
+        expired = true;
+      } else if (!r.ok) {
+        const d = await r.json().catch(() => null);
+        showToast(d?.error ? Ld(d.error) : tNow("That tap did not go through. Try again."));
+      }
+    } catch {
+      showToast(tNow("Network error. Try again."));
+    }
+    setShiftBusy(false);
+    if (expired) return expireSession();
+    load();
   };
 
   /* ── LOGIN ── */
@@ -734,10 +1047,65 @@ export default function StationApp({ station }: { station: Station }) {
     );
   }
 
-  const pendingCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "pending").length, 0);
-  const acceptedCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "accepted").length, 0);
-  /** The pile the crew is looking at right now (accepted / done / combined). */
-  const salesPile: StationSalesPile | null = sales?.modes?.[salesMode] ?? null;
+  // Shadow lines (taken) belong to the other barista: never counted, never shown.
+  const pendingCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "pending" && !i.taken).length, 0);
+  const acceptedCount = tickets.reduce((acc, t) => acc + t.items.filter((i) => i.stationStatus === "accepted" && !i.taken).length, 0);
+  /**
+   * THE DONE TAP FREES THE BOARD (owner's decision, Sept 2026): the moment the
+   * crew marks an item Done it LEAVES this dashboard — it used to linger
+   * crossed-out until the bill was printed or cleared, so finished work piled
+   * up on the screen all day and the owner kept finding old orders still on
+   * the boards. Only OPEN work (pending / started) is rendered; a table whose
+   * every line is finished simply leaves the board (announced once, quietly,
+   * in the load above). The alarms still watch the FULL server list, so a
+   * real removal or a cancellation can never hide behind this filter.
+   * BARISTA HAND-OVER: shadow lines (taken by the other barista) never render
+   * either — the hand-over stole nothing from the board, it is still "one
+   * line, one pair of hands".
+   */
+  const boardTickets = tickets
+    .map((t) => ({
+      ...t,
+      boardItems: t.items.filter(
+        (i) => !i.taken && (i.stationStatus !== "done" || doneLingerLeft(i) > 0)
+      ),
+    }))
+    .filter((t) => t.boardItems.length > 0);
+  /**
+   * STANDBY (barista hand-over): my board is empty because the shift is
+   * someone else's today. The SERVER names who holds the board away from me
+   * (blockedBy), so the lock screen can say "Barista morning shift is taken by
+   * Eyob" and, while the morning is still live, offer the one-tap takeover
+   * "no, this is my shift, add me". The afternoon is never taken this way.
+   */
+  const blockedBy = shiftMeta?.blockedBy ?? null;
+  /**
+   * WHICH LOCK SCREEN the empty board shows (barista hand-over only):
+   *   • "continue"     — the morning owner, window closed, afternoon free:
+   *                      he may keep working all day with one tap.
+   *   • "morning-over" — his shift is finished and somebody else took the
+   *                      afternoon: the note names who takes over.
+   *   • "standby"      — this shift belongs to somebody else today.
+   *   • null           — nothing to lock: a barista whose shift is still live
+   *                      simply has no orders right now (normal "all clear").
+   */
+  const lockScreen: "continue" | "morning-over" | "standby" | null =
+    !shiftMeta || shiftMeta.seesPending
+      ? null
+      : shiftMeta.canContinueAfternoon
+        ? "continue"
+        : shiftMeta.myShift === "morning"
+          ? shiftMeta.phase === "after"
+            ? "morning-over"
+            : null
+          : blockedBy
+            ? "standby"
+            : null;
+  /** Receipt-backed station sales are the default; personal tap piles remain available. */
+  const salesPile: StationSalesPile | null = salesView === "printed"
+    ? sales?.printed ?? null
+    : sales?.modes?.[salesView] ?? null;
+  const salesViewLabel = salesView === "printed" ? L("EFD receipt sales") : Ld(SALES_MODE_LABELS[salesView]);
 
   return (
     <div className="min-h-screen bg-[#14100C] text-white pb-12">
@@ -749,19 +1117,19 @@ export default function StationApp({ station }: { station: Station }) {
           </div>
           <div>
             <h1 className="font-serif font-bold text-amber-100 leading-none">{L("Fana Cafe • {label}", { label: L(meta.label) })}</h1>
-            <p className="text-[10px] text-stone-400">{L(meta.desc)} • {staffName}</p>
+            <p className="text-[10px] text-stone-400">
+              {L(meta.desc)} • {staffName}
+              {/* THE SHIFT CHIP: your first accepted drink registered you —
+                  everyone can see whose board this is. */}
+              {shiftMeta?.myShift && (
+                <span className="ml-1.5 inline-block text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-600/25 border border-emerald-600/60 text-emerald-300 align-middle">
+                  {shiftMeta.alsoMorning ? L("Full day") : shiftMeta.myShift === "morning" ? L("Morning") : L("Afternoon")}
+                </span>
+              )}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <PocketAlertsChip
-            status={pocket.status}
-            busy={pocket.busy}
-            onArm={pocket.arm}
-            onTest={pocket.test}
-            onToast={showToast}
-            notificationsEnabled={pocket.notificationsEnabled}
-            onSetNotificationsEnabled={pocket.setNotificationsEnabled}
-          />
           <button
             onClick={enableAlerts}
             className={`text-[10px] font-black px-3 py-1.5 rounded-full flex items-center gap-1.5 transition ${
@@ -788,16 +1156,11 @@ export default function StationApp({ station }: { station: Station }) {
         </div>
       )}
 
-      {/* iPhone pocket-mode instruction (Android needs nothing) */}
-      <div className="max-w-4xl mx-auto px-4 md:px-6 pt-4">
-        <PocketAlertsHint />
-      </div>
-
       {/* counters + the crew's own "Items sold" tab (owner's decision, Sept
           2026: the crew asked what they SOLD, not how many tables were open).
           The tile already carries today's own unit count, so the day's work is
           visible without opening the tab. */}
-      <div className="max-w-4xl mx-auto px-4 md:px-6 pt-6 grid grid-cols-3 gap-3 text-center">
+      <div className={`max-w-4xl mx-auto px-4 md:px-6 pt-6 grid ${salesVisible ? "grid-cols-3" : "grid-cols-2"} gap-3 text-center`}>
         <div className="bg-violet-950/60 border border-violet-700 rounded-2xl p-3.5">
           <p className="text-[10px] font-extrabold uppercase text-violet-300">{L("New Incoming")}</p>
           <p className="font-serif font-black text-2xl text-white">{pendingCount}</p>
@@ -806,17 +1169,63 @@ export default function StationApp({ station }: { station: Station }) {
           <p className="text-[10px] font-extrabold uppercase text-amber-300">{L("Started (Accepted)")}</p>
           <p className="font-serif font-black text-2xl text-white">{acceptedCount}</p>
         </div>
-        <button
-          onClick={openSales}
-          className="bg-[#2C1B17] border border-[#C9A227]/50 hover:border-[#C9A227] hover:bg-[#3D2314] rounded-2xl p-3.5 transition flex flex-col items-center justify-center gap-1"
-          title={L("What you sold, by date and by category")}
-        >
-          <History className="w-5 h-5 text-[#C9A227]" />
-          <p className="text-[10px] font-extrabold uppercase text-amber-200">{L("Items sold")}</p>
-          <p className="font-serif font-black text-2xl text-white">{todayUnits === null ? "…" : todayUnits}</p>
-          <p className="text-[9px] font-extrabold uppercase text-stone-400">{L("Today • tap to open")}</p>
-        </button>
+        {salesVisible && (
+          <button
+            onClick={openSales}
+            className="bg-[#2C1B17] border border-[#C9A227]/50 hover:border-[#C9A227] hover:bg-[#3D2314] rounded-2xl p-3.5 transition flex flex-col items-center justify-center gap-1"
+            title={L("What you sold, by date and by category")}
+          >
+            <History className="w-5 h-5 text-[#C9A227]" />
+            <p className="text-[10px] font-extrabold uppercase text-amber-200">{L("Items sold")}</p>
+            <p className="font-serif font-black text-2xl text-white">{todayUnits === null ? "…" : todayUnits}</p>
+            <p className="text-[9px] font-extrabold uppercase text-stone-400">{L("Today • tap to open")}</p>
+          </button>
+        )}
       </div>
+
+      {/* ── THE 20-MINUTE HAND-OVER COUNTDOWN (owner, Sept 2026) ──
+          At the shift-change hour this medium counter runs on BOTH barista
+          screens. The morning man finishes what he accepted; the first drink
+          the afternoon man accepts registers him. Both see the SAME
+          still-pending lines, and the moment one accepts a line it leaves
+          the other's screen. Only participants see this banner. */}
+      {shiftMeta && shiftMeta.phase === "handover" && (shiftMeta.myShift !== null || shiftMeta.seesPending) && handoverClock && (
+        <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5">
+          <div className="bg-amber-950/70 border-2 border-[#C9A227] rounded-2xl p-4 text-center space-y-1.5 shadow-2xl">
+            <p className="text-[11px] font-black uppercase tracking-widest text-amber-300">{L("Shift hand-over")}</p>
+            <p className="font-serif font-black text-4xl md:text-5xl text-white tabular-nums leading-none">{handoverClock}</p>
+            <p className="text-[11px] font-bold text-amber-200/90 max-w-md mx-auto">
+              {shiftMeta.myShift === "morning"
+                ? L("Morning shift: finish what you accepted. When the counter ends, new orders move to the afternoon barista.")
+                : shiftMeta.myShift === "afternoon"
+                  ? L("You are the afternoon shift. Shared drinks below belong to whoever accepts them first.")
+                  : L("Accept your first drink to register as the afternoon shift.")}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── KEEP WORKING (owner, Sept 2026) ──
+          The morning man still has drinks to finish, the 20 minutes are over
+          and nobody took the afternoon. He does not have to stand by: while he
+          finishes what he accepted, he may already continue as the day's
+          afternoon barista, and new orders come back to this screen. */}
+      {shiftMeta?.canContinueAfternoon && boardTickets.length > 0 && (
+        <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5">
+          <div className="bg-amber-950/70 border border-[#C9A227] rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-[11px] font-bold text-amber-200 max-w-md">
+              {L("Nobody took the afternoon shift yet. When your accepted drinks are done, tap below to continue as the afternoon barista.")}
+            </p>
+            <button
+              onClick={() => runShiftAction("continue-afternoon")}
+              disabled={shiftBusy}
+              className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] text-xs font-black uppercase disabled:opacity-50"
+            >
+              {L("I will continue as afternoon shift")}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── CANCELLED WORK: the crew's PROOF (owner's decision, Sept 2026) ──
           A cancelled order used to disappear from this list, so a cook who had
@@ -893,12 +1302,66 @@ export default function StationApp({ station }: { station: Station }) {
 
       {/* tickets cards */}
       <div className="max-w-4xl mx-auto px-4 md:px-6 mt-5 space-y-4">
-        {tickets.length === 0 ? (
-          <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
-            {L("All clear • no incoming items for the {label} right now. New orders and added items appear here instantly when they are sent.", { label: L(meta.label) })}
-          </div>
+        {boardTickets.length === 0 ? (
+          shiftMeta && lockScreen ? (
+            <div className="bg-[#2C1B17] border border-[#C9A227]/40 rounded-2xl p-10 text-center space-y-3">
+              {lockScreen === "continue" ? (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
+                  <p className="text-stone-400 text-xs max-w-md mx-auto">
+                    {L("The counter has ended and nobody took the afternoon shift yet. Continue as the afternoon barista and new orders come back to this screen.")}
+                  </p>
+                  <button
+                    onClick={() => runShiftAction("continue-afternoon")}
+                    disabled={shiftBusy}
+                    className="mx-auto block px-5 py-3 rounded-xl bg-gradient-to-r from-[#C9A227] to-amber-500 text-[#2C1B17] text-xs font-black uppercase disabled:opacity-50"
+                  >
+                    {L("I will continue as afternoon shift")}
+                  </button>
+                </>
+              ) : lockScreen === "morning-over" ? (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
+                  <p className="text-amber-100 text-sm font-black">{L("Your shift is over now.")}</p>
+                  {/* The note the owner asked for on the black screen: WHO
+                      takes the afternoon, by name. */}
+                  {blockedBy && (
+                    <p className="text-amber-200 text-xs font-black">
+                      {L("Today's afternoon shift is {name}", { name: blockedBy.name })}
+                    </p>
+                  )}
+                  <p className="text-stone-400 text-xs">
+                    {L("The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.")}
+                  </p>
+                </>
+              ) : lockScreen === "standby" && blockedBy ? (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("Waiting for your shift")}</p>
+                  <p className="text-amber-100 text-sm font-black">
+                    {blockedBy.shift === "morning"
+                      ? L("Barista morning shift is taken by {name}", { name: blockedBy.name })
+                      : L("Today's afternoon shift is {name}", { name: blockedBy.name })}
+                  </p>
+                  <p className="text-stone-400 text-xs max-w-md mx-auto">
+                    {L("You are not in this shift. Orders show only on {name}'s screen.", { name: blockedBy.name })}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-serif font-black text-amber-200 text-base">{L("☀ Hand-over complete")}</p>
+                  <p className="text-stone-400 text-xs">
+                    {L("The counter has ended. New orders go to the afternoon barista. Tap Items sold to see your day.")}
+                  </p>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="bg-[#2C1B17] border border-stone-800 rounded-2xl p-10 text-center text-stone-500 text-xs">
+              {L("All clear • no incoming items for the {label} right now. New orders and added items appear here instantly when they are sent.", { label: L(meta.label) })}
+            </div>
+          )
         ) : (
-          tickets.map((t) => (
+          boardTickets.map((t) => (
             <div key={t.id} className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
@@ -942,12 +1405,12 @@ export default function StationApp({ station }: { station: Station }) {
                   )}
                 </div>
                 <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-[#C9A227]/20 text-[#C9A227]">
-                  {L("{length} item(s) for you", { length: t.items.length })}
+                  {L("{length} item(s) for you", { length: t.boardItems.length })}
                 </span>
               </div>
 
               <div className="space-y-2 divide-y divide-stone-800">
-                {t.items.map((i) => (
+                {t.boardItems.map((i) => (
                   <div
                     key={i.id}
                     className={`pt-2 flex items-center justify-between gap-3 text-xs ${
@@ -1000,8 +1463,8 @@ export default function StationApp({ station }: { station: Station }) {
                       </button>
                     )}
                     {i.stationStatus === "done" && (
-                      <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700">
-                        {L("✓ Done")}
+                      <span className="shrink-0 text-[10px] font-black text-emerald-400 bg-emerald-950/60 px-2.5 py-1 rounded-full uppercase border border-emerald-700 tabular-nums">
+                        {L("✓ Done • leaves in {clock}", { clock: lingerClock(doneLingerLeft(i)) })}
                       </span>
                     )}
                   </div>
@@ -1015,11 +1478,11 @@ export default function StationApp({ station }: { station: Station }) {
       {/* ═══ ITEMS SOLD — the crew's own sales tab ═══
           What this cook / barista / juice maker sold, grouped by menu CATEGORY,
           for the DATE they tap and the pile they choose (accepted / done /
-          combined). The counting rules live in @/lib/station-sales — the same
+          done). The counting rules live in @/lib/station-sales — the same
           attribution the shift report uses — and are served by
           /api/station-sales, so this screen and the cross-checker's paper can
           never disagree about who sold what. */}
-      {showSales && (
+      {showSales && salesVisible && (
         <div className="fixed inset-0 z-40 bg-[#14100C] overflow-y-auto text-stone-100">
           <div className="sticky top-0 z-10 bg-[#2C1B17]/95 backdrop-blur border-b border-[#C9A227]/30 px-4 md:px-8 py-3.5 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
@@ -1069,22 +1532,24 @@ export default function StationApp({ station }: { station: Station }) {
               </div>
             </div>
 
-            {/* WHICH TAPS COUNT — accepted / done / combined, each with its own
-                unit count so the crew sees the three piles at a glance */}
+            {/* Receipt-backed station sales are the default and match the admin
+                report. Personal Accept/Done piles remain available for activity checks. */}
             <div>
-              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-2">{L("Which taps to count")}</p>
+              <p className="text-[10px] font-extrabold uppercase tracking-wider text-stone-400 mb-2">{L("Sales view")}</p>
               <div className="grid grid-cols-3 gap-2">
-                {SALES_MODES.map((m) => (
+                {(["printed", ...SALES_MODES] as StationSalesView[]).map((view) => (
                   <button
-                    key={m}
-                    onClick={() => setSalesMode(m)}
+                    key={view}
+                    onClick={() => setSalesView(view)}
                     className={`rounded-xl px-3 py-2 text-xs font-black uppercase transition ${
-                      salesMode === m ? "bg-emerald-600 text-white" : "bg-stone-800 text-stone-200 hover:bg-stone-700"
+                      salesView === view ? "bg-emerald-600 text-white" : "bg-stone-800 text-stone-200 hover:bg-stone-700"
                     }`}
                   >
-                    {Ld(SALES_MODE_LABELS[m])}
+                    {view === "printed" ? L("EFD receipts") : Ld(SALES_MODE_LABELS[view])}
                     <span className="block text-[10px] font-bold normal-case opacity-80">
-                      {sales?.modes?.[m] ? sales.modes[m].quantity.toLocaleString("en-US") : "…"}
+                      {view === "printed"
+                        ? sales?.printed?.quantity.toLocaleString("en-US") ?? "…"
+                        : sales?.modes?.[view].quantity.toLocaleString("en-US") ?? "…"}
                     </span>
                   </button>
                 ))}
@@ -1092,7 +1557,9 @@ export default function StationApp({ station }: { station: Station }) {
             </div>
 
             <p className="text-[11px] text-stone-400">
-              {L("Accepted counts the lines you tapped Accept on, Done the lines you tapped Done on, and Combined every line you touched, counted once. Removed lines and cancelled orders are never counted.")}
+              {salesView === "printed"
+                ? L("Each EFD receipt counts only its own lines and quantities once. Items and added quantities after the latest print are excluded until they have another receipt; this station total matches the Admin report.")
+                : L("Accepted counts the lines you tapped Accept on, Done the lines you finished. These activity piles include printed lines only; removed lines, unprinted orders, and cancelled orders never count.")}
             </p>
 
             {salesError ? (
@@ -1106,11 +1573,25 @@ export default function StationApp({ station }: { station: Station }) {
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
                     <h2 className="font-black text-amber-200">
-                      {L("{mode} • ITEMS SOLD", { mode: Ld(SALES_MODE_LABELS[salesMode]).toUpperCase() })}
+                      {L("{mode} • ITEMS SOLD", { mode: salesViewLabel.toUpperCase() })}
                     </h2>
                     <p className="text-[11px] text-stone-400 mt-0.5">
                       {L("Covers: {rangeText}", { rangeText: salesRangeText(sales.range) })}
                     </p>
+                    {/* THE WHOLE LANE, NEXT TO THE PERSON'S OWN PILE (owner:
+                        "make it to show the total sale"). Same rows, every
+                        member of this crew counted — so a tablet signed in as
+                        somebody who did not tap, or lines the cashier's print
+                        closed, can never leave the crew reading a lone 0,0. */}
+                    {salesView !== "printed" && sales.lane?.[salesView] && (
+                      <p className="text-[11px] font-bold text-amber-200/80 mt-1">
+                        {L("{station} total: {n} items • {amount}", {
+                          station: Ld(meta.label),
+                          n: sales.lane[salesView].quantity.toLocaleString("en-US"),
+                          amount: staffEtb(sales.lane[salesView].amount),
+                        })}
+                      </p>
+                    )}
                   </div>
                   <span className="text-[10px] font-black px-2.5 py-1 rounded-full uppercase bg-[#C9A227]/20 text-[#C9A227] shrink-0">
                     {L("{orders} bill(s)", { orders: salesPile.bills })}

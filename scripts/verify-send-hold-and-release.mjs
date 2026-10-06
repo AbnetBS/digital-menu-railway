@@ -5,10 +5,15 @@
  *
  *   1. WAITER SEND HOLD: when a waiter sends an order FROM HER OWN PHONE, the
  *      order waits `waiter_send_hold_seconds` (default 60) before it reaches
- *      the stations, with a live countdown and a "Send now" button beside it.
- *      The cart stays editable during the hold, and cancelling the cart
- *      cancels the hold. A customer's QR order that she ACCEPTS is NOT held,
- *      and neither is an addition to a bill she already sent.
+ *      the stations. Tapping Send KEEPS HER ON THE PAGE (owner, 30 Sept 2026 —
+ *      the waiters said being thrown back to the grid slowed them down): the
+ *      items she is about to send stay editable above, and under them sit the
+ *      three controls the owner listed — the COUNTDOWN, SEND NOW on its right,
+ *      and CANCEL WHOLE ORDER below the two. Back still takes her to the grid
+ *      with the countdown alive (the violet tile brings her back in), and a
+ *      send that lands takes her to the grid by itself. A customer's QR order
+ *      that she ACCEPTS is NOT held, and neither is an addition to a bill she
+ *      already sent.
  *   2. THE OWNER CAN CHANGE THE HOLD: the admin Stations tab has a seconds
  *      control (presets 30 sec / 1 min / 2 min / 3 min) saved through
  *      PUT /api/settings as `waiter_send_hold_seconds`, and the value is
@@ -97,12 +102,49 @@ function pass(name, cond) {
   pass("the countdown keeps running across views and sends the saved order at zero",
     /send\.dueAt <= now/.test(waiter) && /sendPendingOrderRef\.current\(send\.idempotencyKey, false\)/.test(waiter)
     && /window\.setInterval\(tick, 1000\)/.test(waiter));
-  pass('a "Send now" button releases the saved order immediately from any view',
-    waiter.includes("Send now") && /sendPendingOrderRef\.current\(send\.idempotencyKey, true\)/.test(waiter)
-    && /sendPendingOrderRef\.current\(activeHoldKey, true\)/.test(waiter));
-  pass("a queued order shows its own table and Send now control outside the order screen",
-    /pendingSends\.filter\(\(send\) => view !== "order"/.test(waiter)
-    && waiter.includes('L("Order for {tableName}", { tableName: send.tableName })'));
+  // THE HOLD ON THE PAGE (owner, 30 Sept 2026 — he reversed the "throw her
+  // back to the grid" rule after the waiters said it slowed them down). Send
+  // keeps her where she is, over the items she is about to send, with the
+  // three controls he listed under them: the countdown, Send now on its right,
+  // and Cancel whole order below the two.
+  // Read each handler's OWN body: a lazy [\s\S]*? would happily run past the
+  // closing brace and "prove" something about a different function.
+  const bodyOf = (signature) => (waiter.split(signature)[1] || "").split("\n  };")[0] || "";
+  const startHoldBody = bodyOf("const startSendHold = () => {");
+  const cancelBody = bodyOf("const cancelSendHold = async () => {");
+  const sentBody = bodyOf("const sendPendingOrder = async (key: string, manual = false) => {");
+
+  pass("Send KEEPS the waiter on the page over the items she is about to send",
+    startHoldBody.includes("setActiveHold(idempotencyKey);")
+    && startHoldBody.includes("setHoldLeft(hold);")
+    && !startHoldBody.includes('setView("tables")')
+    && !startHoldBody.includes("setCart([])"));
+  pass("under the items sit the COUNTDOWN, SEND NOW on its right, CANCEL WHOLE ORDER below",
+    waiter.includes('L("Sends in")') && waiter.includes('L("Send now")')
+    && waiter.includes('L("Cancel whole order")')
+    && /formatHoldClock\(holdLeft\)/.test(waiter)
+    && /sendPendingOrderRef\.current\(activeHoldKey, true\)/.test(waiter)
+    && /onClick=\{\(\) => void cancelSendHold\(\)\}/.test(waiter));
+  pass("the waiting list says WHAT it is, so nobody reads it as already sent",
+    /⏳ Waiting to send • \{count\} item\(s\)/.test(waiter) && /About to send • \{count\} item\(s\)/.test(waiter));
+  pass("the items stay editable while it counts (quantity, note, remove)",
+    /max-h-\[30dvh\] overflow-y-auto space-y-2/.test(waiter) && /activeHoldKey !== null \?/.test(waiter));
+  pass("CANCELLING THE WHOLE ORDER clears the cart as well as the saved copy",
+    cancelBody.includes("setCart([]);") && cancelBody.includes("setActiveHold(null);")
+    && cancelBody.includes("method: \"DELETE\""));
+  pass("a send that actually lands still takes her to the tables grid",
+    sentBody.includes("if (activeHoldKeyRef.current === key) {") && sentBody.includes('setView("tables");'));
+  pass("the waiting table glows violet with its own countdown and a View order button",
+    waiter.includes("Waiting to send") && waiter.includes("View order")
+    && /border-violet-500/.test(waiter) && /formatHoldClock\(queuedLeft\)/.test(waiter));
+  pass("tapping a waiting table reopens the queued order for editing (timer + Send now at the bottom)",
+    /const openQueuedSend = \(send: PendingWaiterSend\)/.test(waiter)
+    && /setCart\(send\.items\.map/.test(waiter) && /setActiveHold\(send\.idempotencyKey\)/.test(waiter)
+    && /send\.tableId === t\.id && !send\.groupRound/.test(waiter)
+    && waiter.includes("Send now") && /sendPendingOrderRef\.current\(activeHoldKey, true\)/.test(waiter));
+  pass("reopening is not an edit: identical items never re-save to the server",
+    /if \(JSON\.stringify\(send\.items\) === signature\) return send;/.test(waiter)
+    && /if \(changed && updatedSend\?\.serverScheduled\)/.test(waiter));
   pass("edits during the hold update its saved payload; leaving prevents another cart overwriting it",
     /items: cart\.map\(\(item\) => \({ \.\.\.item }\)\)/.test(waiter)
     && /activeHoldKeyRef\.current = key/.test(waiter));
@@ -168,8 +210,11 @@ function pass(name, cond) {
     cashier.includes("✓ CONFIRM TO STATIONS"));
   pass("both releases go through the same PUT (send:true / confirmed)",
     tickets.includes("sendRequested") && tickets.includes("additions_released"));
-  pass("releasing wakes exactly the crews that received new work",
-    tickets.includes("releasedStations") && countOf(tickets, "sendPushToRoles(releasedStations") === 1);
+  /* OWNER'S DECISION (29 Sept 2026): releasing rings no phone. The audit still
+   * records WHICH crews got the new work, and the crews' screens pick the lines
+   * up on their next refresh — the ring itself is gone, forever. */
+  pass("releasing still records the crews that received new work (no phone ring any more)",
+    tickets.includes("releasedStations") && tickets.includes("additions_released") && !/sendPushTo/.test(tickets));
   pass("the guest's own status screen is driven by the shared phase helper",
     tableStatusApi.includes("customerOrderPhase") && orderLinesLib.includes("customerOrderPhase"));
 }

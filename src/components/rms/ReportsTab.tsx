@@ -607,7 +607,7 @@ export default function ReportsTab() {
             )}
             {!!pending && pending.amount > 0 && (
               <p className="text-[11px] font-bold text-amber-300 bg-amber-950/40 border border-amber-700/40 rounded-xl px-3 py-2 mb-4">
-                {L("⚠ {bills} bill(s) received {items} item line(s) ({amount} ETB) AFTER their last print. Those lines are counted above but are not on an EFD receipt yet: key them in and print receipt #2, and the two piles will match.", { bills: pending.bills, items: pending.items, amount: pending.amount.toLocaleString("en-US") })}
+                {L("⚠ {bills} bill(s) received {items} item line(s) ({amount} ETB) AFTER their last print. Those lines are excluded from sales until the cashier prints receipt #2.", { bills: pending.bills, items: pending.items, amount: pending.amount.toLocaleString("en-US") })}
                 {pending.partial ? L(" (Counted over the newest {length} bills shown here.)", { length: (data.printedToday || []).length }) : ""}
               </p>
             )}
@@ -647,7 +647,7 @@ export default function ReportsTab() {
                           <p className="text-[10px] font-black text-stone-400 uppercase">{L("✓ cleared {value}", { value: t.closedAt ? formatClock(t.closedAt) : "" })}</p>
                         )}
                         {!!t.itemsAfterPrint && t.itemsAfterPrint > 0 && (
-                          <p className="text-[10px] font-black text-amber-300 truncate" title={L("Lines added after this bill was printed: counted as sales here, but still waiting for their own EFD receipt (receipt #2).")}>
+                          <p className="text-[10px] font-black text-amber-300 truncate" title={L("Lines added after this bill was printed: excluded from sales until they have their own EFD receipt (receipt #2).")}>
                             {L("⚠ +{itemsAfterPrint} line(s) • {n} ETB not printed yet", { itemsAfterPrint: t.itemsAfterPrint, n: t.itemsAfterPrintAmount || 0 })}
                           </p>
                         )}
@@ -674,7 +674,7 @@ export default function ReportsTab() {
             </p>
             {!!pending && pending.amount > 0 && (
               <p style={{ fontSize: "11px", fontWeight: 700 }}>
-                {L("Difference to explain: {bills} bill(s) took {items} item line(s) ({amount} ETB) after their last print, so those lines are in the totals above but not on an EFD receipt yet (receipt #2 still to be keyed in).", { bills: pending.bills, items: pending.items, amount: pending.amount.toLocaleString("en-US") })}
+                {L("Not yet in sales: {bills} bill(s) took {items} item line(s) ({amount} ETB) after their last print. They count only after receipt #2 is keyed and printed.", { bills: pending.bills, items: pending.items, amount: pending.amount.toLocaleString("en-US") })}
               </p>
             )}
           </div>
@@ -733,7 +733,7 @@ export default function ReportsTab() {
       )}
 
       {waiterModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print" onClick={() => setWaiterModal(null)}>
+        <div className="fana-fit-screen fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print" onClick={() => setWaiterModal(null)}>
           <div className="bg-[#2C1B17] border-2 border-[#C9A227]/50 rounded-2xl w-full max-w-3xl max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="sticky top-0 bg-[#2C1B17] border-b border-stone-800 px-5 py-4 flex items-start justify-between gap-3">
               <div>
@@ -783,11 +783,11 @@ export default function ReportsTab() {
         </div>
       )}
 
-      {/* BILL DETAIL MODAL — the printed-bills archive card expanded: every
-          item with name, qty, unit price, line total and the bill total. */}
+      {/* BILL DETAIL MODAL — receipt lines plus visible post-print additions;
+          the total is only the amount backed by the latest receipt. */}
       {billModal && (
         <div
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print"
+          className="fana-fit-screen fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print"
           onClick={() => setBillModal(null)}
         >
           <div
@@ -824,9 +824,8 @@ export default function ReportsTab() {
             <div className="px-5 py-4 space-y-3">
               <div className="bg-[#3D2314] rounded-xl divide-y divide-stone-800">
                 {(billModal.items || []).filter((i) => !i.removed).map((i) => {
-                  // A line added AFTER this bill's print is a sale, but it is not on
-                  // the EFD paper the cross-checker holds yet (receipt #2). Say so
-                  // on the line itself instead of leaving her to find the difference.
+                  // A line added AFTER this bill's print is not a sale yet. Keep it
+                  // visible for follow-up, but label it outside the receipt total.
                   const afterPrint =
                     !!billModal.printedAt && !!i.createdAt && new Date(i.createdAt).getTime() > new Date(billModal.printedAt).getTime();
                   return (
@@ -836,7 +835,7 @@ export default function ReportsTab() {
                         <p className="text-xs font-semibold text-stone-300">{i.quantity} × {i.price} ETB</p>
                         {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic mt-0.5">📝 {i.notes}</p>}
                         {afterPrint && (
-                          <p className="text-[10px] font-black text-amber-300 mt-0.5">{L("⚠ added after the print: not on the EFD receipt yet")}</p>
+                          <p className="text-[10px] font-black text-amber-300 mt-0.5">{L("⚠ added after print: excluded until receipt #2 is printed")}</p>
                         )}
                       </div>
                       <span className="text-sm font-black text-[#C9A227] shrink-0">{i.price * i.quantity} ETB</span>
@@ -848,7 +847,7 @@ export default function ReportsTab() {
                 )}
               </div>
               <div className="bg-[#3D2314] border border-[#C9A227]/40 rounded-xl px-4 py-3 flex items-center justify-between">
-                <span className="text-sm font-black text-stone-200">{L("Bill total")}</span>
+                <span className="text-sm font-black text-stone-200">{billModal.printedAt ? L("EFD receipt total") : L("Sale total")}</span>
                 <span className="font-serif font-black text-2xl text-[#C9A227]">{billModal.totalAmount} ETB</span>
               </div>
               <button
@@ -865,7 +864,7 @@ export default function ReportsTab() {
       {shiftOpen && <ShiftReport onClose={() => setShiftOpen(false)} logoUrl={brand.logo_url} />}
 
       {receiptModal && (
-        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 no-print" onClick={() => setReceiptModal(null)}>
+        <div className="fana-fit-screen fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 no-print" onClick={() => setReceiptModal(null)}>
           <img src={receiptModal} alt={L("Receipt")} className="max-h-[85vh] max-w-full rounded-2xl border border-[#C9A227]" />
         </div>
       )}

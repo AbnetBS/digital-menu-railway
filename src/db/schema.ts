@@ -349,3 +349,44 @@ export const pushSubscriptions = pgTable("push_subscriptions", {
   name: varchar("name", { length: 100 }), // which staff member's device
   createdAt: timestamp("created_at").defaultNow(),
 });
+
+// ─── ATTENDANCE SYSTEM (FANA CAFE) ─────────────────────────────────────────
+// Biometric attendance with FPC1020A + ESP32 WROOM + OLED + Buzzer + LEDs
+// Supports 40-50 staff, 3-5 fingerprints per person, 2 shifts, backup battery
+
+export const attendanceShifts = pgTable("attendance_shifts", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 50 }).notNull(), // Morning, Afternoon, Full Day
+  startTime: varchar("start_time", { length: 5 }).notNull(), // HH:MM e.g. 08:00
+  endTime: varchar("end_time", { length: 5 }).notNull(), // HH:MM e.g. 17:00
+  graceMinutes: integer("grace_minutes").notNull().default(15), // late after start+grace
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const staffBiometrics = pgTable("staff_biometrics", {
+  id: serial("id").primaryKey(),
+  staffId: integer("staff_id").notNull(), // FK to staff_users.id
+  fingerprintId: integer("fingerprint_id").notNull(), // 1-1000 stored in FPC1020A
+  fingerName: varchar("finger_name", { length: 50 }).default("Right Index"), // Right Index, Left Thumb, etc.
+  enrolledAt: timestamp("enrolled_at").defaultNow(),
+  enrolledBy: varchar("enrolled_by", { length: 100 }), // admin name
+});
+
+export const attendanceLogs = pgTable("attendance_logs", {
+  id: serial("id").primaryKey(),
+  staffId: integer("staff_id").notNull(), // FK to staff_users.id
+  fingerprintId: integer("fingerprint_id"), // which finger was used (nullable for PIN method)
+  date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD in Africa/Addis_Ababa
+  clockIn: timestamp("clock_in"),
+  clockOut: timestamp("clock_out"),
+  clockInMethod: varchar("clock_in_method", { length: 20 }).default("fingerprint"), // fingerprint | pin | manual
+  clockOutMethod: varchar("clock_out_method", { length: 20 }),
+  totalMinutes: integer("total_minutes"), // calculated at clock-out
+  lateMinutes: integer("late_minutes").default(0), // minutes late for IN
+  status: varchar("status", { length: 20 }).default("on_time"), // on_time | late | early_out | absent | completed
+  shiftId: integer("shift_id"), // FK to attendance_shifts
+  deviceId: varchar("device_id", { length: 50 }).default("entrance"), // which device
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});

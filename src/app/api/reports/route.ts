@@ -12,6 +12,7 @@ import {
   isYesterdayET,
   isDayBeforeYesterdayET,
   isWithinEtDays,
+  isOnEtDayDaysAgo,
   etHour,
   etDayKeyDaysAgo,
   etStartOfDaysAgo,
@@ -436,6 +437,24 @@ export async function GET(request: Request) {
     const todayOrders = todayTickets.length;
     const averageOrderValue = todayOrders > 0 ? Math.round(todayRevenue / todayOrders) : 0;
 
+    // Last 7 days daily sales - sliding window, 7th day removed when new day starts
+    // Each day is Ethiopian calendar day, not 24h window
+    const last7DaysSales = Array.from({ length: 7 }, (_, i) => {
+      const daysAgo = i; // 0 = today, 1 = yesterday, etc.
+      const dayTickets = revenueTickets.filter((t) => isOnEtDayDaysAgo(soldAt(t), daysAgo));
+      const dayKey = etDayKeyDaysAgo(daysAgo);
+      const revenue = sumOf(dayTickets);
+      const orders = dayTickets.length;
+      const label = daysAgo === 0 ? "Today" : daysAgo === 1 ? "Yesterday" : `${daysAgo} days ago`;
+      return {
+        date: dayKey || "",
+        dayKey: dayKey || "",
+        label,
+        revenue,
+        orders,
+      };
+    }).reverse(); // oldest first for display: 6 days ago -> today
+
     // Every section below describes ONLY the selected period. The five summary
     // sets above stay all-period (they feed the selector cards).
     const scopeTickets =
@@ -839,6 +858,8 @@ export async function GET(request: Request) {
       totalItems,
       archiveCapped,
       archiveTotal: printedPeriodTickets.length + paidTodayIds.length,
+      // Last 7 days daily sales - sliding window, 7th day removed when new day starts
+      last7DaysSales,
     });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

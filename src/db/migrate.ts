@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-09-29-1";
+const SCHEMA_VERSION = "2026-10-06-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -321,6 +321,52 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    // Attendance shifts (Morning, Afternoon) - owner config
+    "attendance_shifts",
+    `CREATE TABLE IF NOT EXISTS attendance_shifts (
+      id serial PRIMARY KEY,
+      name varchar(50) NOT NULL,
+      start_time varchar(5) NOT NULL,
+      end_time varchar(5) NOT NULL,
+      grace_minutes integer NOT NULL DEFAULT 15,
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    // Staff fingerprint mappings - FPC1020A stores template, we store ID->staff mapping
+    "staff_biometrics",
+    `CREATE TABLE IF NOT EXISTS staff_biometrics (
+      id serial PRIMARY KEY,
+      staff_id integer NOT NULL,
+      fingerprint_id integer NOT NULL,
+      finger_name varchar(50) DEFAULT 'Right Index',
+      enrolled_at timestamp DEFAULT now(),
+      enrolled_by varchar(100)
+    )`,
+  ],
+  [
+    // Attendance logs - one row per staff per day with IN/OUT like paper sheet
+    "attendance_logs",
+    `CREATE TABLE IF NOT EXISTS attendance_logs (
+      id serial PRIMARY KEY,
+      staff_id integer NOT NULL,
+      fingerprint_id integer,
+      date varchar(10) NOT NULL,
+      clock_in timestamp,
+      clock_out timestamp,
+      clock_in_method varchar(20) DEFAULT 'fingerprint',
+      clock_out_method varchar(20),
+      total_minutes integer,
+      late_minutes integer DEFAULT 0,
+      status varchar(20) DEFAULT 'on_time',
+      shift_id integer,
+      device_id varchar(50) DEFAULT 'entrance',
+      notes text,
+      created_at timestamp DEFAULT now(),
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
     // THE BARISTA HAND-OVER (owner's decision, Sept 2026): one row per
     // registered shift owner per station per Ethiopian day. A barista's FIRST
     // accept of the shift writes it (logging in alone registers nothing);
@@ -445,6 +491,37 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     role: { type: "text", def: "'waiter'" },
     name: { type: "text" },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+  },
+  attendance_shifts: {
+    name: { type: "text", def: "'Morning'" },
+    start_time: { type: "text", def: "'08:00'" },
+    end_time: { type: "text", def: "'17:00'" },
+    grace_minutes: { type: "integer", def: "15", castText: true },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+  },
+  staff_biometrics: {
+    staff_id: { type: "integer", def: "0", castText: true },
+    fingerprint_id: { type: "integer", def: "0", castText: true },
+    finger_name: { type: "text", def: "'Right Index'" },
+    enrolled_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    enrolled_by: { type: "text" },
+  },
+  attendance_logs: {
+    staff_id: { type: "integer", def: "0", castText: true },
+    fingerprint_id: { type: "integer", castText: true },
+    date: { type: "text", def: "'2026-01-01'" },
+    clock_in: { type: "timestamp", dropNotNull: true },
+    clock_out: { type: "timestamp", dropNotNull: true },
+    clock_in_method: { type: "text", def: "'fingerprint'" },
+    clock_out_method: { type: "text" },
+    total_minutes: { type: "integer", castText: true },
+    late_minutes: { type: "integer", def: "0", castText: true },
+    status: { type: "text", def: "'on_time'" },
+    shift_id: { type: "integer", castText: true },
+    device_id: { type: "text", def: "'entrance'" },
+    notes: { type: "text" },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    updated_at: { type: "timestamp", def: "now()", dropNotNull: true },
   },
 };
 
@@ -626,6 +703,9 @@ async function runFullMigrate(force: boolean) {
     "order_submissions",
     "ticket_events",
     "push_subscriptions",
+    "attendance_shifts",
+    "staff_biometrics",
+    "attendance_logs",
   ];
   for (const t of serialTables) {
     await run(`CREATE SEQUENCE IF NOT EXISTS ${t}_id_seq`);

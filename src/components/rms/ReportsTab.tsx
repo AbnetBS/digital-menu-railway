@@ -65,7 +65,14 @@ function fmtDayKey(key?: string | null): string {
 }
 
 export default function ReportsTab() {
-  const { t: L, rich: Lr, td: Ld, date: Ldate } = useStaffT();
+  const { t: Lraw, rich: Lr, td: Ld, date: Ldate } = useStaffT();
+  const L = (s: string, params?: any) => {
+    try {
+      return (Lraw as any)(s, params) || s;
+    } catch {
+      return s;
+    }
+  };
   const [data, setData] = useState<ReportData | null>(null);
   // The selected period: the five cards above are the switch, and EVERY section
   // below (cross-check, KPIs, peak hours, highest-selling, categories, printed
@@ -278,6 +285,84 @@ export default function ReportsTab() {
               ? ` (${fmtDayKey(data.periodRange.from)} – ${fmtDayKey(data.dayKeys.today)})`
               : "" })}
           </p>
+
+          {/* ═══ LAST 7 DAYS DAILY SALES — sliding window, owner requested ═══
+              Shows only the last 7 Ethiopian days, oldest → newest. When a new
+              day starts, the 8th day drops off automatically (sliding window).
+              Total sales no longer shows all-time, only these 7 days. */}
+          {data.last7DaysSales && data.last7DaysSales.length > 0 && (
+            <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/50 p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider flex items-center gap-2">
+                    📅 {L("Daily Sales - Last 7 Days (Sliding Window)")}
+                  </h3>
+                  <p className="text-[11px] text-stone-400 mt-0.5">
+                    {L("Only the last 7 days are shown. When a new day starts, the oldest day is removed. All-time total replaced by 7-day daily breakdown.")}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-extrabold uppercase text-stone-400">{L("7-day total")}</p>
+                  <p className="font-serif font-black text-xl text-[#C9A227]">
+                    {fmt(data.last7DaysSales.reduce((s, d) => s + (d.revenue || 0), 0))}
+                  </p>
+                  <p className="text-[10px] font-bold text-stone-500">
+                    {L("{cnt} orders", { cnt: data.last7DaysSales.reduce((s, d) => s + (d.orders || 0), 0) })}
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+                {data.last7DaysSales.map((d, idx) => {
+                  const isToday = idx === data.last7DaysSales!.length - 1;
+                  const maxRev = Math.max(...data.last7DaysSales!.map((x) => x.revenue || 0), 1);
+                  return (
+                    <div
+                      key={d.date}
+                      className={`rounded-xl p-3 border ${isToday ? "bg-gradient-to-br from-[#C9A227] to-[#8C6D18] border-[#C9A227] text-[#2C1B17]" : "bg-[#3D2314] border-stone-700 text-white"} space-y-2`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className={`text-[10px] font-extrabold uppercase ${isToday ? "opacity-80" : "text-stone-400"}`}>{d.label}</span>
+                        {isToday && <span className="text-[8px] font-black bg-black/20 px-1.5 py-0.5 rounded-full uppercase">{L("Today")}</span>}
+                      </div>
+                      <p className={`text-[11px] font-bold ${isToday ? "opacity-70" : "text-stone-500"}`}>{fmtDayKey(d.date)}</p>
+                      <p className="font-serif font-black text-lg leading-none">{fmt(d.revenue)}</p>
+                      <p className={`text-[10px] font-bold ${isToday ? "opacity-70" : "text-stone-400"}`}>{L("{cnt} orders", { cnt: d.orders })}</p>
+                      <div className="h-1.5 bg-black/20 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${isToday ? "bg-[#2C1B17]" : "bg-[#C9A227]"} print-bar`} style={{ width: `${(d.revenue / maxRev) * 100}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-black/30">
+                      <th className="text-left p-2 font-black text-stone-400 uppercase text-[10px]">{L("Date")}</th>
+                      <th className="text-left p-2 font-black text-stone-400 uppercase text-[10px]">{L("Day")}</th>
+                      <th className="text-right p-2 font-black text-stone-400 uppercase text-[10px]">{L("Orders")}</th>
+                      <th className="text-right p-2 font-black text-stone-400 uppercase text-[10px]">{L("Revenue")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.last7DaysSales.map((d) => (
+                      <tr key={d.date} className="border-t border-stone-800">
+                        <td className="p-2 font-bold text-amber-100">{fmtDayKey(d.date)}</td>
+                        <td className="p-2 font-bold text-stone-300">{d.label}</td>
+                        <td className="p-2 text-right font-bold text-stone-300">{d.orders}</td>
+                        <td className="p-2 text-right font-black text-[#C9A227]">{fmt(d.revenue)}</td>
+                      </tr>
+                    ))}
+                    <tr className="border-t-2 border-[#C9A227]/50 bg-[#C9A227]/10 font-black">
+                      <td className="p-2 text-amber-100" colSpan={2}>{L("Total (7 days)")}</td>
+                      <td className="p-2 text-right text-amber-100">{data.last7DaysSales.reduce((s, d) => s + d.orders, 0)}</td>
+                      <td className="p-2 text-right text-[#C9A227]">{fmt(data.last7DaysSales.reduce((s, d) => s + d.revenue, 0))}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* ═══ CROSS-CHECK BY STATION — the paper world's four piles ═══
               Before this system the cross-checker collected the kitchen's, the

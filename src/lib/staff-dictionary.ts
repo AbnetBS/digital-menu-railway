@@ -1439,6 +1439,15 @@ export const STAFF_AM = {
   "Shift sales use only units already on an EFD receipt (or paid lines in full-payment mode). New items and added quantities wait until a later receipt; each earlier receipt is counted once.": "የፈረቃ ሽያጭ የሚቆጥረው EFD ደረሰኝ ላይ ያሉ እቃዎችን ብቻ ነው (ወይም በሙሉ ክፍያ ሁኔታ የተከፈሉ እቃዎችን)። አዳዲስ እቃዎች እና የተጨመሩ ብዛቶች እስከ ቀጣዩ ደረሰኝ ይጠብቃሉ፤ እያንዳንዱ ቀደም ያለ ደረሰኝ አንድ ጊዜ ብቻ ይቆጠራል።",
   "Each EFD receipt counts only its own lines and quantities once. Items and added quantities after the latest print are excluded until they have another receipt; this station total matches the Admin report.": "እያንዳንዱ EFD ደረሰኝ የራሱን እቃዎች እና ብዛቶች አንድ ጊዜ ብቻ ይቆጥራል። ከመጨረሻው ህትመት በኋላ የተጨመሩ እቃዎችና ብዛቶች ሌላ ደረሰኝ እስኪኖራቸው ድረስ አይቆጠሩም፤ የዚህ ክፍል ድምር ከአስተዳደር ሪፖርት ጋር ይመሳሰላል።",
   "EFD: {printed} unit(s) printed • {pending} waiting": "EFD፦ {printed} እቃ ታትሟል • {pending} በመጠባበቅ ላይ",
+
+  /* ── Last 7 days daily sales (sliding window) ── */
+  "Daily Sales - Last 7 Days (Sliding Window)": "የቀን ሽያጭ - ያለፉት 7 ቀናት (ተንሸራታች መስኮት)",
+  "Only the last 7 days are shown. When a new day starts, the oldest day is removed. All-time total replaced by 7-day daily breakdown.": "ያለፉት 7 ቀናት ብቻ ይታያሉ። አዲስ ቀን ሲጀምር የቆየው ቀን ይወገዳል። የሁሉም ጊዜ ድምር በ7 ቀን ዕለታዊ ዝርዝር ተተክቷል።",
+  "7-day total": "የ7 ቀን ድምር",
+  "{cnt} orders": "{cnt} ትዕዛዞች",
+  "Day": "ቀን",
+  "Revenue": "ገቢ",
+  "Total (7 days)": "ጠቅላላ (7 ቀናት)",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

@@ -38,12 +38,14 @@ function pass(name, cond) {
 //    `tickets.receipt_requested_at` on an OPEN bill of that table (it can never
 //    touch a status, a payment, a price or a quantity). scripts/verify-order-status.mjs
 //    re-checks all of that on every `npm test`.
+//  • /api/attendance/clock — biometric hardware (ESP32) and attendance kiosk scans.
 const PUBLIC_MUTATION_ROUTES = new Set([
   join(API, "admin", "login", "route.ts"),
   join(API, "admin", "verify", "route.ts"),
   join(API, "staff", "login", "route.ts"),
   join(API, "translate", "route.ts"),
   join(API, "table-status", "route.ts"),
+  join(API, "attendance", "clock", "route.ts"),
 ]);
 
 function walk(dir) {

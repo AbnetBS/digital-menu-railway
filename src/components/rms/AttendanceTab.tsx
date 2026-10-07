@@ -73,7 +73,7 @@ export default function AttendanceTab() {
   const [enrollStaffId, setEnrollStaffId] = useState<number | "">("");
   const [enrollFingerId, setEnrollFingerId] = useState("");
   const [enrollFingerName, setEnrollFingerName] = useState("Right Index");
-  const [enrollMsg, setEnrollMsg] = useState("");
+  const [msg, setMsg] = useState("");
   
   // Shift form
   const [shiftName, setShiftName] = useState("");
@@ -130,7 +130,7 @@ export default function AttendanceTab() {
 
   const handleEnroll = async () => {
     if (!enrollStaffId || !enrollFingerId) {
-      setEnrollMsg("Staff and Fingerprint ID required");
+      setMsg("Staff and Fingerprint ID required");
       return;
     }
     try {
@@ -145,32 +145,65 @@ export default function AttendanceTab() {
       });
       const d = await r.json();
       if (!r.ok) {
-        setEnrollMsg(d.error || "Failed");
+        setMsg(d.error || "Failed");
       } else {
-        setEnrollMsg(`✓ ${d.message}`);
+        setMsg(`✓ ${d.message}`);
         setEnrollFingerId("");
         loadBiometrics();
       }
     } catch {
-      setEnrollMsg("Network error");
+      setMsg("Network error");
     }
   };
 
   const handleDeleteBio = async (id: number) => {
     if (!confirm("Delete this fingerprint? Employee will need to re-enroll on device.")) return;
-    await fetch(`/api/attendance/biometrics?id=${id}`, { method: "DELETE" });
-    loadBiometrics();
+    try {
+      const r = await fetch(`/api/attendance/biometrics?id=${id}`, { method: "DELETE" });
+      if (r.ok) {
+        setMsg("Fingerprint deleted");
+        loadBiometrics();
+      } else {
+        setMsg("Failed to delete fingerprint");
+      }
+    } catch {
+      setMsg("Network error: failed to delete fingerprint");
+    }
   };
 
   const handleAddShift = async () => {
     if (!shiftName || !shiftStart || !shiftEnd) return;
-    await fetch("/api/attendance/shifts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: shiftName, startTime: shiftStart, endTime: shiftEnd, graceMinutes: Number(shiftGrace) }),
-    });
-    setShiftName("");
-    loadShifts();
+    try {
+      const r = await fetch("/api/attendance/shifts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: shiftName, startTime: shiftStart, endTime: shiftEnd, graceMinutes: Number(shiftGrace) }),
+      });
+      if (r.ok) {
+        setShiftName("");
+        setMsg("Shift added");
+        loadShifts();
+      } else {
+        setMsg("Failed to add shift");
+      }
+    } catch {
+      setMsg("Network error: failed to add shift");
+    }
+  };
+
+  const handleDeleteShift = async (id: number) => {
+    if (!confirm("Delete shift?")) return;
+    try {
+      const r = await fetch(`/api/attendance/shifts?id=${id}`, { method: "DELETE" });
+      if (r.ok) {
+        setMsg("Shift deleted");
+        loadShifts();
+      } else {
+        setMsg("Failed to delete shift");
+      }
+    } catch {
+      setMsg("Network error: failed to delete shift");
+    }
   };
 
   // Group biometrics by staff
@@ -417,7 +450,7 @@ export default function AttendanceTab() {
                 <Plus className="w-4 h-4" /> Enroll
               </button>
             </div>
-            {enrollMsg && <p className="mt-3 text-xs font-bold text-emerald-400">{enrollMsg}</p>}
+            {msg && <p className="mt-3 text-xs font-bold text-emerald-400">{msg}</p>}
             <p className="mt-3 text-[11px] text-stone-400">Steps: 1) On ESP32 device, enroll finger with ID (e.g., ID 12) via Serial/OLED, 2) Come here, select staff, enter same ID 12, click Enroll - links fingerprint to staff.</p>
           </div>
 
@@ -476,7 +509,7 @@ export default function AttendanceTab() {
                   <p className="font-bold text-white">{sh.name}</p>
                   <p className="text-xs text-stone-400">{sh.startTime} - {sh.endTime} (Grace {sh.graceMinutes}m)</p>
                 </div>
-                <button onClick={async () => { if (confirm("Delete shift?")) { await fetch(`/api/attendance/shifts?id=${sh.id}`, { method: "DELETE" }); loadShifts(); } }} className="p-2 bg-rose-500/20 text-rose-300 rounded-lg">
+                <button onClick={() => handleDeleteShift(sh.id)} className="p-2 bg-rose-500/20 text-rose-300 rounded-lg">
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>

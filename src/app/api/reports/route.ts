@@ -441,7 +441,7 @@ export async function GET(request: Request) {
     // Each day is Ethiopian calendar day, not 24h window
     const last7DaysSales = Array.from({ length: 7 }, (_, i) => {
       const daysAgo = i; // 0 = today, 1 = yesterday, etc.
-      const dayTickets = revenueTickets.filter((t) => isOnEtDayDaysAgo(soldAt(t), daysAgo));
+      const dayTickets = ticketsSoldDuring((date) => isOnEtDayDaysAgo(date, daysAgo));
       const dayKey = etDayKeyDaysAgo(daysAgo);
       const revenue = sumOf(dayTickets);
       const orders = dayTickets.length;

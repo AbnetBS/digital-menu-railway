@@ -65,6 +65,11 @@
  * - Re-enrolling an ID that already has a finger on the module now works
  *   (old finger is deleted first, status 7 handled).
  * - Sensor is re-checked every 5 s if it was missing at boot (self-healing).
+ * - REAL-TIME, NO POLLING: the device keeps one Server-Sent-Events stream open
+ *   to /api/attendance/events. The server pushes the instant an enrollment is
+ *   queued or a mapping changes - zero traffic until something happens.
+ *   A slow 15 s fallback poll runs only while the stream is down, so
+ *   enrollment keeps working no matter what.
  */
 
 #include <WiFi.h>
@@ -132,15 +137,17 @@ String deviceToken = ""; // No device token required by the server
 bool sensorReady = false;
 int templateCount = -1;
 
-// How often the device asks the server "is anybody waiting to enroll a finger?"
-// (the owner asked for 2 seconds). This poll is ~99% of the device's server
-// traffic (43,200 tiny requests/day). Raise it to e.g. 5000 to cut that by
-// 60% - enrollment pickup then takes up to 5 s instead of 2 s.
-#define PENDING_POLL_INTERVAL_MS 2000
+// REAL-TIME, NO POLLING: the device keeps one Server-Sent-Events stream open
+// to /api/attendance/events. The server pushes the instant the admin queues an
+// enrollment or a mapping changes - zero traffic until something happens.
+// Only while the stream is DOWN does the device fall back to a slow poll, so
+// enrollment keeps working no matter what (old server, WiFi drops, ...).
+#define PENDING_POLL_FALLBACK_MS 15000  // fallback poll, only while stream is down
+#define EVENT_STREAM_STALL_MS 75000     // no bytes (heartbeats come every 25 s) -> reconnect
 
 // Admin presses "Add Fingerprint" on the website -> the server opens a pending
-// job -> this device picks it up here, shows the name, stores the finger and
-// reports the mapping back.
+// job -> this device picks it up (pushed in real time), shows the name, stores
+// the finger and reports the mapping back.
 unsigned long lastPendingCheck = 0;
 bool enrollingFromServer = false;
 bool checkPendingEnroll();
@@ -166,6 +173,15 @@ unsigned long lastFingerEventMs = 0;
 
 // Enrollment: guided tries per step before giving up
 #define ENROLL_MAX_ATTEMPTS 5
+
+// ── Real-time event stream (SSE) state ──────────────────────────────────────
+HTTPClient eventHttp;
+WiFiClient *eventStream = nullptr;
+bool eventStreamActive = false;
+unsigned long lastEventStreamTry = 0;
+unsigned long lastEventStreamData = 0;
+unsigned long eventStreamRetryMs = 5000; // reconnect backoff (grows to 30 s)
+String eventLine = "";                  // one SSE line at a time
 
 void setup() {
   Serial.begin(115200);
@@ -291,10 +307,32 @@ void setup() {
 void loop() {
   server.handleClient();
 
-  // The admin may be waiting for a finger: ask the server every 2 seconds.
-  if (!enrollingFromServer && millis() - lastPendingCheck > 2000) {
-    lastPendingCheck = millis();
-    checkPendingEnroll();
+  // Real-time event stream: the server pushes only when something happens
+  // (admin queued an enrollment / a mapping changed). While the stream is
+  // down, a slow fallback poll keeps enrollment working no matter what.
+  static bool wifiWasConnected = false;
+  bool wifiConnected = WiFi.status() == WL_CONNECTED;
+  if (wifiConnected && !wifiWasConnected && eventStreamActive) {
+    stopEventStream(); // the WiFi drop killed the old sockets
+  }
+  wifiWasConnected = wifiConnected;
+
+  if (wifiConnected) {
+    if (eventStreamActive) {
+      pumpEventStream();
+      if (eventStreamActive && millis() - lastEventStreamData > EVENT_STREAM_STALL_MS) {
+        Serial.println("Event stream stalled, reconnecting");
+        startEventStream();
+      }
+    } else if (millis() - lastEventStreamTry > eventStreamRetryMs) {
+      startEventStream();
+    }
+    // Fallback poll ONLY while the real-time stream is down.
+    if (!eventStreamActive && !enrollingFromServer &&
+        millis() - lastPendingCheck > PENDING_POLL_FALLBACK_MS) {
+      lastPendingCheck = millis();
+      checkPendingEnroll();
+    }
   }
 
   // If the sensor was missing at boot (or died), keep checking every 5 s.
@@ -418,10 +456,11 @@ void loop() {
   if (millis() - lastSync > 30000) {
     lastSync = millis();
     syncOfflineQueue();
-    // Refresh mappings every 5 minutes
+    // Refresh mappings every 15 minutes as a fallback - normally a mapping
+    // change is pushed to us in real time by the event stream.
     static int syncCount = 0;
     syncCount++;
-    if (syncCount > 10) {
+    if (syncCount > 30) {
       syncCount = 0;
       loadMappingsFromServer();
     }
@@ -903,8 +942,79 @@ bool enrollFingerprint(int id) {
   return true;
 }
 
+/* ── Real-time event stream (replaces the old 2 s enrollment poll) ──────────
+ * The device keeps one Server-Sent-Events stream open. The server pushes
+ * "data: refresh" the moment an enrollment is queued or a mapping changes;
+ * between events the connection is idle (a heartbeat every 25 s), so there
+ * is NO polling and almost no traffic.
+ */
+
+void stopEventStream() {
+  if (eventStreamActive) Serial.println("Event stream disconnected");
+  eventStreamActive = false;
+  eventStream = nullptr;
+  eventLine = "";
+  eventHttp.end();
+  lastEventStreamTry = millis();
+}
+
+// Open the SSE stream. GET() returns as soon as the headers arrive; the body
+// (events + heartbeats) is read later by pumpEventStream().
+void startEventStream() {
+  stopEventStream();
+  if (WiFi.status() != WL_CONNECTED) return;
+  Serial.println("Connecting real-time event stream...");
+  eventHttp.begin(serverURL + "/api/attendance/events?channel=device");
+  eventHttp.addHeader("Accept", "text/event-stream");
+  if (deviceToken.length() > 0) eventHttp.addHeader("x-attendance-device", deviceToken);
+  eventHttp.setTimeout(5000);
+  int code = eventHttp.GET();
+  if (code == 200) {
+    eventStream = eventHttp.getStreamPtr();
+    eventStreamActive = true;
+    lastEventStreamData = millis();
+    eventStreamRetryMs = 5000;
+    Serial.println("Real-time event stream connected (no more polling)");
+  } else {
+    Serial.print("Event stream connect failed, HTTP ");
+    Serial.println(code);
+    eventHttp.end();
+    eventStreamActive = false;
+    eventStreamRetryMs = min(eventStreamRetryMs * 2, 30000UL); // backoff
+  }
+  lastEventStreamTry = millis();
+}
+
+// Read whatever is available on the stream (never blocks). A "data: refresh"
+// push means something happened: check for a queued enrollment and refresh
+// the name mappings - one small GET each, only when it really happened.
+void pumpEventStream() {
+  if (!eventStreamActive || eventStream == nullptr) return;
+  if (!eventStream->connected()) {
+    stopEventStream();
+    return;
+  }
+  bool gotRefresh = false;
+  while (eventStream->available() > 0) {
+    char c = (char)eventStream->read();
+    lastEventStreamData = millis();
+    if (c == '\n') {
+      if (eventLine.startsWith("data:")) gotRefresh = true; // "data: refresh"
+      eventLine = "";
+    } else if (c != '\r') {
+      eventLine += c;
+    }
+  }
+  if (gotRefresh && !enrollingFromServer) {
+    Serial.println("Real-time event: checking enrollment + mappings");
+    loadMappingsFromServer();
+    checkPendingEnroll();
+  }
+}
+
 /* ── THE ADMIN'S "ADD FINGERPRINT" BUTTON ───────────────────────────────────
- * GET /api/attendance/biometrics?pending tells us who is waiting. We show the
+ * The server pushes a real-time event when a job is queued (or the fallback
+ * poll finds it via GET /api/attendance/biometrics?pending). We show the
  * name on the OLED, take the finger under the ID the server chose, then post
  * the mapping back so the website prints "Fingerprint Added ✓".
  */

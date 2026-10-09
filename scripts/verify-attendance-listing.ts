@@ -293,11 +293,18 @@ pass(
     mappingsApi.includes('eq(attendanceEnrollJobs.status, "pending")')
 );
 pass(
-  "the firmware polls the pending job every 2 seconds and posts the mapping back",
+  "the firmware listens in real time (SSE, fallback poll) and posts the mapping back",
   firmware.includes("checkPendingEnroll()") &&
     firmware.includes("/api/attendance/biometrics?pending=1") &&
     firmware.includes("postMappingToServer(") &&
-    firmware.includes("millis() - lastPendingCheck > 2000")
+    firmware.includes("/api/attendance/events?channel=device") &&
+    firmware.includes("pumpEventStream(") &&
+    firmware.includes("PENDING_POLL_FALLBACK_MS") &&
+    biometricsApi.includes("publish(CHANNELS.device)")
+);
+pass(
+  "the kiosk board refreshes in real time (EventSource) instead of polling",
+  kiosk.includes("new EventSource") && kiosk.includes("channel=attendance") && kiosk.includes("fetchToday()")
 );
 pass(
   "a person keeps at most 5 fingers",

@@ -79,7 +79,9 @@ Need 16 jumper wires total.
 
 1. Idle: OLED shows "Place finger", tablet /attendance shows live clock
 2. Scan: FPC1020A finds ID in <0.45 sec, OLED shows name, green LED + beep, POST to /api/attendance/clock
-3. Tablet /attendance auto refresh every 8 sec, shows new row IN/OUT with total hours
+3. Tablet /attendance updates in REAL TIME (SSE push from the server) the moment a scan lands - no polling
+4. The ESP32 keeps one real-time event stream open (/api/attendance/events): the admin presses "Add Fingerprint"
+   and the device is told INSTANTLY (no 2-second polling). A slow 15 s fallback poll runs only if the stream is down.
 4. Admin /admin -> Attendance tab shows paper sheet view like your photo: Employee Name | Date | IN Time & Finger | OUT Time & Finger | Total Hours | Late
    - Print button: In Paper Sheet View, click "Print Hard Copy" -> prints only the table like normal paper (landscape, black border, FANA CAFÉ header) for hard copy filing
 5. Offline: Saves to LittleFS queue, syncs when internet back, OLED still works from local cache

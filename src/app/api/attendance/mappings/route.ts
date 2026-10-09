@@ -4,6 +4,7 @@ import { attendanceBiometrics, attendanceEnrollJobs, attendanceMembers } from "@
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { deviceAllowed } from "@/lib/attendance-device";
+import { publish, CHANNELS } from "@/lib/realtime";
 import { and, eq } from "drizzle-orm";
 import { MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
 
@@ -130,6 +131,10 @@ export async function POST(request: Request) {
           eq(attendanceEnrollJobs.status, "pending")
         )
       );
+
+    // The device stored a finger: push the device channel so the admin page
+    // watching the job prints "Fingerprint Added ✓" instantly.
+    publish(CHANNELS.device);
 
     return NextResponse.json({
       success: true,

@@ -13,10 +13,11 @@ import { CheckCircle2, AlertCircle, Clock, Fingerprint, Timer } from "lucide-rea
  *   LEFT (a third of the screen): his name from the list, the PIN keypad for
  *   the days his finger is wet or dirty, and the Overtime button.
  *   RIGHT: today, live, as the paper sheet - name, IN (time & signature), OUT
- *   (time & signature), total hours, status. Auto refresh every 8 seconds.
+ *   (time & signature), total hours, status. Real time: the server pushes the
+ *   moment a scan is clocked in/out (SSE), so there is no polling at all.
  *
  * The fingerprint stays the main way: the ESP32 posts the scan straight to
- * /api/attendance/clock and this page picks it up on its next refresh. The PIN
+ * /api/attendance/clock and this page picks it up instantly. The PIN
  * is only the second option.
  */
 
@@ -89,8 +90,29 @@ export default function AttendanceKiosk() {
   useEffect(() => {
     fetchToday();
     fetchMembers();
-    const poll = setInterval(fetchToday, 8000);
-    return () => clearInterval(poll);
+    // Real time: the server pushes when a scan is clocked in/out, so the
+    // board updates instantly and there is no polling. If the stream cannot
+    // be opened (e.g. an older server), fall back to the old 8 s refresh.
+    let es: EventSource | null = null;
+    let poll: ReturnType<typeof setInterval> | null = null;
+    if (typeof EventSource !== "undefined") {
+      es = new EventSource("/api/realtime?channel=attendance");
+      es.onmessage = () => fetchToday();
+      es.onerror = () => {
+        if (es && es.readyState === EventSource.CLOSED) {
+          es.close();
+          es = null;
+          poll = setInterval(fetchToday, 8000);
+        }
+        // otherwise EventSource reconnects by itself
+      };
+    } else {
+      poll = setInterval(fetchToday, 8000);
+    }
+    return () => {
+      if (es) es.close();
+      if (poll) clearInterval(poll);
+    };
   }, [fetchToday, fetchMembers]);
 
   // A message on the door must not stay there forever.

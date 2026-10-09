@@ -125,6 +125,27 @@ With this, the ESP32 only talks to the sensor when a finger is really on it -
 fewer useless scans, cleaner images, less wear. (If it never triggers,
 change `FINGER_TOUCH_ACTIVE` from `HIGH` to `LOW`.)
 
+## Real-time updates (no more polling)
+
+The device and the screens no longer ask the server "anything new?" every
+few seconds. Everything is pushed only when something happens:
+
+- **ESP32**: keeps one stream open to `/api/attendance/events?channel=device`.
+  The admin presses "Add Fingerprint" -> the server pushes instantly -> the
+  OLED shows "Enroll <name>" right away. No 2-second polling (that was
+  43,200 tiny requests/day). If the stream is ever down, a slow 15 s fallback
+  poll keeps enrollment working.
+- **/attendance tablet page**: gets pushed the moment a scan is clocked
+  in/out (was: refresh every 8 s).
+- **Admin Attendance tab**: "Today Live" and "Fingerprint Added ✓" are
+  instant (were: 8 s and 2 s polls).
+- Between events the streams are idle (a heartbeat every 25 s), so server
+  traffic is ~zero until something actually happens.
+
+Server load after this change: the device makes ~1 small request only when
+something happens (a scan, an enrollment, a mapping change) instead of
+~43,000 requests/day.
+
 ## Expected Serial Monitor output after the fix
 
 Enrollment:

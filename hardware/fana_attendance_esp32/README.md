@@ -124,9 +124,17 @@ Print button creates hard copy like normal paper with @media print landscape.
 ## Troubleshooting
 
 - If OLED black: try address 0x3D instead of 0x3C
-- If fingerprint not found: check wiring TX->16 RX->17 cross, baud 57600, VCC 3.3V or 5V
+- **Enrollment fails with "status = 6" / scan says "Image unclear":**
+  the sensor saw the finger but the image was too messy. See
+  **FINGERPRINT_FIX.md** - first peel the protective film off the sensor,
+  clean it, and press the finger flat and still. This is the #1 cause.
+- If fingerprint sensor not answering: check wiring TX->16 RX->17 cross,
+  GND, VCC 3.3V (or 5V if the module is a 5V version), **baud 19200** (8N1)
+- If fingerprint not found (but scans work): the finger is not enrolled -
+  the OLED says "Not enrolled! Ask admin to add this finger"
 - If WiFi fails: reset WiFiManager by uncommenting wm.resetSettings() and re-upload
 - If POST fails: check serverURL https, check VPSDime firewall allows ESP32 IP, check Coolify domain
+- Serial Monitor commands: `enroll <id>`, `list`, `empty`, `test` (115200 baud)
 
 ## Next Steps After Hardware Buy (Tomorrow Connect Checklist)
 

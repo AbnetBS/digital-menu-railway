@@ -1,9 +1,9 @@
 /*
  * FANA CAFE & RESTAURANT - Attendance System
  * GitHub: hardware/fana_attendance_esp32/fana_attendance_esp32.ino (keep updated here for copy-paste upload)
- * Branch: arena/468a03d9-digital-menu-railway -> main after merge
+ * Branch: arena/861dfe55-digital-menu-railway -> main after merge
  * Hardware: ESP32 WROOM Wifi Board 1,750 Br + FPC1020A 4,500 Br + 0.96" OLED + Buzzer + LEDs
- * Total: 8,720 Br core, 16 wires exact (8 Female-Female for modules, 8 Male-Male for ESP32/buzzer/LEDs)
+ * Total: 8,720 Br core; 16 core wires + 2 touch-sense wires (recommended)
  *
  * Wiring:
  * FPC1020A VCC (Red)    -> ESP32 3.3V (or 5V if module needs 5V)
@@ -19,11 +19,11 @@
  * OLED SDA              -> GPIO21
  * OLED SCL              -> GPIO22
  *
- * OPTIONAL but recommended (better captures, less sensor wear):
- * FPC1020A TOUCH OUT (pin 5) -> ESP32 GPIO25   and uncomment FINGER_TOUCH_PIN below
+ * TOUCH SENSE (enabled in this sketch; connect both wires):
+ * FPC1020A TOUCH OUT (pin 5) -> ESP32 GPIO25
  * FPC1020A V_TOUCH   (pin 6) -> 3.3V
- * With this wired, the ESP32 only sends scan commands when a finger is really
- * on the sensor. See FINGERPRINT_FIX.md.
+ * Each enrollment capture waits for touch, then 600 ms for the finger to settle.
+ * See FINGERPRINT_FIX.md if your touch output is active-low.
  *
  * IMPORTANT (physical): peel the protective plastic film off the FPC1020A
  * sensor surface before first use - a capacitive sensor cannot image through
@@ -52,14 +52,16 @@
  * For 40-50 staff, 3 fingerprints each = 120-150 templates
  * FPC1020A stores 150-1000 templates, <0.45 sec search, capacitive with wet optimization
  *
- * Fingerprint fixes in this version (see FINGERPRINT_FIX.md):
- * - "BIOVO enrollment failed at step 1; status = 6" fixed: status 6 means the
- *   module saw a finger but the IMAGE was too messy/unclear. Enrollment now
- *   retries each step with on-screen guidance (press flat, clean sensor).
- * - Patched library re-syncs on frame head, so a late reply from the 1x/sec
- *   idle scan can no longer be mistaken for the enrollment reply.
- * - "Not enrolled" (status 5) and "image unclear" (status 6) are now told
- *   apart from "no finger" (status 8).
+ * Fingerprint enrollment fixes in this version (see FINGERPRINT_FIX.md):
+ * - The capture flow matches the FPC1020A reference: 1x ADD_1, 4x ADD_2, 1x ADD_3.
+ * - Status 6 retries the SAME capture while the finger stays still; after
+ *   three consecutive unclear images, the OLED asks the user to lift and re-place.
+ * - TOUCH OUT on GPIO25 gates each capture; the sketch waits 600 ms after touch
+ *   before sending the command. Wire pin 5 to GPIO25 and pin 6 (V_TOUCH) to 3.3V.
+ * - The reported failure was a moving finger during capture. The patched library
+ *   remains unchanged and continues to guard against stale UART replies.
+ * - "Not enrolled" (status 5), "image unclear" (status 6), and "no finger"
+ *   (status 8) are told apart.
  * - One scan = one clock event: after a scan the device waits for the finger
  *   to be lifted before accepting the next one (no more double clock-in).
  * - Re-enrolling an ID that already has a finger on the module now works
@@ -98,10 +100,10 @@ Biovo1020A finger(mySerial);
 #define GREEN_LED 18
 #define RED_LED 19
 
-// OPTIONAL: wire the module's TOUCH OUT (pin 5) to GPIO25 and V_TOUCH (pin 6)
-// to 3.3V, then uncomment the next line. The ESP32 will only scan when a
-// finger is actually present. If it never triggers, change ACTIVE to LOW.
-// #define FINGER_TOUCH_PIN 25
+// Wire module TOUCH OUT (pin 5) to GPIO25 and V_TOUCH (pin 6) to 3.3V.
+// Enrollment waits for touch, then lets the finger settle for 600 ms before
+// each capture. If your module's touch output is active-low, change HIGH to LOW.
+#define FINGER_TOUCH_PIN 25
 #define FINGER_TOUCH_ACTIVE HIGH
 
 // Web server for local config
@@ -171,8 +173,10 @@ std::map<int, String> fingerprintToStaff;
 bool awaitingFingerLift = false;
 unsigned long lastFingerEventMs = 0;
 
-// Enrollment: guided tries per step before giving up
+// Each of the six enrollment captures gets its own retry cap. An unclear image
+// is retried in place; only three consecutive unclear replies trigger a lift.
 #define ENROLL_MAX_ATTEMPTS 5
+#define ENROLL_HOLD_STILL_BEFORE_LIFT 3
 
 // ── Real-time event stream (SSE) state ──────────────────────────────────────
 HTTPClient eventHttp;
@@ -534,6 +538,51 @@ void waitForFingerLift(uint32_t timeoutMs) {
 #endif
 }
 
+// Every enrollment command is sent only after a finger is detected and has
+// settled. Without the optional wire, the caller provides the timed fallback.
+void waitForFingerPlacement() {
+#ifdef FINGER_TOUCH_PIN
+  while (!fingerTouched()) delay(20);
+#endif
+  delay(600);
+}
+
+// The status-6 recovery asks for a real lift before re-placement when touch
+// sense is wired. Without touch sense, leave time for the person to lift.
+void waitForFingerReleaseForRetry() {
+#ifdef FINGER_TOUCH_PIN
+  while (fingerTouched()) delay(20);
+  delay(200); // allow the module to register finger-off
+#else
+  delay(1500);
+#endif
+}
+
+void showEnrollCaptureScreen(int id, uint8_t step, uint8_t captureNumber,
+                             uint8_t captureTotal, uint8_t attempt,
+                             const char* prompt) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Enroll ID " + String(id));
+  display.setCursor(0, 12);
+  display.println("Step " + String(step) + " of 3");
+  display.setCursor(0, 24);
+  display.println("Capture " + String(captureNumber) + "/" + String(captureTotal));
+  if (String(prompt) == "Hold still - don't move") {
+    display.setCursor(0, 36);
+    display.println("Hold still - don't");
+    display.setCursor(0, 48);
+    display.println("move - Try " + String(attempt) + "/" + String(ENROLL_MAX_ATTEMPTS));
+  } else {
+    display.setCursor(0, 36);
+    display.println(prompt);
+    display.setCursor(0, 48);
+    display.println("Try " + String(attempt) + "/" + String(ENROLL_MAX_ATTEMPTS));
+  }
+  display.display();
+}
+
 void showEnrollFailScreen(const char* line1, const char* line2) {
   display.clearDisplay();
   display.setTextSize(1);
@@ -802,15 +851,14 @@ void syncOfflineQueue() {
 }
 
 /*
- * Enroll one finger under the given ID. BIOVO enrollment uses three guided
- * captures (steps 1, 2, 3); the same finger must be placed for each step and
- * lifted in between. Each step gets up to ENROLL_MAX_ATTEMPTS guided tries -
- * status 0x06 ("image unclear") is almost always fixed by pressing the finger
- * flat and still on a clean sensor, so we coach and retry instead of failing.
+ * Enroll one finger under the given ID, following the official FPC1020A flow:
+ * one ADD_1 capture, four ADD_2 captures, and one ADD_3 capture. Each capture
+ * gets its own retry budget. An IMAGEMESS reply means the finger moved or the
+ * image was unclear: keep the same finger in place and retry that capture.
  */
 bool enrollFingerprint(int id) {
-  if (id <= 0) {
-    Serial.println("Invalid fingerprint ID; use a positive ID.");
+  if (id <= 0 || id > 1000) {
+    Serial.println("Invalid fingerprint ID; use a number from 1 to 1000.");
     return false;
   }
   if (!sensorReady) {
@@ -823,50 +871,70 @@ bool enrollFingerprint(int id) {
   }
 
   Serial.print("Enrolling ID #"); Serial.println(id);
+  Serial.println("Six captures: step 1 once, step 2 four times, step 3 once.");
+  Serial.println("Press flat and STILL. Do not move until each capture finishes.");
 
   // Drop any stale reply from the idle scan loop and give the module a
-  // moment to finish a scan in progress, so the first reply we read really
-  // belongs to our enroll command.
+  // moment to finish a scan in progress before starting enrollment.
   while (mySerial.available()) mySerial.read();
   delay(150);
 
-  // BIOVO enrollment uses three guided scans: steps 1, 2, and 3.
-  for (uint8_t step = 1; step <= 3; step++) {
-    const char* prompt = (step == 1) ? "Place finger"
-                        : (step == 2) ? "Lift, place again"
-                        :               "Place same finger";
-    bool stepDone = false;
+  const uint8_t captureSteps[6] = {1, 2, 2, 2, 2, 3};
+  const uint8_t captureNumbers[6] = {1, 1, 2, 3, 4, 1};
+  const uint8_t captureTotals[6] = {1, 4, 4, 4, 4, 1};
 
-    for (uint8_t attempt = 1; attempt <= ENROLL_MAX_ATTEMPTS; attempt++) {
-      Serial.print("Enrollment step "); Serial.print(step);
-      Serial.print("/3, attempt "); Serial.println(attempt);
+  for (uint8_t capture = 0; capture < 6; capture++) {
+    const uint8_t step = captureSteps[capture];
+    const uint8_t captureNumber = captureNumbers[capture];
+    const uint8_t captureTotal = captureTotals[capture];
+    uint8_t attempt = 0;
+    uint8_t consecutiveImageMess = 0;
+    bool captureDone = false;
+    const char* nextPrompt = (capture == 0) ? "Place finger flat" : "Keep finger still";
+    unsigned long lastImageMessAt = 0;
 
-      display.clearDisplay();
-      display.setTextSize(1);
-      display.setCursor(0, 0);
-      display.println("Enroll ID " + String(id));
-      display.setCursor(0, 14);
-      display.println(prompt);
-      display.setCursor(0, 28);
-      display.println("Step " + String(step) + " of 3");
-      if (attempt > 1) {
-        display.setCursor(0, 42);
-        display.println("Try " + String(attempt) + "/" + String(ENROLL_MAX_ATTEMPTS));
+    while (attempt < ENROLL_MAX_ATTEMPTS) {
+      attempt++;
+      Serial.print("Enrollment step "); Serial.print(step); Serial.print("/3, capture ");
+      Serial.print(captureNumber); Serial.print("/"); Serial.print(captureTotal);
+      Serial.print(", attempt "); Serial.print(attempt); Serial.print("/");
+      Serial.println(ENROLL_MAX_ATTEMPTS);
+
+      showEnrollCaptureScreen(id, step, captureNumber, captureTotal, attempt, nextPrompt);
+
+#ifdef FINGER_TOUCH_PIN
+      // Do not photograph a moving finger: wait for TOUCH OUT, then let the
+      // finger settle for 600 ms before sending this capture command.
+      Serial.println("Waiting for finger touch, then 600 ms to settle...");
+      waitForFingerPlacement();
+#else
+      // Without TOUCH OUT, give the first placement extra time and a stable
+      // finger 600 ms before every later capture/retry.
+      if (capture == 0 && attempt == 1) delay(1500);
+      else delay(600);
+#endif
+
+      // Status 6 retries go out about one second after the last failure. The
+      // touch-sense settle time above counts toward that second.
+      if (lastImageMessAt != 0 && consecutiveImageMess > 0 &&
+          consecutiveImageMess < ENROLL_HOLD_STILL_BEFORE_LIFT) {
+        const uint32_t elapsed = millis() - lastImageMessAt;
+        if (elapsed < 1000) delay(1000 - elapsed);
       }
-      display.display();
 
       if (finger.enroll((uint16_t)id, step, 30000)) {
-        stepDone = true;
+        captureDone = true;
         break;
       }
 
-      uint8_t status = finger.getLastStatus();
-      Serial.print("Step "); Serial.print(step);
-      Serial.print(" failed; status = "); Serial.print(status);
-      Serial.print(" ("); Serial.print(fingerStatusText(status)); Serial.println(")");
+      const uint8_t status = finger.getLastStatus();
+      Serial.print("Step "); Serial.print(step); Serial.print(" capture ");
+      Serial.print(captureNumber); Serial.print(" failed; status = ");
+      Serial.print(status); Serial.print(" ("); Serial.print(fingerStatusText(status));
+      Serial.println(")");
 
-      // No reply / garbled line: wiring or power problem. Retrying will not
-      // help - abort; the 2 s poll will start a fresh attempt later.
+      // No reply / garbled line means a sensor or power problem. Retrying will
+      // not help - abort as before; the idle health check can recover later.
       if (status == 0xFF || status == BIOVO_ACK_COMM_ERROR) {
         showEnrollFailScreen("Sensor no reply", "Check wiring+power");
         beepError();
@@ -875,9 +943,9 @@ bool enrollFingerprint(int id) {
         return false;
       }
 
-      // This ID already has a finger stored on the module: remove the old
-      // one and enroll fresh (makes re-enrollment work).
-      if (status == BIOVO_ACK_USER_EXIST && step == 1) {
+      // The first ADD_1 can report that this ID is already stored. Delete the
+      // old template and retry under the same ID, preserving re-enrollment.
+      if (status == BIOVO_ACK_USER_EXIST && capture == 0) {
         Serial.println("ID already stored on module, deleting old finger");
         display.clearDisplay();
         display.setCursor(0, 0);
@@ -885,28 +953,60 @@ bool enrollFingerprint(int id) {
         display.setCursor(0, 16);
         display.println("Replacing...");
         display.display();
-        finger.deleteUser((uint16_t)id, 5000);
+        const bool deleted = finger.deleteUser((uint16_t)id, 5000);
+        if (!deleted) {
+          Serial.print("Could not delete old ID; status = ");
+          Serial.println(finger.getLastStatus());
+        }
+        nextPrompt = "Place finger flat";
+        consecutiveImageMess = 0;
+        lastImageMessAt = 0;
         continue;
       }
 
-      if (attempt == ENROLL_MAX_ATTEMPTS) break;
+      if (status == BIOVO_ACK_IMAGEMESS) {
+        consecutiveImageMess++;
+        if (attempt >= ENROLL_MAX_ATTEMPTS) {
+          Serial.println("This capture reached its 5-attempt limit.");
+          break;
+        }
 
-      // Bad image (0x06) or generic failure: coach the user, then try again.
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.println("Enroll ID " + String(id));
-      display.setCursor(0, 14);
-      display.println(fingerStatusShort(status));
-      display.setCursor(0, 28);
-      display.println("Lift, place flat");
-      display.setCursor(0, 42);
-      display.println("Try " + String(attempt + 1) + "/" + String(ENROLL_MAX_ATTEMPTS));
-      display.display();
+        if (consecutiveImageMess >= ENROLL_HOLD_STILL_BEFORE_LIFT) {
+          Serial.println("Three unclear captures in a row: lift, then place flat again.");
+          showEnrollCaptureScreen(id, step, captureNumber, captureTotal,
+                                  attempt + 1, "Lift, place flat");
+          waitForFingerReleaseForRetry();
+          nextPrompt = "Place finger flat";
+          consecutiveImageMess = 0;
+          lastImageMessAt = 0;
+        } else {
+          // Crucial recovery: do NOT ask for a lift after the first unclear
+          // image. The same finger becomes still while the one-second retry
+          // delay passes, so resend this same capture command in place.
+          Serial.println("Hold still - don't move. Retrying this same capture in about 1 second.");
+          nextPrompt = "Hold still - don't move";
+          showEnrollCaptureScreen(id, step, captureNumber, captureTotal,
+                                  attempt + 1, nextPrompt);
+          lastImageMessAt = millis();
+        }
+        continue;
+      }
+
+      // Other recoverable replies keep the guided retry behavior. Status 8
+      // means no finger was seen; other errors ask for a fresh flat placement.
+      consecutiveImageMess = 0;
+      lastImageMessAt = 0;
+      if (attempt >= ENROLL_MAX_ATTEMPTS) break;
+      nextPrompt = (status == BIOVO_ACK_TIMEOUT) ? "Place finger flat" : "Lift, place flat";
+      showEnrollCaptureScreen(id, step, captureNumber, captureTotal,
+                              attempt + 1, nextPrompt);
       beepError();
-      waitForFingerLift(1500); // give the user time to lift and re-place
+      waitForFingerLift(1500);
     }
 
-    if (!stepDone) {
+    if (!captureDone) {
+      Serial.print("Enrollment capture "); Serial.print(captureNumber);
+      Serial.print(" of step "); Serial.print(step); Serial.println(" failed.");
       showEnrollFailScreen("Enroll failed", "Try again");
       beepError();
       delay(1500);
@@ -914,30 +1014,44 @@ bool enrollFingerprint(int id) {
       return false;
     }
 
-    if (step < 3) {
-      // Enrollment needs the finger lifted between captures.
-      display.clearDisplay();
-      display.setCursor(0, 0);
-      display.println("Good! Lift finger");
-      display.setCursor(0, 16);
-      display.println("Then place again");
-      display.display();
-      beepSuccess();
-      waitForFingerLift(5000);
-    }
+    Serial.print("Enrollment step "); Serial.print(step); Serial.print(" capture ");
+    Serial.print(captureNumber); Serial.println(" accepted.");
   }
 
   Serial.println("Fingerprint enrolled successfully.");
-  int16_t newCount = finger.getCount(3000);
+  const int16_t newCount = finger.getCount(3000);
   if (newCount >= 0) templateCount = newCount;
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println("Enrolled ID " + String(id));
-  display.setCursor(0, 16);
-  display.println("Success!");
-  display.display();
-  beepSuccess();
-  delay(2000);
+
+  if (!enrollingFromServer) {
+    // Manual Serial enrollment stores only the sensor template. The admin
+    // must map this ID to a staff member so clock scans can identify the name.
+    Serial.print("Stored as ID ");
+    Serial.print(id);
+    Serial.println(" — map it: admin → Attendance → Staff Fingerprints");
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("Stored as ID " + String(id));
+    display.setCursor(0, 14);
+    display.println("Map it in admin:");
+    display.setCursor(0, 28);
+    display.println("Attendance >");
+    display.setCursor(0, 42);
+    display.println("Staff Fingerprints");
+    display.display();
+    beepSuccess();
+    delay(5000);
+  } else {
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("Enrolled ID " + String(id));
+    display.setCursor(0, 16);
+    display.println("Success!");
+    display.display();
+    beepSuccess();
+    delay(2000);
+  }
+
   showIdleScreen();
   return true;
 }

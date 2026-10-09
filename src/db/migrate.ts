@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-06-1";
+const SCHEMA_VERSION = "2026-10-08-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -367,6 +367,69 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    // Attendance roles (owner, Oct 2026): Cleaner, Chef, Waiter, Manager ...
+    // The role carries the times, so "late" is measured against the entrance
+    // time of the role the person belongs to.
+    "attendance_roles",
+    `CREATE TABLE IF NOT EXISTS attendance_roles (
+      id serial PRIMARY KEY,
+      name varchar(80) NOT NULL,
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    // The periods of one role: Morning 08:00 -> 14:00, Afternoon 14:00 -> 22:00,
+    // and any extra period the owner adds in the same form.
+    "attendance_role_shifts",
+    `CREATE TABLE IF NOT EXISTS attendance_role_shifts (
+      id serial PRIMARY KEY,
+      role_id integer NOT NULL,
+      label varchar(40) NOT NULL DEFAULT 'Morning',
+      start_time varchar(5) NOT NULL,
+      end_time varchar(5) NOT NULL,
+      sort_order integer DEFAULT 0
+    )`,
+  ],
+  [
+    // THE ATTENDANCE LISTING: its own people, not the station logins. A
+    // cleaner clocks in with a finger and never logs in anywhere.
+    "attendance_members",
+    `CREATE TABLE IF NOT EXISTS attendance_members (
+      id serial PRIMARY KEY,
+      name varchar(100) NOT NULL,
+      role_id integer,
+      pin varchar(100),
+      active boolean DEFAULT true,
+      created_at timestamp DEFAULT now(),
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    // fingerprintId inside the FPC1020A -> which member of that listing.
+    "attendance_biometrics",
+    `CREATE TABLE IF NOT EXISTS attendance_biometrics (
+      id serial PRIMARY KEY,
+      member_id integer NOT NULL,
+      fingerprint_id integer NOT NULL,
+      finger_name varchar(50) DEFAULT 'Right Index',
+      enrolled_at timestamp DEFAULT now(),
+      enrolled_by varchar(100)
+    )`,
+  ],
+  [
+    // "Place your finger" jobs the ESP32 picks up by polling ?pending.
+    "attendance_enroll_jobs",
+    `CREATE TABLE IF NOT EXISTS attendance_enroll_jobs (
+      id serial PRIMARY KEY,
+      member_id integer NOT NULL,
+      member_name varchar(100),
+      fingerprint_id integer NOT NULL,
+      status varchar(20) DEFAULT 'pending',
+      created_at timestamp DEFAULT now(),
+      completed_at timestamp
+    )`,
+  ],
+  [
     // THE BARISTA HAND-OVER (owner's decision, Sept 2026): one row per
     // registered shift owner per station per Ethiopian day. A barista's FIRST
     // accept of the shift writes it (logging in alone registers nothing);
@@ -508,6 +571,8 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
   },
   attendance_logs: {
     staff_id: { type: "integer", def: "0", castText: true },
+    member_id: { type: "integer", castText: true },
+    role_id: { type: "integer", castText: true },
     fingerprint_id: { type: "integer", castText: true },
     date: { type: "text", def: "'2026-01-01'" },
     clock_in: { type: "timestamp", dropNotNull: true },
@@ -517,11 +582,47 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     total_minutes: { type: "integer", castText: true },
     late_minutes: { type: "integer", def: "0", castText: true },
     status: { type: "text", def: "'on_time'" },
+    is_overtime: { type: "boolean", def: "false" },
+    early_out: { type: "boolean", def: "false" },
     shift_id: { type: "integer", castText: true },
     device_id: { type: "text", def: "'entrance'" },
     notes: { type: "text" },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
     updated_at: { type: "timestamp", def: "now()", dropNotNull: true },
+  },
+  attendance_roles: {
+    name: { type: "text", def: "'Role'" },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+  },
+  attendance_role_shifts: {
+    role_id: { type: "integer", def: "0", castText: true },
+    label: { type: "text", def: "'Morning'" },
+    start_time: { type: "text", def: "'08:00'" },
+    end_time: { type: "text", def: "'17:00'" },
+    sort_order: { type: "integer", def: "0", castText: true },
+  },
+  attendance_members: {
+    name: { type: "text", def: "'Member'" },
+    role_id: { type: "integer", castText: true },
+    pin: { type: "text" },
+    active: { type: "boolean", def: "true" },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    updated_at: { type: "timestamp", def: "now()", dropNotNull: true },
+  },
+  attendance_biometrics: {
+    member_id: { type: "integer", def: "0", castText: true },
+    fingerprint_id: { type: "integer", def: "0", castText: true },
+    finger_name: { type: "text", def: "'Right Index'" },
+    enrolled_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    enrolled_by: { type: "text" },
+  },
+  attendance_enroll_jobs: {
+    member_id: { type: "integer", def: "0", castText: true },
+    member_name: { type: "text" },
+    fingerprint_id: { type: "integer", def: "0", castText: true },
+    status: { type: "text", def: "'pending'" },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    completed_at: { type: "timestamp" },
   },
 };
 
@@ -706,6 +807,11 @@ async function runFullMigrate(force: boolean) {
     "attendance_shifts",
     "staff_biometrics",
     "attendance_logs",
+    "attendance_roles",
+    "attendance_role_shifts",
+    "attendance_members",
+    "attendance_biometrics",
+    "attendance_enroll_jobs",
   ];
   for (const t of serialTables) {
     await run(`CREATE SEQUENCE IF NOT EXISTS ${t}_id_seq`);

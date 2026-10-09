@@ -372,9 +372,68 @@ export const staffBiometrics = pgTable("staff_biometrics", {
   enrolledBy: varchar("enrolled_by", { length: 100 }), // admin name
 });
 
+// ─── ATTENDANCE: ROLES, MEMBERS AND THEIR FINGERS (owner, Oct 2026) ────────
+// The attendance listing is its OWN list. A cleaner, a washer or a chef clocks
+// in with a finger but has no station login, so they live here and never in
+// staff_users. Each role carries its own entrance/exit times, which is what
+// decides "late" (15 minutes after the entrance time of that role).
+
+export const attendanceRoles = pgTable("attendance_roles", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 80 }).notNull(), // Cleaner, Chef, Waiter, Manager
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+/** One period of a role: Morning 08:00 -> 14:00, Afternoon 14:00 -> 22:00, ... */
+export const attendanceRoleShifts = pgTable("attendance_role_shifts", {
+  id: serial("id").primaryKey(),
+  roleId: integer("role_id").notNull(), // FK to attendance_roles.id
+  label: varchar("label", { length: 40 }).notNull().default("Morning"),
+  startTime: varchar("start_time", { length: 5 }).notNull(), // time of entrance, HH:MM
+  endTime: varchar("end_time", { length: 5 }).notNull(), // time out, HH:MM
+  sortOrder: integer("sort_order").default(0),
+});
+
+export const attendanceMembers = pgTable("attendance_members", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 100 }).notNull(),
+  roleId: integer("role_id"), // FK to attendance_roles.id
+  pin: varchar("pin", { length: 100 }), // bcrypt hash: the backup when the finger is wet
+  active: boolean("active").default(true), // a leaver keeps his history but leaves the sheet
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+/** fingerprintId stored in the FPC1020A -> which member of the attendance list. */
+export const attendanceBiometrics = pgTable("attendance_biometrics", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull(), // FK to attendance_members.id
+  fingerprintId: integer("fingerprint_id").notNull(), // 1-1000 inside the FPC1020A
+  fingerName: varchar("finger_name", { length: 50 }).default("Right Index"),
+  enrolledAt: timestamp("enrolled_at").defaultNow(),
+  enrolledBy: varchar("enrolled_by", { length: 100 }),
+});
+
+/**
+ * "Place your finger" jobs. The admin presses Add Fingerprint, the ESP32 polls
+ * ?pending every 2 seconds, shows the name on its OLED, stores the finger and
+ * posts the mapping back; the admin page then reads Fingerprint Added.
+ */
+export const attendanceEnrollJobs = pgTable("attendance_enroll_jobs", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull(), // FK to attendance_members.id
+  memberName: varchar("member_name", { length: 100 }), // for the OLED, no join needed
+  fingerprintId: integer("fingerprint_id").notNull(), // the ID the device must use
+  status: varchar("status", { length: 20 }).default("pending"), // pending | done | cancelled
+  createdAt: timestamp("created_at").defaultNow(),
+  completedAt: timestamp("completed_at"),
+});
+
 export const attendanceLogs = pgTable("attendance_logs", {
   id: serial("id").primaryKey(),
-  staffId: integer("staff_id").notNull(), // FK to staff_users.id
+  staffId: integer("staff_id"), // legacy rows only: FK to staff_users.id
+  memberId: integer("member_id"), // FK to attendance_members.id (the list that counts now)
+  roleId: integer("role_id"), // role whose times decided late / early out that day
   fingerprintId: integer("fingerprint_id"), // which finger was used (nullable for PIN method)
   date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD in Africa/Addis_Ababa
   clockIn: timestamp("clock_in"),
@@ -384,7 +443,9 @@ export const attendanceLogs = pgTable("attendance_logs", {
   totalMinutes: integer("total_minutes"), // calculated at clock-out
   lateMinutes: integer("late_minutes").default(0), // minutes late for IN
   status: varchar("status", { length: 20 }).default("on_time"), // on_time | late | early_out | absent | completed
-  shiftId: integer("shift_id"), // FK to attendance_shifts
+  isOvertime: boolean("is_overtime").default(false), // the person pressed Overtime on the kiosk
+  earlyOut: boolean("early_out").default(false), // left before his role's time out
+  shiftId: integer("shift_id"), // legacy: FK to attendance_shifts
   deviceId: varchar("device_id", { length: 50 }).default("entrance"), // which device
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow(),

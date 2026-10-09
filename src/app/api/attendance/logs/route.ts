@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { attendanceLogs, attendanceMembers, attendanceRoles } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
+import { etDayKey } from "@/lib/timezone";
 import { and, eq, gte, lte } from "drizzle-orm";
 import {
   clockLabel,
@@ -23,8 +24,9 @@ import {
  * still fits a printed page.
  *
  * Every box carries its own status so the admin tab can colour it:
- *   IN   absent (red) | late (yellow) | on_time (green)
+ *   IN   absent (red, from registration through today) | late (yellow) | on_time (green)
  *   OUT  none | still_in | completed | early_out (blue) | overtime (violet)
+ * Dates before a member's registration and after today are blank, not absent.
  */
 
 export async function GET(request: Request) {
@@ -39,6 +41,7 @@ export async function GET(request: Request) {
     const to = searchParams.get("to");
     const date = searchParams.get("date");
     const memberIdFilter = searchParams.get("memberId");
+    const today = etDayKey(new Date()) || new Date().toISOString().slice(0, 10);
 
     const members = await db.select().from(attendanceMembers);
     const roles = await db.select().from(attendanceRoles);
@@ -52,6 +55,8 @@ export async function GET(request: Request) {
         name: m.name,
         roleId: m.roleId,
         role: m.roleId ? roleName.get(m.roleId) || "No role" : "No role",
+        // Registration date in the attendance sheet's Ethiopian calendar.
+        registeredOn: etDayKey(m.createdAt),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -82,6 +87,7 @@ export async function GET(request: Request) {
       from: dates[0] ?? from,
       to: dates[dates.length - 1] ?? to,
       dates,
+      today,
       // True when the owner asked for more than a week and it was cut back.
       capped: from && to ? Math.abs(daysBetween(from, to)) + 1 > SHEET_MAX_DAYS : false,
       maxDays: SHEET_MAX_DAYS,

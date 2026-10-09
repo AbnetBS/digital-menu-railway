@@ -52,6 +52,7 @@ import {
   hoursLabel,
   inStatusOf,
   isEarlyOut,
+  isAttendanceExpectedOnDate,
   lateMinutesFor,
   outStatusOf,
   parseHHMM,
@@ -143,6 +144,24 @@ pass(
 pass("a reversed range is turned the right way up", sheetDates("2026-10-08", "2026-10-06").length === 3);
 pass("crossing a month end still steps one day at a time", addDays("2026-10-31", 1) === "2026-11-01");
 pass("the days between two keys are counted", daysBetween("2026-10-01", "2026-10-08") === 7);
+pass(
+  "a member registered today is not marked absent on the three earlier sheet dates",
+  !isAttendanceExpectedOnDate("2026-10-06", "2026-10-09", "2026-10-09")
+);
+pass(
+  "the registration date itself and today are valid attendance dates",
+  isAttendanceExpectedOnDate("2026-10-09", "2026-10-09", "2026-10-09") &&
+    isAttendanceExpectedOnDate("2026-10-09", "2026-10-06", "2026-10-09")
+);
+pass(
+  "future sheet dates are blank instead of absent",
+  !isAttendanceExpectedOnDate("2026-10-10", "2026-10-06", "2026-10-09")
+);
+pass(
+  "invalid or missing registration dates do not create false absences",
+  !isAttendanceExpectedOnDate("2026-10-09", null, "2026-10-09") &&
+    !isAttendanceExpectedOnDate("2026-10-09", "2026-02-30", "2026-10-09")
+);
 
 /* ── 3. the colour of a box ──────────────────────────────────────────────── */
 
@@ -217,6 +236,17 @@ pass(
 pass(
   "the paper sheet takes its rows from the attendance people",
   logsApi.includes("attendanceMembers") && !logsApi.includes("staffUsers") && logsApi.includes("sheetDates")
+);
+pass(
+  "the paper-sheet API provides Ethiopian registration dates and today's date",
+  logsApi.includes("registeredOn: etDayKey(m.createdAt)") && logsApi.includes("today,")
+);
+pass(
+  "pre-registration and future sheet cells stay blank, while eligible no-shows remain absent",
+  adminTab.includes("isAttendanceExpectedOnDate(d, s.registeredOn, sheetData.today)") &&
+    adminTab.includes("? IN_STYLE.absent") &&
+    adminTab.includes("? OUT_STYLE.none") &&
+    adminTab.includes("Dates before registration and after today stay blank.")
 );
 
 /* ── 4b. the drizzle schema and the migration DDL agree ──────────────────── */

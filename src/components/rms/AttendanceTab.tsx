@@ -16,6 +16,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { isAttendanceExpectedOnDate } from "@/lib/attendance";
 import { useStaffT } from "@/lib/staff-i18n";
 
 /**
@@ -1162,8 +1163,8 @@ export default function AttendanceTab() {
               </button>
             )}
             <p className="text-[11px] text-stone-400">
-              One box per person per day, {SHEET_MAX_DAYS} days at most: green = on time, yellow = late (15 minutes
-              after his role starts), red = did not come.
+              One box per person per day, {SHEET_MAX_DAYS} days at most: green = on time, yellow = late, and red = absent
+              from registration through today. Dates before registration and after today stay blank.
             </p>
           </div>
 
@@ -1230,9 +1231,18 @@ export default function AttendanceTab() {
                           <span className="block text-[11px] font-bold text-stone-600">{s.role}</span>
                         </td>
                         {sheetData.dates.map((d: string) => {
-                          const cell = sheetData.matrix[s.id]?.[d] ?? null;
-                          const inClass = IN_STYLE[cell ? cell.inStatus : "absent"] || "";
-                          const outClass = OUT_STYLE[cell ? cell.outStatus : "none"] || "";
+                          const attendanceExpected = isAttendanceExpectedOnDate(d, s.registeredOn, sheetData.today);
+                          const cell = attendanceExpected ? sheetData.matrix[s.id]?.[d] ?? null : null;
+                          const inClass = cell
+                            ? IN_STYLE[cell.inStatus] || ""
+                            : attendanceExpected
+                              ? IN_STYLE.absent
+                              : "";
+                          const outClass = cell
+                            ? OUT_STYLE[cell.outStatus] || ""
+                            : attendanceExpected
+                              ? OUT_STYLE.none
+                              : "";
                           return (
                             <Fragment key={`${s.id}-${d}`}>
                               <td
@@ -1248,9 +1258,9 @@ export default function AttendanceTab() {
                                       <div className="text-[11px] font-black">Late {cell.lateMinutes}m</div>
                                     )}
                                   </>
-                                ) : (
+                                ) : attendanceExpected ? (
                                   <span className="text-[12px] font-black">Absent</span>
-                                )}
+                                ) : null}
                               </td>
                               <td
                                 className={`p-2 border border-black text-center font-mono font-black text-[14px] ${outClass}`}
@@ -1264,11 +1274,11 @@ export default function AttendanceTab() {
                                       <div className="text-[11px] font-black">Early out</div>
                                     )}
                                   </>
-                                ) : cell?.clockInTime ? (
+                                ) : attendanceExpected && cell?.clockInTime ? (
                                   <span className="text-[12px] font-black">Still In</span>
-                                ) : (
+                                ) : attendanceExpected ? (
                                   <span className="text-[12px] font-black">-</span>
-                                )}
+                                ) : null}
                               </td>
                             </Fragment>
                           );
@@ -1287,7 +1297,8 @@ export default function AttendanceTab() {
               </div>
               <div className="p-3 bg-stone-100 text-[11px] text-stone-700 text-center font-bold">
                 Digital signature = fingerprint scan • Green = on time • Yellow = late (15 minutes after his role
-                starts) • Red = absent • Blue = early out • Violet = overtime • Total hours = OUT - IN
+                starts) • Red = absent from registration through today • Blank = before registration or future • Blue =
+                early out • Violet = overtime • Total hours = OUT - IN
               </div>
             </div>
           )}

@@ -130,6 +130,7 @@ Ayelech ...   | 12:00 ID1 Late5 | 14:00 ID1 2h | ...
 ```
 SGN = Fingerprint ID verified (digital signature)
 Print button creates hard copy like normal paper with @media print landscape.
+A person is marked absent only from their registration date through Ethiopian today; earlier dates and future dates stay blank.
 
 ## Backup Battery
 

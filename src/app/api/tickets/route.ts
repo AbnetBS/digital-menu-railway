@@ -15,6 +15,7 @@ import { canMergeLines } from "@/lib/order-lines";
 import { recordTicketEvent, summarizeSubmissionLines } from "@/lib/ticket-audit";
 import { mergeCategoryRouting, stationForOrder, stationOf, STATION_LABELS, type StationName } from "@/lib/stations";
 import { isBillSent, isTableReleased, allLinesFinished } from "@/lib/order-release";
+import { PRINT_WITHOUT_DONE_KEY, crewsPrintMaySkip } from "@/lib/station-print-without-done";
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
 import { nextGroupNumberToday, nextGroupNumberInTx, groupLabel } from "@/lib/group-orders";
 import { isDeferredWorkerRequest } from "@/lib/deferred-ticket-auth";
@@ -1172,25 +1173,43 @@ export async function PUT(request: Request) {
     //     received them, so they can not block a print. They become real work
     //     the moment the cashier or a waiter releases them (CONFIRM & SEND).
     // Removed lines were never made, so they never block either.
+    //
+    // THE ADMIN SWITCH ("Cashier Can Print Without Done", owner, Oct 2026): a
+    // crew switched ON may be skipped by this gate, so the cashier can print
+    // while that crew has not tapped Done. OFF (the default, and also the answer
+    // when the setting cannot be read) keeps the rule above.
     if (body.status === "printed") {
-      const openLines = await db
-        .select({
-          name: ticketItems.name,
-          quantity: ticketItems.quantity,
-          stationName: ticketItems.stationName,
-        })
-        .from(ticketItems)
-        .where(
-          and(
-            eq(ticketItems.ticketId, cur.id),
-            eq(ticketItems.removed, false),
-            sql`COALESCE(${ticketItems.released}, true) = true`,
-            sql`COALESCE(${ticketItems.stationStatus}, '') <> 'done'`,
-            // An unset station is the kitchen (stationOf's own fallback), so it
-            // is gated like the kitchen; only buna is exempt.
-            sql`trim(coalesce(${ticketItems.stationName}, '')) <> 'buna'`
+      let printWithoutDoneCrews = new Set<StationName>();
+      try {
+        const switchRows = await db
+          .select({ value: siteSettings.value })
+          .from(siteSettings)
+          .where(eq(siteSettings.key, PRINT_WITHOUT_DONE_KEY))
+          .limit(1);
+        printWithoutDoneCrews = crewsPrintMaySkip(switchRows[0]?.value);
+      } catch {
+        /* unreadable setting → every crew must still tap Done */
+      }
+      const openLines = (
+        await db
+          .select({
+            name: ticketItems.name,
+            quantity: ticketItems.quantity,
+            stationName: ticketItems.stationName,
+          })
+          .from(ticketItems)
+          .where(
+            and(
+              eq(ticketItems.ticketId, cur.id),
+              eq(ticketItems.removed, false),
+              sql`COALESCE(${ticketItems.released}, true) = true`,
+              sql`COALESCE(${ticketItems.stationStatus}, '') <> 'done'`,
+              // An unset station is the kitchen (stationOf's own fallback), so it
+              // is gated like the kitchen; only buna is exempt.
+              sql`trim(coalesce(${ticketItems.stationName}, '')) <> 'buna'`
+            )
           )
-        );
+      ).filter((l) => !printWithoutDoneCrews.has(stationOf(l.stationName)));
       if (openLines.length > 0) {
         const crews = [...new Set(openLines.map((l) => stationOf(l.stationName)))];
         const who = crews.map((station) => STATION_LABELS[station]).join(", ");

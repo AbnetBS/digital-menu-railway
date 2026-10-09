@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Coffee, CookingPot, CupSoda, Save, CheckCircle2, Timer, Minus, Plus, Eye, EyeOff } from "lucide-react";
+import { Coffee, CookingPot, CupSoda, Save, CheckCircle2, Timer, Minus, Plus, Eye, EyeOff, Printer } from "lucide-react";
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
 import { mergeCategoryRouting } from "@/lib/stations";
 import {
@@ -11,6 +11,14 @@ import {
   type StationSalesStation,
   type StationSalesVisibility,
 } from "@/lib/station-sales-visibility";
+import {
+  DEFAULT_PRINT_WITHOUT_DONE,
+  PRINT_WITHOUT_DONE_KEY,
+  PRINT_WITHOUT_DONE_STATIONS,
+  parsePrintWithoutDone,
+  type PrintWithoutDoneSettings,
+  type PrintWithoutDoneStation,
+} from "@/lib/station-print-without-done";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import {
   WAITER_SEND_HOLD_DEFAULT_SECONDS,
@@ -32,6 +40,9 @@ export default function StationsTab() {
   const [salesVisibility, setSalesVisibility] = useState<StationSalesVisibility>({ ...DEFAULT_STATION_SALES_VISIBILITY });
   const [saving, setSaving] = useState(false);
   const [visibilitySaving, setVisibilitySaving] = useState(false);
+  // Per crew: may the cashier print while that crew has not tapped Done? OFF by default.
+  const [printWithoutDone, setPrintWithoutDone] = useState<PrintWithoutDoneSettings>({ ...DEFAULT_PRINT_WITHOUT_DONE });
+  const [printRuleSaving, setPrintRuleSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
 
   const load = async () => {
@@ -53,6 +64,7 @@ export default function StationsTab() {
       }
       setHoldSeconds(waiterSendHoldSeconds(s.waiter_send_hold_seconds));
       setSalesVisibility(parseStationSalesVisibility(s.station_sales_visibility));
+      setPrintWithoutDone(parsePrintWithoutDone(s[PRINT_WITHOUT_DONE_KEY]));
     }
   };
 
@@ -82,6 +94,30 @@ export default function StationsTab() {
     setTimeout(() => setSavedMsg(""), 3500);
   };
 
+  // Saves immediately, like the sales switches above. ON lets the cashier tap
+  // ✓ Printed while that crew has not tapped Done; OFF (the default) keeps the rule.
+  const togglePrintWithoutDone = async (station: PrintWithoutDoneStation) => {
+    if (printRuleSaving) return;
+    const previous = printWithoutDone;
+    const next = { ...previous, [station]: !previous[station] };
+    setPrintWithoutDone(next);
+    setPrintRuleSaving(true);
+    const res = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [PRINT_WITHOUT_DONE_KEY]: JSON.stringify(next) }),
+    }).catch(() => null);
+    setPrintRuleSaving(false);
+    if (!res?.ok) {
+      setPrintWithoutDone(previous);
+      setSavedMsg(tNow("Could not update the cashier print rule. Try again."));
+      setTimeout(() => setSavedMsg(""), 3500);
+      return;
+    }
+    setSavedMsg(tNow("✓ Cashier print rule updated"));
+    setTimeout(() => setSavedMsg(""), 3500);
+  };
+
   const save = async () => {
     setSaving(true);
     const res = await fetch("/api/settings", {
@@ -91,6 +127,7 @@ export default function StationsTab() {
         category_routing: JSON.stringify(routing),
         waiter_send_hold_seconds: String(holdSeconds),
         station_sales_visibility: JSON.stringify(salesVisibility),
+        [PRINT_WITHOUT_DONE_KEY]: JSON.stringify(printWithoutDone),
       }),
     }).catch(() => null);
     setSaving(false);
@@ -256,6 +293,60 @@ export default function StationsTab() {
           })}
         </div>
         {visibilitySaving && <p className="text-[10px] font-bold text-amber-300">{L("Saving visibility...")}</p>}
+      </section>
+
+      {/* ── CASHIER PRINT WITHOUT DONE (owner, Oct 2026) ──
+          One switch per crew. OFF (the default) keeps the rule: the crew must tap
+          Done on every line before the cashier can tap ✓ Printed. ON lets the
+          cashier tap ✓ Printed even when that crew never tapped Done (the server
+          check is in the tickets PUT). */}
+      <section className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 p-5 space-y-3">
+        <div>
+          <h3 className="text-sm font-bold text-amber-200 flex items-center gap-2">
+            <Printer className="w-4 h-4 text-[#C9A227]" /> {L("Cashier Print Without Done")}
+          </h3>
+          <p className="text-[11px] text-stone-400 mt-1">
+            {L("OFF (the default): the crew must tap Done on every line before the cashier can tap ✓ Printed. ON: the cashier can tap ✓ Printed even if that crew has not tapped Done.")}
+          </p>
+        </div>
+        <div className="divide-y divide-stone-800">
+          {PRINT_WITHOUT_DONE_STATIONS.map((station) => {
+            const allowed = printWithoutDone[station];
+            const label = station === "barista" ? "Barista" : station === "kitchen" ? "Kitchen" : "Juice";
+            const icon = station === "barista"
+              ? <Coffee className="w-4 h-4 text-amber-300" />
+              : station === "kitchen"
+                ? <CookingPot className="w-4 h-4 text-emerald-300" />
+                : <CupSoda className="w-4 h-4 text-lime-300" />;
+            return (
+              <div key={station} className="flex items-center justify-between gap-4 py-3">
+                <div className="flex items-center gap-2.5">
+                  {icon}
+                  <span className="text-xs font-bold text-amber-100">{L(label)}</span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={allowed}
+                  aria-label={L("Cashier can print without {station} Done", { station: L(label) })}
+                  onClick={() => void togglePrintWithoutDone(station)}
+                  disabled={printRuleSaving}
+                  className={`min-w-24 inline-flex items-center justify-between gap-2 rounded-full px-2 py-1.5 border transition disabled:opacity-50 ${
+                    allowed
+                      ? "bg-emerald-900/70 border-emerald-500 text-emerald-100"
+                      : "bg-stone-900 border-stone-600 text-stone-300"
+                  }`}
+                >
+                  <span className={`w-5 h-5 rounded-full flex items-center justify-center ${allowed ? "bg-emerald-400" : "bg-stone-600"}`}>
+                    <Printer className={`w-3 h-3 ${allowed ? "text-emerald-950" : "text-white"}`} />
+                  </span>
+                  <span className="text-[10px] font-black uppercase">{allowed ? L("ON") : L("OFF")}</span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {printRuleSaving && <p className="text-[10px] font-bold text-amber-300">{L("Saving print rule...")}</p>}
       </section>
 
       {/* ── THE WAITER'S SEND HOLD (owner, Sept 2026) ──

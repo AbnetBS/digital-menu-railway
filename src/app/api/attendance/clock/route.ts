@@ -8,6 +8,7 @@ import {
 } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { verifySecret } from "@/lib/auth";
+import { publish, CHANNELS } from "@/lib/realtime";
 import { and, eq } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
 import {
@@ -175,6 +176,9 @@ export async function POST(request: Request) {
           ? (await db.insert(attendanceLogs).values(values).returning())[0]
           : (await db.update(attendanceLogs).set(values).where(eq(attendanceLogs.id, existingLogs[0].id)).returning())[0];
 
+      // A scan just happened: tell the kiosk/admin sheets to refresh (SSE).
+      publish(CHANNELS.attendance);
+
       return NextResponse.json({
         ...base,
         logId: row.id,
@@ -204,6 +208,7 @@ export async function POST(request: Request) {
       if (rescanAction(existing.clockIn, now) === "already_registered") {
         const inTime = clockLabel(existing.clockIn) || "";
         const waitMinutes = REPEAT_SCAN_LOCK_MINUTES - minutesSinceIn;
+        publish(CHANNELS.attendance);
         return NextResponse.json({
           ...base,
           logId: existing.id,
@@ -249,6 +254,8 @@ export async function POST(request: Request) {
       const outTime = clockLabel(now) || "";
       const hours = hoursLabel(totalMinutes) || "";
 
+      publish(CHANNELS.attendance);
+
       return NextResponse.json({
         ...base,
         logId: row.id,
@@ -275,6 +282,7 @@ export async function POST(request: Request) {
 
     /* ── the day is already closed ─────────────────────────────────────── */
     const totalMinutes = existing.totalMinutes || 0;
+    publish(CHANNELS.attendance);
     return NextResponse.json({
       ...base,
       logId: existing.id,

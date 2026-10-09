@@ -199,24 +199,44 @@ export default function AttendanceTab() {
     loadToday();
   }, [loadRoles, loadMembers, loadToday]);
 
-  // Today Live really does refresh itself every 8 seconds, as its badge says.
+  // Today Live refreshes in real time: the server pushes the moment a scan
+  // is clocked in/out (SSE), so there is no polling. Falls back to the old
+  // 8-second refresh if the stream cannot be opened.
   useEffect(() => {
     if (activeView !== "today") return;
-    const t = setInterval(loadToday, 8000);
-    return () => clearInterval(t);
+    let es: EventSource | null = null;
+    let t: ReturnType<typeof setInterval> | null = null;
+    if (typeof EventSource !== "undefined") {
+      es = new EventSource("/api/realtime?channel=attendance");
+      es.onmessage = () => loadToday();
+      es.onerror = () => {
+        if (es && es.readyState === EventSource.CLOSED) {
+          es.close();
+          es = null;
+          t = setInterval(loadToday, 8000);
+        }
+        // otherwise EventSource reconnects by itself
+      };
+    } else {
+      t = setInterval(loadToday, 8000);
+    }
+    return () => {
+      if (es) es.close();
+      if (t) clearInterval(t);
+    };
   }, [activeView, loadToday]);
 
   useEffect(() => {
     if (activeView === "sheet") loadSheet();
   }, [activeView, loadSheet]);
 
-  /* ── the "place your finger" jobs: ask the server every 2 seconds ─────── */
+  /* ── the "place your finger" jobs: real time, no polling ─────────────── */
   const pendingIds = Object.entries(jobs)
     .filter(([, j]) => j.status === "pending")
     .map(([memberId]) => Number(memberId));
 
-  // The poll reads the jobs through a ref: the effect itself only depends on
-  // WHICH people are waiting, so an unchanged answer never re-arms it.
+  // The refresh reads the jobs through a ref: the effect itself only depends
+  // on WHICH people are waiting, so an unchanged answer never re-arms it.
   const jobsRef = useRef<Record<number, EnrollJob>>({});
   useEffect(() => {
     jobsRef.current = jobs;
@@ -245,10 +265,31 @@ export default function AttendanceTab() {
       }
     };
     tick();
-    const t = setInterval(tick, 2000);
+    // Real time: the device channel fires when a fingerprint mapping lands
+    // (the ESP32 finished enrolling), so "Fingerprint Added ✓" is instant.
+    // Falls back to the old 2-second poll if the stream cannot be opened.
+    let es: EventSource | null = null;
+    let t: ReturnType<typeof setInterval> | null = null;
+    if (typeof EventSource !== "undefined") {
+      es = new EventSource("/api/realtime?channel=device");
+      es.onmessage = () => {
+        tick();
+      };
+      es.onerror = () => {
+        if (es && es.readyState === EventSource.CLOSED) {
+          es.close();
+          es = null;
+          t = setInterval(tick, 2000);
+        }
+        // otherwise EventSource reconnects by itself
+      };
+    } else {
+      t = setInterval(tick, 2000);
+    }
     return () => {
       cancelled = true;
-      clearInterval(t);
+      if (es) es.close();
+      if (t) clearInterval(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(pendingIds), loadMembers]);

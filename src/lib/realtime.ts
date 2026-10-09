@@ -21,6 +21,10 @@ const subscribers = new Map<string, Set<Enqueue>>();
 export const CHANNELS = {
   /** Order/table/station operational changes (waiter, cashier, kitchen, barista). */
   orders: "orders",
+  /** Attendance kiosk (/attendance) and admin Today Live: a scan was clocked in/out. */
+  attendance: "attendance",
+  /** Door device (ESP32) + admin enroll wait: an enrollment was queued or a fingerprint mapping changed. */
+  device: "device",
 } as const;
 
 /** Register a stream sink for a channel. Returns an unsubscribe function. */

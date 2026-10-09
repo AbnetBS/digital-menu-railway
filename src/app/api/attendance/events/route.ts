@@ -1,30 +1,32 @@
+import { NextResponse } from "next/server";
 import { subscribe, CHANNELS } from "@/lib/realtime";
-import { requireStaffOrAdmin } from "@/lib/session";
+import { deviceAllowed } from "@/lib/attendance-device";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * GET /api/realtime?channel=orders
+ * GET /api/attendance/events?channel=device
  *
- * Server-Sent Events endpoint. A staff device opens this stream once after
- * login and keeps it open; whenever a mutation route publishes to the channel,
- * the server pushes `data: refresh` here, and the client re-fetches its data.
- * Between events the connection is idle (only a lightweight keep-alive comment
- * every 25s), so there is NO polling and NO database traffic until something
- * actually changes.
+ * Server-Sent Events endpoint for the ESP32 door device. The scanner opens
+ * this stream ONCE and then does NO polling at all: when the admin queues a
+ * fingerprint enrollment (POST /api/attendance/biometrics) or a mapping is
+ * added (POST /api/attendance/mappings), the server publishes to the device
+ * channel and the ESP32 is told instantly. Between events the connection is
+ * idle (only a keep-alive comment every 25 s), so there is zero traffic
+ * until something actually happens.
+ *
+ * Auth: the same device token as the mappings endpoint
+ * (ATTENDANCE_DEVICE_TOKEN, sent as `x-attendance-device` or ?device=).
+ * With no token configured the endpoint is as open as the clock endpoint,
+ * so an already-flashed scanner keeps working after an update.
  */
 export async function GET(request: Request) {
-  const auth = await requireStaffOrAdmin();
-  if (!auth.ok) return auth.response;
+  if (!deviceAllowed(request)) {
+    return NextResponse.json({ error: "Device not allowed" }, { status: 401 });
+  }
 
-  const { searchParams } = new URL(request.url);
-  // Staff screens may subscribe to the orders, attendance or device channel.
-  // (The door device itself has no session and uses /api/attendance/events.)
-  const requested = searchParams.get("channel");
-  const channel =
-    requested === CHANNELS.attendance || requested === CHANNELS.device ? requested : CHANNELS.orders;
-
+  const channel = CHANNELS.device;
   const encoder = new TextEncoder();
   let unsub: (() => void) | null = null;
   let keepalive: ReturnType<typeof setInterval> | null = null;

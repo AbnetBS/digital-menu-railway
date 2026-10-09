@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { attendanceBiometrics, attendanceEnrollJobs, attendanceMembers } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
+import { publish, CHANNELS } from "@/lib/realtime";
 import { and, desc, eq } from "drizzle-orm";
 import { ENROLL_JOB_TTL_MINUTES, MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
 
@@ -194,6 +195,9 @@ export async function POST(request: Request) {
         .values({ memberId: member.id, memberName: member.name, fingerprintId, status: "pending" })
         .returning();
 
+      // A finger is waiting: push the ESP32 instantly instead of it polling.
+      publish(CHANNELS.device);
+
       return NextResponse.json({
         job: {
           id: job[0].id,
@@ -245,6 +249,10 @@ export async function POST(request: Request) {
           eq(attendanceEnrollJobs.status, "pending")
         )
       );
+
+    // A fingerprint mapping changed: push the device channel (the admin
+    // page watching the job learns "Fingerprint Added ✓" instantly).
+    publish(CHANNELS.device);
 
     return NextResponse.json({
       ...bio[0],

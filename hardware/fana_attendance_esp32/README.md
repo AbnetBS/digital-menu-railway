@@ -79,7 +79,9 @@ Need 16 jumper wires total.
 
 1. Idle: OLED shows "Place finger", tablet /attendance shows live clock
 2. Scan: FPC1020A finds ID in <0.45 sec, OLED shows name, green LED + beep, POST to /api/attendance/clock
-3. Tablet /attendance auto refresh every 8 sec, shows new row IN/OUT with total hours
+3. Tablet /attendance updates in REAL TIME (SSE push from the server) the moment a scan lands - no polling
+4. The ESP32 keeps one real-time event stream open (/api/attendance/events): the admin presses "Add Fingerprint"
+   and the device is told INSTANTLY (no 2-second polling). A slow 15 s fallback poll runs only if the stream is down.
 4. Admin /admin -> Attendance tab shows paper sheet view like your photo: Employee Name | Date | IN Time & Finger | OUT Time & Finger | Total Hours | Late
    - Print button: In Paper Sheet View, click "Print Hard Copy" -> prints only the table like normal paper (landscape, black border, FANA CAFÉ header) for hard copy filing
 5. Offline: Saves to LittleFS queue, syncs when internet back, OLED still works from local cache
@@ -124,9 +126,17 @@ Print button creates hard copy like normal paper with @media print landscape.
 ## Troubleshooting
 
 - If OLED black: try address 0x3D instead of 0x3C
-- If fingerprint not found: check wiring TX->16 RX->17 cross, baud 57600, VCC 3.3V or 5V
+- **Enrollment fails with "status = 6" / scan says "Image unclear":**
+  the sensor saw the finger but the image was too messy. See
+  **FINGERPRINT_FIX.md** - first peel the protective film off the sensor,
+  clean it, and press the finger flat and still. This is the #1 cause.
+- If fingerprint sensor not answering: check wiring TX->16 RX->17 cross,
+  GND, VCC 3.3V (or 5V if the module is a 5V version), **baud 19200** (8N1)
+- If fingerprint not found (but scans work): the finger is not enrolled -
+  the OLED says "Not enrolled! Ask admin to add this finger"
 - If WiFi fails: reset WiFiManager by uncommenting wm.resetSettings() and re-upload
 - If POST fails: check serverURL https, check VPSDime firewall allows ESP32 IP, check Coolify domain
+- Serial Monitor commands: `enroll <id>`, `list`, `empty`, `test` (115200 baud)
 
 ## Next Steps After Hardware Buy (Tomorrow Connect Checklist)
 

@@ -148,6 +148,25 @@ export function hoursLabel(totalMinutes: number | null | undefined): string | nu
 
 /* ─── the paper sheet window ─────────────────────────────────────────────── */
 
+/**
+ * Whether an attendance absence is meaningful for this member on this sheet
+ * date. The keys are Ethiopian calendar dates in YYYY-MM-DD form: before the
+ * member registered and after today should remain blank, not red/absent.
+ */
+export function isAttendanceExpectedOnDate(
+  dateKey: string,
+  registeredOn: string | null | undefined,
+  today: string | null | undefined
+): boolean {
+  const isDateKey = (key: string | null | undefined): key is string => {
+    if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(key)) return false;
+    const parsed = new Date(`${key}T00:00:00.000Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === key;
+  };
+  if (!isDateKey(dateKey) || !isDateKey(registeredOn) || !isDateKey(today)) return false;
+  return dateKey >= registeredOn && dateKey <= today;
+}
+
 /** Shift a "YYYY-MM-DD" key by whole days (plain date maths, no timezone). */
 export function addDays(dateKey: string, days: number): string {
   const [y, m, d] = dateKey.split("-").map(Number);

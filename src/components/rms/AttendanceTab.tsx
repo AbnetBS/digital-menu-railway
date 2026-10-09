@@ -16,6 +16,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { isAttendanceExpectedOnDate } from "@/lib/attendance";
 import { useStaffT } from "@/lib/staff-i18n";
 
 /**
@@ -112,6 +113,9 @@ export default function AttendanceTab() {
 
   const [roles, setRoles] = useState<Role[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [membersError, setMembersError] = useState("");
+  const [manualSubmitting, setManualSubmitting] = useState(false);
   const [todayLogs, setTodayLogs] = useState<any>(null);
   const [sheetData, setSheetData] = useState<any>(null);
 
@@ -162,11 +166,18 @@ export default function AttendanceTab() {
   }, []);
 
   const loadMembers = useCallback(async () => {
+    setMembersLoading(true);
+    setMembersError("");
     try {
-      const r = await fetch("/api/attendance/members");
-      if (r.ok) setMembers(await r.json());
-    } catch {
-      /* the list simply stays as it was */
+      const r = await fetch("/api/attendance/members", { cache: "no-store" });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(data?.error || "Could not load staff members");
+      if (!Array.isArray(data)) throw new Error("The staff member list had an unexpected response");
+      setMembers(data as Member[]);
+    } catch (error) {
+      setMembersError(error instanceof Error ? error.message : "Could not load staff members");
+    } finally {
+      setMembersLoading(false);
     }
   }, []);
 
@@ -229,6 +240,12 @@ export default function AttendanceTab() {
   useEffect(() => {
     if (activeView === "sheet") loadSheet();
   }, [activeView, loadSheet]);
+
+  // Refresh members whenever Staff Fingerprints is opened so the list and
+  // dropdown reflect the latest server mappings, including manual additions.
+  useEffect(() => {
+    if (activeView === "prints") loadMembers();
+  }, [activeView, loadMembers]);
 
   /* ── the "place your finger" jobs: real time, no polling ─────────────── */
   const pendingIds = Object.entries(jobs)
@@ -483,30 +500,41 @@ export default function AttendanceTab() {
   };
 
   const enrollManual = async () => {
-    if (!manualMemberId || !manualFingerId) {
-      say("Pick the person and type the fingerprint ID", true);
+    const selectedMember = members.find((member) => member.id === Number(manualMemberId));
+    const fingerprintId = Number(manualFingerId);
+    if (!selectedMember || !manualFingerId) {
+      say("Select a person and type the ID stored on the device", true);
       return;
     }
+    if (!Number.isInteger(fingerprintId) || fingerprintId < 1 || fingerprintId > 1000) {
+      say("Fingerprint ID must be a whole number from 1 to 1000", true);
+      return;
+    }
+
+    setManualSubmitting(true);
     try {
       const r = await fetch("/api/attendance/biometrics", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        // No action is sent intentionally: the route's default action is "map".
         body: JSON.stringify({
-          memberId: Number(manualMemberId),
-          fingerprintId: Number(manualFingerId),
+          memberId: selectedMember.id,
+          fingerprintId,
           fingerName: manualFingerName,
         }),
       });
-      const d = await r.json();
+      const d = await r.json().catch(() => ({}));
       if (!r.ok) {
         say(d.error || "Could not add the fingerprint", true);
         return;
       }
-      say(`✓ ${d.message}`);
+      say(`✓ Fingerprint Added for ${d.memberName || selectedMember.name} (ID ${fingerprintId})`);
       setManualFingerId("");
-      loadMembers();
+      await loadMembers();
     } catch {
       say("Network error. Try again.", true);
+    } finally {
+      setManualSubmitting(false);
     }
   };
 
@@ -1135,8 +1163,8 @@ export default function AttendanceTab() {
               </button>
             )}
             <p className="text-[11px] text-stone-400">
-              One box per person per day, {SHEET_MAX_DAYS} days at most: green = on time, yellow = late (15 minutes
-              after his role starts), red = did not come.
+              One box per person per day, {SHEET_MAX_DAYS} days at most: green = on time, yellow = late, and red = absent
+              from registration through today. Dates before registration and after today stay blank.
             </p>
           </div>
 
@@ -1203,9 +1231,18 @@ export default function AttendanceTab() {
                           <span className="block text-[11px] font-bold text-stone-600">{s.role}</span>
                         </td>
                         {sheetData.dates.map((d: string) => {
-                          const cell = sheetData.matrix[s.id]?.[d] ?? null;
-                          const inClass = IN_STYLE[cell ? cell.inStatus : "absent"] || "";
-                          const outClass = OUT_STYLE[cell ? cell.outStatus : "none"] || "";
+                          const attendanceExpected = isAttendanceExpectedOnDate(d, s.registeredOn, sheetData.today);
+                          const cell = attendanceExpected ? sheetData.matrix[s.id]?.[d] ?? null : null;
+                          const inClass = cell
+                            ? IN_STYLE[cell.inStatus] || ""
+                            : attendanceExpected
+                              ? IN_STYLE.absent
+                              : "";
+                          const outClass = cell
+                            ? OUT_STYLE[cell.outStatus] || ""
+                            : attendanceExpected
+                              ? OUT_STYLE.none
+                              : "";
                           return (
                             <Fragment key={`${s.id}-${d}`}>
                               <td
@@ -1221,9 +1258,9 @@ export default function AttendanceTab() {
                                       <div className="text-[11px] font-black">Late {cell.lateMinutes}m</div>
                                     )}
                                   </>
-                                ) : (
+                                ) : attendanceExpected ? (
                                   <span className="text-[12px] font-black">Absent</span>
-                                )}
+                                ) : null}
                               </td>
                               <td
                                 className={`p-2 border border-black text-center font-mono font-black text-[14px] ${outClass}`}
@@ -1237,11 +1274,11 @@ export default function AttendanceTab() {
                                       <div className="text-[11px] font-black">Early out</div>
                                     )}
                                   </>
-                                ) : cell?.clockInTime ? (
+                                ) : attendanceExpected && cell?.clockInTime ? (
                                   <span className="text-[12px] font-black">Still In</span>
-                                ) : (
+                                ) : attendanceExpected ? (
                                   <span className="text-[12px] font-black">-</span>
-                                )}
+                                ) : null}
                               </td>
                             </Fragment>
                           );
@@ -1260,7 +1297,8 @@ export default function AttendanceTab() {
               </div>
               <div className="p-3 bg-stone-100 text-[11px] text-stone-700 text-center font-bold">
                 Digital signature = fingerprint scan • Green = on time • Yellow = late (15 minutes after his role
-                starts) • Red = absent • Blue = early out • Violet = overtime • Total hours = OUT - IN
+                starts) • Red = absent from registration through today • Blank = before registration or future • Blue =
+                early out • Violet = overtime • Total hours = OUT - IN
               </div>
             </div>
           )}
@@ -1270,15 +1308,53 @@ export default function AttendanceTab() {
       {/* ── STAFF FINGERPRINTS (the manual way, kept on purpose) ───────── */}
       {activeView === "prints" && (
         <div className="space-y-4">
-          <div className="bg-[#2C1B17] p-5 rounded-2xl border border-[#C9A227]/30">
-            <h3 className="text-sm font-bold text-amber-200 mb-3">Add a fingerprint by its ID (FPC1020A)</h3>
+          <div className="bg-[#2C1B17] p-5 rounded-2xl border border-[#C9A227]/30 space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-bold text-amber-200">Staff fingerprints</h3>
+              <button
+                onClick={() => loadMembers()}
+                disabled={membersLoading}
+                className="flex items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-[11px] font-bold text-amber-100 hover:bg-white/20 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3 h-3 ${membersLoading ? "animate-spin" : ""}`} />
+                {membersLoading ? "Loading..." : "Refresh people"}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
+              <div className="rounded-xl border border-emerald-800 bg-emerald-950/30 p-3">
+                <p className="font-black text-emerald-200">Automatic</p>
+                <p className="mt-1 text-stone-300">
+                  Attendance → Staff Members → edit the person → <strong>ADD FINGERPRINT</strong>. The device
+                  chooses the ID, guides the finger, and sends the mapping back automatically.
+                </p>
+              </div>
+              <div className="rounded-xl border border-amber-800 bg-amber-950/30 p-3">
+                <p className="font-black text-amber-200">Manual</p>
+                <p className="mt-1 text-stone-300">
+                  On the device Serial Monitor at 115200 baud, type <code>enroll 7</code> using the ID you want.
+                  After it says Stored, map the ID here in Staff Fingerprints: choose that same person and ID below, choose the finger name, then press Add.
+                </p>
+              </div>
+            </div>
+
+            {membersError && (
+              <p role="alert" className="rounded-lg border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-200">
+                Could not load the staff list: {membersError}. Use Refresh people to try again.
+              </p>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <select
                 value={manualMemberId}
+                disabled={membersLoading || members.length === 0}
                 onChange={(e) => setManualMemberId(e.target.value ? Number(e.target.value) : "")}
-                className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
+                aria-label="Select person for fingerprint mapping"
+                className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white disabled:opacity-50"
               >
-                <option value="">Select person</option>
+                <option value="">
+                  {membersLoading ? "Loading people..." : members.length === 0 ? "No staff members yet" : "Select person"}
+                </option>
                 {members.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.name} ({m.roleName}) - {m.fingers.length}/5 fingers
@@ -1286,15 +1362,22 @@ export default function AttendanceTab() {
                 ))}
               </select>
               <input
+                type="number"
+                min={1}
+                max={1000}
+                step={1}
                 value={manualFingerId}
-                onChange={(e) => setManualFingerId(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                onChange={(e) => setManualFingerId(e.target.value)}
                 inputMode="numeric"
+                autoComplete="off"
+                aria-label="Fingerprint ID from 1 to 1000"
                 placeholder="Fingerprint ID (1-1000)"
                 className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
               />
               <select
                 value={manualFingerName}
                 onChange={(e) => setManualFingerName(e.target.value)}
+                aria-label="Finger name"
                 className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-xs text-white"
               >
                 <option>Right Index</option>
@@ -1306,18 +1389,24 @@ export default function AttendanceTab() {
               </select>
               <button
                 onClick={enrollManual}
-                className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase rounded-xl flex items-center justify-center gap-2"
+                disabled={manualSubmitting || membersLoading || members.length === 0}
+                aria-busy={manualSubmitting}
+                className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase rounded-xl flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <Plus className="w-4 h-4" /> Add
+                {manualSubmitting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                {manualSubmitting ? "Adding..." : "Add"}
               </button>
             </div>
-            <p className="mt-3 text-[11px] text-stone-400">
-              Use this when the finger is already stored on the device and you know its ID. Otherwise press Add
-              Fingerprint on the person in Staff Members and let the scanner do it.
+            <p className="text-[11px] text-stone-400">
+              The finger must already be stored on the device before using Manual. Choose the exact ID printed after
+              <code> enroll &lt;id&gt;</code>; the form sends that ID to the attendance list.
             </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {membersLoading && members.length === 0 && (
+              <p className="text-xs text-stone-400">Loading staff members and their fingerprint IDs...</p>
+            )}
             {members.map((m) => (
               <div key={m.id} className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-4">
                 <div className="flex items-center justify-between mb-3">
@@ -1361,6 +1450,11 @@ export default function AttendanceTab() {
                 </div>
               </div>
             ))}
+            {members.length === 0 && !membersLoading && !membersError && (
+              <p className="text-xs text-stone-400 md:col-span-2 lg:col-span-3">
+                No staff members yet. Add people in Attendance → Staff Members first; each person and every mapped ID will appear here.
+              </p>
+            )}
           </div>
         </div>
       )}

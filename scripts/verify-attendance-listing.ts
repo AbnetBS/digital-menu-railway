@@ -52,6 +52,7 @@ import {
   hoursLabel,
   inStatusOf,
   isEarlyOut,
+  isAttendanceExpectedOnDate,
   lateMinutesFor,
   outStatusOf,
   parseHHMM,
@@ -143,6 +144,24 @@ pass(
 pass("a reversed range is turned the right way up", sheetDates("2026-10-08", "2026-10-06").length === 3);
 pass("crossing a month end still steps one day at a time", addDays("2026-10-31", 1) === "2026-11-01");
 pass("the days between two keys are counted", daysBetween("2026-10-01", "2026-10-08") === 7);
+pass(
+  "a member registered today is not marked absent on the three earlier sheet dates",
+  !isAttendanceExpectedOnDate("2026-10-06", "2026-10-09", "2026-10-09")
+);
+pass(
+  "the registration date itself and today are valid attendance dates",
+  isAttendanceExpectedOnDate("2026-10-09", "2026-10-09", "2026-10-09") &&
+    isAttendanceExpectedOnDate("2026-10-09", "2026-10-06", "2026-10-09")
+);
+pass(
+  "future sheet dates are blank instead of absent",
+  !isAttendanceExpectedOnDate("2026-10-10", "2026-10-06", "2026-10-09")
+);
+pass(
+  "invalid or missing registration dates do not create false absences",
+  !isAttendanceExpectedOnDate("2026-10-09", null, "2026-10-09") &&
+    !isAttendanceExpectedOnDate("2026-10-09", "2026-02-30", "2026-10-09")
+);
 
 /* ── 3. the colour of a box ──────────────────────────────────────────────── */
 
@@ -217,6 +236,17 @@ pass(
 pass(
   "the paper sheet takes its rows from the attendance people",
   logsApi.includes("attendanceMembers") && !logsApi.includes("staffUsers") && logsApi.includes("sheetDates")
+);
+pass(
+  "the paper-sheet API provides Ethiopian registration dates and today's date",
+  logsApi.includes("registeredOn: etDayKey(m.createdAt)") && logsApi.includes("today,")
+);
+pass(
+  "pre-registration and future sheet cells stay blank, while eligible no-shows remain absent",
+  adminTab.includes("isAttendanceExpectedOnDate(d, s.registeredOn, sheetData.today)") &&
+    adminTab.includes("? IN_STYLE.absent") &&
+    adminTab.includes("? OUT_STYLE.none") &&
+    adminTab.includes("Dates before registration and after today stay blank.")
 );
 
 /* ── 4b. the drizzle schema and the migration DDL agree ──────────────────── */
@@ -303,6 +333,32 @@ pass(
     biometricsApi.includes("publish(CHANNELS.device)")
 );
 pass(
+  "firmware follows the six-capture sequence: 1x step 1, 4x step 2, 1x step 3",
+  /const uint8_t captureSteps\[6\] = \{1, 2, 2, 2, 2, 3\}/.test(firmware) &&
+    firmware.includes("const uint8_t captureTotals[6] = {1, 4, 4, 4, 4, 1};") &&
+    firmware.includes("Capture ") &&
+    firmware.includes("captureTotal")
+);
+pass(
+  "status 6 retries the same capture while holding still and lifts only after three consecutive failures",
+  firmware.includes("status == BIOVO_ACK_IMAGEMESS") &&
+    firmware.includes("ENROLL_HOLD_STILL_BEFORE_LIFT 3") &&
+    firmware.includes("Hold still - don't move. Retrying this same capture") &&
+    firmware.includes("waitForFingerReleaseForRetry()") &&
+    firmware.includes("ENROLL_MAX_ATTEMPTS 5")
+);
+pass(
+  "touch-sense enrollment waits for GPIO25 and settles 600 ms before each capture",
+  firmware.includes("#define FINGER_TOUCH_PIN 25") &&
+    firmware.includes("waitForFingerPlacement()") &&
+    firmware.includes("delay(600)")
+);
+pass(
+  "manual Serial enrollment tells the owner how to map its stored ID",
+  firmware.includes("Stored as ID ") &&
+    firmware.includes("map it: admin → Attendance → Staff Fingerprints")
+);
+pass(
   "the kiosk board refreshes in real time (EventSource) instead of polling",
   kiosk.includes("new EventSource") && kiosk.includes("channel=attendance") && kiosk.includes("fetchToday()")
 );
@@ -359,6 +415,50 @@ pass(
 pass("the sheet says how many days it prints at most", adminTab.includes("SHEET_MAX_DAYS"));
 pass("a too-long range is cut in the date pickers too", adminTab.includes("setFromCapped") && adminTab.includes("setToCapped"));
 pass("the Staff Fingerprints tab is still there", adminTab.includes("Staff Fingerprints"));
+
+const printsView = adminTab.split('{activeView === "prints" && (')[1]?.split("{/* Print styles")[0] ?? "";
+pass(
+  "Staff Fingerprints refreshes the member list when opened and reports load errors",
+  adminTab.includes('if (activeView === "prints") loadMembers()') &&
+    adminTab.includes('fetch("/api/attendance/members", { cache: "no-store" })') &&
+    adminTab.includes("membersError")
+);
+pass(
+  "Staff Fingerprints lists each member, their fingerprint IDs and per-finger delete buttons",
+  printsView.includes("members.map((m)") &&
+    printsView.includes("m.fingers.map((f)") &&
+    printsView.includes("ID {f.fingerprintId}") &&
+    printsView.includes("deleteFinger(f.id)")
+);
+pass(
+  "the manual form selects a member, takes a 1-1000 ID and a finger name",
+  printsView.includes("Select person") &&
+    printsView.includes("min={1}") &&
+    printsView.includes("max={1000}") &&
+    printsView.includes("value={manualFingerName}") &&
+    printsView.includes("onClick={enrollManual}")
+);
+pass(
+  "manual mapping POSTs memberId, fingerprintId and fingerName to the default map action",
+  adminTab.includes('fetch("/api/attendance/biometrics"') &&
+    adminTab.includes("memberId: selectedMember.id") &&
+    adminTab.includes("fingerprintId,") &&
+    adminTab.includes("fingerName: manualFingerName") &&
+    biometricsApi.includes('body.action ?? "map"')
+);
+pass(
+  "both automatic and manual enrollment instructions are plain words on the tab",
+  printsView.includes("Attendance → Staff Members") &&
+    printsView.includes("ADD FINGERPRINT") &&
+    printsView.includes("Serial Monitor at 115200 baud") &&
+    printsView.includes("enroll 7") &&
+    printsView.includes("Staff Fingerprints")
+);
+pass(
+  "a successful manual mapping confirms the staff member and reloads the finger list",
+  adminTab.includes("Fingerprint Added for ${d.memberName || selectedMember.name}") &&
+    adminTab.includes("await loadMembers()")
+);
 
 /* ── 9. the kiosk ────────────────────────────────────────────────────────── */
 

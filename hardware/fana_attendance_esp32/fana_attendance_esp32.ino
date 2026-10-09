@@ -132,9 +132,15 @@ String deviceToken = ""; // No device token required by the server
 bool sensorReady = false;
 int templateCount = -1;
 
+// How often the device asks the server "is anybody waiting to enroll a finger?"
+// (the owner asked for 2 seconds). This poll is ~99% of the device's server
+// traffic (43,200 tiny requests/day). Raise it to e.g. 5000 to cut that by
+// 60% - enrollment pickup then takes up to 5 s instead of 2 s.
+#define PENDING_POLL_INTERVAL_MS 2000
+
 // Admin presses "Add Fingerprint" on the website -> the server opens a pending
 // job -> this device picks it up here, shows the name, stores the finger and
-// reports the mapping back. Poll every 2 seconds, as the owner asked.
+// reports the mapping back.
 unsigned long lastPendingCheck = 0;
 bool enrollingFromServer = false;
 bool checkPendingEnroll();

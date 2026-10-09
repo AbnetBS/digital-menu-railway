@@ -1,104 +1,137 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { attendanceLogs, staffUsers } from "@/db/schema";
+import { attendanceLogs, attendanceMembers, attendanceRoles } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
-import { gte, lte, and, desc, eq } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
+import {
+  clockLabel,
+  daysBetween,
+  hoursLabel,
+  inStatusOf,
+  outStatusOf,
+  sheetDates,
+  SHEET_MAX_DAYS,
+} from "@/lib/attendance";
+
+/**
+ * THE PAPER SHEET (owner, Oct 2026).
+ *
+ * One row per person of the attendance listing, one pair of boxes per day:
+ * IN (time & signature) and OUT (time & signature), exactly like the paper he
+ * used to keep. The range is cut to a week at most, because seven days is what
+ * still fits a printed page.
+ *
+ * Every box carries its own status so the admin tab can colour it:
+ *   IN   absent (red) | late (yellow) | on_time (green)
+ *   OUT  none | still_in | completed | early_out (blue) | overtime (violet)
+ */
 
 export async function GET(request: Request) {
   const auth = await requireAdmin();
   if (!auth.ok) return auth.response;
-  
+
   await ensureTablesExist();
-  
+
   try {
     const { searchParams } = new URL(request.url);
-    const from = searchParams.get("from"); // YYYY-MM-DD
-    const to = searchParams.get("to"); // YYYY-MM-DD
-    const date = searchParams.get("date"); // single date
-    const staffId = searchParams.get("staffId");
-    
-    let logs;
-    
-    if (date) {
-      const { eq } = await import("drizzle-orm");
-      const { attendanceLogs } = await import("@/db/schema");
-      logs = await db.select().from(attendanceLogs).where(eq(attendanceLogs.date, date)).orderBy(desc(attendanceLogs.date));
-    } else if (from && to) {
-      logs = await db.select().from(attendanceLogs)
-        .where(and(gte(attendanceLogs.date, from), lte(attendanceLogs.date, to)))
-        .orderBy(desc(attendanceLogs.date));
-    } else if (from) {
-      logs = await db.select().from(attendanceLogs)
-        .where(gte(attendanceLogs.date, from))
-        .orderBy(desc(attendanceLogs.date));
-    } else {
-      // Last 30 days by default
-      logs = await db.select().from(attendanceLogs).orderBy(desc(attendanceLogs.date)).limit(200);
+    const from = searchParams.get("from");
+    const to = searchParams.get("to");
+    const date = searchParams.get("date");
+    const memberIdFilter = searchParams.get("memberId");
+
+    const members = await db.select().from(attendanceMembers);
+    const roles = await db.select().from(attendanceRoles);
+    const roleName = new Map(roles.map((r) => [r.id, r.name]));
+
+    const rows = members
+      .filter((m) => m.active !== false)
+      .filter((m) => !memberIdFilter || m.id === Number(memberIdFilter))
+      .map((m) => ({
+        id: m.id,
+        name: m.name,
+        roleId: m.roleId,
+        role: m.roleId ? roleName.get(m.roleId) || "No role" : "No role",
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const dates = date ? [date] : sheetDates(from, to);
+
+    let logs: typeof attendanceLogs.$inferSelect[] = [];
+    if (dates.length > 0) {
+      logs = await db
+        .select()
+        .from(attendanceLogs)
+        .where(
+          date
+            ? eq(attendanceLogs.date, date)
+            : and(gte(attendanceLogs.date, dates[0]), lte(attendanceLogs.date, dates[dates.length - 1]))
+        );
     }
-    
-    // Filter by staff if requested
-    let filtered = logs;
-    if (staffId) {
-      filtered = logs.filter(l => l.staffId === Number(staffId));
-    }
-    
-    // Enrich with staff names
-    const staffList = await db.select().from(staffUsers);
-    const staffMap = new Map(staffList.map(s => [s.id, s.name]));
-    
-    const enriched = filtered.map(l => {
-      const totalMinutes = l.totalMinutes || 0;
-      const hours = Math.floor(totalMinutes / 60);
-      const mins = totalMinutes % 60;
-      
-      return {
-        ...l,
-        staffName: staffMap.get(l.staffId) || `Staff ${l.staffId}`,
-        totalHours: l.clockOut ? `${hours}h ${mins}m` : null,
-        clockInTime: l.clockIn ? new Date(l.clockIn).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : null,
-        clockOutTime: l.clockOut ? new Date(l.clockOut).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : null,
-      };
-    });
-    
-    // For paper sheet view: group by staff and date
-    // Build matrix: staff x dates
-    const dates = [...new Set(enriched.map(l => l.date))].sort();
-    const staffIds = [...new Set(enriched.map(l => l.staffId))].sort();
-    
-    const matrix: Record<number, Record<string, typeof enriched[0] | null>> = {};
-    for (const sid of staffIds) {
-      matrix[sid] = {};
+
+    const matrix: Record<number, Record<string, ReturnType<typeof cellOf> | null>> = {};
+    for (const r of rows) {
+      matrix[r.id] = {};
       for (const d of dates) {
-        matrix[sid][d] = enriched.find(l => l.staffId === sid && l.date === d) || null;
+        const log = logs.find((l) => l.memberId === r.id && l.date === d) || null;
+        matrix[r.id][d] = cellOf(log);
       }
     }
-    
+
     return NextResponse.json({
-      logs: enriched,
-      matrix,
+      from: dates[0] ?? from,
+      to: dates[dates.length - 1] ?? to,
       dates,
-      staffIds,
-      staffList: staffList.map(s => ({ id: s.id, name: s.name, role: s.role })),
+      // True when the owner asked for more than a week and it was cut back.
+      capped: from && to ? Math.abs(daysBetween(from, to)) + 1 > SHEET_MAX_DAYS : false,
+      maxDays: SHEET_MAX_DAYS,
+      // `staffList` keeps its old name: the print area reads it for the rows.
+      staffList: rows,
+      matrix,
+      logs: logs.map((l) => ({
+        ...l,
+        clockInTime: clockLabel(l.clockIn),
+        clockOutTime: clockLabel(l.clockOut),
+        totalHours: l.clockOut ? hoursLabel(l.totalMinutes) : null,
+      })),
     });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
 }
 
+/** One box of the sheet: the times plus the colour it must be printed in. */
+function cellOf(log: typeof attendanceLogs.$inferSelect | null) {
+  if (!log) return null;
+  return {
+    logId: log.id,
+    memberId: log.memberId,
+    clockInTime: clockLabel(log.clockIn),
+    clockOutTime: clockLabel(log.clockOut),
+    totalHours: log.clockOut ? hoursLabel(log.totalMinutes) : null,
+    lateMinutes: log.lateMinutes || 0,
+    isOvertime: Boolean(log.isOvertime),
+    earlyOut: Boolean(log.earlyOut),
+    status: log.status,
+    inStatus: inStatusOf(log),
+    outStatus: outStatusOf(log),
+    fingerprintId: log.fingerprintId,
+    clockInMethod: log.clockInMethod,
+  };
+}
+
 export async function DELETE(request: Request) {
   const auth = await requireAdmin();
   if (!auth.ok) return auth.response;
-  
+
   await ensureTablesExist();
-  
+
   try {
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get("id");
+    const id = Number(new URL(request.url).searchParams.get("id"));
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });
-    
-    await db.delete(attendanceLogs).where(eq(attendanceLogs.id, Number(id)));
-    return NextResponse.json({ success: true });
+
+    await db.delete(attendanceLogs).where(eq(attendanceLogs.id, id));
+    return NextResponse.json({ success: true, message: "Line deleted" });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

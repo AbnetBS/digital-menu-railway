@@ -72,6 +72,18 @@ WebServer server(80);
 String serverURL = "https://yourdomain.com"; // Your VPSDime Coolify domain with https
 String deviceId = "entrance";
 bool useHTTPS = true;
+// Optional: if the owner sets ATTENDANCE_DEVICE_TOKEN on the server, put the
+// same word here. Empty = the server accepts the device as it always did.
+String deviceToken = "";
+
+// Admin presses "Add Fingerprint" on the website -> the server opens a pending
+// job -> this device picks it up here, shows the name, stores the finger and
+// reports the mapping back. Poll every 2 seconds, as the owner asked.
+unsigned long lastPendingCheck = 0;
+bool enrollingFromServer = false;
+bool checkPendingEnroll();
+bool postMappingToServer(int fingerprintId, String memberName);
+bool enrollFingerprint(int id);
 
 // Offline queue
 struct QueueItem {
@@ -183,6 +195,12 @@ void setup() {
 
 void loop() {
   server.handleClient();
+
+  // The admin may be waiting for a finger: ask the server every 2 seconds.
+  if (!enrollingFromServer && millis() - lastPendingCheck > 2000) {
+    lastPendingCheck = millis();
+    checkPendingEnroll();
+  }
 
   // Check for fingerprint
   int fingerprintId = getFingerprintID();
@@ -307,6 +325,12 @@ int getFingerprintID() {
   return finger.fingerID;
 }
 
+// Every call to the website carries the device word when one is configured.
+void addDeviceHeaders(HTTPClient &http) {
+  http.addHeader("Content-Type", "application/json");
+  if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
+}
+
 bool postToServer(int fingerprintId, String staffName) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
@@ -314,7 +338,7 @@ bool postToServer(int fingerprintId, String staffName) {
   String url = serverURL + "/api/attendance/clock";
   
   http.begin(url);
-  http.addHeader("Content-Type", "application/json");
+  addDeviceHeaders(http);
 
   DynamicJsonDocument doc(256);
   doc["fingerprintId"] = fingerprintId;
@@ -339,13 +363,22 @@ bool postToServer(int fingerprintId, String staffName) {
       String message = respDoc["message"] | "";
       int lateMinutes = respDoc["lateMinutes"] | 0;
       String totalHours = respDoc["totalHours"] | "";
+      // The server sends the Ethiopian wall clock already formatted ("08:05"):
+      // slicing the ISO stamp here printed UTC instead of cafe time.
+      String inLabel = respDoc["clockInLabel"] | "";
+      String outLabel = respDoc["clockOutLabel"] | "";
+
+      // memberName is the new key; staffName is kept for older servers.
+      String who = respDoc["memberName"] | "";
+      if (who.length() == 0) who = respDoc["staffName"] | "";
+      if (who.length() == 0) who = staffName;
 
       display.clearDisplay();
       display.setCursor(0,0);
-      display.println(respDoc["staffName"] | staffName);
+      display.println(who);
       display.setCursor(0,15);
       if (action == "clock_in") {
-        display.println("IN " + String(respDoc["clockIn"] | "").substring(11,16));
+        display.println("IN " + inLabel);
         if (lateMinutes > 0) {
           display.setCursor(0,30);
           display.println("Late " + String(lateMinutes) + "m");
@@ -354,7 +387,7 @@ bool postToServer(int fingerprintId, String staffName) {
           display.println("On Time");
         }
       } else if (action == "clock_out") {
-        display.println("OUT " + String(respDoc["clockOut"] | "").substring(11,16));
+        display.println("OUT " + outLabel);
         display.setCursor(0,30);
         display.println(totalHours);
       } else {
@@ -378,6 +411,7 @@ void loadMappingsFromServer() {
   String url = serverURL + "/api/attendance/mappings";
   
   http.begin(url);
+  if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
   int httpCode = http.GET();
   
   if (httpCode == 200) {
@@ -499,7 +533,7 @@ void syncOfflineQueue() {
   }
 }
 
-void enrollFingerprint(int id) {
+bool enrollFingerprint(int id) {
   Serial.print("Enrolling ID #"); Serial.println(id);
   
   display.clearDisplay();
@@ -517,7 +551,7 @@ void enrollFingerprint(int id) {
   p = finger.image2Tz(1);
   if (p != FINGERPRINT_OK) {
     Serial.println("Error image2Tz 1");
-    return;
+    return false;
   }
 
   display.clearDisplay();
@@ -545,13 +579,13 @@ void enrollFingerprint(int id) {
   p = finger.image2Tz(2);
   if (p != FINGERPRINT_OK) {
     Serial.println("Error image2Tz 2");
-    return;
+    return false;
   }
 
   p = finger.createModel();
   if (p != FINGERPRINT_OK) {
     Serial.println("Error createModel");
-    return;
+    return false;
   }
 
   p = finger.storeModel(id);
@@ -565,11 +599,109 @@ void enrollFingerprint(int id) {
     display.display();
     beepSuccess();
     delay(2000);
-  } else {
-    Serial.println("Error storing");
-    beepError();
+    showIdleScreen();
+    return true;
   }
+  Serial.println("Error storing");
+  beepError();
   showIdleScreen();
+  return false;
+}
+
+/* ── THE ADMIN'S "ADD FINGERPRINT" BUTTON ───────────────────────────────────
+ * GET /api/attendance/biometrics?pending tells us who is waiting. We show the
+ * name on the OLED, take the finger under the ID the server chose, then post
+ * the mapping back so the website prints "Fingerprint Added ✓".
+ */
+bool checkPendingEnroll() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  HTTPClient http;
+  http.begin(serverURL + "/api/attendance/biometrics?pending=1");
+  if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
+  int httpCode = http.GET();
+  if (httpCode != 200) {
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
+
+  DynamicJsonDocument doc(1024);
+  if (deserializeJson(doc, payload)) return false;
+  int count = doc["count"] | 0;
+  if (count <= 0) return false;
+
+  JsonObject job = doc["jobs"][0].as<JsonObject>();
+  if (job.isNull()) return false;
+  int fingerprintId = job["fingerprintId"] | 0;
+  String memberName = job["memberName"] | "Member";
+  if (fingerprintId <= 0) return false;
+
+  Serial.print("Pending enrollment from the website: ");
+  Serial.print(memberName);
+  Serial.print(" as ID ");
+  Serial.println(fingerprintId);
+
+  enrollingFromServer = true;
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("Enroll " + memberName.substring(0, 12));
+  display.setCursor(0, 15);
+  display.println("ID " + String(fingerprintId));
+  display.setCursor(0, 30);
+  display.println("Place finger");
+  display.display();
+
+  bool stored = enrollFingerprint(fingerprintId);
+  if (stored) {
+    postMappingToServer(fingerprintId, memberName);
+    fingerprintToStaff[fingerprintId] = memberName; // usable at once, offline or not
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println(memberName.substring(0, 16));
+    display.setCursor(0, 15);
+    display.println("Fingerprint Added");
+    display.display();
+    delay(3000);
+  } else {
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("Enroll failed");
+    display.setCursor(0, 15);
+    display.println("Press again on web");
+    display.display();
+    delay(3000);
+  }
+  enrollingFromServer = false;
+  showIdleScreen();
+  return stored;
+}
+
+// The last step of the flow: tell the website which finger belongs to whom.
+bool postMappingToServer(int fingerprintId, String memberName) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  HTTPClient http;
+  http.begin(serverURL + "/api/attendance/mappings");
+  addDeviceHeaders(http);
+
+  DynamicJsonDocument doc(256);
+  doc["fingerprintId"] = fingerprintId;
+  doc["staffName"] = memberName;
+  doc["memberName"] = memberName;
+  doc["deviceId"] = deviceId;
+
+  String json;
+  serializeJson(doc, json);
+  int httpCode = http.POST(json);
+  http.end();
+
+  Serial.print("Mapping posted, HTTP ");
+  Serial.println(httpCode);
+  return httpCode == 200;
 }
 
 void emptyDatabase() {

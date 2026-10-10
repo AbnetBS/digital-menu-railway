@@ -75,12 +75,15 @@ Use 16 jumper wires in total. The fingerprint sensor needs only four of them: VC
 ### Automatic enrollment, step by step
 When you press **Add Fingerprint** on the website, the device shows the person's name and walks them through six scans taken from ONE placement:
 
-- The OLED says **PLACE FINGER** once, then **KEEP STILL** while the five remaining scans are taken, with the progress shown as `Scan 2/6`. Do not lift the finger until the device is done.
+- The admin page says **Waiting for the device** and then **Device is ready • ID n** the moment the scanner picked the job up. If it never changes, the scanner is offline.
+- If a finger is already resting on the glass the OLED says **LIFT YOUR FINGER** first. Take it off - a finger that was there before the job started is what used to make the automatic enrollment fail while the Serial command worked.
+- The OLED then says **PLACE FINGER** once, then **KEEP STILL** while the five remaining scans are taken, with the progress shown as `Scan 2/6`. Do not lift the finger until the device is done.
 - Between the six captures the device sends the sensor NOTHING but the six ADD commands. Any other command mid-enrollment makes the module refuse the next scan with status 1 - this is what broke enrollment in PR #50 and is fixed now (see FINGERPRINT_FIX.md).
 - The order is fixed: one scan of step 1, four scans of step 2, one scan of step 3 - the same finger, flat and still on the sensor the whole time.
 - Each ADD command gives the module up to 30 seconds. If no finger is seen for 30 seconds in total, the job ends with "no finger was placed".
 - If the image is not clear (sensor status 6), the OLED says **HOLD STILL** and the same scan is retried about a second later. After three unclear images it says **LIFT, PLACE AGAIN**.
-- If nobody places a finger within 30 seconds, or the scan cannot be finished, the job is marked **failed**. The OLED shows **Not added** with the reason, and the admin page shows **Fingerprint was not added** with a **Try again** button. The device does not loop on its own.
+- If the six scans still cannot be finished, the device asks for a fresh lift and placement and starts the whole sequence again - up to 3 attempts - before it gives up.
+- If nobody places a finger within 30 seconds, or all 3 attempts fail, the job is marked **failed**. The OLED shows **Not added** with the reason, and the admin page prints the same reason (which scan, which sensor status) with a **Try again** button. The device does not loop on its own.
 
 ### Physical checklist
 - Remove the sensor's protective film; clean the sensor surface.
@@ -117,7 +120,8 @@ When you press **Add Fingerprint** on the website, the device shows the person's
 - POST /api/attendance/biometrics {memberId, fingerprintId, fingerName} -> manually map an ID already stored on the sensor (default action: map)
 - POST /api/attendance/biometrics {action: "enroll", memberId} -> open the automatic enrollment job
 - GET /api/attendance/biometrics?pending=1 -> device reads the pending job
-- POST /api/attendance/mappings {action: "job_failed", jobId, reason} -> device reports a failed enrollment job (marks it failed on the website)
+- POST /api/attendance/mappings {action: "job_started", jobId, fingerprintId} -> device says it picked the job up, BEFORE it touches the sensor; the admin page shows "Device is ready"
+- POST /api/attendance/mappings {action: "job_failed", jobId, reason} -> device reports a failed enrollment job (marks it failed on the website, and the page prints the reason)
 
 The device itself serves only its status page (`/` and `/status`). It has no `/enroll`, `/logs` or `/mappings` routes.
 - GET /api/attendance/members -> admin member list, including each member's fingers[] IDs
@@ -146,7 +150,9 @@ A person is marked absent only from their registration date through Ethiopian to
 ## Troubleshooting
 
 - If OLED black: try address 0x3D instead of 0x3C
-- **Enrollment says HOLD STILL (sensor status 6, image unclear):** keep the finger flat and still. The device retries the same scan on its own. If it keeps failing, clean the sensor and check the physical checklist above.
+- **Enrollment says HOLD STILL (sensor status 6, image unclear):** keep the finger flat and still. The device retries the same scan on its own, and retries the whole six-scan sequence up to 3 times. If it keeps failing, clean the sensor and check the physical checklist above. The admin page now prints the exact scan and status, so you can see where it stopped.
+- **The admin page stays on "Waiting for the device":** the scanner never picked the job up. Check that it is powered, on the same WiFi, and that `serverURL` in the sketch points at the live domain.
+- **Run the enrollment tests without the hardware:** `bash hardware/fana_attendance_esp32/test/run.sh` compiles the real sketch against host stubs and runs the enrollment state machine on a simulated sensor.
 - **Enrollment keeps failing on the device:** flash `diagnostics/enroll_diagnostic/enroll_diagnostic.ino` INSTEAD of the product sketch and send `a`, `b` or `c` in the Serial Monitor (115200 baud). It runs one six-scan test enrollment and prints every sensor reply with a timestamp; `a` replays the old PR #50 strategy, `b` the lift-pause strategy, `c` the current keep-the-finger-on strategy. Share the log so the statuses can be compared.
 - If fingerprint sensor not answering: check wiring TX->16 RX->17 cross,
   GND, VCC 3.3V (or 5V if the module is a 5V version), **baud 19200** (8N1)

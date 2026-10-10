@@ -91,6 +91,10 @@ export async function GET(request: Request) {
           memberName: job.memberName,
           fingerprintId: job.fingerprintId,
           status: job.status,
+          // The device's own words: "Device is ready - place the finger now"
+          // while it waits, "scan 2/6 not accepted: ... (status 6)" if it fails.
+          detail: job.detail,
+          startedAt: job.startedAt,
           completedAt: job.completedAt,
         },
         done: job.status === "done",
@@ -179,7 +183,15 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: `ID ${fingerprintId} is already used` }, { status: 409 });
         }
       } else {
-        const free = nextFreeId(existing.map((b) => b.fingerprintId));
+        // An ID another person's still-open job is already waiting on is not
+        // free either: two people enrolled at the same time must never be sent
+        // the same sensor ID, or the second one overwrites the first.
+        const openJobs = await db
+          .select({ fingerprintId: attendanceEnrollJobs.fingerprintId })
+          .from(attendanceEnrollJobs)
+          .where(eq(attendanceEnrollJobs.status, "pending"));
+        const taken = [...existing.map((b) => b.fingerprintId), ...openJobs.map((j) => j.fingerprintId)];
+        const free = nextFreeId(taken);
         if (free === null) return NextResponse.json({ error: "No free fingerprint ID left" }, { status: 409 });
         fingerprintId = free;
       }

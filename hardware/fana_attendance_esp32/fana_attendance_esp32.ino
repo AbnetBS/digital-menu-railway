@@ -30,9 +30,13 @@
  *           registered). The device then returns to "Place finger". One
  *           placement = one scan, however long the finger stays on the sensor.
  *   Add:    the admin presses Add Fingerprint on the website. The OLED shows
- *           the name and guides every capture: PLACE FINGER, LIFT FINGER, ...
- *           Every wait has a timeout, so the device never hangs. A failed job
- *           is reported back to the website and is not retried in a loop.
+ *           the name and guides the captures: PLACE FINGER once, then KEEP
+ *           STILL while the same finger is read five more times. Between the
+ *           six ADD steps the sketch sends the sensor NOTHING else - any
+ *           other command mid-enrollment makes the module refuse the next
+ *           step. Every wait has a timeout, so the device never hangs. A
+ *           failed job is reported back to the website and is not retried in
+ *           a loop.
  *   Manual: Serial "enroll <id>" stores a finger; map it in admin afterwards.
  *
  * Setup:
@@ -74,10 +78,12 @@ WebServer server(80);
 #define SERVER_TIMEOUT_MS       4000  // never wait longer than this for the website
 #define RESULT_SHOW_MS          1500  // a normal result stays on the OLED this long
 #define WARNING_SHOW_MS         2500  // a problem stays on the OLED this long
-#define ENROLL_FINGER_WAIT_MS   30000 // enrollment waits this long for a finger
-#define ENROLL_LIFT_WAIT_MS     15000 // ...and this long for a finger to be lifted
-#define ENROLL_ADD_TIMEOUT_MS   15000 // host timeout for one enroll command
-#define ENROLL_MAX_RETRIES      6     // other failed attempts allowed per capture
+#define ENROLL_NO_FINGER_MS     30000 // give up after this long without any finger
+#define ENROLL_PLACE_SETTLE_MS  2500  // fresh placement: settle time before an ADD command
+#define ENROLL_KEEP_SETTLE_MS   600   // kept finger: settle time before the next ADD
+#define ENROLL_LIFT_PAUSE_MS    2500  // "lift, place again" pause (no sensor command)
+#define ENROLL_ADD_TIMEOUT_MS   30000 // one ADD command may wait this long for a finger
+#define ENROLL_MAX_ATTEMPTS     5     // attempts allowed per capture
 #define ENROLL_HOLD_STILL_AT    3     // unclear images before "lift and place again"
 #define ENROLL_MAX_UNCLEAR      6     // unclear images allowed per capture
 #define MAPPING_RETRY_MS        10000 // retry a mapping the website did not get yet
@@ -85,7 +91,6 @@ WebServer server(80);
 #define EVENT_STREAM_STALL_MS   75000
 
 /* ── Types (declared first so the Arduino IDE can build its prototypes) ──── */
-enum WaitResult : uint8_t { WAIT_FINGER, WAIT_TIMEOUT, WAIT_SENSOR_DEAD };
 enum EnrollResult : uint8_t {
   ENROLL_OK,
   ENROLL_NO_FINGER,
@@ -175,8 +180,6 @@ void beepSuccess();
 void beepError();
 bool detectSensor(uint8_t tries);
 bool sensorAnswers();
-WaitResult waitForFingerOn(uint32_t timeoutMs);
-bool waitForFingerOff(uint32_t timeoutMs);
 EnrollResult enrollFingerprint(int id, const String &who);
 const char *enrollReason(EnrollResult result);
 void scanForFinger();
@@ -760,7 +763,23 @@ void retryPendingMapping() {
   }
 }
 
-/* ── Enrollment: six guided scans (1 x ADD_1, 4 x ADD_2, 1 x ADD_3) ───────── */
+/* ── Enrollment: six guided scans (1 x ADD_1, 4 x ADD_2, 1 x ADD_3) ─────────
+ *
+ * What the real device showed us (statuses from the Serial log):
+ *  - Sending SEARCH or any other command between the ADD steps of one
+ *    enrollment breaks the session: the next ADD step answers status 1
+ *    ("Command failed"). After ADD_1 goes out, the ONLY commands sent are
+ *    the remaining ADD steps. The library's own EnrollUser example does
+ *    the same: back-to-back enroll() calls with a plain pause, no search.
+ *  - An ADD command sent while the finger is still moving down gets an
+ *    unclear image: status 6. So each ADD command is sent only after the
+ *    finger had time to rest flat and still on the glass.
+ *
+ * The finger is therefore placed ONCE and KEPT on the sensor for all six
+ * captures. Recoveries (unclear image, misread scan) use timed pauses,
+ * never extra sensor commands. This is the flow that enrolled fingers on
+ * the device before the search-between-scans rewrite.
+ */
 const char *enrollReason(EnrollResult result) {
   switch (result) {
     case ENROLL_NO_FINGER:     return "no finger was placed";
@@ -773,76 +792,66 @@ const char *enrollReason(EnrollResult result) {
   }
 }
 
-// Waits until the sensor sees a finger. Never blocks forever.
-WaitResult waitForFingerOn(uint32_t timeoutMs) {
-  const uint32_t start = millis();
-  uint8_t silent = 0;
-  while (millis() - start < timeoutMs) {
-    uint16_t matchedId = 0;
-    uint8_t permission = 0;
-    const bool matched = finger.search(matchedId, permission, SENSOR_POLL_MS) && matchedId > 0;
-    const uint8_t st = finger.getLastStatus();
-    if (matched || st == BIOVO_ACK_NOUSER || st == BIOVO_ACK_IMAGEMESS) return WAIT_FINGER;
-
-    if (st == BIOVO_ACK_NO_RESPONSE) {
-      if (++silent >= 3) {
-        if (!sensorAnswers()) return WAIT_SENSOR_DEAD;
-        silent = 0;
-      }
-    } else {
-      silent = 0;
-    }
-    delay(30);
-  }
-  return WAIT_TIMEOUT;
-}
-
-// Waits until the sensor reports "no finger" twice in a row. Never blocks forever.
-bool waitForFingerOff(uint32_t timeoutMs) {
-  const uint32_t start = millis();
-  uint8_t gone = 0;
-  while (millis() - start < timeoutMs) {
-    uint16_t matchedId = 0;
-    uint8_t permission = 0;
-    const bool matched = finger.search(matchedId, permission, SENSOR_POLL_MS) && matchedId > 0;
-    const uint8_t st = finger.getLastStatus();
-    const bool noFinger = !matched && (st == BIOVO_ACK_TIMEOUT || st == BIOVO_ACK_GO_OUT || st == BIOVO_ACK_NO_RESPONSE);
-    if (noFinger) {
-      gone++;
-      if (gone >= 2) return true;
-    } else {
-      gone = 0;
-    }
-    delay(30);
-  }
-  return false;
-}
-
 // Stores one finger under id. who is the name shown on the OLED ("" = manual).
 EnrollResult enrollFingerprint(int id, const String &who) {
   const uint8_t captureSteps[6] = {1, 2, 2, 2, 2, 3};
 
   Serial.print("Enrolling ID ");
   Serial.println(id);
-  Serial.println("Six scans: place the same finger flat and still for each one.");
+  Serial.println("Six scans: place the same finger flat and still, and keep it on the sensor for all six.");
 
-  // Drop stale replies left over from the idle scan loop.
-  while (mySerial.available()) mySerial.read();
+  // Drop stale replies from the idle scan loop and wait for a quiet line,
+  // so the first reply we read really belongs to our first ADD command.
+  finger.drain(150);
+
+  // A finger still on the sensor when enrollment ends must not be clocked by
+  // the very next idle search; the lift that ends enrollment resets this.
+  awaitingFingerLift = true;
 
   bool oldTemplateReplaced = false;
+  bool freshPlacement = true;   // capture 1 always starts with a fresh placement
+  uint32_t noFingerSinceMs = 0; // 0 = a finger was answered recently
 
   for (uint8_t cap = 0; cap < 6; cap++) {
     uint8_t unclear = 0;
-    uint8_t retries = 0;
+    uint8_t attempt = 0;
+    bool captureDone = false;
 
-    for (;;) {
-      showEnrollScreen(who, id, cap, "PLACE FINGER", "Press flat and keep still");
-      const WaitResult w = waitForFingerOn(ENROLL_FINGER_WAIT_MS);
-      if (w == WAIT_TIMEOUT) return ENROLL_NO_FINGER;
-      if (w == WAIT_SENSOR_DEAD) return ENROLL_SENSOR_ERROR;
-      delay(300); // let the finger settle on the glass
+    while (!captureDone && attempt < ENROLL_MAX_ATTEMPTS) {
+      attempt++;
 
-      if (finger.enroll((uint16_t)id, captureSteps[cap], ENROLL_ADD_TIMEOUT_MS)) break;
+      // Settle window before the ADD command: a capture taken while the
+      // finger is still moving down comes back unclear (status 6).
+      if (freshPlacement) {
+        showEnrollScreen(who, id, cap, "PLACE FINGER", "Flat, still, keep it on");
+        delay(ENROLL_PLACE_SETTLE_MS);
+        freshPlacement = false;
+      } else {
+        showEnrollScreen(who, id, cap, "KEEP STILL", "Same finger, do not lift");
+        delay(ENROLL_KEEP_SETTLE_MS);
+      }
+
+      Serial.print("Scan ");
+      Serial.print(cap + 1);
+      Serial.print("/6 (step ");
+      Serial.print(captureSteps[cap]);
+      Serial.print(", attempt ");
+      Serial.print(attempt);
+      Serial.print("/");
+      Serial.print(ENROLL_MAX_ATTEMPTS);
+      Serial.println(") sending ADD");
+
+      const uint32_t cmdStart = millis();
+      if (finger.enroll((uint16_t)id, captureSteps[cap], ENROLL_ADD_TIMEOUT_MS)) {
+        Serial.print("Scan ");
+        Serial.print(cap + 1);
+        Serial.print("/6 accepted in ");
+        Serial.print(millis() - cmdStart);
+        Serial.println(" ms");
+        captureDone = true;
+        noFingerSinceMs = 0;
+        break;
+      }
 
       const uint8_t st = finger.getLastStatus();
       Serial.print("Scan ");
@@ -851,7 +860,9 @@ EnrollResult enrollFingerprint(int id, const String &who) {
       Serial.print(st);
       Serial.print(" (");
       Serial.print(fingerStatusText(st));
-      Serial.println(")");
+      Serial.print(") after ");
+      Serial.print(millis() - cmdStart);
+      Serial.println(" ms");
 
       if (st == BIOVO_ACK_USER_EXIST && cap == 0 && !oldTemplateReplaced) {
         // The ID already holds a template on the sensor. The website's list was
@@ -859,37 +870,55 @@ EnrollResult enrollFingerprint(int id, const String &who) {
         Serial.println("Old template under this ID - deleting it");
         oldTemplateReplaced = true;
         if (!finger.deleteUser((uint16_t)id, 5000)) return ENROLL_FAILED;
+        freshPlacement = true;
         continue;
       }
       if (st == BIOVO_ACK_USER_EXIST) return ENROLL_ID_IN_USE;
       if (st == BIOVO_ACK_FULL) return ENROLL_SENSOR_FULL;
 
+      if (st == BIOVO_ACK_NO_RESPONSE || st == BIOVO_ACK_COMM_ERROR) {
+        if (!sensorAnswers()) return ENROLL_SENSOR_ERROR;
+        freshPlacement = true; // line hiccup recovered: ask for a clean placement
+        continue;
+      }
+
       if (st == BIOVO_ACK_IMAGEMESS) {
         if (++unclear >= ENROLL_MAX_UNCLEAR) return ENROLL_UNCLEAR;
         if (unclear % ENROLL_HOLD_STILL_AT == 0) {
-          showEnrollScreen(who, id, cap, "LIFT, PLACE AGAIN", "Finger was not steady");
-          if (!waitForFingerOff(ENROLL_LIFT_WAIT_MS)) return ENROLL_LIFT_TIMEOUT;
+          // Three unclear images in a row: ask for a real lift and a fresh
+          // flat placement. Only TIME passes here - no sensor command.
+          showEnrollScreen(who, id, cap, "LIFT, PLACE AGAIN", "Flat and still");
+          beepError();
+          delay(ENROLL_LIFT_PAUSE_MS);
+          freshPlacement = true;
         } else {
+          // Most unclear images are a finger that micro-moved. It is already
+          // in place, so keep it there and resend this same capture shortly.
           showEnrollScreen(who, id, cap, "HOLD STILL", "Image unclear, keep flat");
-          delay(800);
+          delay(1000);
         }
         continue;
       }
 
-      // No finger, the finger moved, or a lost reply.
-      if (st == BIOVO_ACK_NO_RESPONSE || st == BIOVO_ACK_COMM_ERROR) {
-        if (!sensorAnswers()) return ENROLL_SENSOR_ERROR;
+      if (st == BIOVO_ACK_TIMEOUT) {
+        // The module saw no finger. Give a full placement window, and give up
+        // when no finger arrives for ENROLL_NO_FINGER_MS in total.
+        if (noFingerSinceMs == 0) noFingerSinceMs = millis();
+        if (millis() - noFingerSinceMs >= ENROLL_NO_FINGER_MS) return ENROLL_NO_FINGER;
+        showEnrollScreen(who, id, cap, "PLACE FINGER", "No finger seen yet");
+        freshPlacement = true;
+        continue;
       }
-      if (++retries >= ENROLL_MAX_RETRIES) return ENROLL_FAILED;
-      showEnrollScreen(who, id, cap, "LIFT, PLACE AGAIN", "Finger moved or not read");
-      waitForFingerOff(8000);
+
+      // Status 1 (command failed) or anything else unexpected: recover with a
+      // fresh lift and placement. No other command is sent at the module.
+      showEnrollScreen(who, id, cap, "LIFT, PLACE AGAIN", "Scan was not read");
+      beepError();
+      delay(ENROLL_LIFT_PAUSE_MS);
+      freshPlacement = true;
     }
 
-    // This scan was accepted. Ask for the finger to be lifted before the next one.
-    if (cap < 5) {
-      showEnrollScreen(who, id, cap + 1, "LIFT FINGER", "Good! Take your finger off");
-      if (!waitForFingerOff(ENROLL_LIFT_WAIT_MS)) return ENROLL_LIFT_TIMEOUT;
-    }
+    if (!captureDone) return ENROLL_FAILED;
   }
 
   Serial.println("Fingerprint enrolled successfully.");

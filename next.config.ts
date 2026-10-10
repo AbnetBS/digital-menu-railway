@@ -28,6 +28,10 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // Development only: the live preview and local browsers load the dev server
+  // from other hosts. Without this Next blocks the page's scripts, and the
+  // admin page stays on "Verifying admin access...". Ignored in production.
+  allowedDevOrigins: ["127.0.0.1", "localhost", "*.e2b.app"],
   async headers() {
     return [
       {

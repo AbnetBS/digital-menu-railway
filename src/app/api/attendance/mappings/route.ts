@@ -58,7 +58,10 @@ export async function POST(request: Request) {
   await ensureTablesExist();
 
   try {
-    const body = await request.json();
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ error: "Send a JSON body" }, { status: 400 });
+    }
 
     // The device could not finish the job (no finger, sensor error, ID taken).
     // Close the job as failed so the admin sees it at once instead of waiting

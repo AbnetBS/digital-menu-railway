@@ -59,6 +59,22 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
+
+    // The device could not finish the job (no finger, sensor error, ID taken).
+    // Close the job as failed so the admin sees it at once instead of waiting
+    // for the job to expire. Only a pending job can be closed this way.
+    if (body.action === "job_failed") {
+      const jobId = Number(body.jobId);
+      if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 });
+      const reason = String(body.reason ?? "Device could not finish the job").slice(0, 120);
+      await db
+        .update(attendanceEnrollJobs)
+        .set({ status: "failed", completedAt: new Date() })
+        .where(and(eq(attendanceEnrollJobs.id, jobId), eq(attendanceEnrollJobs.status, "pending")));
+      publish(CHANNELS.device);
+      return NextResponse.json({ success: true, reason });
+    }
+
     const fingerprintId = Number(body.fingerprintId);
     if (!fingerprintId || fingerprintId < 1 || fingerprintId > 1000) {
       return NextResponse.json({ error: "fingerprintId must be 1-1000" }, { status: 400 });

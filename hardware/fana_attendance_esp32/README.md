@@ -6,11 +6,11 @@
 - ESP32 WROOM Wifi Board 1,750 Br (Micro USB, use existing data cable)
 - FPC1020A Fingerprint 4,500 Br (1000 capacity, capacitive, 360°, wet optimized, <0.45s)
 - 0.96" OLED Module 950 Br
-- Jumper Wires 40pcs (core build uses 16 wires; add 2 for recommended touch sense)
+- Jumper Wires 40pcs (the build uses 16 wires)
 - BreadBoard 750 Br
 - Buzzer 5V 150 Br
 - LED 5mm x2 20 Br (Green + Red)
-- Total core: 8,720 Br; the core wiring uses 16 wires, or 18 with touch sense connected
+- Total core: 8,720 Br; the wiring uses 16 wires
 
 Optional (you said not needed now):
 - Power Bank 10,000mAh pass-through 1,800 Br for backup battery (30 hours)
@@ -22,9 +22,8 @@ Optional (you said not needed now):
 
 Total with optional: ~11,920 Br
 
-**Core wire count: 16; add 2 recommended touch-sense wires (18 total)**
-- 4 wires Female-Female for FPC1020A (VCC,GND,TX,RX)
-- 2 recommended wires for FPC1020A touch sense (TOUCH OUT, V_TOUCH)
+**Wire count: 16**
+- 4 wires Female-Female for FPC1020A (VCC, GND, TX, RX). Nothing else is needed for the sensor.
 - 4 wires Female-Female for OLED (VCC,GND,SDA,SCL)
 - 8 wires Male-Male for ESP32 breadboard power + buzzer + 2 LEDs + resistors
 
@@ -34,8 +33,7 @@ FPC1020A VCC (Red)    -> ESP32 3.3V (5V only if module is rated for 5V)
 FPC1020A GND (Black)  -> ESP32 GND
 FPC1020A TX (Yellow)  -> ESP32 GPIO16 (RX2)
 FPC1020A RX (White)   -> ESP32 GPIO17 (TX2)
-FPC1020A TOUCH OUT (pin 5) -> ESP32 GPIO25
-FPC1020A V_TOUCH (pin 6)   -> ESP32 3.3V
+(FPC1020A pins 5 and 6 are NOT connected. The sketch does not use them.)
 Buzzer +              -> ESP32 GPIO23
 Buzzer -              -> GND
 Green LED +           -> GPIO18 -> 220ohm -> GND
@@ -46,7 +44,7 @@ OLED SDA              -> GPIO21
 OLED SCL              -> GPIO22
 ```
 
-Use 16 jumper wires for the core build, or 18 when adding the two recommended touch-sense connections.
+Use 16 jumper wires in total. The fingerprint sensor needs only four of them: VCC, GND, RX, TX.
 
 ## Setup Steps
 
@@ -54,7 +52,7 @@ Use 16 jumper wires for the core build, or 18 when adding the two recommended to
 2. Add ESP32 boards: File -> Preferences -> Additional URL: https://dl.espressif.com/dl/package_esp32_index.json
 3. Boards Manager -> esp32 -> Install
 4. Install the **patched Biovo1020A library from this repository** (keep the tested copy unchanged), plus Adafruit SSD1306, Adafruit GFX Library, WiFiManager by tzapu, and ArduinoJson. Do not install/use the Adafruit fingerprint library for this module.
-5. Wire FPC1020A TOUCH OUT (pin 5) to GPIO25 and V_TOUCH (pin 6) to 3.3V; touch sensing is enabled in this sketch.
+5. Wire the sensor with the four wires only (see the table above). No touch wires.
 6. Select Board: ESP32 Dev Module, Port: COMx, Upload Speed: 921600.
 7. Upload the sketch from `hardware/fana_attendance_esp32/fana_attendance_esp32.ino`.
 8. First boot: Phone WiFi -> connect to "Fana-Attendance-Setup" (password "fana12345") -> set restaurant WiFi.
@@ -74,23 +72,26 @@ Use 16 jumper wires for the core build, or 18 when adding the two recommended to
 4. In admin, open **Attendance → Staff Fingerprints**. Select the person, enter the same ID, choose the finger name, and press **Add**.
 5. The page confirms **Fingerprint Added for …**. The ID must match the one stored on the device.
 
-### The six captures and status-6 retry
-Each fingerprint is captured six times: **Step 1 = one ADD_1 capture; Step 2 = four ADD_2 captures; Step 3 = one ADD_3 capture.** Keep the same finger flat and still through successful captures. The OLED identifies the progress, for example **Step 2 of 3, Capture 2/4**.
+### Automatic enrollment, step by step
+When you press **Add Fingerprint** on the website, the device shows the person's name and walks them through six scans:
 
-With touch sense, before each capture the device waits for a finger on TOUCH OUT and gives it about **600 ms to settle**. If the module returns status 6 (image unclear), the device says **“Hold still — don't move”** and retries the same capture after about one second. It asks you to lift and place flat only after three consecutive unclear images; each capture has at most five attempts.
+- **PLACE FINGER**, then **LIFT FINGER**, alternating, with the progress shown as `Scan 2/6`.
+- The order is fixed: one scan of step 1, four scans of step 2, one scan of step 3. Keep the same finger flat and still for each scan.
+- Nothing is counted while no finger is on the sensor. The device waits for a finger, up to 30 seconds.
+- If the image is not clear (sensor status 6), the OLED says **HOLD STILL** and the same scan is retried. After three unclear images it says **LIFT, PLACE AGAIN**.
+- If nobody places a finger within 30 seconds, or the scan cannot be finished, the job is marked **failed**. The OLED shows **Not added** with the reason, and the admin page shows **Fingerprint was not added** with a **Try again** button. The device does not loop on its own.
 
 ### Physical checklist
 - Remove the sensor's protective film; clean the sensor surface.
-- Press the finger flat and **STILL**. Do not move until the capture finishes — movement caused the reported failure.
+- Press the finger flat and **STILL**. Do not move until the scan is accepted. Lifting early is the most common cause of a failed enrollment.
 - If a finger is dry, lightly moisten it; wipe off sweat or excess moisture.
-- Connect TOUCH OUT pin 5 → ESP32 GPIO25 and V_TOUCH pin 6 → 3.3V. If touch is not detected, change `FINGER_TOUCH_ACTIVE` from `HIGH` to `LOW` in the sketch and upload again.
 - Keep wires short. If captures still fail, place a **100 µF capacitor across module VCC and GND**.
 - Use 5V power **only if the module is specifically rated for 5V**; otherwise use its rated voltage. UART stays at 19200 baud.
 
 ## Workflow
 
 1. Idle: OLED shows "Place finger", tablet /attendance shows live clock
-2. Scan: FPC1020A finds ID in <0.45 sec, OLED shows name, green LED + beep, POST to /api/attendance/clock
+2. Scan: one placement = one scan. The finger is matched and **VERIFIED** shows at once, then the website answers in about 1-2 seconds (IN / OUT / late / not registered). The device goes back to "Place finger" by itself. A finger that stays on the sensor is never posted twice.
 3. Tablet /attendance updates in REAL TIME (SSE push from the server) the moment a scan lands - no polling
 4. The ESP32 keeps one real-time event stream open (/api/attendance/events): the admin presses "Add Fingerprint"
    and the device is told INSTANTLY (no 2-second polling). A slow 15 s fallback poll runs only if the stream is down.
@@ -115,6 +116,9 @@ With touch sense, before each capture the device waits for a finger on TOUCH OUT
 - POST /api/attendance/biometrics {memberId, fingerprintId, fingerName} -> manually map an ID already stored on the sensor (default action: map)
 - POST /api/attendance/biometrics {action: "enroll", memberId} -> open the automatic enrollment job
 - GET /api/attendance/biometrics?pending=1 -> device reads the pending job
+- POST /api/attendance/mappings {action: "job_failed", jobId, reason} -> device reports a failed enrollment job (marks it failed on the website)
+
+The device itself serves only its status page (`/` and `/status`). It has no `/enroll`, `/logs` or `/mappings` routes.
 - GET /api/attendance/members -> admin member list, including each member's fingers[] IDs
 - GET/POST /api/attendance/shifts -> Morning/Afternoon shifts
 - GET /api/reports -> now includes last7DaysSales sliding window 7 days
@@ -141,17 +145,14 @@ A person is marked absent only from their registration date through Ethiopian to
 ## Troubleshooting
 
 - If OLED black: try address 0x3D instead of 0x3C
-- **Enrollment returns status 6 (image unclear):** the old workflow captured
-  while the finger was moving into place. The new flow retries the same capture
-  while you hold still, then asks you to lift only after three unclear tries.
-  See **FINGERPRINT_FIX.md** and use the physical checklist above.
+- **Enrollment says HOLD STILL (sensor status 6, image unclear):** keep the finger flat and still. The device retries the same scan on its own. If it keeps failing, clean the sensor and check the physical checklist above.
 - If fingerprint sensor not answering: check wiring TX->16 RX->17 cross,
   GND, VCC 3.3V (or 5V if the module is a 5V version), **baud 19200** (8N1)
 - If fingerprint not found (but scans work): the finger is not enrolled -
-  the OLED says "Not enrolled! Ask admin to add this finger"
+  the OLED says **NOT REGISTERED / Finger not enrolled / Ask admin to add it**
 - If WiFi fails: reset WiFiManager by uncommenting wm.resetSettings() and re-upload
 - If POST fails: check serverURL https, check VPSDime firewall allows ESP32 IP, check Coolify domain
-- Serial Monitor commands: `enroll <id>`, `list`, `empty`, `test` (115200 baud)
+- Serial Monitor commands (115200 baud): `enroll <id>` (manual enrollment, 1-1000), `list`, `test`, `empty confirm` (deletes ALL fingerprints on the sensor; plain `empty` only prints a warning)
 
 ## Next Steps After Hardware Buy (Tomorrow Connect Checklist)
 

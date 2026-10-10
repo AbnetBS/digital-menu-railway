@@ -5,7 +5,7 @@ import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { deviceAllowed } from "@/lib/attendance-device";
 import { publish, CHANNELS } from "@/lib/realtime";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
 
 /**
@@ -67,14 +67,31 @@ export async function POST(request: Request) {
     // Who is this finger? By id when the job gave one, otherwise by the name
     // the device was told to enroll.
     let member: { id: number; name: string } | null = null;
-    const byId = Number(body.memberId ?? 0);
+    let byId = Number(body.memberId ?? 0);
     const byName = String(body.memberName ?? body.staffName ?? "").trim();
+
+    // The scanner sends the job it worked on: that job, not a name, says who
+    // the finger belongs to, and a report that does not match it is refused.
+    const jobId = Number(body.jobId ?? 0);
+    if (jobId) {
+      const jobs = await db.select().from(attendanceEnrollJobs).where(eq(attendanceEnrollJobs.id, jobId)).limit(1);
+      if (jobs.length > 0) {
+        const job = jobs[0];
+        if (job.fingerprintId !== fingerprintId || (byId && job.memberId !== byId)) {
+          return NextResponse.json(
+            { error: `Job ${jobId} was for ID ${job.fingerprintId}, not ID ${fingerprintId}` },
+            { status: 409 }
+          );
+        }
+        byId = job.memberId;
+      }
+    }
 
     if (byId) {
       const found = await db.select().from(attendanceMembers).where(eq(attendanceMembers.id, byId)).limit(1);
       if (found.length > 0) member = { id: found[0].id, name: found[0].name };
     }
-    if (!member && byName) {
+    if (!member && byName && !jobId) {
       const all = await db.select().from(attendanceMembers);
       const found = all.find((m) => m.name.toLowerCase() === byName.toLowerCase());
       if (found) member = { id: found.id, name: found.name };
@@ -126,9 +143,9 @@ export async function POST(request: Request) {
       .set({ status: "done", completedAt: new Date() })
       .where(
         and(
-          eq(attendanceEnrollJobs.memberId, member.id),
+          jobId ? eq(attendanceEnrollJobs.id, jobId) : eq(attendanceEnrollJobs.memberId, member.id),
           eq(attendanceEnrollJobs.fingerprintId, fingerprintId),
-          eq(attendanceEnrollJobs.status, "pending")
+          inArray(attendanceEnrollJobs.status, ["pending", "failed"])
         )
       );
 

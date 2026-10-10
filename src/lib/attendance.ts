@@ -238,3 +238,23 @@ export function outStatusOf(log: SheetLog | null | undefined): OutStatus {
   if (log.earlyOut || log.status === "early_out") return "early_out";
   return "completed";
 }
+
+/** How old a scan the device kept offline may be, and how far ahead its clock may run. */
+export const MAX_OFFLINE_SCAN_AGE_MS = 72 * 60 * 60 * 1000;
+export const MAX_DEVICE_CLOCK_AHEAD_MS = 120 * 1000;
+
+/**
+ * WHEN DID THE FINGER TOUCH? The scanner sends `scannedAt` (Unix seconds) with
+ * every scan, and with the scans it saved while the WiFi was down. Recording
+ * those at the moment they are finally sent would turn an 08:00 IN into a
+ * 10:00 "late". A time outside the window (dead clock battery, no NTP yet) is
+ * ignored and the server time is used, exactly as before.
+ */
+export function scanTimeFrom(scannedAt: unknown, serverNow: Date = new Date()): Date {
+  const seconds = Number(scannedAt);
+  if (!Number.isFinite(seconds) || seconds <= 0) return serverNow;
+  const at = new Date(Math.round(seconds) * 1000);
+  const diff = at.getTime() - serverNow.getTime();
+  if (diff > MAX_DEVICE_CLOCK_AHEAD_MS || diff < -MAX_OFFLINE_SCAN_AGE_MS) return serverNow;
+  return diff > 0 ? serverNow : at;
+}

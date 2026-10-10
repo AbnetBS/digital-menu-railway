@@ -424,9 +424,10 @@ export const attendanceEnrollJobs = pgTable("attendance_enroll_jobs", {
   memberId: integer("member_id").notNull(), // FK to attendance_members.id
   memberName: varchar("member_name", { length: 100 }), // for the OLED, no join needed
   fingerprintId: integer("fingerprint_id").notNull(), // the ID the device must use
-  status: varchar("status", { length: 20 }).default("pending"), // pending | done | cancelled
+  status: varchar("status", { length: 20 }).default("pending"), // pending | done | cancelled | failed
   createdAt: timestamp("created_at").defaultNow(),
   completedAt: timestamp("completed_at"),
+  failReason: text("fail_reason"), // what the scanner showed when it could not add the finger
 });
 
 export const attendanceLogs = pgTable("attendance_logs", {

@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { attendanceBiometrics, attendanceEnrollJobs, attendanceMembers } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
+import { deviceAllowed } from "@/lib/attendance-device";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { and, desc, eq } from "drizzle-orm";
 import { ENROLL_JOB_TTL_MINUTES, MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
@@ -23,8 +24,14 @@ import { ENROLL_JOB_TTL_MINUTES, MAX_FINGERS_PER_MEMBER } from "@/lib/attendance
  *   5. The admin page polls `GET /api/attendance/biometrics?job=<id>` and reads
  *      the job as done, so it can print "Fingerprint Added ✓".
  *
- * The `?pending` read is the only open one: it is the hardware asking "is
- * anybody waiting for me?", and it carries names and IDs, never a PIN.
+ * The `?pending` read is the device's: it is the hardware asking "is anybody
+ * waiting for me?", and it carries names and IDs, never a PIN. When the owner
+ * sets ATTENDANCE_DEVICE_TOKEN only the scanner (or an admin) may read it.
+ *
+ * When the device cannot finish (no finger for 25 s, the finger already
+ * belongs to somebody else, sensor trouble) it posts
+ * { action: "device_failed", jobId, reason }: the job becomes "failed", the
+ * admin page shows the reason at once and the device never picks it up again.
  */
 
 /** The next free fingerprint ID inside the FPC1020A (1-1000). */
@@ -42,7 +49,7 @@ export async function GET(request: Request) {
 
   // The device poll and the admin poll both go through here; only the device
   // poll (?pending) may run without a session, and it only lists names + IDs.
-  if (pending !== "1") {
+  if (pending !== "1" || !deviceAllowed(request)) {
     const auth = await requireAdmin();
     if (!auth.ok) return auth.response;
   }
@@ -92,8 +99,10 @@ export async function GET(request: Request) {
           fingerprintId: job.fingerprintId,
           status: job.status,
           completedAt: job.completedAt,
+          reason: job.status === "failed" ? job.failReason || "The device could not add the finger" : null,
         },
         done: job.status === "done",
+        failed: job.status === "failed",
       });
     }
 
@@ -120,14 +129,42 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  let body: Record<string, unknown>;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "JSON body required" }, { status: 400 });
+  }
+  const action = String(body.action ?? "map");
+
+  // The scanner reports a job it could not finish. Device token (or admin).
+  if (action === "device_failed") {
+    if (!deviceAllowed(request)) {
+      const auth = await requireAdmin();
+      if (!auth.ok) return auth.response;
+    }
+    await ensureTablesExist();
+    const jobId = Number(body.jobId);
+    if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 });
+    const reason = String(body.reason ?? "").trim().slice(0, 80) || "The device could not add the finger";
+    try {
+      await db
+        .update(attendanceEnrollJobs)
+        .set({ status: "failed", completedAt: new Date(), failReason: reason })
+        .where(and(eq(attendanceEnrollJobs.id, jobId), eq(attendanceEnrollJobs.status, "pending")));
+      publish(CHANNELS.device);
+      return NextResponse.json({ success: true, message: reason });
+    } catch (error) {
+      return NextResponse.json({ error: String(error) }, { status: 500 });
+    }
+  }
+
   const auth = await requireAdmin();
   if (!auth.ok) return auth.response;
 
   await ensureTablesExist();
 
   try {
-    const body = await request.json();
-    const action = String(body.action ?? "map");
 
     if (action === "cancel") {
       const jobId = Number(body.jobId);

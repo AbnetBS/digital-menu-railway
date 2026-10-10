@@ -1,16 +1,16 @@
 # FANA CAFE - Attendance Hardware
 
-> **GitHub Repo File**: The upload sketch lives at `hardware/fana_attendance_esp32/fana_attendance_esp32.ino`. This review updates branch `arena/861dfe55-digital-menu-railway`; after merge, use the copy on `main`.
+> **GitHub Repo File**: The upload sketch lives at `hardware/fana_attendance_esp32/fana_attendance_esp32.ino`. What changed in Oct 2026 and why: **FINGERPRINT_FIX.md**.
 
 ## Materials (core build - 8,720 Br before optional accessories)
 - ESP32 WROOM Wifi Board 1,750 Br (Micro USB, use existing data cable)
 - FPC1020A Fingerprint 4,500 Br (1000 capacity, capacitive, 360°, wet optimized, <0.45s)
 - 0.96" OLED Module 950 Br
-- Jumper Wires 40pcs (core build uses 16 wires; add 2 for recommended touch sense)
+- Jumper Wires 40pcs (core build uses 16 wires)
 - BreadBoard 750 Br
 - Buzzer 5V 150 Br
 - LED 5mm x2 20 Br (Green + Red)
-- Total core: 8,720 Br; the core wiring uses 16 wires, or 18 with touch sense connected
+- Total core: 8,720 Br; the core wiring uses 16 wires
 
 Optional (you said not needed now):
 - Power Bank 10,000mAh pass-through 1,800 Br for backup battery (30 hours)
@@ -22,9 +22,8 @@ Optional (you said not needed now):
 
 Total with optional: ~11,920 Br
 
-**Core wire count: 16; add 2 recommended touch-sense wires (18 total)**
-- 4 wires Female-Female for FPC1020A (VCC,GND,TX,RX)
-- 2 recommended wires for FPC1020A touch sense (TOUCH OUT, V_TOUCH)
+**Core wire count: 16**
+- 4 wires Female-Female for FPC1020A (VCC,GND,TX,RX). Pins 5 and 6 (touch sense) stay unconnected.
 - 4 wires Female-Female for OLED (VCC,GND,SDA,SCL)
 - 8 wires Male-Male for ESP32 breadboard power + buzzer + 2 LEDs + resistors
 
@@ -34,8 +33,7 @@ FPC1020A VCC (Red)    -> ESP32 3.3V (5V only if module is rated for 5V)
 FPC1020A GND (Black)  -> ESP32 GND
 FPC1020A TX (Yellow)  -> ESP32 GPIO16 (RX2)
 FPC1020A RX (White)   -> ESP32 GPIO17 (TX2)
-FPC1020A TOUCH OUT (pin 5) -> ESP32 GPIO25
-FPC1020A V_TOUCH (pin 6)   -> ESP32 3.3V
+FPC1020A pins 5 and 6 (touch sense) -> NOT CONNECTED
 Buzzer +              -> ESP32 GPIO23
 Buzzer -              -> GND
 Green LED +           -> GPIO18 -> 220ohm -> GND
@@ -46,58 +44,60 @@ OLED SDA              -> GPIO21
 OLED SCL              -> GPIO22
 ```
 
-Use 16 jumper wires for the core build, or 18 when adding the two recommended touch-sense connections.
+Use 16 jumper wires. The fingerprint sensor needs only its 4 wires: wiring the touch-sense pins made the old sketch slow and stuck.
 
 ## Setup Steps
 
 1. Install Arduino IDE 2.3.10
 2. Add ESP32 boards: File -> Preferences -> Additional URL: https://dl.espressif.com/dl/package_esp32_index.json
 3. Boards Manager -> esp32 -> Install
-4. Install the **patched Biovo1020A library from this repository** (keep the tested copy unchanged), plus Adafruit SSD1306, Adafruit GFX Library, WiFiManager by tzapu, and ArduinoJson. Do not install/use the Adafruit fingerprint library for this module.
-5. Wire FPC1020A TOUCH OUT (pin 5) to GPIO25 and V_TOUCH (pin 6) to 3.3V; touch sensing is enabled in this sketch.
+4. Install the **patched Biovo1020A library from this repository** (keep the tested copy unchanged), plus Adafruit SSD1306, Adafruit GFX Library, WiFiManager by tzapu, and ArduinoJson (v6 or v7). Do not install/use the Adafruit fingerprint library for this module.
+5. Wire the fingerprint sensor with 4 wires only (VCC, GND, TX -> GPIO16, RX -> GPIO17). If the server has `ATTENDANCE_DEVICE_TOKEN` set, copy it into `deviceToken` at the top of the sketch.
 6. Select Board: ESP32 Dev Module, Port: COMx, Upload Speed: 921600.
 7. Upload the sketch from `hardware/fana_attendance_esp32/fana_attendance_esp32.ino`.
 8. First boot: Phone WiFi -> connect to "Fana-Attendance-Setup" (password "fana12345") -> set restaurant WiFi.
-9. The device will show its IP on the OLED. Test with a mapped staff finger; it should beep and POST to the server.
+9. The OLED shows **PLACE FINGER**. A mapped finger shows **VERIFIED + name** at once, then **IN 08:05** from the server about a second later.
 
-## Enroll Fingerprints — two ways
+## Enroll Fingerprints: two ways
 
 ### Path A: automatic (recommended)
 1. In admin, open **Attendance → Staff Members** and edit the person.
-2. Press **ADD FINGERPRINT**. The server chooses a free sensor ID from 1–1000 and pushes the job to the device.
-3. Follow the OLED; the device enrolls the finger and sends the mapping back. The admin page shows **Fingerprint Added ✓**.
+2. Press **ADD FINGERPRINT**. The server chooses a free sensor ID from 1-1000 and pushes the job to the device.
+3. The OLED shows the name and guides the person: **PLACE**, **HOLD**, **LIFT**, same finger again, with **Step x of 6** and a countdown (25 s per capture, no tries are counted while nobody is touching).
+4. The device sends the mapping back with the job number. The OLED says **FINGERPRINT ADDED** and the admin page shows **Fingerprint Added ✓**.
+5. If it cannot finish, the OLED says why (for example *Finger already used by Abebe* or *No finger - timed out*) and the admin page shows **Fingerprint not added** with the reason and **Try again**.
 
 ### Path B: manual (enroll on the device, then map it)
 1. Open the device Serial Monitor at **115200 baud**.
-2. Type `enroll 7` (use the ID you want, 1–1000) and press Enter.
-3. Follow the OLED. On success the device prints and displays: **Stored as ID 7 — map it: admin → Attendance → Staff Fingerprints**.
+2. Type `enroll 7` (use a free ID, 1-1000; `free` prints the next one) and press Enter.
+3. Follow the OLED. On success the device prints **Stored as ID 7. Map it: admin → Attendance → Staff Fingerprints**.
 4. In admin, open **Attendance → Staff Fingerprints**. Select the person, enter the same ID, choose the finger name, and press **Add**.
-5. The page confirms **Fingerprint Added for …**. The ID must match the one stored on the device.
+5. The page confirms **Fingerprint Added for …**. `enroll` refuses an ID that is already mapped to somebody.
 
-### The six captures and status-6 retry
-Each fingerprint is captured six times: **Step 1 = one ADD_1 capture; Step 2 = four ADD_2 captures; Step 3 = one ADD_3 capture.** Keep the same finger flat and still through successful captures. The OLED identifies the progress, for example **Step 2 of 3, Capture 2/4**.
-
-With touch sense, before each capture the device waits for a finger on TOUCH OUT and gives it about **600 ms to settle**. If the module returns status 6 (image unclear), the device says **“Hold still — don't move”** and retries the same capture after about one second. It asks you to lift and place flat only after three consecutive unclear images; each capture has at most five attempts.
+### Sensor status codes (official protocol)
+Enrollment status **6 = this ID is already used** on the sensor (the device deletes the leftover and continues), **7 = this finger is already saved** under another ID, **8 = no finger yet** (keep waiting). Six captures: step 1 once, step 2 four times, step 3 once.
 
 ### Physical checklist
 - Remove the sensor's protective film; clean the sensor surface.
-- Press the finger flat and **STILL**. Do not move until the capture finishes — movement caused the reported failure.
+- Press the finger flat; use the same finger for all six captures.
 - If a finger is dry, lightly moisten it; wipe off sweat or excess moisture.
-- Connect TOUCH OUT pin 5 → ESP32 GPIO25 and V_TOUCH pin 6 → 3.3V. If touch is not detected, change `FINGER_TOUCH_ACTIVE` from `HIGH` to `LOW` in the sketch and upload again.
-- Keep wires short. If captures still fail, place a **100 µF capacitor across module VCC and GND**.
-- Use 5V power **only if the module is specifically rated for 5V**; otherwise use its rated voltage. UART stays at 19200 baud.
+- Keep wires short. If the sensor resets when WiFi starts, place a **100 µF capacitor across module VCC and GND**.
+- Use 5V power **only if the module is specifically rated for 5V**. UART stays at 19200 baud.
+
+### Tests without hardware
+`cd hardware/fana_attendance_esp32/test && ./run_tests.sh` builds the real sketch on a PC against a simulated sensor, OLED and website and plays 16 situations (fast verify, idle then scan, enrollment, offline, legacy module...). See FINGERPRINT_FIX.md.
 
 ## Workflow
 
 1. Idle: OLED shows "Place finger", tablet /attendance shows live clock
-2. Scan: FPC1020A finds ID in <0.45 sec, OLED shows name, green LED + beep, POST to /api/attendance/clock
+2. Scan: FPC1020A finds the ID, OLED shows VERIFIED + name with green LED + beep in about 0.3 s; the POST to /api/attendance/clock runs in the background and its answer (IN/OUT/Late) follows
 3. Tablet /attendance updates in REAL TIME (SSE push from the server) the moment a scan lands - no polling
 4. The ESP32 keeps one real-time event stream open (/api/attendance/events): the admin presses "Add Fingerprint"
    and the device is told INSTANTLY (no 2-second polling). A slow 15 s fallback poll runs only if the stream is down.
 4. Admin /admin -> Attendance tab shows paper sheet view like your photo: Employee Name | Date | IN Time & Finger | OUT Time & Finger | Total Hours | Late
    - Print button: In Paper Sheet View, click "Print Hard Copy" -> prints only the table like normal paper (landscape, black border, FANA CAFÉ header) for hard copy filing
-5. Offline: Saves to LittleFS queue, syncs when internet back, OLED still works from local cache
-6. Sales: Owner reports now show only last 7 days daily sales sliding window (7th removed when new day starts) — total sales all-time replaced
+5. Offline: Saves to LittleFS queue with the real scan time, syncs when internet back (recorded at the scan time, not the sync time), OLED still works from local cache
+6. Sales: Owner reports now show only last 7 days daily sales sliding window (7th removed when new day starts) - total sales all-time replaced
 
 ## New Features Oct 2026
 
@@ -108,13 +108,15 @@ With touch sense, before each capture the device waits for a finger on TOUCH OUT
 
 ## API Endpoints (on your VPSDime VPS)
 
-- POST /api/attendance/clock {fingerprintId, deviceId} -> clock IN/OUT, returns OLED message
+- POST /api/attendance/clock {fingerprintId, deviceId, scannedAt} -> clock IN/OUT at the scan time, returns OLED message (device token or admin when ATTENDANCE_DEVICE_TOKEN is set)
 - GET /api/attendance/today -> today's live logs for kiosk
 - GET /api/attendance/logs?from=2026-10-01&to=2026-10-07 -> paper sheet data
 - GET /api/attendance/mappings -> fingerprintId -> staffName for ESP32 cache (public, no auth for ESP32)
 - POST /api/attendance/biometrics {memberId, fingerprintId, fingerName} -> manually map an ID already stored on the sensor (default action: map)
 - POST /api/attendance/biometrics {action: "enroll", memberId} -> open the automatic enrollment job
 - GET /api/attendance/biometrics?pending=1 -> device reads the pending job
+- POST /api/attendance/biometrics {action: "device_failed", jobId, reason} -> device reports a job it could not finish
+- POST /api/attendance/mappings {fingerprintId, memberId, jobId} -> device reports the finger it stored
 - GET /api/attendance/members -> admin member list, including each member's fingers[] IDs
 - GET/POST /api/attendance/shifts -> Morning/Afternoon shifts
 - GET /api/reports -> now includes last7DaysSales sliding window 7 days
@@ -141,17 +143,16 @@ A person is marked absent only from their registration date through Ethiopian to
 ## Troubleshooting
 
 - If OLED black: try address 0x3D instead of 0x3C
-- **Enrollment returns status 6 (image unclear):** the old workflow captured
-  while the finger was moving into place. The new flow retries the same capture
-  while you hold still, then asks you to lift only after three unclear tries.
-  See **FINGERPRINT_FIX.md** and use the physical checklist above.
+- **Device slow or stuck:** make sure pins 5 and 6 of the sensor are NOT connected (4 wires only).
+- **Enrollment says "ID busy on sensor":** type `delete <id>` in the Serial Monitor and press Add Fingerprint again.
 - If fingerprint sensor not answering: check wiring TX->16 RX->17 cross,
   GND, VCC 3.3V (or 5V if the module is a 5V version), **baud 19200** (8N1)
-- If fingerprint not found (but scans work): the finger is not enrolled -
-  the OLED says "Not enrolled! Ask admin to add this finger"
-- If WiFi fails: reset WiFiManager by uncommenting wm.resetSettings() and re-upload
+- If fingerprint not found (but scans work): the finger is not stored on the sensor -
+  the OLED says "NOT REGISTERED - Ask the admin". "NOT ADDED - Ask admin to map ID x"
+  means the sensor knows the finger but the website has no mapping for that ID.
+- If WiFi fails: type `wifi reset` in the Serial Monitor; the device restarts into the setup hotspot
 - If POST fails: check serverURL https, check VPSDime firewall allows ESP32 IP, check Coolify domain
-- Serial Monitor commands: `enroll <id>`, `list`, `empty`, `test` (115200 baud)
+- Serial Monitor commands (115200 baud): `enroll <id>`, `delete <id>`, `count`, `free`, `test`, `empty`, `wifi reset`
 
 ## Next Steps After Hardware Buy (Tomorrow Connect Checklist)
 

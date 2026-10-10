@@ -60,6 +60,8 @@ import {
   rescanAction,
   sheetDates,
   toHHMM,
+  scanTimeFrom,
+  MAX_OFFLINE_SCAN_AGE_MS,
 } from "../src/lib/attendance";
 
 let failures = 0;
@@ -84,6 +86,7 @@ const logsApi = read("src/app/api/attendance/logs/route.ts");
 const adminTab = read("src/components/rms/AttendanceTab.tsx");
 const kiosk = read("src/app/(internal)/attendance/page.tsx");
 const firmware = read("hardware/fana_attendance_esp32/fana_attendance_esp32.ino");
+const attendanceLib = read("src/lib/attendance.ts");
 
 /* ── 1. the rules themselves (imported, not re-implemented) ──────────────── */
 
@@ -308,8 +311,8 @@ pass(
   biometricsApi.includes("nextFreeId")
 );
 pass(
-  "the device asks who is waiting with ?pending and that read is the only open one",
-  biometricsApi.includes('pending !== "1"') && biometricsApi.includes("requireAdmin()")
+  "the device asks who is waiting with ?pending (device token or admin)",
+  biometricsApi.includes('pending !== "1" || !deviceAllowed(request)') && biometricsApi.includes("requireAdmin()")
 );
 pass("the pending answer carries the OLED lines for the device", biometricsApi.includes("Place finger"));
 pass(
@@ -317,46 +320,81 @@ pass(
   adminTab.includes("biometrics?job=") && adminTab.includes("Fingerprint Added ✓")
 );
 pass(
-  "the device reports the finger it stored to /mappings and that closes the job",
+  "the device reports the finger it stored to /mappings and that closes the job it worked on",
   mappingsApi.includes("export async function POST") &&
     mappingsApi.includes("attendanceEnrollJobs") &&
-    mappingsApi.includes('eq(attendanceEnrollJobs.status, "pending")')
+    mappingsApi.includes("body.jobId") &&
+    mappingsApi.includes('inArray(attendanceEnrollJobs.status, ["pending", "failed"])')
 );
 pass(
-  "the firmware listens in real time (SSE, fallback poll) and posts the mapping back",
-  firmware.includes("checkPendingEnroll()") &&
+  "a job the device could not finish becomes failed with its reason, and the admin sees it",
+  biometricsApi.includes('action === "device_failed"') &&
+    biometricsApi.includes('status: "failed"') &&
+    biometricsApi.includes("failReason") &&
+    adminTab.includes('job?.status === "failed"') &&
+    adminTab.includes("Fingerprint not added")
+);
+pass(
+  "the firmware listens in real time (SSE, fallback poll) and posts the mapping back with the job",
+  firmware.includes("checkPendingJob()") &&
     firmware.includes("/api/attendance/biometrics?pending=1") &&
-    firmware.includes("postMappingToServer(") &&
+    firmware.includes('path = "/api/attendance/mappings"') &&
+    firmware.includes('doc["jobId"] = r.jobId') &&
+    firmware.includes('doc["action"] = "device_failed"') &&
     firmware.includes("/api/attendance/events?channel=device") &&
-    firmware.includes("pumpEventStream(") &&
+    firmware.includes("pumpEventStream()") &&
     firmware.includes("PENDING_POLL_FALLBACK_MS") &&
     biometricsApi.includes("publish(CHANNELS.device)")
 );
 pass(
-  "firmware follows the six-capture sequence: 1x step 1, 4x step 2, 1x step 3",
-  /const uint8_t captureSteps\[6\] = \{1, 2, 2, 2, 2, 3\}/.test(firmware) &&
-    firmware.includes("const uint8_t captureTotals[6] = {1, 4, 4, 4, 4, 1};") &&
-    firmware.includes("Capture ") &&
-    firmware.includes("captureTotal")
+  "firmware follows the six-capture sequence (1, 2, 2, 2, 2, 3) and shows Step x of 6",
+  /static const uint8_t steps\[ENROLL_CAPTURES\] = \{1, 2, 2, 2, 2, 3\}/.test(firmware) &&
+    firmware.includes("#define ENROLL_CAPTURES 6") &&
+    firmware.includes("Step ")
 );
 pass(
-  "status 6 retries the same capture while holding still and lifts only after three consecutive failures",
-  firmware.includes("status == BIOVO_ACK_IMAGEMESS") &&
-    firmware.includes("ENROLL_HOLD_STILL_BEFORE_LIFT 3") &&
-    firmware.includes("Hold still - don't move. Retrying this same capture") &&
-    firmware.includes("waitForFingerReleaseForRetry()") &&
-    firmware.includes("ENROLL_MAX_ATTEMPTS 5")
+  "enrollment reads the real status codes: 6 = ID occupied, 7 = finger saved elsewhere, 8 = no finger yet",
+  firmware.includes("#define FP_ACK_ID_OCCUPIED   0x06") &&
+    firmware.includes("#define FP_ACK_FINGER_EXISTS 0x07") &&
+    firmware.includes("#define FP_ACK_TIMEOUT       0x08") &&
+    firmware.includes("if (st == FP_ACK_TIMEOUT) { noReply = 0; continue; }") &&
+    !firmware.includes("BIOVO_ACK_IMAGEMESS")
 );
 pass(
-  "touch-sense enrollment waits for GPIO25 and settles 600 ms before each capture",
-  firmware.includes("#define FINGER_TOUCH_PIN 25") &&
-    firmware.includes("waitForFingerPlacement()") &&
-    firmware.includes("delay(600)")
+  "four wires only: no touch-sense pin, nothing waits for GPIO25",
+  !firmware.includes("FINGER_TOUCH_PIN") && !firmware.includes("waitForFingerPlacement") && !firmware.includes("digitalRead(25")
+);
+pass(
+  "the sensor's capture window is set, and the scan never posts or waits on the network",
+  firmware.includes("#define FP_CMD_CAPTURE_WINDOW 0x2E") &&
+    firmware.includes("configureCaptureWindow()") &&
+    firmware.includes("xTaskCreatePinnedToCore(") &&
+    firmware.includes("showVerified(")
 );
 pass(
   "manual Serial enrollment tells the owner how to map its stored ID",
   firmware.includes("Stored as ID ") &&
-    firmware.includes("map it: admin → Attendance → Staff Fingerprints")
+    firmware.includes("Map it: admin → Attendance → Staff Fingerprints")
+);
+{
+  const serverNow = new Date("2026-10-10T07:00:00Z");
+  const sec = (d: Date) => Math.floor(d.getTime() / 1000);
+  const twoHoursAgo = new Date(serverNow.getTime() - 2 * 60 * 60 * 1000);
+  pass("an offline scan 2 hours old keeps its own time", scanTimeFrom(sec(twoHoursAgo), serverNow).getTime() === twoHoursAgo.getTime());
+  pass("no scannedAt means the server time", scanTimeFrom(undefined, serverNow) === serverNow);
+  pass(
+    "a scan older than the offline window falls back to the server time",
+    scanTimeFrom(sec(serverNow) - MAX_OFFLINE_SCAN_AGE_MS / 1000 - 60, serverNow) === serverNow
+  );
+  pass("a device clock far in the future is ignored", scanTimeFrom(sec(serverNow) + 3600, serverNow) === serverNow);
+  pass("a device clock a few seconds ahead is clamped to now", scanTimeFrom(sec(serverNow) + 30, serverNow) === serverNow);
+  pass("garbage scannedAt is ignored", scanTimeFrom("abc", serverNow) === serverNow);
+}
+pass(
+  "the clock takes the real scan time (offline scans are not marked late) and the device token",
+  clockApi.includes("scanTimeFrom(scannedAt)") &&
+    clockApi.includes("deviceAllowed(request)") &&
+    attendanceLib.includes("MAX_OFFLINE_SCAN_AGE_MS")
 );
 pass(
   "the kiosk board refreshes in real time (EventSource) instead of polling",

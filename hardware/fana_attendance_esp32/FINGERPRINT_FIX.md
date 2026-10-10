@@ -1,85 +1,95 @@
-# FPC1020A enrollment fix — FANA CAFE attendance
+# FPC1020A fix (Oct 2026): 4 wires, fast clock-in, enrollment that never gets stuck
 
-## Why enrollment failed
+This replaces the earlier "status 6 = unclear image" fix. That diagnosis was
+wrong, and the touch-sense wiring it added made the device slow and stuck.
 
-The Serial Monitor showed enrollment **status 6 (IMAGEMESS)**, while a normal scan returned **status 5 (NOUSER)**. Those results tell us different things:
+## What was wrong, and what the sketch does now
 
-- **Status 5 during a scan:** the module took a usable image of the still finger and searched its database, but that fingerprint ID is not stored yet.
-- **Status 6 during enrollment:** the module could not use the image it took. In the failed workflow, the capture command was sent just after the OLED asked for a finger, while the finger was still moving into place.
+| Problem the owner saw | Real cause | Now |
+| --- | --- | --- |
+| Device slow / stuck with pins 5 and 6 wired; finger did nothing | The sketch waited for the touch pin (GPIO25) before it read the sensor. When the pin never changed, the loop waited forever. | **Touch sense removed.** Only VCC, GND, TX, RX. The sensor itself reports "finger / no finger". |
+| Clock-in took about 5 s | Each scan did a full HTTPS handshake to the server, then `delay(3000)` + `delay(2000)` before the next scan. Reconnecting the event stream also blocked scanning. | The scan loop never touches the network. **VERIFIED + name in about 0.3 s** (from the local name cache), the server answer (IN 08:05 / Late) about 1 s later. The HTTPS connection stays open. All network work runs on the second CPU core. |
+| A finger verified earlier says "not registered" after the device sat idle | One capture with no retry, and the sensor's capture timeout was never set, so a finger still landing on the glass was searched as a bad image. | The capture window is set at boot (command 0x2E). A first unclear read is retried silently twice before anything is shown. "Not registered" appears only for a finger that really is not stored. |
+| "Add Fingerprint": OLED counts 1/5, 2/5... then an error without any finger placed | Status **6** means **"this ID is already used on the sensor"**, not "unclear image". Status **8** means **"no finger yet"**. Both were counted as failed tries. | 6 = delete the leftover and enroll under that ID. 7 = this finger is already stored under another ID (a leftover is removed, a finger that belongs to another person is refused with their name). 8 = keep waiting. The person gets 25 s per capture, and the OLED counts down. |
 
-So communication with the sensor was working; it was capturing too early. The fix changes the enrollment workflow, not the vendored Biovo1020A library. Keep that library unchanged.
+Status codes (official Biovo/FPC1020A protocol): 0 OK, 1 fail, 4 full,
+5 no such user, **6 ID occupied**, **7 finger already exists**, **8 timeout (no finger)**.
 
-## Correct six-capture enrollment
-
-The sketch now follows the reference flow for this FPC1020A module:
-
-| OLED step | Module command | Captures |
-| --- | --- | ---: |
-| Step 1 of 3 | ADD_1 (`step 1`) | 1 |
-| Step 2 of 3 | ADD_2 (`step 2`) | 4 |
-| Step 3 of 3 | ADD_3 (`step 3`) | 1 |
-
-That is **six accepted captures total**. Use the same finger and keep it pressed flat and still through successful captures. The OLED shows the step and capture number, for example **Step 2 of 3 — Capture 2/4**.
-
-Before every capture, the sketch waits for the touch signal and then waits about **600 ms** for the finger to settle. If the module still returns status 6, the sketch shows **“Hold still — don't move”** and retries the **same capture** after about one second. It does not ask for a lift after the first unclear image. After three consecutive unclear images for that capture, it asks you to lift and place the finger flat again. Each individual capture is limited to five attempts.
-
-If the ID already has a template on the sensor, the sketch keeps the existing behavior: it deletes that old template and retries the first capture under the same ID. A missing/offline sensor still stops enrollment and reports a wiring/power error.
-
-## Add a fingerprint — two ways
-
-### Path A: automatic (recommended)
-
-1. In the admin site open **Attendance → Staff Members**.
-2. Edit the person and press **ADD FINGERPRINT**.
-3. The server picks an available ID from 1–1000 and sends the job to the connected device in real time.
-4. Follow the OLED. Press the finger flat and still until each capture finishes; lift only if the screen asks you to.
-5. The device sends the mapping back. The admin page shows **Fingerprint Added ✓**.
-
-### Path B: manual (enroll on the device, then map it)
-
-1. Open the device Serial Monitor at **115200 baud**.
-2. Type `enroll 7` (replace 7 with the sensor ID you intend to use, from 1–1000) and press Enter.
-3. Follow the OLED and keep the finger flat and still. When it succeeds, Serial and OLED say **Stored as ID 7 — map it: admin → Attendance → Staff Fingerprints**.
-4. In the admin site open **Attendance → Staff Fingerprints**. Select the person, enter **the same sensor ID**, choose the finger name, and press **Add**.
-5. The page confirms **Fingerprint Added for …**. That mapping lets scans identify the person; enrolling on the sensor alone does not assign a staff name.
-
-Use the same ID in both places. If the selected ID is already on the device, the firmware's existing replace behavior deletes that template and enrolls the new finger under it.
-
-## Two touch-sense wires (recommended and enabled in this sketch)
-
-Connect these two module pins so the ESP32 knows when the finger has arrived:
+## Wiring: 4 wires only
 
 ```text
-FPC1020A pin 5  TOUCH OUT  -> ESP32 GPIO25
-FPC1020A pin 6  V_TOUCH    -> 3.3V
+FPC1020A VCC -> ESP32 3.3V  (5V only if your module is marked 5V)
+FPC1020A GND -> ESP32 GND
+FPC1020A TX  -> ESP32 GPIO16 (RX2)
+FPC1020A RX  -> ESP32 GPIO17 (TX2)
+Pins 5 (TOUCH OUT) and 6 (V_TOUCH): leave them unconnected
 ```
 
-The sketch currently has `FINGER_TOUCH_PIN` enabled for GPIO25 and assumes `FINGER_TOUCH_ACTIVE HIGH`. If the signal never becomes active when a finger touches the sensor, change `FINGER_TOUCH_ACTIVE` from `HIGH` to `LOW`, upload again, and retry. Make sure pin 6 goes to **3.3V**, not GPIO25.
+UART is 19200 baud, 8N1. If the OLED says SENSOR ERROR, TX and RX are usually swapped.
+
+## Add a fingerprint: two ways
+
+### A. Automatic (admin button)
+
+1. Admin -> Attendance -> Staff Members -> **Add Fingerprint**.
+2. The device shows the name and the ID at once (real-time push).
+3. The OLED guides the person: **PLACE** (put finger flat), **HOLD** (keep still),
+   **LIFT** (lift the finger), then the same finger again. A bar shows **Step x of 6**,
+   and a countdown shows the seconds left for each capture.
+4. The device stores the finger, sends the mapping (with the job number, so it
+   can never be saved under the wrong person), and shows **FINGERPRINT ADDED**.
+   The admin page shows **Fingerprint Added ✓**.
+5. If it cannot finish (nobody came for 25 s, the finger already belongs to
+   somebody else, sensor trouble), the OLED says why and the admin page shows
+   **Fingerprint not added** with the same reason and a **Try again** button.
+   The device never retries the job in a loop.
+
+The finger still lying on the sensor after enrolling is **not** clocked in. The device waits for it to be lifted first.
+
+### B. Manual (backup)
+
+1. Serial Monitor at 115200 baud: type `enroll 7` (any free ID 1-1000; `free` prints one).
+2. Follow the OLED, same steps as above.
+3. Serial and OLED say: **Stored as ID 7. Map it: admin → Attendance → Staff Fingerprints**.
+4. In admin -> Staff Fingerprints, select the person, type the same ID, press **Add**.
+
+`enroll` refuses an ID that is already mapped to a person, so an employee's
+finger can never be overwritten by mistake. `delete 7` removes ID 7 from the sensor.
+
+## Offline
+
+When WiFi or the server is down, scans still show VERIFIED at once. They are saved
+with the **real scan time** and sent when the connection is back, so an 08:00 IN
+synced at 10:00 is still recorded at 08:00 (the server accepts scan times up to
+72 hours old). A 404 (finger not mapped on the website) is shown once and never queued.
+
+## Security
+
+If the owner sets `ATTENDANCE_DEVICE_TOKEN` on the server, put the same value in
+`deviceToken` at the top of the sketch. Then only the scanner (or an admin) can clock
+in by fingerprint ID, read pending jobs, report mappings or report a failed job.
+Without a token everything works as before.
 
 ## Physical checklist
 
-Before enrolling, check each item:
+- Peel the protective film off the sensor and keep it clean.
+- Press the finger flat. For enrollment, use the middle of the finger and press the same finger each time.
+- Very dry finger: breathe on it lightly. Wet finger: wipe it.
+- Short wires, common GND. If the sensor resets when the WiFi starts, put a 100 µF capacitor across the module's VCC and GND.
 
-- [ ] Peel the protective film off the fingerprint sensor; the capacitive sensor cannot read through it.
-- [ ] Clean the sensor surface and keep it free of oil, dust, and residue.
-- [ ] Place the finger flat and press it **STILL**. Do not move until the capture finishes; this was the cause of the status-6 failures.
-- [ ] If the finger is dry, lightly moisten it (for example, breathe on it). Wipe off sweat or excess moisture.
-- [ ] Connect TOUCH OUT pin 5 → GPIO25 and V_TOUCH pin 6 → 3.3V; flip `FINGER_TOUCH_ACTIVE` to `LOW` only if this module's output is active-low.
-- [ ] Keep the UART and power wires short and make sure GND is common.
-- [ ] If captures still fail, add a **100 µF capacitor across module VCC and GND**, close to the module.
-- [ ] Power the sensor from 5V **only if the module is marked/rated for 5V**. Otherwise use its rated supply; never guess or exceed its rating.
-- [ ] Keep the sensor UART at **19200 baud, 8N1**.
-
-## The library and the real-time flow
-
-The patched `hardware/fana_attendance_esp32/libraries/Biovo1020A` remains unchanged. Its stale-reply handling and host tests protect UART communication, but they cannot make a moving finger image clear. The enrollment fix uses the library's existing compatible `enroll(id, step, timeout)` calls.
-
-The automatic path still uses the existing server-pushed event stream. If that stream is unavailable, the existing slow fallback remains; clock-in/out, offline queueing, mappings, and their endpoints are not changed by this fix.
-
-The library's host tests can be run without hardware:
+## Tests (no hardware needed)
 
 ```sh
-cd hardware/fana_attendance_esp32/libraries/Biovo1020A/test
-g++ -std=c++11 -I. -I../src host_test.cpp ../src/Biovo1020A.cpp -o host_test
-./host_test
+cd hardware/fana_attendance_esp32/test
+./run_tests.sh
 ```
+
+This runs the library's host tests, then builds the real sketch on the PC
+against a simulated FPC1020A, OLED, WiFi and website (with ArduinoJson v6 and v7).
+It plays through 16 situations: fast verify, a finger left on the sensor, a finger
+still landing, an unknown finger, automatic enrollment (waiting for the person,
+leftover IDs, duplicates, somebody else's finger, nobody coming), offline and
+sync, a module without the 0x2E command, manual enrollment and 150 names.
+It needs `g++` and `git` (ArduinoJson is cloned once into a temp folder).
+
+The Biovo1020A library itself is unchanged.

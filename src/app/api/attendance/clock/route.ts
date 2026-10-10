@@ -8,6 +8,8 @@ import {
 } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { verifySecret } from "@/lib/auth";
+import { requireAdmin } from "@/lib/session";
+import { deviceAllowed } from "@/lib/attendance-device";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { and, eq } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
@@ -20,6 +22,7 @@ import {
   lateMinutesFor,
   pickShift,
   rescanAction,
+  scanTimeFrom,
   type RoleShift,
 } from "@/lib/attendance";
 
@@ -40,8 +43,8 @@ import {
  *     the sheet can colour that box.
  */
 
-function getTodayKey(): string {
-  return etDayKey(new Date()) || new Date().toISOString().slice(0, 10);
+function getTodayKey(at: Date = new Date()): string {
+  return etDayKey(at) || at.toISOString().slice(0, 10);
 }
 
 /** The periods of the member's role, ordered by their entrance time. */
@@ -68,6 +71,7 @@ export async function POST(request: Request) {
       deviceId = "entrance",
       method = "fingerprint",
       pin,
+      scannedAt,
     } = body;
 
     /* ── who is scanning? ──────────────────────────────────────────────── */
@@ -96,6 +100,12 @@ export async function POST(request: Request) {
       memberId = rows[0].id;
       memberName = rows[0].name;
     } else {
+      // Only the door scanner (ATTENDANCE_DEVICE_TOKEN, when the owner set
+      // one) or an admin may clock somebody in by fingerprint ID.
+      if (!deviceAllowed(request)) {
+        const auth = await requireAdmin();
+        if (!auth.ok) return auth.response;
+      }
       if (fingerprintId === undefined || fingerprintId === null) {
         return NextResponse.json({ error: "fingerprintId required", led: "red", buzzer: "error" }, { status: 400 });
       }
@@ -132,8 +142,10 @@ export async function POST(request: Request) {
     const roleId = member[0]?.roleId ?? null;
     const shifts = await roleShiftsOf(roleId);
 
-    const todayKey = getTodayKey();
-    const now = new Date();
+    // A PIN is typed at the tablet right now; a fingerprint carries the
+    // moment the finger touched (it may have been saved while offline).
+    const now = method === "pin" ? new Date() : scanTimeFrom(scannedAt);
+    const todayKey = getTodayKey(now);
     const nowMinutes = etMinutes(now);
     const clockInShift = pickShift(shifts, nowMinutes);
 

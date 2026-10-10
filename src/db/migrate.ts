@@ -426,7 +426,8 @@ const RMS_CREATES: Array<[string, string]> = [
       fingerprint_id integer NOT NULL,
       status varchar(20) DEFAULT 'pending',
       created_at timestamp DEFAULT now(),
-      completed_at timestamp
+      completed_at timestamp,
+      fail_reason text
     )`,
   ],
   [
@@ -623,6 +624,7 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     status: { type: "text", def: "'pending'" },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
     completed_at: { type: "timestamp" },
+    fail_reason: { type: "text" },
   },
 };
 

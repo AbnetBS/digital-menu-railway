@@ -66,7 +66,7 @@ interface Member {
 interface EnrollJob {
   jobId: number;
   fingerprintId: number;
-  status: "pending" | "done" | "cancelled";
+  status: "pending" | "done" | "failed" | "cancelled";
 }
 
 /* The colours of the paper sheet, in one place: IN is green / yellow / red,
@@ -275,6 +275,8 @@ export default function AttendanceTab() {
           if (d.job.status === "done") {
             say(`Fingerprint Added ✓ ${d.job.memberName || ""}`);
             loadMembers();
+          } else if (d.job.status === "failed") {
+            say("Fingerprint was not added. Check the device screen and try again.", true);
           }
         } catch {
           /* keep waiting: the device may simply be offline for a moment */
@@ -1105,6 +1107,19 @@ export default function AttendanceTab() {
                     <p className="text-xs font-black text-emerald-300 bg-emerald-950/40 border border-emerald-800 rounded-xl p-3">
                       Fingerprint Added ✓
                     </p>
+                  ) : job?.status === "failed" ? (
+                    <div className="bg-rose-950/40 border border-rose-800 rounded-xl p-3">
+                      <p className="text-xs font-bold text-rose-200">Fingerprint was not added</p>
+                      <p className="text-[10px] text-rose-300/80 mt-1">
+                        No finger was placed, or the scanner could not read it. Try again.
+                      </p>
+                      <button
+                        onClick={() => startEnroll(m.id)}
+                        className="mt-2 text-[10px] font-bold text-amber-200 hover:text-white underline"
+                      >
+                        Try again
+                      </button>
+                    </div>
                   ) : (
                     <button
                       onClick={() => startEnroll(m.id)}

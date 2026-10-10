@@ -136,7 +136,8 @@ export async function DELETE(request: Request) {
     const id = Number(new URL(request.url).searchParams.get("id"));
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });
 
-    await db.delete(attendanceLogs).where(eq(attendanceLogs.id, id));
+    const removed = await db.delete(attendanceLogs).where(eq(attendanceLogs.id, id)).returning({ id: attendanceLogs.id });
+    if (removed.length === 0) return NextResponse.json({ error: "Line not found" }, { status: 404 });
     return NextResponse.json({ success: true, message: "Line deleted" });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

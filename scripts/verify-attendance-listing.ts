@@ -335,23 +335,36 @@ pass(
 pass(
   "firmware follows the six-capture sequence: 1x step 1, 4x step 2, 1x step 3",
   /const uint8_t captureSteps\[6\] = \{1, 2, 2, 2, 2, 3\}/.test(firmware) &&
-    firmware.includes("const uint8_t captureTotals[6] = {1, 4, 4, 4, 4, 1};") &&
-    firmware.includes("Capture ") &&
-    firmware.includes("captureTotal")
+    firmware.includes("finger.enroll((uint16_t)id, captureSteps[cap]") &&
+    firmware.includes("Six scans: place the same finger flat and still")
 );
 pass(
-  "status 6 retries the same capture while holding still and lifts only after three consecutive failures",
-  firmware.includes("status == BIOVO_ACK_IMAGEMESS") &&
-    firmware.includes("ENROLL_HOLD_STILL_BEFORE_LIFT 3") &&
-    firmware.includes("Hold still - don't move. Retrying this same capture") &&
-    firmware.includes("waitForFingerReleaseForRetry()") &&
-    firmware.includes("ENROLL_MAX_ATTEMPTS 5")
+  "status 6 retries the same capture while holding still and lifts only after repeated failures",
+  firmware.includes("st == BIOVO_ACK_IMAGEMESS") &&
+    firmware.includes("ENROLL_HOLD_STILL_AT") &&
+    firmware.includes("ENROLL_MAX_UNCLEAR") &&
+    firmware.includes("\"HOLD STILL\"") &&
+    firmware.includes("\"LIFT, PLACE AGAIN\"") &&
+    !firmware.includes("waitForFingerReleaseForRetry")
 );
 pass(
-  "touch-sense enrollment waits for GPIO25 and settles 600 ms before each capture",
-  firmware.includes("#define FINGER_TOUCH_PIN 25") &&
-    firmware.includes("waitForFingerPlacement()") &&
-    firmware.includes("delay(600)")
+  "the sketch uses the 4 sensor wires only: no touch-sense pin or touch wait",
+  !firmware.includes("FINGER_TOUCH_PIN") &&
+    !firmware.includes("waitForFingerPlacement") &&
+    !firmware.includes("fingerTouched") &&
+    !/TOUCH/i.test(firmware)
+);
+pass(
+  "a failed automatic enrollment is reported to the website, and the admin page shows it",
+  firmware.includes('doc["action"] = "job_failed"') &&
+    mappingsApi.includes('body.action === "job_failed"') &&
+    adminTab.includes('"failed"')
+);
+pass(
+  "the device only serves the status page: the old /enroll, /logs and /mappings routes are gone",
+  !firmware.includes('server.on("/enroll"') &&
+    !firmware.includes('server.on("/logs"') &&
+    !firmware.includes('server.on("/mappings"')
 );
 pass(
   "manual Serial enrollment tells the owner how to map its stored ID",

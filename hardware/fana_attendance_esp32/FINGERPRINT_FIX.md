@@ -1,6 +1,79 @@
 # FPC1020A enrollment and scanning - FANA CAFE attendance
 
-## Current state (2026-10-10): the search-between-scans regression and its fix
+## Current state (2026-10-10): why the website button failed while Serial `enroll` worked
+
+**The report:** pressing **ADD FINGERPRINT** in admin → Attendance showed the
+same OLED guide as the manual flow (**PLACE FINGER**, **Scan 1/6**), but the
+finger was never stored. The screen walked through the recovery prompts
+(**HOLD STILL**, **LIFT, PLACE AGAIN**), then gave up, and the admin page
+stopped waiting. `enroll <id>` on the Serial monitor kept working.
+
+Both paths always called the **same** `enrollFingerprint()`, so the difference
+could only be the state the sensor was in when the six captures began. There
+were two:
+
+1. **A leftover template under the ID the server picked.** The website chooses
+   the lowest ID its own fingerprint table does not use. It cannot know about a
+   template that sits on the sensor and was never mapped to anybody - an
+   earlier failed job, or a Serial `enroll 1` from the setup checklist. `ADD_1`
+   then answered status 7 (*ID already has a finger*), and the old code sent a
+   **DELETE in the middle of the placement**. That is exactly what rule 1 below
+   forbids, so every capture after it was refused.
+2. **A finger already resting on the glass.** With `enroll <id>` the owner
+   types the command first and only then reaches for the sensor, so `ADD_1`
+   always saw a finger coming **down**. With the website button the person is
+   usually standing at the scanner - often already leaning on it - when the job
+   arrives over the event stream, so `ADD_1` captured a picture that existed
+   before the command was sent, and every retry saw the same unmoving finger:
+   status 6 (*image unclear*) until the attempts ran out.
+
+**The fix:** `enrollFingerprint()` now runs a **pre-flight before the first ADD
+command** (the only point where extra commands are still legal), so both paths
+start from an identical sensor state:
+
+| Step | Command | Why |
+| --- | --- | --- |
+| 1 | `COUNT` + `DELETE <id>` | free the slot up front, never mid-placement |
+| 2 | `SEARCH` until the glass is **empty** | the OLED says **LIFT YOUR FINGER**; a finger left on the glass no longer poisons `ADD_1` |
+| 3 | **PLACE FINGER** + settle, then `ADD_1` | the module sees a finger coming down, exactly as in the manual flow |
+
+After that the six captures are unchanged: **only ADD commands**, 600 ms
+settle, finger kept on the glass.
+
+Three more things were wrong and are fixed:
+
+- **A failed session failed the job.** Now the whole six-scan sequence is
+  retried from a fresh lift and placement up to `ENROLL_MAX_SESSIONS` (3)
+  times, because a broken session can only be repaired by starting a new one.
+- **Waiting for a person ate the capture budget.** A *no finger* answer is not
+  a failed capture, so it no longer consumes an attempt; the 30 s no-finger
+  budget decides, and the reason reported is *no finger was placed*.
+- **A garbled reply sent a `COUNT` mid-session** (`sensorAnswers()`), breaking
+  the session it was trying to save. Recovery is now timed only.
+
+**Nothing is silent any more.** The device posts
+`{"action":"job_started"}` to `/api/attendance/mappings` **before** it touches
+the sensor, and on failure `{"action":"job_failed", "reason": ...}` where the
+reason names the scan and the status, e.g.
+`scan 2/6 not accepted: Image unclear - press flat, clean sensor (status 6)`.
+Both are stored on the job row (`started_at`, `detail`) and printed by the
+admin page, so "the loading stopped" now always comes with a reason.
+
+### Verifying it without the device
+
+```sh
+bash hardware/fana_attendance_esp32/test/run.sh
+```
+
+That compiles the **real sketch** against host stubs and runs the enrollment
+state machine on a simulated FPC1020A and a simulated website: the reported
+worst case (finger already on the glass **and** a leftover template on the
+ID), unclear images, a session broken by a stray SEARCH, nobody coming to the
+scanner, an ID that belongs to somebody else, and the full
+`?pending` → `job_started` → `mapping` round trip. `npm test` runs it too
+(`scripts/verify-fingerprint-enroll.ts`).
+
+## The earlier regression: the search-between-scans rewrite and its fix
 
 **What was broken on the device:** after PR #50, automatic enrollment failed on
 scan 2 with **status 1 (Command failed)**, and manual `enroll <id>` failed the
@@ -79,10 +152,12 @@ So communication with the sensor was working; it was capturing too early. That f
 
 - **Four sensor wires only:** VCC, GND, RX, TX. The extra sense wires (sensor pins 5 and 6) are not used and stay unconnected.
 - **Idle scanning uses the sensor's own SEARCH.** A status of 0x08 (timeout), 0x0F (finger lifted), or 0xFF (no reply) means "no finger". A match, status 0x05 (not enrolled), or status 0x06 (unclear image) means "finger on".
-- **Enrollment sends NO search commands.** During the six captures the only commands sent are the six ADD steps (plus a DELETE when a leftover template blocks the ID, and a COUNT at the end to refresh the template counter).
+- **Enrollment sends NO commands at all between the six captures.** The only commands sent during a session are the six ADD steps. Everything else - the COUNT, the DELETE that frees a leftover slot, and the SEARCH that waits for the glass to empty - happens in the pre-flight, **before** `ADD_1` goes out, because after that the module accepts nothing but the remaining ADD steps.
 - **One scan per placement.** A finger that stays on the sensor is scanned once. The device waits for the finger to be lifted before it accepts the next placement, so a finger left on the sensor for minutes is not posted again and again. The same guard keeps a finger left on the sensor after enrollment from clocking in by accident.
 - **Fast result.** VERIFIED appears as soon as the sensor matches the finger. The website answer is awaited for at most 4 seconds, and there are no fixed delays in the scan path.
 - **Automatic enrollment is guided on the OLED** and never counts scans that were not made.
+- **Automatic and manual enrollment are the same code.** Both call `enrollFingerprint()`, and both go through the same pre-flight, so the website button cannot drift away from the Serial command again.
+- **A failed attempt is not a failed job.** The whole six-scan sequence is retried from a fresh lift and placement up to 3 times before the website is told.
 
 ## The six-capture enrollment flow
 
@@ -95,14 +170,15 @@ The sketch follows the reference flow for this FPC1020A module:
 | Step 3 of 3 | ADD_3 (`step 3`) | 1 |
 
 That is **six accepted captures total, all from ONE placement**. The OLED
-shows **PLACE FINGER** once and then **KEEP STILL**, with the progress shown
-as **Scan 2/6** and a filling bar.
+shows **LIFT YOUR FINGER** if the glass is not empty, then **PLACE FINGER**
+once, then **KEEP STILL**, with the progress shown as **Scan 2/6** and a
+filling bar.
 
 - The finger is placed once. Each ADD command is sent only after a settle pause (2.5 s for the first capture, 600 ms between later captures), so the module never captures a moving finger.
 - The module itself gets up to 30 seconds per ADD command. If no finger is seen for 30 seconds in total, the job ends with "no finger was placed".
 - If the module returns status 6 (image unclear), the OLED shows **HOLD STILL** and retries the **same capture** about a second later. After three unclear images in a row it asks for **LIFT, PLACE AGAIN** (a timed pause - no sensor command).
-- An ID that the website already maps to a person is never overwritten, by a website job or by `enroll <id>`. If the sensor holds a template under an ID that no one is mapped to (a leftover), the sketch deletes that leftover and enrolls again.
-- A failed capture ends the enrollment with a clear reason on the OLED. A website job is then reported as failed (see below), and the sketch does not retry it by itself.
+- An ID that the website already maps to a person is never overwritten, by a website job or by `enroll <id>`. If the sensor holds a template under an ID that no one is mapped to (a leftover), the sketch deletes that leftover **before** asking for a finger, so the DELETE can never land inside the session.
+- If the six captures cannot be finished, the device asks for a fresh lift and placement and starts the whole sequence again, up to 3 times. Only then does the job end, with a clear reason on the OLED and the same reason sent to the website.
 
 ## Add a fingerprint: two ways
 
@@ -111,9 +187,10 @@ as **Scan 2/6** and a filling bar.
 1. In the admin site open **Attendance → Staff Members**.
 2. Edit the person and press **ADD FINGERPRINT**.
 3. The server picks an available ID from 1–1000 and sends the job to the connected device in real time.
-4. Follow the OLED. Place the finger flat and still when it says **PLACE FINGER**, then KEEP IT ON the sensor while the five remaining scans are taken. Do not lift until the device says it is done.
+4. Follow the OLED. If a finger is already on the glass it says **LIFT YOUR FINGER** first - take it off. Then place the finger flat and still when it says **PLACE FINGER**, and KEEP IT ON the sensor while the five remaining scans are taken. Do not lift until the device says it is done.
 5. When all six scans are accepted, the device sends the mapping back and the admin page shows **Fingerprint Added ✓**.
-6. If no finger is placed within 30 seconds, or the enrollment cannot be finished, the job is marked failed. The OLED shows **Not added** with the reason. The admin page shows **Fingerprint was not added** with a **Try again** button.
+6. While the device works, the admin page shows **Device is ready • ID n** as soon as the scanner picked the job up (before that it says **Waiting for the device**, which means the scanner is offline).
+7. If no finger is placed within 30 seconds, or the enrollment cannot be finished after 3 attempts, the job is marked failed. The OLED shows **Not added** with the reason, and the admin page prints the same reason - for example `scan 2/6 not accepted: Image unclear - press flat, clean sensor (status 6)` - next to a **Try again** button.
 
 ### Path B: manual (enroll on the device, then map it)
 

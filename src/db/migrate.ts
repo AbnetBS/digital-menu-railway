@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-08-1";
+const SCHEMA_VERSION = "2026-10-10-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -425,6 +425,8 @@ const RMS_CREATES: Array<[string, string]> = [
       member_name varchar(100),
       fingerprint_id integer NOT NULL,
       status varchar(20) DEFAULT 'pending',
+      detail text,
+      started_at timestamp,
       created_at timestamp DEFAULT now(),
       completed_at timestamp
     )`,
@@ -621,6 +623,9 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     member_name: { type: "text" },
     fingerprint_id: { type: "integer", def: "0", castText: true },
     status: { type: "text", def: "'pending'" },
+    // What the ESP32 is doing with the job, and when it picked it up.
+    detail: { type: "text" },
+    started_at: { type: "timestamp" },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
     completed_at: { type: "timestamp" },
   },

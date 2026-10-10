@@ -67,6 +67,12 @@ interface EnrollJob {
   jobId: number;
   fingerprintId: number;
   status: "pending" | "done" | "failed" | "cancelled";
+  // The device's own words about this job: "Device is ready - place the
+  // finger now" while it waits, or the exact scan and status it failed on.
+  detail?: string | null;
+  // Set once the ESP32 has the job, so the page can say whether the scanner
+  // is waiting for a finger or never saw the job at all.
+  startedAt?: string | null;
 }
 
 /* The colours of the paper sheet, in one place: IN is green / yellow / red,
@@ -270,13 +276,29 @@ export default function AttendanceTab() {
           const r = await fetch(`/api/attendance/biometrics?job=${job.jobId}`);
           if (!r.ok) continue;
           const d = await r.json();
-          if (cancelled || d.job.status === job.status) continue;
-          setJobs((prev) => ({ ...prev, [memberId]: { ...job, status: d.job.status } }));
+          if (cancelled) continue;
+          // The status is not the only thing that moves: while the job stays
+          // pending the device still reports that it picked it up ("Device is
+          // ready - place the finger now"), and that has to reach the screen.
+          const next: EnrollJob = {
+            ...job,
+            status: d.job.status,
+            detail: d.job.detail ?? job.detail ?? null,
+            startedAt: d.job.startedAt ?? job.startedAt ?? null,
+          };
+          if (next.status !== job.status || next.detail !== job.detail || next.startedAt !== job.startedAt) {
+            setJobs((prev) => ({ ...prev, [memberId]: { ...prev[memberId], ...next } }));
+          }
           if (d.job.status === "done") {
             say(`Fingerprint Added ✓ ${d.job.memberName || ""}`);
             loadMembers();
           } else if (d.job.status === "failed") {
-            say("Fingerprint was not added. Check the device screen and try again.", true);
+            say(
+              d.job.detail
+                ? `Fingerprint was not added: ${d.job.detail}`
+                : "Fingerprint was not added. Check the device screen and try again.",
+              true
+            );
           }
         } catch {
           /* keep waiting: the device may simply be offline for a moment */
@@ -468,7 +490,15 @@ export default function AttendanceTab() {
       }
       setJobs((prev) => ({
         ...prev,
-        [id as number]: { jobId: d.job.id, fingerprintId: d.job.fingerprintId, status: "pending" },
+        // detail/startedAt start empty: they belong to THIS attempt, so an old
+        // failure message never shows up under a fresh job.
+        [id as number]: {
+          jobId: d.job.id,
+          fingerprintId: d.job.fingerprintId,
+          status: "pending",
+          detail: null,
+          startedAt: null,
+        },
       }));
       say(`${d.message} • the device shows his name now`);
     } catch {
@@ -1091,11 +1121,15 @@ export default function AttendanceTab() {
                   {job?.status === "pending" ? (
                     <div className="bg-amber-950/40 border border-amber-700 rounded-xl p-3">
                       <p className="text-xs font-bold text-amber-200 flex items-center gap-2">
-                        <RefreshCw className="w-3 h-3 animate-spin" /> Waiting for the finger • ID {job.fingerprintId}
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                        {job.startedAt ? "Device is ready • " : "Waiting for the device • "}ID {job.fingerprintId}
                       </p>
                       <p className="text-[10px] text-amber-300/80 mt-1">
-                        The device shows his name now. He places his finger on the scanner.
+                        {job.startedAt
+                          ? "The scanner is waiting. Lift the finger if it is already on the glass, then place it flat and keep it there until all six scans pass."
+                          : "Sending the job to the scanner. If this does not change in about 20 seconds the device is offline."}
                       </p>
+                      {job.detail ? <p className="text-[10px] text-amber-200/90 mt-1 font-bold">{job.detail}</p> : null}
                       <button
                         onClick={() => cancelEnroll(m.id)}
                         className="mt-2 text-[10px] font-bold text-stone-400 hover:text-white underline"
@@ -1111,8 +1145,13 @@ export default function AttendanceTab() {
                     <div className="bg-rose-950/40 border border-rose-800 rounded-xl p-3">
                       <p className="text-xs font-bold text-rose-200">Fingerprint was not added</p>
                       <p className="text-[10px] text-rose-300/80 mt-1">
-                        No finger was placed, or the scanner could not read it. Try again.
+                        {job.detail || "No finger was placed, or the scanner could not read it. Try again."}
                       </p>
+                      {!job.startedAt ? (
+                        <p className="text-[10px] text-rose-300/70 mt-1">
+                          The scanner never picked this job up. Check that it is powered on and on the same WiFi.
+                        </p>
+                      ) : null}
                       <button
                         onClick={() => startEnroll(m.id)}
                         className="mt-2 text-[10px] font-bold text-amber-200 hover:text-white underline"

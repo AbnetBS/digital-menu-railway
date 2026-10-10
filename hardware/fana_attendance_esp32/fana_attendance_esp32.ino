@@ -83,9 +83,13 @@ WebServer server(80);
 #define ENROLL_KEEP_SETTLE_MS   600   // kept finger: settle time before the next ADD
 #define ENROLL_LIFT_PAUSE_MS    2500  // "lift, place again" pause (no sensor command)
 #define ENROLL_ADD_TIMEOUT_MS   30000 // one ADD command may wait this long for a finger
-#define ENROLL_MAX_ATTEMPTS     5     // attempts allowed per capture
+#define ENROLL_MAX_ATTEMPTS     6     // attempts allowed per capture
 #define ENROLL_HOLD_STILL_AT    3     // unclear images before "lift and place again"
 #define ENROLL_MAX_UNCLEAR      6     // unclear images allowed per capture
+#define ENROLL_MAX_SESSIONS     3     // whole six-scan attempts before the job fails
+#define ENROLL_LIFT_BUDGET_MS   20000 // how long "LIFT YOUR FINGER" may wait
+#define ENROLL_SENSE_MS         1200  // one "is the glass empty?" SEARCH waits this long
+#define ENROLL_TOTAL_BUDGET_MS  120000 // the whole job gives up after this long
 #define MAPPING_RETRY_MS        10000 // retry a mapping the website did not get yet
 #define PENDING_POLL_FALLBACK_MS 15000
 #define EVENT_STREAM_STALL_MS   75000
@@ -153,6 +157,11 @@ std::map<int, String> fingerprintToStaff;
 bool enrollingFromServer = false;
 int lastHandledJobId = 0;
 
+// The exact reason for the outcome of the last enrollment, for the Serial log
+// and for the website ("scan 2/6 not accepted: image unclear (status 6)").
+// The admin page prints it, so a failure is never a silent spinner again.
+String enrollDetail = "";
+
 // A finger was enrolled on the sensor but the website did not get the mapping
 // yet (no internet). The device keeps sending it until the website accepts it.
 bool mappingPending = false;
@@ -180,6 +189,10 @@ void beepSuccess();
 void beepError();
 bool detectSensor(uint8_t tries);
 bool sensorAnswers();
+int glassHasFinger();
+bool freeLeftoverTemplate(int id);
+bool waitGlassEmpty(const String &who, int id, uint32_t budgetMs);
+EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs);
 EnrollResult enrollFingerprint(int id, const String &who);
 const char *enrollReason(EnrollResult result);
 void scanForFinger();
@@ -190,7 +203,8 @@ void showRefused(const String &name, const String &body);
 void showSensorWarning(const String &title, const String &line2, const String &line3);
 bool checkPendingEnroll();
 int postMappingToServer(int fingerprintId, int memberId, const String &memberName);
-void reportJobFailed(int jobId, const char *reason);
+void reportJobStarted(int jobId, int fingerprintId);
+void reportJobFailed(int jobId, const String &reason);
 void retryPendingMapping();
 void keepServerLinkAlive();
 void stopEventStream();
@@ -645,11 +659,19 @@ bool checkPendingEnroll() {
   Serial.println(fingerprintId);
 
   enrollingFromServer = true;
+
+  // Tell the website the device really has the job, so the admin page can say
+  // "the device is ready, place the finger now" instead of spinning silently.
+  // Nothing is sent to the sensor here, so it cannot disturb the enrollment.
+  reportJobStarted(jobId, fingerprintId);
+
   EnrollResult result;
   if (fingerprintId < 1 || fingerprintId > 1000) {
+    enrollDetail = "the website sent fingerprint ID " + String(fingerprintId) + " (must be 1-1000)";
     result = ENROLL_FAILED;
   } else if (fingerprintToStaff.count(fingerprintId)) {
     // Never overwrite a finger that already belongs to someone.
+    enrollDetail = "ID " + String(fingerprintId) + " already belongs to " + fingerprintToStaff[fingerprintId];
     result = ENROLL_ID_IN_USE;
   } else {
     result = enrollFingerprint(fingerprintId, memberName);
@@ -684,8 +706,12 @@ bool checkPendingEnroll() {
       delay(2000);
     }
   } else {
-    reportJobFailed(jobId, enrollReason(result));
-    showLines("Not added", enrollReason(result), "Press Add Fingerprint", "on the website again");
+    // The reason goes to the website in full, so the admin page can print
+    // which of the six scans failed and what the sensor answered.
+    String reason = enrollReason(result);
+    if (enrollDetail.length() > 0) reason = enrollDetail;
+    reportJobFailed(jobId, reason);
+    showLines("Not added", reason, "Press Add Fingerprint", "on the website again");
     beepError();
     delay(WARNING_SHOW_MS);
   }
@@ -721,8 +747,38 @@ int postMappingToServer(int fingerprintId, int memberId, const String &memberNam
   return httpCode;
 }
 
+// Tells the website the device picked the job up, so the admin page stops
+// guessing whether the scanner is even online. Sent BEFORE the first sensor
+// command, so it can never disturb the six captures.
+void reportJobStarted(int jobId, int fingerprintId) {
+  if (jobId <= 0 || WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  http.setTimeout(SERVER_TIMEOUT_MS);
+  http.begin(serverURL + "/api/attendance/mappings");
+  addDeviceHeaders(http);
+
+  DynamicJsonDocument doc(256);
+  doc["action"] = "job_started";
+  doc["jobId"] = jobId;
+  doc["fingerprintId"] = fingerprintId;
+  doc["deviceId"] = deviceId;
+  doc["templates"] = templateCount;
+  doc["detail"] = "Device is ready - lift the finger, then place it flat (ID " +
+                  String(fingerprintId) + ")";
+  String json;
+  serializeJson(doc, json);
+  const int httpCode = http.POST(json);
+  http.end();
+
+  Serial.print("Announced job ");
+  Serial.print(jobId);
+  Serial.print(" to the website, HTTP ");
+  Serial.println(httpCode);
+}
+
 // Tells the website the job failed, so the admin page stops waiting.
-void reportJobFailed(int jobId, const char *reason) {
+void reportJobFailed(int jobId, const String &reason) {
   if (jobId <= 0 || WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
@@ -741,7 +797,9 @@ void reportJobFailed(int jobId, const char *reason) {
 
   Serial.print("Reported failed job ");
   Serial.print(jobId);
-  Serial.print(", HTTP ");
+  Serial.print(" (");
+  Serial.print(reason);
+  Serial.print("), HTTP ");
   Serial.println(httpCode);
 }
 
@@ -778,7 +836,38 @@ void retryPendingMapping() {
  * The finger is therefore placed ONCE and KEPT on the sensor for all six
  * captures. Recoveries (unclear image, misread scan) use timed pauses,
  * never extra sensor commands. This is the flow that enrolled fingers on
- * the device before the search-between-scans rewrite.
+ * the device with the Serial `enroll <id>` command.
+ *
+ * ── WHY THE WEBSITE BUTTON FAILED WHILE THE SERIAL COMMAND WORKED ──────────
+ *
+ * Both paths always called this very same function, so the difference could
+ * only be the state the sensor was in when the six captures began. There
+ * were two, and both are fixed below by a pre-flight that runs BEFORE the
+ * first ADD command (after ADD_1 no other command is allowed any more):
+ *
+ *  1. A LEFTOVER TEMPLATE UNDER THE SAME ID. The website picks the lowest ID
+ *     that its own fingerprint table does not use. It cannot know about a
+ *     template that sits on the sensor and was never mapped - an earlier
+ *     failed job, or a Serial `enroll 1` nobody linked to a person. ADD_1
+ *     then answers status 7 ("ID already has a finger"), the old code sent a
+ *     DELETE *in the middle of the placement*, and every following ADD saw a
+ *     finger that had not moved since: status 6 until the attempts ran out.
+ *     The ID is now freed up front, before anybody is asked for a finger.
+ *
+ *  2. A FINGER ALREADY RESTING ON THE GLASS. With `enroll <id>` the owner
+ *     types the command first and only then reaches for the sensor, so the
+ *     module always captured a fresh finger. With the website button the
+ *     person is usually standing at the scanner already - often with his
+ *     finger on it - when the job arrives over the event stream, so ADD_1
+ *     captured a picture that was taken before the command was even sent and
+ *     every retry saw the very same unmoving finger: status 6 again.
+ *     The device now waits for a real LIFT first, so both paths start from an
+ *     empty glass and the module sees a finger coming down in both cases.
+ *
+ * And because one bad placement can still happen to anybody, a failed
+ * session no longer fails the job: the whole six-scan sequence is retried
+ * from a fresh lift and placement (ENROLL_MAX_SESSIONS times) before the
+ * website is told it did not work.
  */
 const char *enrollReason(EnrollResult result) {
   switch (result) {
@@ -792,24 +881,77 @@ const char *enrollReason(EnrollResult result) {
   }
 }
 
-// Stores one finger under id. who is the name shown on the OLED ("" = manual).
-EnrollResult enrollFingerprint(int id, const String &who) {
+/* ── Pre-flight helpers: legal ONLY before the first ADD command ──────────── */
+
+// Reads the glass once with the sensor's own SEARCH.
+//   1 = a finger is on the glass, 0 = the glass is empty, -1 = unreadable.
+int glassHasFinger() {
+  uint16_t matchedId = 0;
+  uint8_t permission = 0;
+  if (finger.search(matchedId, permission, ENROLL_SENSE_MS) && matchedId > 0) return 1;
+  switch (finger.getLastStatus()) {
+    case BIOVO_ACK_NOUSER:      return 1;  // finger seen, not enrolled
+    case BIOVO_ACK_IMAGEMESS:   return 1;  // finger seen, image unclear
+    case BIOVO_ACK_TIMEOUT:     return 0;
+    case BIOVO_ACK_GO_OUT:      return 0;
+    case BIOVO_ACK_NO_RESPONSE: return 0;
+    default:                    return -1;
+  }
+}
+
+// Empties the sensor slot for id. Both callers only get here for an ID that
+// no person on the website is mapped to, so whatever is in that slot is a
+// leftover from an earlier attempt and must go BEFORE the guided placement -
+// a DELETE sent in the middle of it breaks the whole session.
+bool freeLeftoverTemplate(int id) {
+  const int16_t before = finger.getCount(3000);
+  if (before >= 0) templateCount = before;
+
+  Serial.print("Freeing sensor slot ID ");
+  Serial.print(id);
+  Serial.print(" (templates before: ");
+  Serial.print(before);
+  Serial.println(")");
+
+  // Deleting an already empty slot simply answers "command failed"; harmless.
+  if (!finger.deleteUser((uint16_t)id, 5000)) {
+    Serial.print("Slot was already free (status ");
+    Serial.print(finger.getLastStatus());
+    Serial.println(")");
+    return false;
+  }
+  Serial.println("Leftover template under this ID was deleted");
+  const int16_t after = finger.getCount(3000);
+  if (after >= 0) templateCount = after;
+  return true;
+}
+
+// Waits until the glass is empty, so the module always sees a finger coming
+// DOWN - never one that has been resting there since before the job arrived.
+bool waitGlassEmpty(const String &who, int id, uint32_t budgetMs) {
+  const uint32_t startedAt = millis();
+  bool asked = false;
+  for (;;) {
+    const int state = glassHasFinger();
+    if (state <= 0) {
+      // Two quiet reads in a row would be nicer, but the module already waits
+      // for a lift inside SEARCH, so one clean read is enough.
+      if (asked) Serial.println("Finger lifted - glass is empty");
+      return true;
+    }
+    if (!asked) {
+      asked = true;
+      Serial.println("A finger is already on the glass - asking for a lift first");
+    }
+    if (millis() - startedAt >= budgetMs) return false;
+    showEnrollScreen(who, id, 0, "LIFT YOUR FINGER", "Then place it again");
+    delay(300);
+  }
+}
+
+/* ── One six-capture session. Sends the sensor NOTHING but the six ADD steps. ─ */
+EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
   const uint8_t captureSteps[6] = {1, 2, 2, 2, 2, 3};
-
-  Serial.print("Enrolling ID ");
-  Serial.println(id);
-  Serial.println("Six scans: place the same finger flat and still, and keep it on the sensor for all six.");
-
-  // Drop stale replies from the idle scan loop and wait for a quiet line,
-  // so the first reply we read really belongs to our first ADD command.
-  finger.drain(150);
-
-  // A finger still on the sensor when enrollment ends must not be clocked by
-  // the very next idle search; the lift that ends enrollment resets this.
-  awaitingFingerLift = true;
-
-  bool oldTemplateReplaced = false;
-  bool freshPlacement = true;   // capture 1 always starts with a fresh placement
   uint32_t noFingerSinceMs = 0; // 0 = a finger was answered recently
 
   for (uint8_t cap = 0; cap < 6; cap++) {
@@ -820,12 +962,16 @@ EnrollResult enrollFingerprint(int id, const String &who) {
     while (!captureDone && attempt < ENROLL_MAX_ATTEMPTS) {
       attempt++;
 
+      if (millis() >= deadlineMs) {
+        enrollDetail = "took too long at scan " + String(cap + 1) + "/6";
+        return ENROLL_FAILED;
+      }
+
       // Settle window before the ADD command: a capture taken while the
       // finger is still moving down comes back unclear (status 6).
-      if (freshPlacement) {
+      if (cap == 0 && attempt == 1) {
         showEnrollScreen(who, id, cap, "PLACE FINGER", "Flat, still, keep it on");
         delay(ENROLL_PLACE_SETTLE_MS);
-        freshPlacement = false;
       } else {
         showEnrollScreen(who, id, cap, "KEEP STILL", "Same finger, do not lift");
         delay(ENROLL_KEEP_SETTLE_MS);
@@ -864,33 +1010,32 @@ EnrollResult enrollFingerprint(int id, const String &who) {
       Serial.print(millis() - cmdStart);
       Serial.println(" ms");
 
-      if (st == BIOVO_ACK_USER_EXIST && cap == 0 && !oldTemplateReplaced) {
-        // The ID already holds a template on the sensor. The website's list was
-        // checked before this, so it is a leftover: delete it and enroll again.
-        Serial.println("Old template under this ID - deleting it");
-        oldTemplateReplaced = true;
-        if (!finger.deleteUser((uint16_t)id, 5000)) return ENROLL_FAILED;
-        freshPlacement = true;
-        continue;
+      enrollDetail = "scan " + String(cap + 1) + "/6 not accepted: " +
+                     String(fingerStatusText(st)) + " (status " + String(st) + ")";
+
+      if (st == BIOVO_ACK_USER_EXIST) {
+        // The ID was freed before the placement, so this means somebody else
+        // took the slot in the meantime. Never overwrite it.
+        return ENROLL_ID_IN_USE;
       }
-      if (st == BIOVO_ACK_USER_EXIST) return ENROLL_ID_IN_USE;
       if (st == BIOVO_ACK_FULL) return ENROLL_SENSOR_FULL;
 
       if (st == BIOVO_ACK_NO_RESPONSE || st == BIOVO_ACK_COMM_ERROR) {
-        if (!sensorAnswers()) return ENROLL_SENSOR_ERROR;
-        freshPlacement = true; // line hiccup recovered: ask for a clean placement
+        // No COUNT here: any command that is not an ADD ends the session.
+        // Time is the only recovery, and the next session re-checks the sensor.
+        delay(ENROLL_LIFT_PAUSE_MS);
         continue;
       }
 
       if (st == BIOVO_ACK_IMAGEMESS) {
         if (++unclear >= ENROLL_MAX_UNCLEAR) return ENROLL_UNCLEAR;
         if (unclear % ENROLL_HOLD_STILL_AT == 0) {
-          // Three unclear images in a row: ask for a real lift and a fresh
-          // flat placement. Only TIME passes here - no sensor command.
+          // Three unclear images in a row: the finger moved or is not flat.
+          // Only TIME passes here - no sensor command - and the person puts
+          // it back down while this same capture is still waiting for it.
           showEnrollScreen(who, id, cap, "LIFT, PLACE AGAIN", "Flat and still");
           beepError();
           delay(ENROLL_LIFT_PAUSE_MS);
-          freshPlacement = true;
         } else {
           // Most unclear images are a finger that micro-moved. It is already
           // in place, so keep it there and resend this same capture shortly.
@@ -901,30 +1046,117 @@ EnrollResult enrollFingerprint(int id, const String &who) {
       }
 
       if (st == BIOVO_ACK_TIMEOUT) {
-        // The module saw no finger. Give a full placement window, and give up
-        // when no finger arrives for ENROLL_NO_FINGER_MS in total.
+        // The module saw no finger. That is not a failed capture - nobody has
+        // come to the scanner yet - so it must not eat into the attempt
+        // budget. Give a full placement window, and give up when no finger
+        // arrives for ENROLL_NO_FINGER_MS in total.
+        attempt--;
         if (noFingerSinceMs == 0) noFingerSinceMs = millis();
-        if (millis() - noFingerSinceMs >= ENROLL_NO_FINGER_MS) return ENROLL_NO_FINGER;
+        if (millis() - noFingerSinceMs >= ENROLL_NO_FINGER_MS) {
+          enrollDetail = "no finger was placed within " + String(ENROLL_NO_FINGER_MS / 1000) + " s";
+          return ENROLL_NO_FINGER;
+        }
         showEnrollScreen(who, id, cap, "PLACE FINGER", "No finger seen yet");
-        freshPlacement = true;
+        delay(ENROLL_PLACE_SETTLE_MS);
         continue;
       }
 
-      // Status 1 (command failed) or anything else unexpected: recover with a
-      // fresh lift and placement. No other command is sent at the module.
-      showEnrollScreen(who, id, cap, "LIFT, PLACE AGAIN", "Scan was not read");
-      beepError();
-      delay(ENROLL_LIFT_PAUSE_MS);
-      freshPlacement = true;
+      // Status 1 (command failed) or anything else unexpected: the session is
+      // broken. Stop it and let enrollFingerprint() start a brand new one.
+      return ENROLL_FAILED;
     }
 
-    if (!captureDone) return ENROLL_FAILED;
+    if (!captureDone) {
+      if (enrollDetail.length() == 0) {
+        enrollDetail = "scan " + String(cap + 1) + "/6 was never accepted";
+      }
+      return ENROLL_FAILED;
+    }
   }
 
-  Serial.println("Fingerprint enrolled successfully.");
-  const int16_t newCount = finger.getCount(3000);
-  if (newCount >= 0) templateCount = newCount;
+  enrollDetail = "";
   return ENROLL_OK;
+}
+
+// Stores one finger under id. who is the name shown on the OLED ("" = manual).
+// The website job and the Serial `enroll <id>` command both land here and are
+// walked through exactly the same pre-flight, so they cannot drift apart.
+EnrollResult enrollFingerprint(int id, const String &who) {
+  Serial.print("Enrolling ID ");
+  Serial.println(id);
+  Serial.println("Six scans: place the same finger flat and still, and keep it on the sensor for all six.");
+
+  enrollDetail = "";
+
+  // Drop stale replies from the idle scan loop and wait for a quiet line,
+  // so the first reply we read really belongs to our first ADD command.
+  finger.drain(150);
+
+  // A finger still on the sensor when enrollment ends must not be clocked by
+  // the very next idle search; the lift that ends enrollment resets this.
+  awaitingFingerLift = true;
+
+  /* ── Pre-flight 1: free the sensor slot (before anybody is asked for a
+   *    finger, because a DELETE mid-placement breaks the session). ── */
+  freeLeftoverTemplate(id);
+
+  /* ── Pre-flight 2: start from an EMPTY glass, exactly like the Serial
+   *    command does, so ADD_1 always sees a finger coming down. ── */
+  if (!waitGlassEmpty(who, id, ENROLL_LIFT_BUDGET_MS)) {
+    enrollDetail = "a finger stayed on the glass for " + String(ENROLL_LIFT_BUDGET_MS / 1000) + " s";
+    return ENROLL_LIFT_TIMEOUT;
+  }
+
+  const uint32_t deadlineMs = millis() + ENROLL_TOTAL_BUDGET_MS;
+  EnrollResult outcome = ENROLL_FAILED;
+
+  for (uint8_t session = 1; session <= ENROLL_MAX_SESSIONS; session++) {
+    if (session > 1) {
+      // A broken session cannot be repaired: the module keeps the images it
+      // already took. Only a fresh lift, a fresh placement and a new ADD_1
+      // start a clean one.
+      Serial.print("Session ");
+      Serial.print(session - 1);
+      Serial.print(" did not finish (");
+      Serial.print(enrollDetail);
+      Serial.print("). Starting attempt ");
+      Serial.print(session);
+      Serial.print(" of ");
+      Serial.println(ENROLL_MAX_SESSIONS);
+      showEnrollScreen(who, id, 0, "LIFT, PLACE AGAIN",
+                       "Try " + String(session) + " of " + String(ENROLL_MAX_SESSIONS));
+      beepError();
+      delay(ENROLL_LIFT_PAUSE_MS);
+      if (!waitGlassEmpty(who, id, ENROLL_LIFT_BUDGET_MS)) {
+        enrollDetail = "a finger stayed on the glass for " + String(ENROLL_LIFT_BUDGET_MS / 1000) + " s";
+        return ENROLL_LIFT_TIMEOUT;
+      }
+    }
+
+    outcome = runCaptureSession(id, who, deadlineMs);
+
+    if (outcome == ENROLL_OK) {
+      Serial.println("Fingerprint enrolled successfully.");
+      const int16_t newCount = finger.getCount(3000);
+      if (newCount >= 0) templateCount = newCount;
+      enrollDetail = "";
+      return ENROLL_OK;
+    }
+
+    // Nobody came to the scanner, the sensor is dead or the slot is taken:
+    // retrying cannot help, so tell the website at once.
+    if (outcome == ENROLL_NO_FINGER || outcome == ENROLL_SENSOR_FULL ||
+        outcome == ENROLL_ID_IN_USE || outcome == ENROLL_UNCLEAR) {
+      return outcome;
+    }
+    if (millis() >= deadlineMs) {
+      if (enrollDetail.length() == 0) enrollDetail = "enrollment took too long";
+      return ENROLL_FAILED;
+    }
+  }
+
+  if (enrollDetail.length() == 0) enrollDetail = enrollReason(outcome);
+  return outcome;
 }
 
 // Serial "enroll <id>": store a finger on the sensor, map it in admin afterwards.
@@ -961,9 +1193,13 @@ void manualEnroll(int id) {
     beepSuccess();
     delay(5000);
   } else {
+    // The same detail the website gets, so the Serial log and the admin page
+    // always tell the same story about the same failure.
+    String reason = enrollReason(result);
+    if (enrollDetail.length() > 0) reason = enrollDetail;
     Serial.print("Enroll failed: ");
-    Serial.println(enrollReason(result));
-    showLines("Enroll failed", enrollReason(result), "Try again", "");
+    Serial.println(reason);
+    showLines("Enroll failed", reason, "Try again", "");
     beepError();
     delay(WARNING_SHOW_MS);
   }

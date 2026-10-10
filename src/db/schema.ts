@@ -425,6 +425,14 @@ export const attendanceEnrollJobs = pgTable("attendance_enroll_jobs", {
   memberName: varchar("member_name", { length: 100 }), // for the OLED, no join needed
   fingerprintId: integer("fingerprint_id").notNull(), // the ID the device must use
   status: varchar("status", { length: 20 }).default("pending"), // pending | done | cancelled
+  // What the device is doing / why it stopped, in its own words
+  // ("scan 2/6 not accepted: Image unclear - press flat, clean sensor (status 6)").
+  // Without it the admin page could only spin and then say "it did not work".
+  detail: text("detail"),
+  // Set the moment the ESP32 picks the job up, so the page can tell the
+  // difference between "the scanner never saw this" and "somebody has to
+  // place a finger".
+  startedAt: timestamp("started_at"),
   createdAt: timestamp("created_at").defaultNow(),
   completedAt: timestamp("completed_at"),
 });

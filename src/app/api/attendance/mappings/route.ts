@@ -63,16 +63,36 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Send a JSON body" }, { status: 400 });
     }
 
+    // The device picked the job up. It says so BEFORE it sends the sensor its
+    // first command, so the admin page can tell the difference between "the
+    // scanner never saw this job" (still no started_at) and "somebody now has
+    // to put a finger on the glass" (started_at is set).
+    if (body.action === "job_started") {
+      const jobId = Number(body.jobId);
+      if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 });
+      const detail = String(body.detail ?? "Device is ready - place the finger now").slice(0, 160);
+      await db
+        .update(attendanceEnrollJobs)
+        // Stays "pending" on purpose: a device that dies mid-enrollment leaves
+        // the job servable, and the ?pending read keeps its old meaning.
+        .set({ startedAt: new Date(), detail })
+        .where(and(eq(attendanceEnrollJobs.id, jobId), eq(attendanceEnrollJobs.status, "pending")));
+      publish(CHANNELS.device);
+      return NextResponse.json({ success: true, detail });
+    }
+
     // The device could not finish the job (no finger, sensor error, ID taken).
     // Close the job as failed so the admin sees it at once instead of waiting
     // for the job to expire. Only a pending job can be closed this way.
     if (body.action === "job_failed") {
       const jobId = Number(body.jobId);
       if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 });
-      const reason = String(body.reason ?? "Device could not finish the job").slice(0, 120);
+      const reason = String(body.reason ?? "Device could not finish the job").slice(0, 160);
       await db
         .update(attendanceEnrollJobs)
-        .set({ status: "failed", completedAt: new Date() })
+        // The reason is kept: the admin page prints exactly which of the six
+        // scans failed and what the sensor answered.
+        .set({ status: "failed", completedAt: new Date(), detail: reason })
         .where(and(eq(attendanceEnrollJobs.id, jobId), eq(attendanceEnrollJobs.status, "pending")));
       publish(CHANNELS.device);
       return NextResponse.json({ success: true, reason });

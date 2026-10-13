@@ -1,5 +1,13 @@
 # FPC1020A enrollment and scanning - FANA CAFE attendance
 
+> This document records the PR #53 fix (October 2026) and is kept as history.
+> The guide below still describes the current flow exactly - the only thing
+> that changed later is the display: the device now uses a **20x4 I2C LCD**
+> instead of the 0.96" OLED, so "the OLED says..." below means "the LCD says...".
+> Every prompt (**PLACE FINGER**, **KEEP STILL**, **HOLD STILL**,
+> **LIFT, PLACE AGAIN**, **LIFT YOUR FINGER**) and the six-capture order are
+> unchanged. The `Scan 1/6` text is now the `ID n [######] k/6` progress row.
+
 ## Current state (2026-10-10): why the website button failed while Serial `enroll` worked
 
 **The report:** pressing **ADD FINGERPRINT** in admin → Attendance showed the

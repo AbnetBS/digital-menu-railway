@@ -27,7 +27,7 @@ FPC1020A fingerprint sensor used by `../fana_attendance_esp32.ino`.
    codes `0xFE` (garbled/wrong-command reply) and `0xFF` (no reply).
 3. **`drain()`** - flush the UART and wait for a quiet line before
    enrollment, so no half-finished scan interferes.
-4. **`statusText()`** - human-readable status strings for Serial/OLED.
+4. **`statusText()`** - human-readable status strings for Serial/LCD.
 5. Absolute frame deadline + `delay(1)` yield in the receive loop, so a dead
    sensor cannot busy-spin the ESP32 task for the whole timeout.
 

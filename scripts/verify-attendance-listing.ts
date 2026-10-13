@@ -311,7 +311,7 @@ pass(
   "the device asks who is waiting with ?pending and that read is the only open one",
   biometricsApi.includes('pending !== "1"') && biometricsApi.includes("requireAdmin()")
 );
-pass("the pending answer carries the OLED lines for the device", biometricsApi.includes("Place finger"));
+pass("the pending answer carries the ready-made LCD lines for the device", biometricsApi.includes("Place finger"));
 pass(
   "the admin page polls the job and prints Fingerprint Added ✓",
   adminTab.includes("biometrics?job=") && adminTab.includes("Fingerprint Added ✓")

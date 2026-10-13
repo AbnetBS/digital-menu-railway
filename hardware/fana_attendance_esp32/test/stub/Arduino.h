@@ -15,10 +15,13 @@
 
 #define HIGH 1
 #define LOW  0
+#define DEC 10
+#define HEX 16
+#define OCT 8
+#define BIN 2
 #define OUTPUT 1
 #define INPUT 0
 #define LED_BUILTIN 2
-#define SSD1306_SWITCHCAPVCC 0x2
 #define SERIAL_8N1 0
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
@@ -33,12 +36,16 @@ static inline void pinMode(int, int) {}
 static inline void digitalWrite(int, int) {}
 static inline int digitalRead(int) { return 0; }
 static inline long map(long x, long a, long b, long c, long d) { return (x-a)*(d-c)/(b-a)+c; }
+// tone()/noTone(): only used when BUZZER_IS_PASSIVE is switched on.
+static inline void tone(int, unsigned int, unsigned long = 0) {}
+static inline void noTone(int) {}
 
 // ── Arduino String ─────────────────────────────────────────────────────────
 class String {
 public:
   std::string s;
   String() {}
+  String(const String &o) : s(o.s) {}
   String(const char *c) : s(c ? c : "") {}
   String(const std::string &c) : s(c) {}
   String(int v) { char b[24]; snprintf(b, sizeof(b), "%d", v); s = b; }
@@ -148,7 +155,7 @@ public:
 // Set by the test harness: called for every command written to a UART, and it
 // appends whatever the simulated device answers.
 extern bool (*serialWriteHook)(int portId, const uint8_t *buf, size_t n, std::deque<uint8_t> &rxOut);
-// Set by the test harness: called with the text drawn on the OLED.
+// Set by the test harness: called with every row printed to the LCD.
 extern void (*screenHook)(const std::string &line);
 
 class HardwareSerial : public Stream {
@@ -174,6 +181,7 @@ extern HardwareSerial Serial;
 class TwoWire : public Stream {
 public:
   void begin(int = -1, int = -1) {}
+  void setClock(uint32_t) {}
   int available() override { return 0; }
   int read() override { return -1; }
   size_t write(const uint8_t *, size_t n) override { return n; }

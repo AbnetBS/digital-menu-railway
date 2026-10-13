@@ -1,7 +1,8 @@
 /*
  * FANA CAFE & RESTAURANT - Attendance System
  * GitHub: hardware/fana_attendance_esp32/fana_attendance_esp32.ino (keep updated here for copy-paste upload)
- * Hardware: ESP32 WROOM + FPC1020A fingerprint sensor + 0.96" OLED + buzzer + 2 LEDs
+ * Hardware: ESP32 WROOM + FPC1020A fingerprint sensor + 20x4 I2C LCD
+ *           + transistor-driven buzzer + 2 LEDs
  *
  * FINGERPRINT SENSOR: 4 WIRES ARE ENOUGH
  *   Sensor label   ->  ESP32
@@ -12,15 +13,38 @@
  *   Leave sensor pins 5 and 6 (the extra pins) unconnected. This sketch does
  *   not use them: the sensor itself reports when a finger is on it.
  *
+ * 20x4 LCD (2004 module with a soldered I2C backpack) - THROUGH THE LEVEL SHIFTER
+ *   ESP32 3V3        ->  level shifter LV
+ *   Regulated 5 V    ->  level shifter HV   AND   LCD backpack VCC
+ *   ESP32 GPIO21     ->  level shifter A1   ->  B1 ->  LCD backpack SDA
+ *   ESP32 GPIO22     ->  level shifter A2   ->  B2 ->  LCD backpack SCL
+ *   All GNDs together (LV side, HV side, LCD, ESP32).
+ *   Channels 3 and 4 stay unused.
+ *   NEVER wire the backpack's SDA/SCL straight to the ESP32: the backpack is a
+ *   5 V device and its pull-ups put 5 V on the ESP32 pin. That is what the
+ *   shifter is for. The sketch talks to the LCD with 3.3 V logic on the LV
+ *   side (A1/A2) and assumes nothing about the backpack's I2C address: the
+ *   hd44780 library finds it (0x27, 0x3F, 0x20, ...) during setup and the
+ *   address it used is printed on the Serial Monitor.
+ *   If the blue contrast pot is not set right the screen shows blank blocks
+ *   with the backlight on - that is a contrast problem, not a wiring problem.
+ *
+ * BUZZER (on a transistor, NOT straight from the pin)
+ *   GPIO23 -> 1 kohm -> 2N2222 base, 10 kohm from base to GND
+ *   Buzzer + -> 5 V, buzzer - -> collector, emitter -> GND
+ *   Magnetic buzzer only: 1N4007 across the buzzer, striped end to +5 V.
+ *   Verify the transistor's pinout and the buzzer's voltage/type first.
+ *   The level shifter is NOT the buzzer driver.
+ *   This sketch drives GPIO23 HIGH/LOW, which suits an ACTIVE buzzer. For a
+ *   PASSIVE buzzer uncomment BUZZER_IS_PASSIVE below (see the README check).
+ *
  * OTHER WIRES
- *   OLED VCC -> 3.3V, GND -> GND, SDA -> GPIO21, SCL -> GPIO22
- *   Buzzer +  -> GPIO23, Buzzer - -> GND
  *   Green LED -> GPIO18 -> 220 ohm -> GND
  *   Red LED   -> GPIO19 -> 220 ohm -> GND
  *
  * Libraries (Arduino Library Manager + one custom copy):
  *   - Biovo1020A PATCHED copy - install hardware/fana_attendance_esp32/libraries/Biovo1020A
- *   - Adafruit SSD1306, Adafruit GFX Library
+ *   - hd44780 by Bill Perry  - the 20x4 I2C LCD (REPLACES Adafruit SSD1306/GFX)
  *   - WiFiManager by tzapu, ArduinoJson (v6)
  * Sensor UART: 19200 baud, 8N1.
  *
@@ -29,7 +53,7 @@
  *           answers in about one or two seconds (IN / OUT / late / not
  *           registered). The device then returns to "Place finger". One
  *           placement = one scan, however long the finger stays on the sensor.
- *   Add:    the admin presses Add Fingerprint on the website. The OLED shows
+ *   Add:    the admin presses Add Fingerprint on the website. The LCD shows
  *           the name and guides the captures: PLACE FINGER once, then KEEP
  *           STILL while the same finger is read five more times. Between the
  *           six ADD steps the sketch sends the sensor NOTHING else - any
@@ -52,23 +76,53 @@
 #include <ArduinoJson.h>
 #include <Biovo1020A.h>
 #include <map>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <LittleFS.h>
 #include <WebServer.h>
+/* 20x4 I2C LCD. hd44780 is the library: it finds the backpack's I2C address
+ * and its expander chip by itself, so this sketch assumes neither. The i/o
+ * class lives in a sub-folder - both includes are required, and Wire.h must be
+ * included too (hd44780's i/o class headers do not pull it in themselves).
+ * NOTE: the hd44780 class deliberately has NO println() - it is a compile
+ * error there. Use print() (this sketch always does). */
+#include <Wire.h>
+#include <hd44780.h>
+#include <hd44780ioClass/hd44780_I2Cexp.h>
 
 /* ── Pins and display ─────────────────────────────────────────────────────── */
-// Named OLED_* (not SCREEN_WIDTH) so no other library can clash with the name.
-#define OLED_WIDTH    128
-#define OLED_HEIGHT   64
-#define OLED_RESET    -1
+#define LCD_COLS      20   // 2004 module: 20 characters per row
+#define LCD_ROWS      4    // ... and 4 rows
+#define LCD_SDA_PIN   21   // level shifter A1 -> B1 -> backpack SDA
+#define LCD_SCL_PIN   22   // level shifter A2 -> B2 -> backpack SCL
+#define ENROLL_SCANS  6    // the LCD progress bar has one cell per capture
 #define BUZZER_PIN    23
 #define GREEN_LED     18
 #define RED_LED       19
 #define SENSOR_RX_PIN 16 // ESP32 receives here, from sensor TX (pin 3)
 #define SENSOR_TX_PIN 17 // ESP32 sends here, to sensor RX (pin 2)
 
-Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);
+/* The library auto-locates the backpack (0x27, 0x3F, 0x20, 0x38, ...) and
+ * auto-configures its PCF8574 / MCP23008. Leave the next line commented: the
+ * address is then found, never assumed. If the diagnostic (see
+ * diagnostics/lcd_check/lcd_check.ino) reports one address and you want the
+ * sketch pinned to it, uncomment the line and put that address in.
+ * hd44780_I2Cexp lcd(LCD_I2C_ADDRESS); // ... and define it as e.g. 0x27 */
+// #define LCD_I2C_ADDRESS 0x27
+#ifdef LCD_I2C_ADDRESS
+hd44780_I2Cexp lcd(LCD_I2C_ADDRESS);
+#else
+hd44780_I2Cexp lcd;   // auto-locate + auto-configure: no address is assumed
+#endif
+bool lcdReady = false;
+
+/* True while a six-capture enrollment is running (the Serial command and the
+ * website job both set it). The LCD is never re-initialized mid-enrollment. */
+bool enrollmentActive = false;
+/* Clears that flag on every return path of a function that sets it. */
+struct EnrollmentGuard {
+  EnrollmentGuard() { enrollmentActive = true; }
+  ~EnrollmentGuard() { enrollmentActive = false; }
+};
+
 HardwareSerial mySerial(2);
 Biovo1020A finger(mySerial);
 WebServer server(80);
@@ -76,8 +130,8 @@ WebServer server(80);
 /* ── Timing (milliseconds) ────────────────────────────────────────────────── */
 #define SENSOR_POLL_MS          1500  // one fingerprint check waits at most this long
 #define SERVER_TIMEOUT_MS       4000  // never wait longer than this for the website
-#define RESULT_SHOW_MS          1500  // a normal result stays on the OLED this long
-#define WARNING_SHOW_MS         2500  // a problem stays on the OLED this long
+#define RESULT_SHOW_MS          1500  // a normal result stays on the LCD this long
+#define WARNING_SHOW_MS         2500  // a problem stays on the LCD this long
 #define ENROLL_NO_FINGER_MS     30000 // give up after this long without any finger
 #define ENROLL_PLACE_SETTLE_MS  2500  // fresh placement: settle time before an ADD command
 #define ENROLL_KEEP_SETTLE_MS   600   // kept finger: settle time before the next ADD
@@ -185,6 +239,8 @@ void showLines(const String &l1, const String &l2, const String &l3, const Strin
 void showBig(const String &top, const String &big, const String &bottom);
 void showEnrollScreen(const String &who, int id, uint8_t done, const String &prompt, const String &hint);
 void showIdleScreen();
+bool startLcd();
+void checkLcdHealth();
 void beepSuccess();
 void beepError();
 bool detectSensor(uint8_t tries);
@@ -237,14 +293,11 @@ void setup() {
   digitalWrite(GREEN_LED, LOW);
   digitalWrite(RED_LED, LOW);
 
-  // OLED
-  Wire.begin(21, 22); // SDA, SCL
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("OLED not found at 0x3C, trying 0x3D");
-    display.begin(SSD1306_SWITCHCAPVCC, 0x3D);
-  }
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
+  // 20x4 I2C LCD on GPIO21/22, behind the level shifter (A1/A2 -> B1/B2).
+  // The 100 kHz clock is what the backpack and the shifter like.
+  Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+  Wire.setClock(100000);
+  startLcd();
   showLines("FANA CAFE", "Attendance", "Starting...", "");
 
   if (!LittleFS.begin(true)) {
@@ -303,6 +356,7 @@ void loop() {
   server.handleClient();
   keepServerLinkAlive();
   checkSensorHealth();
+  checkLcdHealth();
   if (sensorReady) scanForFinger();
   retryPendingMapping();
   periodicSync();
@@ -310,93 +364,154 @@ void loop() {
   delay(5);
 }
 
-/* ── OLED helpers (all text fits the 128x64 screen) ───────────────────────── */
+/* ── 20x4 LCD helpers ─────────────────────────────────────────────────────── *
+ * The screen is 20 characters wide and 4 rows tall, so every row is written
+ * as EXACTLY 20 characters: a shorter line is padded with spaces, which wipes
+ * whatever was there before. A row is only re-sent to the LCD when its text
+ * really changed, and lcd.clear() runs once (in startLcd()), so the screen
+ * never flickers while it is being updated.
+ * Layout used by this sketch:
+ *   idle        FANA CAFE Attendance / Place finger / Online|Offline / Templates
+ *   result      name / big word / (continuation) / note
+ *   enrollment  Enroll <who> / ID n [######] k/6 / instruction / hint
+ * ------------------------------------------------------------------------- */
+static char lcdShown[LCD_ROWS][LCD_COLS + 1];  // what is on the glass right now
+
+// Cuts text to width characters and pads it with spaces to exactly width.
+static String lcdFit(const String &text, uint8_t width) {
+  String out = text.substring(0, width);
+  while (out.length() < width) out += ' ';
+  return out;
+}
+
+// Text centered inside width characters (cut first if it is too long).
+static String lcdCenter(const String &text, uint8_t width) {
+  String t = text.substring(0, width);
+  String out;
+  for (uint8_t i = 0; i < (width - t.length()) / 2; i++) out += ' ';
+  out += t;
+  return lcdFit(out, width);
+}
+
+// One full row, written only when it differs from what is already on the glass.
+static void lcdWriteRow(uint8_t row, const String &text) {
+  if (!lcdReady || row >= LCD_ROWS) return;
+  const String fitted = lcdFit(text, LCD_COLS);
+  if (fitted == String(lcdShown[row])) return; // no change on this row: no flicker
+  lcd.setCursor(0, row);
+  lcd.print(fitted);
+  for (uint8_t c = 0; c < LCD_COLS; c++) lcdShown[row][c] = fitted[c];
+  lcdShown[row][LCD_COLS] = '\0';
+}
+
+// Finds the backpack, sets the display up and reports the address it found.
+bool startLcd() {
+  const int status = lcd.begin(LCD_COLS, LCD_ROWS); // 20 columns, 4 rows
+  if (status) {
+    lcdReady = false;
+    Serial.print("20x4 LCD not found (hd44780 begin status ");
+    Serial.print(status);
+    Serial.println("). Check: LCD VCC on regulated 5 V, GND, SDA on B1, SCL on B2,");
+    Serial.println("LV on 3V3, HV on 5 V, every GND common, and the contrast pot.");
+    Serial.println("Run diagnostics/lcd_check/lcd_check.ino to see the I2C addresses.");
+    return false;
+  }
+  lcdReady = true;
+  lcd.backlight();
+  lcd.clear();
+  // The glass is blank now: remember that, so the first draw writes every row.
+  for (uint8_t r = 0; r < LCD_ROWS; r++) {
+    for (uint8_t c = 0; c < LCD_COLS; c++) lcdShown[r][c] = ' ';
+    lcdShown[r][LCD_COLS] = '\0';
+  }
+  Serial.print("20x4 LCD ready, backpack found at I2C address 0x");
+  Serial.println(lcd.getProp(hd44780_I2Cexp::Prop_addr), HEX);
+  return true;
+}
+
+// While the LCD is missing, look for it again every 10 s (loose wire, late
+// power). Never during enrollment: the six captures must not be interrupted.
+void checkLcdHealth() {
+  static unsigned long lastTry = 0;
+  if (lcdReady || enrollmentActive) return;
+  if (millis() - lastTry < 10000) return;
+  lastTry = millis();
+  if (startLcd()) {
+    Serial.println("20x4 LCD found");
+    showIdleScreen();
+  }
+}
+
+/* ── LCD helpers (all text fits 20 columns) ───────────────────────────────── */
 void showLines(const String &l1, const String &l2, const String &l3, const String &l4) {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println(l1.substring(0, 21));
-  display.setCursor(0, 16);
-  display.println(l2.substring(0, 21));
-  display.setCursor(0, 32);
-  display.println(l3.substring(0, 21));
-  display.setCursor(0, 48);
-  display.println(l4.substring(0, 21));
-  display.display();
+  lcdWriteRow(0, l1);
+  lcdWriteRow(1, l2);
+  lcdWriteRow(2, l3);
+  lcdWriteRow(3, l4);
 }
 
-// Small top line, one big word (max 9 characters), small bottom line.
+// Who on top, the big word in the middle of the screen (a word longer than
+// one row continues on the next row), the note at the bottom.
 void showBig(const String &top, const String &big, const String &bottom) {
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
-  display.setCursor(0, 0);
-  display.println(top.substring(0, 21));
-  display.setTextSize(2);
-  display.setCursor(0, 16);
-  display.println(big.substring(0, 9));
-  display.setTextSize(1);
-  display.setCursor(0, 48);
-  display.println(bottom.substring(0, 21));
-  display.display();
+  lcdWriteRow(0, top);
+  lcdWriteRow(1, lcdCenter(big.substring(0, LCD_COLS), LCD_COLS));
+  lcdWriteRow(2, lcdCenter(big.length() > LCD_COLS ? big.substring(LCD_COLS) : "", LCD_COLS));
+  lcdWriteRow(3, bottom);
 }
 
-// Enrollment screen: who, ID, which scan, a white PROMPT bar, a hint and a
-// progress bar that fills as the six scans are accepted.
+// Enrollment screen: who, ID, the six scans as a text progress bar, the
+// instruction in the middle and the finer hint at the bottom. The old 128x64
+// progress rectangle is a text bar now: one '#' per accepted capture.
 void showEnrollScreen(const String &who, int id, uint8_t done, const String &prompt, const String &hint) {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println((who.length() > 0 ? "Enroll " + who : String("Enroll finger")).substring(0, 21));
-  display.setCursor(0, 12);
-  display.println("ID " + String(id) + "   Scan " + String(done + 1) + "/6");
-  display.fillRect(0, 24, OLED_WIDTH, 12, SSD1306_WHITE);
-  display.setTextColor(SSD1306_BLACK);
-  display.setCursor(3, 26);
-  display.print(prompt.substring(0, 20));
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 40);
-  display.println(hint.substring(0, 21));
-  display.drawRect(0, 54, OLED_WIDTH, 10, SSD1306_WHITE);
-  display.fillRect(2, 56, (done * 124) / 6, 6, SSD1306_WHITE);
-  display.display();
+  String bar;
+  for (uint8_t i = 0; i < ENROLL_SCANS; i++) bar += (i < done ? '#' : '.');
+  lcdWriteRow(0, who.length() > 0 ? "Enroll " + who : String("Enroll finger"));
+  lcdWriteRow(1, "ID " + String(id) + " [" + bar + "] " + String(done) + "/" + String(ENROLL_SCANS));
+  lcdWriteRow(2, lcdCenter(prompt, LCD_COLS));
+  lcdWriteRow(3, hint);
 }
 
 void showIdleScreen() {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println("FANA CAFE Attendance");
-  display.setCursor(0, 14);
-  display.println("Place finger");
-  display.setCursor(0, 28);
+  lcdWriteRow(0, "FANA CAFE Attendance");
+  lcdWriteRow(1, "Place finger");
   if (WiFi.status() == WL_CONNECTED) {
-    display.println("Online  " + WiFi.localIP().toString());
+    lcdWriteRow(2, "Online  " + WiFi.localIP().toString());
   } else {
-    display.println("Offline - scans saved");
+    lcdWriteRow(2, "Offline, scans saved");
   }
-  display.setCursor(0, 42);
   if (sensorReady) {
-    display.println("Templates: " + String(templateCount));
+    lcdWriteRow(3, "Templates: " + String(templateCount));
   } else {
-    display.println("SENSOR OFFLINE!");
+    lcdWriteRow(3, "SENSOR OFFLINE!");
   }
-  display.display();
 }
 
+/* ── Buzzer (GPIO23 -> 1 kohm -> 2N2222 base; the pin never drives the buzzer
+ *    itself, the transistor does). HIGH/LOW is correct for the usual small
+ *    ACTIVE buzzer, which has its own oscillator. A PASSIVE buzzer (no
+ *    internal oscillator) stays silent on HIGH/LOW: uncomment the next line
+ *    and the two beeps below use tone() instead. Confirm which one you have
+ *    with the buzzer check in the README before wiring it up. ── */
+// #define BUZZER_IS_PASSIVE 1
+
 void beepSuccess() {
+#ifdef BUZZER_IS_PASSIVE
+  tone(BUZZER_PIN, 2000, 100);
+#else
   digitalWrite(BUZZER_PIN, HIGH);
   delay(100);
   digitalWrite(BUZZER_PIN, LOW);
+#endif
 }
 
 void beepError() {
+#ifdef BUZZER_IS_PASSIVE
+  tone(BUZZER_PIN, 1200, 300);
+#else
   digitalWrite(BUZZER_PIN, HIGH);
   delay(300);
   digitalWrite(BUZZER_PIN, LOW);
+#endif
 }
 
 /* ── Sensor health ────────────────────────────────────────────────────────── */
@@ -589,9 +704,10 @@ void showClockAnswer(const String &fallbackName, const String &body) {
     showBig(who, "OUT " + outLabel, "Total " + hours);
     beepSuccess();
   } else if (action == "already_registered") {
-    String when = "IN " + inLabel;
-    if (outLabel.length() > 0) when += "  OUT " + outLabel;
-    showLines(who, "Already registered", when, "");
+    // Two times no longer fit on one 20-character row, so each gets its own.
+    showLines(who, "Already registered",
+              inLabel.length() > 0 ? "IN  " + inLabel : String(""),
+              outLabel.length() > 0 ? "OUT " + outLabel : String(""));
     beepSuccess();
   } else {
     showLines(who, message, "", "");
@@ -614,7 +730,7 @@ void showRefused(const String &name, const String &body) {
   }
   Serial.print("Refused: ");
   Serial.println(reason);
-  showLines(name, "NOT ACCEPTED", reason.substring(0, 21), "Ask the admin");
+  showLines(name, "NOT ACCEPTED", reason.substring(0, LCD_COLS), "Ask the admin");
   digitalWrite(RED_LED, HIGH);
   beepError();
   delay(WARNING_SHOW_MS);
@@ -711,7 +827,7 @@ bool checkPendingEnroll() {
     String reason = enrollReason(result);
     if (enrollDetail.length() > 0) reason = enrollDetail;
     reportJobFailed(jobId, reason);
-    showLines("Not added", reason, "Press Add Fingerprint", "on the website again");
+    showLines("Not added", reason, "Press the Add button", "on the website again");
     beepError();
     delay(WARNING_SHOW_MS);
   }
@@ -970,10 +1086,10 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
       // Settle window before the ADD command: a capture taken while the
       // finger is still moving down comes back unclear (status 6).
       if (cap == 0 && attempt == 1) {
-        showEnrollScreen(who, id, cap, "PLACE FINGER", "Flat, still, keep it on");
+        showEnrollScreen(who, id, cap, "PLACE FINGER", "Flat, still, keep on");
         delay(ENROLL_PLACE_SETTLE_MS);
       } else {
-        showEnrollScreen(who, id, cap, "KEEP STILL", "Same finger, do not lift");
+        showEnrollScreen(who, id, cap, "KEEP STILL", "Do not lift it yet");
         delay(ENROLL_KEEP_SETTLE_MS);
       }
 
@@ -1039,7 +1155,7 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
         } else {
           // Most unclear images are a finger that micro-moved. It is already
           // in place, so keep it there and resend this same capture shortly.
-          showEnrollScreen(who, id, cap, "HOLD STILL", "Image unclear, keep flat");
+          showEnrollScreen(who, id, cap, "HOLD STILL", "Unclear, stay flat");
           delay(1000);
         }
         continue;
@@ -1078,10 +1194,14 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
   return ENROLL_OK;
 }
 
-// Stores one finger under id. who is the name shown on the OLED ("" = manual).
+// Stores one finger under id. who is the name shown on the LCD ("" = manual).
 // The website job and the Serial `enroll <id>` command both land here and are
 // walked through exactly the same pre-flight, so they cannot drift apart.
 EnrollResult enrollFingerprint(int id, const String &who) {
+  // Keeps checkLcdHealth() away for the whole job (every return path clears it
+  // again): the six captures must not be interrupted by anything.
+  EnrollmentGuard enrollmentGuard;
+
   Serial.print("Enrolling ID ");
   Serial.println(id);
   Serial.println("Six scans: place the same finger flat and still, and keep it on the sensor for all six.");

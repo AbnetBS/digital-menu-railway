@@ -41,7 +41,7 @@ static void reply(std::deque<uint8_t> &out, uint8_t cmd, uint8_t d1, uint8_t d2,
   for (uint8_t b : f) out.push_back(b);
 }
 
-// The person reacts to what the OLED asks for, reactMs later.
+// The person reacts to what the LCD asks for, reactMs later.
 static void personUpdate(unsigned long now) {
   if (!person.cooperative) return;
   if (person.liftAt != ULONG_MAX && (long)(now - person.liftAt) >= 0) {
@@ -119,10 +119,18 @@ static bool onSensor(int portId, const uint8_t *buf, size_t n, std::deque<uint8_
   }
 }
 
+static std::vector<std::string> screensSeen;   // the whole glass after each row
+
 static void onScreen(const std::string &line) {
   screen += line + "\n";
+  std::string snap;
+  for (int r = 0; r < LCD_STUB_ROWS; r++) {
+    for (int c = 0; c < LCD_STUB_COLS; c++) snap += lcdGrid[r][c];
+    snap += '\n';
+  }
+  screensSeen.push_back(snap);
   if (!person.cooperative) return;
-  // The person does what the OLED asks, reactMs later: lift for anything that
+  // The person does what the LCD asks, reactMs later: lift for anything that
   // says LIFT, and put the finger down for PLACE FINGER.
   const bool wantsLift = line.find("LIFT") != std::string::npos;
   const bool wantsPlace = line.find("PLACE FINGER") != std::string::npos;
@@ -137,7 +145,8 @@ static void onScreen(const std::string &line) {
 /* ── test scaffolding ─────────────────────────────────────────────────────── */
 static int failures = 0;
 static void check(const char *what, bool ok, const std::string &extra = "") {
-  printf("%s %s%s\n", ok ? "PASS" : "FAIL", what, (!ok && !extra.empty()) ? "\n       " + extra : "");
+  const std::string tail = (!ok && !extra.empty()) ? "\n       " + extra : std::string();
+  printf("%s %s%s\n", ok ? "PASS" : "FAIL", what, tail.c_str());
   if (!ok) failures++;
 }
 static void resetAll() {
@@ -156,6 +165,59 @@ static void resetAll() {
   Serial.tx.clear();
   mySerial.rx.clear();
   mySerial.tx.clear();
+  // The LCD: present, switched on, blank, and its address cache forgotten.
+  lcdBeginStatus = 0;
+  lcdReady = false;
+  lcdClearCalls = 0;
+  lcdWrapHits = 0;
+  lcdBacklightOn = false;
+  stubWifiStatus = WL_CONNECTED;
+  screensSeen.clear();
+  startLcd();
+  lcdClearCalls = 0;   // the one clear of startLcd() is the allowed one
+  lcdWriteCalls = 0;
+}
+
+/* ── reading the simulated glass ──────────────────────────────────────────── */
+static std::string rowText(int row) {
+  std::string out;
+  for (int c = 0; c < LCD_STUB_COLS; c++) out += lcdGrid[row][c];
+  return out;
+}
+static bool rowEquals(int row, const char *expected) { return rowText(row) == std::string(expected); }
+// The row is cut to 20 characters and then padded: a leftover character from
+// an older, longer line is impossible on a row this test accepts.
+static bool rowShows(int row, const std::string &needle) {
+  return rowText(row).find(needle) != std::string::npos;
+}
+// Every line this sketch draws is a full 20-character row, so nothing from a
+// longer, older line can be left behind. The stub counts any row write that
+// stopped before column 19, and any character that ran past the row.
+static bool noLeftovers() { return lcdShortRowWrites == 0; }
+static bool nothingOverflows() { return lcdWrapHits == 0; }
+
+// The enrollment progress bar is [######]: exactly six cells, '#' or '.'.
+static bool progressBarOverflows() {
+  for (const std::string &snap : screensSeen) {
+    const size_t br = snap.find('[');
+    if (br == std::string::npos) continue;
+    const size_t end = snap.find(']', br);
+    if (end == std::string::npos || end - br - 1 != ENROLL_SCANS) return true;
+    for (size_t i = br + 1; i < end; i++)
+      if (snap[i] != '#' && snap[i] != '.') return true;
+  }
+  return false;
+}
+
+// The instruction is centered on row 2, never glued to the left edge.
+static bool progressPromptIsCentered() {
+  for (const std::string &snap : screensSeen) {
+    const std::string row = snap.substr(2 * (LCD_STUB_COLS + 1), LCD_STUB_COLS);
+    const size_t first = row.find_first_not_of(' ');
+    if (first == std::string::npos || first == 0) continue;
+    if (row.find("PLACE FINGER") != std::string::npos) return true;
+  }
+  return false;
 }
 static bool cmdSeen(uint8_t c) {
   for (uint8_t x : mod.commands) if (x == c) return true;
@@ -187,6 +249,11 @@ int main() {
   check("the sensor really stored ID 7", mod.ids.count(7) == 1);
   check("six captures were taken", mod.stage == 0 && mod.ids.count(7) == 1);
   check("only ADD commands between the first and the last ADD", onlyAddsBetweenFirstAndLastAdd());
+  check("the 20x4 LCD guided the enrollment by name", screen.find("Enroll Abebe") != std::string::npos);
+  check("every row write filled all 20 columns (no leftovers)", noLeftovers());
+  check("no row ran past column 19", nothingOverflows(), "wrap hits=" + std::to_string(lcdWrapHits));
+  check("the screen was never cleared during enrollment (no flicker)", lcdClearCalls == 0,
+        "clears=" + std::to_string(lcdClearCalls));
 
   printf("\n=== 2. THE REPORTED BUG: finger already on the glass + leftover template on the ID ===\n");
   resetAll();
@@ -306,6 +373,74 @@ int main() {
   check("the new ordering sends no non-ADD command inside the session",
         mod.nonAddInsideSession == 0, "violations=" + std::to_string(mod.nonAddInsideSession));
   check("and it still enrolls", r == ENROLL_OK, "result=" + std::to_string((int)r));
+
+  printf("\n=== 10. the 20x4 LCD: every screen, and the characters that must not be left over ===\n");
+  resetAll();
+  showIdleScreen();
+  check("idle row 0 is the cafe name", rowEquals(0, "FANA CAFE Attendance"), rowText(0));
+  check("idle row 1 asks for the finger", rowEquals(1, "Place finger        "), rowText(1));
+  check("idle row 2 shows the online address", rowShows(2, "Online"), rowText(2));
+  check("idle row 3 counts the templates", rowShows(3, "Templates:"), rowText(3));
+
+  stubWifiStatus = WL_DISCONNECTED;   // the internet dropped
+  sensorReady = false;                // ... and so did the sensor
+  showIdleScreen();
+  check("offline is still reported on the LCD", rowEquals(2, "Offline, scans saved"), rowText(2));
+  check("a dead sensor is still reported on the LCD", rowEquals(3, "SENSOR OFFLINE!     "), rowText(3));
+
+  // A long line, then a short one: the short one must wipe the leftovers.
+  stubWifiStatus = WL_CONNECTED;
+  sensorReady = true;
+  showLines("A very long name that gets cut", "second", "third", "fourth");
+  showIdleScreen();
+  check("a shorter line leaves no leftovers from a longer one",
+        rowEquals(0, "FANA CAFE Attendance"), rowText(0));
+  check("the shorter line filled its row completely (no leftovers)", noLeftovers());
+
+  // Same screen twice: the second draw must not touch the glass (= no flicker).
+  const int writesBefore = lcdWriteCalls;
+  showIdleScreen();
+  check("an unchanged screen is not redrawn (no flicker)", lcdWriteCalls == writesBefore,
+        std::to_string(lcdWriteCalls - writesBefore) + " characters rewritten");
+
+  // The result screen: name, big word centered, note at the bottom.
+  resetAll();
+  showBig("Abebe", "VERIFIED", "Sending...");
+  check("result row 0 is the name", rowEquals(0, "Abebe               "), rowText(0));
+  check("the big word is centered", rowEquals(1, "      VERIFIED      "), rowText(1));
+  check("the note is at the bottom", rowEquals(3, "Sending...          "), rowText(3));
+
+  // Enrollment progress is TEXT now (the old 128x64 drawing is gone).
+  resetAll();
+  person.cooperative = false;         // nobody touches the scanner
+  EnrollResult slow = enrollFingerprint(8, "Sara");
+  check("the enrollment screen shows the ID and the six-cell text bar",
+        screen.find("ID 8 [") != std::string::npos, "no ID/bar row was drawn");
+  check("the bar is followed by the accepted-scan count",
+        screen.find("] 0/6") != std::string::npos, "no k/6 count on the bar row");
+  check("the progress bar never shows more than six cells",
+        !progressBarOverflows());
+  check("the prompt is centered on its own row", progressPromptIsCentered());
+  check("nobody comes, so the job still ends", slow == ENROLL_NO_FINGER,
+        std::to_string((int)slow));
+  check("no row ever ran past column 19 in any screen", nothingOverflows(),
+        "wrap hits=" + std::to_string(lcdWrapHits));
+  check("and no row was ever left half-written", noLeftovers(),
+        "short rows=" + std::to_string(lcdShortRowWrites));
+
+  // A device with no LCD at all still runs: the display simply stays silent.
+  resetAll();
+  lcdReady = false;
+  lcdBeginStatus = -1;               // hd44780 says "no backpack"
+  const int writesWithoutLcd = lcdWriteCalls;
+  showIdleScreen();
+  check("without an LCD nothing is written and nothing crashes",
+        lcdWriteCalls == writesWithoutLcd && !lcdReady);
+  lcdBeginStatus = 0;
+  delay(11000);                      // wait out checkLcdHealth()'s 10 s retry
+  checkLcdHealth();
+  check("a later retry finds the LCD again", lcdReady, "startLcd() still fails");
+  check("the found LCD shows the idle screen", rowEquals(1, "Place finger        "), rowText(1));
 
   printf("\n%s (%d failed)\n", failures ? "HARNESS FAILED" : "HARNESS PASSED", failures);
   return failures ? 1 : 0;

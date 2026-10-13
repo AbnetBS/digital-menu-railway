@@ -16,8 +16,8 @@ import { ENROLL_JOB_TTL_MINUTES, MAX_FINGERS_PER_MEMBER } from "@/lib/attendance
  *   2. POST here with { action: "enroll", memberId: 5 } creates a PENDING job
  *      (the ID is picked by the server when the admin does not type one).
  *   3. The ESP32 polls `GET /api/attendance/biometrics?pending` every 2
- *      seconds, sees the job and shows "Enroll Abebe ID5 Place finger" on its
- *      OLED.
+ *      seconds, sees the job and shows "Enroll Abebe / ID 5 / Place finger"
+ *      on its 20x4 LCD.
  *   4. The person puts his finger on the FPC1020A. The device stores it under
  *      that ID and posts it back to /api/attendance/mappings.
  *   5. The admin page polls `GET /api/attendance/biometrics?job=<id>` and reads
@@ -66,11 +66,14 @@ export async function GET(request: Request) {
           memberId: j.memberId,
           memberName: j.memberName || `Member ${j.memberId}`,
           fingerprintId: j.fingerprintId,
-          // Ready-made OLED lines: 16 characters is what the 0.96" screen fits.
+          // Ready-made LCD lines, longest first: the device's screen is a
+          // 20x4 character LCD, so every line must fit 20 characters.
+          // (The key is still called "oled" - older devices read that name.)
           oled: {
-            line1: `Enroll ${String(j.memberName || j.memberId).substring(0, 12)}`,
+            line1: `Enroll ${String(j.memberName || j.memberId).substring(0, 13)}`,
             line2: `ID ${j.fingerprintId}`,
             line3: "Place finger",
+            line4: "",
           },
         })),
       });

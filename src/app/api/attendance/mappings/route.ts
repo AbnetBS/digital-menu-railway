@@ -11,7 +11,7 @@ import { MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
 /**
  * fingerprintId -> which person of the attendance list.
  *
- * GET  is what the ESP32 downloads to show a name on its OLED and to know who
+ * GET  is what the ESP32 downloads to show a name on its 20x4 LCD and to know who
  *      a scanned finger belongs to when the wifi drops (it caches the answer in
  *      LittleFS).
  * POST is the last step of "Add Fingerprint": the device stored the finger
@@ -40,7 +40,7 @@ export async function GET() {
       fingerName: b.fingerName,
     }));
 
-    // { "1": "Mulu", "2": "Abebe" } - the quick OLED lookup on the device.
+    // { "1": "Mulu", "2": "Abebe" } - the quick LCD lookup on the device.
     const simpleMap: Record<number, string> = {};
     for (const m of mappings) simpleMap[m.fingerprintId] = m.memberName;
 

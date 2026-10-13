@@ -30,7 +30,7 @@ echo "== enrollment state machine (fana_attendance_esp32.ino, simulated sensor) 
 g++ -std=c++17 -O0 -Itest/stub -Ilibraries/Biovo1020A/src -I. \
   -x c++ test/enroll_host_test.cpp test/globals.cpp libraries/Biovo1020A/src/Biovo1020A.cpp \
   -o "$OUT/enroll_test"
-"$OUT/enroll_test" | tr -d '\000' | grep -vE '^(Scan|Enrolling|Six scans|Freeing|Slot|Leftover|Finger|A finger|Real-time|Session|Reported|Announced|Mapping|Loaded|Fingerprint enrolled|Pending)'
+"$OUT/enroll_test" | tr -d '\000' | grep -vE '^(Scan|Enrolling|Six scans|Freeing|Slot|Leftover|Finger|A finger|Real-time|Session|Reported|Announced|Mapping|Loaded|Fingerprint enrolled|Pending|20x4 LCD)'
 
 echo
 echo "All device host tests passed."

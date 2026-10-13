@@ -469,7 +469,7 @@ export default function AttendanceTab() {
 
   /**
    * Add Fingerprint: the server opens a pending job, the ESP32 picks it up on
-   * its 2 second poll and shows the name on its OLED, the person places his
+   * its 2 second poll and shows the name on its LCD, the person places his
    * finger, the device posts the mapping back and this card turns into
    * "Fingerprint Added ✓".
    */

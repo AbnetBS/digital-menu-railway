@@ -190,7 +190,7 @@ export async function POST(request: Request) {
         isOvertime: false,
         message: `${memberName} IN ${inTime}${lateMinutes > 0 ? ` • Late ${lateMinutes}m` : ""}`,
         oled: {
-          line1: memberName.substring(0, 16),
+          line1: memberName.substring(0, 20),
           line2: `IN ${inTime}`,
           line3: lateMinutes > 0 ? `Late ${lateMinutes}m` : "On Time",
         },
@@ -220,7 +220,7 @@ export async function POST(request: Request) {
           status: existing.status,
           message: `${memberName} already registered • IN ${inTime}`,
           oled: {
-            line1: memberName.substring(0, 16),
+            line1: memberName.substring(0, 20),
             line2: "Already IN " + inTime,
             line3: `OUT after ${waitMinutes}m`,
           },
@@ -271,7 +271,7 @@ export async function POST(request: Request) {
         status,
         message: `${memberName} OUT ${outTime} • ${hours}${early ? " • Early out" : ""}`,
         oled: {
-          line1: memberName.substring(0, 16),
+          line1: memberName.substring(0, 20),
           line2: `OUT ${outTime}`,
           line3: early ? `Early out ${hours}` : hours,
         },
@@ -297,7 +297,7 @@ export async function POST(request: Request) {
       status: existing.status,
       message: `${memberName} already registered today`,
       oled: {
-        line1: memberName.substring(0, 16),
+        line1: memberName.substring(0, 20),
         line2: "Already done",
         line3: hoursLabel(totalMinutes) || "",
       },

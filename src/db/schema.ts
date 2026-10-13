@@ -351,7 +351,7 @@ export const pushSubscriptions = pgTable("push_subscriptions", {
 });
 
 // ─── ATTENDANCE SYSTEM (FANA CAFE) ─────────────────────────────────────────
-// Biometric attendance with FPC1020A + ESP32 WROOM + OLED + Buzzer + LEDs
+// Biometric attendance with FPC1020A + ESP32 WROOM + 20x4 I2C LCD + Buzzer + LEDs
 // Supports 40-50 staff, 3-5 fingerprints per person, 2 shifts, backup battery
 
 export const attendanceShifts = pgTable("attendance_shifts", {
@@ -416,13 +416,13 @@ export const attendanceBiometrics = pgTable("attendance_biometrics", {
 
 /**
  * "Place your finger" jobs. The admin presses Add Fingerprint, the ESP32 polls
- * ?pending every 2 seconds, shows the name on its OLED, stores the finger and
+ * ?pending every 2 seconds, shows the name on its LCD, stores the finger and
  * posts the mapping back; the admin page then reads Fingerprint Added.
  */
 export const attendanceEnrollJobs = pgTable("attendance_enroll_jobs", {
   id: serial("id").primaryKey(),
   memberId: integer("member_id").notNull(), // FK to attendance_members.id
-  memberName: varchar("member_name", { length: 100 }), // for the OLED, no join needed
+  memberName: varchar("member_name", { length: 100 }), // for the LCD, no join needed
   fingerprintId: integer("fingerprint_id").notNull(), // the ID the device must use
   status: varchar("status", { length: 20 }).default("pending"), // pending | done | cancelled
   // What the device is doing / why it stopped, in its own words

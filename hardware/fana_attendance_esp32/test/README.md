@@ -16,7 +16,17 @@ Two suites, both compiled and run by `g++` on a PC:
 ## What the simulation models
 
 `stub/` holds the Arduino/ESP32 headers the sketch includes; `globals.cpp`
-defines the objects they declare. The simulated module in `enroll_host_test.cpp`
+defines the objects they declare. That includes **`stub/hd44780.h` +
+`stub/hd44780ioClass/hd44780_I2Cexp.h`**, a simulated 20x4 character LCD that
+stands in for the real hd44780 library: `print()` writes into a 20x4 grid and
+calls `screenHook`, an over-long line wraps and is counted as a wrap, a row
+write that stops before column 19 is counted as a short write, `clear()` is
+counted, and `println()` deliberately does not exist (the real library makes it
+a compile error). The tests use those counters to prove the sketch always
+writes full 20-character rows, never spills past column 19 and never clears the
+screen while it is only updating it.
+
+The simulated module in `enroll_host_test.cpp`
 follows the protocol as this repository documents it:
 
 - `ADD_1` / `ADD_2` x4 / `ADD_3` store a finger, and a step sent out of order
@@ -27,7 +37,7 @@ follows the protocol as this repository documents it:
 - `ADD_1` on an ID that already holds a template answers **status 7**,
   an empty glass answers **status 8**, and injected unclear images answer
   **status 6**.
-- A simulated person reads the OLED and does what it asks, 800 ms later: lifts
+- A simulated person reads the LCD and does what it asks, 800 ms later: lifts
   for anything that says `LIFT`, places the finger for `PLACE FINGER`.
 
 ## The cases it covers
@@ -43,6 +53,11 @@ follows the protocol as this repository documents it:
 | 7 | a job that fails | `job_failed` carries the reason |
 | 8 | an ID that already belongs to somebody | never deleted, no ADD command sent |
 | 9 | the **old** command ordering | it did violate rule 1; the new ordering does not |
+| 10 | the 20x4 LCD: idle (online + offline), a long line followed by a short one, an unchanged screen, the result screen, the enrollment progress bar, a missing LCD and the retry | every row is a full 20 characters with no leftovers, nothing wraps past column 19, an unchanged row is not rewritten (no flicker), progress is text, and a device without an LCD still runs |
 
-`scripts/verify-fingerprint-enroll.ts` runs this suite as part of `npm test`
-and also checks the wiring between the firmware, the API and the admin page.
+`scripts/verify-fingerprint-enroll.ts` and `scripts/verify-lcd-upgrade.ts` run
+this suite as part of `npm test` and also check the wiring between the
+firmware, the API and the admin page. The LCD guard additionally proves the
+sketch no longer references Adafruit SSD1306/GFX, that it never calls the
+forbidden `lcd.println()`, that `lcd.clear()` appears only in the init function,
+and that the wiring documentation matches the sketch's pins.

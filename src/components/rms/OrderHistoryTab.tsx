@@ -5,6 +5,13 @@ import { Search, RefreshCw, ImageIcon, X, Trash2 } from "lucide-react";
 import { Ticket } from "@/types";
 import { formatDateTime, groupOrderLines, type OrderLine } from "@/lib/order-lines";
 import { useStaffT } from "@/lib/staff-i18n";
+import {
+  ORDER_DATE_FILTERS,
+  matchesOrderDateFilter,
+  orderFilterRangeStart,
+  orderHistoryDateOf,
+  type OrderDateFilter,
+} from "@/lib/order-date-filter";
 
 const historyStatusOf = (t: Ticket) => t.historyStatus || (t.status === "cancelled" ? "cancelled" : "done");
 
@@ -64,6 +71,8 @@ export default function OrderHistoryTab() {
   const [orders, setOrders] = useState<Ticket[]>([]);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  /** The owner's "Date" dropdown: today, yesterday, the day before, 7 days, a month. */
+  const [dateFilter, setDateFilter] = useState<OrderDateFilter>("all");
   const [receiptModal, setReceiptModal] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
 
@@ -140,10 +149,27 @@ export default function OrderHistoryTab() {
           .toLowerCase();
         const matchQ = !q || searchText.includes(q.toLowerCase());
         const matchS = statusFilter === "all" || historyStatusOf(o) === statusFilter;
-        return matchQ && matchS;
+        // The "Date" dropdown: Ethiopian calendar days, the same ones the
+        // reports use, counted on the day the bill was finished.
+        const matchD = matchesOrderDateFilter(o, dateFilter);
+        return matchQ && matchS && matchD;
       }),
-    [orders, q, statusFilter]
+    [orders, q, statusFilter, dateFilter]
   );
+
+  /* The report only carries the newest finished bills, so a long range can be
+   * cut short by that window. Say so instead of showing a short list as though
+   * it were the whole month. */
+  const windowTooShort = useMemo(() => {
+    const rangeStart = orderFilterRangeStart(dateFilter);
+    if (!rangeStart || orders.length < 200) return false;
+    let oldest: number | null = null;
+    for (const o of orders) {
+      const d = orderHistoryDateOf(o);
+      if (d && (oldest === null || d.getTime() < oldest)) oldest = d.getTime();
+    }
+    return oldest !== null && oldest > rangeStart.getTime();
+  }, [orders, dateFilter]);
 
   const fmtTime = (t: Ticket) => {
     const d = t.closedAt || t.updatedAt;
@@ -190,24 +216,61 @@ export default function OrderHistoryTab() {
       </div>
 
       {/* Filters (no payment-method options — owner's decision) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="relative">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-stone-500" />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder={L("Search table, waiter, outdoor note, date...")}
+            aria-label={L("Search table, waiter, outdoor note, date...")}
             className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl pl-9 pr-3 py-2.5 text-xs text-white"
           />
         </div>
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-[#2C1B17] border border-stone-700 rounded-xl p-2.5 text-xs text-white">
-          <option value="all">{L("All Statuses")}</option>
-          <option value="done">{L("Done")}</option>
-          <option value="edited_printed">{L("Edited & Printed")}</option>
-          <option value="edited_cancelled">{L("Edited & Cancelled")}</option>
-          <option value="cancelled">{L("Cancelled")}</option>
-        </select>
+        {/* DATE: the owner's dropdown - today, yesterday, the day before, the
+            last 7 days, the last month. The days are Ethiopian calendar days,
+            counted on the day the bill was finished. */}
+        <div>
+          <label className="block text-[10px] font-bold text-amber-200 mb-1" htmlFor="order-history-date">
+            {L("Date")}
+          </label>
+          <select
+            id="order-history-date"
+            value={dateFilter}
+            onChange={(e) => setDateFilter(e.target.value as OrderDateFilter)}
+            className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+          >
+            {ORDER_DATE_FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {L(f.label)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] font-bold text-amber-200 mb-1" htmlFor="order-history-status">
+            {L("Status")}
+          </label>
+          <select
+            id="order-history-status"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="w-full bg-[#2C1B17] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+          >
+            <option value="all">{L("All Statuses")}</option>
+            <option value="done">{L("Done")}</option>
+            <option value="edited_printed">{L("Edited & Printed")}</option>
+            <option value="edited_cancelled">{L("Edited & Cancelled")}</option>
+            <option value="cancelled">{L("Cancelled")}</option>
+          </select>
+        </div>
       </div>
+
+      {windowTooShort && (
+        <p className="text-[11px] text-amber-300 bg-amber-900/20 border border-amber-700/40 rounded-xl px-3 py-2">
+          {L("The list holds the newest 200 bills, so this range may be missing older ones.")}
+        </p>
+      )}
 
       {/* Orders list */}
       {filtered.length === 0 ? (

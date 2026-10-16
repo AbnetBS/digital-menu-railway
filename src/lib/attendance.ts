@@ -2,7 +2,9 @@
  * ATTENDANCE RULES - one place for the owner's numbers and colours
  * (owner, Oct 2026: "the person is considered late if he is 15 min late",
  * "when someone clicks more than once it says already registered but after
- * 1 hour the next scan is printed in the OUT", "maximum of 7 days",
+ * 1 hour the next scan is printed in the OUT", "make it up to 30 days ...
+ * if he select more than 7 days add page below ... when he click print it
+ * will be printed divided like the 1st 7 days then next 7 days",
  * "we need another colour for the early out and the overtime").
  *
  * The kiosk, the admin tab and the paper sheet all import from here, so the
@@ -26,8 +28,22 @@ export const LATE_GRACE_MINUTES = 15;
  */
 export const REPEAT_SCAN_LOCK_MINUTES = 60;
 
-/** The paper sheet prints at most one week at a time. */
+/**
+ * One PRINTED PAGE of the paper sheet is one week wide: seven day-columns is
+ * what still fits the landscape paper the owner prints on.
+ */
 export const SHEET_MAX_DAYS = 7;
+
+/**
+ * How far the admin may reach in one go (owner, Oct 2026: "make it up to 30
+ * days"). A range wider than a page is not cut away any more - it is split
+ * into pages of SHEET_MAX_DAYS days below the sheet, and the print comes out
+ * divided the same way: the first 7 days, then the next 7, and so on.
+ */
+export const SHEET_RANGE_MAX_DAYS = 30;
+
+/** The supervisor's door-tablet login times out after this much inactivity. */
+export const SUPERVISOR_IDLE_TIMEOUT_MINUTES = 2;
 
 /** FPC1020A templates per person we allow the admin to enroll. */
 export const MAX_FINGERS_PER_MEMBER = 5;
@@ -139,6 +155,117 @@ export function rescanAction(
   return minutes < REPEAT_SCAN_LOCK_MINUTES ? "already_registered" : "clock_out";
 }
 
+/* ─── an offline scan keeps the moment of the finger ───────────────────────
+ * The door device stores a scan it could not deliver and sends it again when
+ * the internet is back (owner, Oct 2026: "if someone place his finger it will
+ * store it and put it in list in that scanned time when the connection is
+ * back"). Stored is not enough: stamped with the ARRIVAL time an on-time person
+ * is written down late, and when both the IN and the OUT of one shift were
+ * queued they arrive seconds apart, so the one-hour repeat lock swallows the
+ * OUT and the day stays open with no hours at all.
+ *
+ * So the device sends `scannedAt` - the moment of the finger, from the same
+ * NTP clock that drives its LCD row - and this function decides whether that
+ * moment can be believed. It is deliberately strict, because it is the one
+ * field a client could use to write history:
+ *
+ *   • nothing sensible to read            -> the arrival time (as before)
+ *   • a moment in the future              -> the arrival time
+ *   • a moment older than 3 days          -> the arrival time (a queue that
+ *                                            survived a long outage is still
+ *                                            delivered, just not back-dated
+ *                                            into another week)
+ *
+ * Whatever happens, `arrivedAt` is kept so the log can say both times and
+ * nothing is hidden from the owner.
+ */
+
+/** How far back a queued scan may reach and still be written at its own time. */
+export const OFFLINE_SCAN_MAX_AGE_DAYS = 3;
+
+/** A device clock may run slightly fast; this much ahead is still "now". */
+export const OFFLINE_SCAN_FUTURE_GRACE_MINUTES = 2;
+
+export type ScannedTimeReason =
+  | "used"
+  | "missing"
+  | "unreadable"
+  | "in_the_future"
+  | "too_old";
+
+export type ScannedTime = {
+  /** The moment to write down: the device's own time when it is trusted. */
+  time: Date;
+  /** True when `time` came from the device rather than from the arrival. */
+  trusted: boolean;
+  /** Why the device's time was or was not used - for the audit note. */
+  reason: ScannedTimeReason;
+  /** The moment the scan reached the server. Always kept. */
+  arrivedAt: Date;
+};
+
+const MS_PER_MINUTE = 60000;
+const MS_PER_DAY = 24 * 60 * MS_PER_MINUTE;
+
+/** Seconds since 1970 for a date before 2001 - anything below is not a scan. */
+const PLAUSIBLE_EPOCH_SECONDS = 1000000000;
+
+/**
+ * Read the moment a scan really happened. Accepts the epoch SECONDS the device
+ * sends (and, tolerantly, epoch milliseconds or an ISO stamp), and falls back
+ * to the arrival time whenever the value cannot be trusted.
+ */
+export function scannedTimeOf(raw: unknown, arrivedAt: Date = new Date()): ScannedTime {
+  const fallback = (reason: ScannedTimeReason): ScannedTime => ({
+    time: arrivedAt,
+    trusted: false,
+    reason,
+    arrivedAt,
+  });
+
+  if (raw === null || raw === undefined || raw === "") return fallback("missing");
+
+  let time: Date | null = null;
+  if (raw instanceof Date) {
+    time = Number.isNaN(raw.getTime()) ? null : raw;
+  } else if (typeof raw === "number" && Number.isFinite(raw)) {
+    // The device sends SECONDS. A number too big for seconds is taken as
+    // milliseconds, so a hand-written correction is not thrown away either.
+    time = new Date(raw > PLAUSIBLE_EPOCH_SECONDS * 1000 ? raw : raw * 1000);
+  } else if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+      const n = Number(trimmed);
+      time = Number.isFinite(n)
+        ? new Date(n > PLAUSIBLE_EPOCH_SECONDS * 1000 ? n : n * 1000)
+        : null;
+    } else {
+      const parsed = new Date(trimmed);
+      time = Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+  }
+
+  if (!time || Number.isNaN(time.getTime())) return fallback("unreadable");
+  if (time.getTime() > arrivedAt.getTime() + OFFLINE_SCAN_FUTURE_GRACE_MINUTES * MS_PER_MINUTE) {
+    return fallback("in_the_future");
+  }
+  if (time.getTime() < arrivedAt.getTime() - OFFLINE_SCAN_MAX_AGE_DAYS * MS_PER_DAY) {
+    return fallback("too_old");
+  }
+  return { time, trusted: true, reason: "used", arrivedAt };
+}
+
+/** One line for the log's `notes`, so a back-dated scan is never a secret. */
+export function offlineScanNote(scan: ScannedTime): string | null {
+  if (!scan.trusted) return null;
+  const gapMinutes = Math.round(
+    (scan.arrivedAt.getTime() - scan.time.getTime()) / MS_PER_MINUTE
+  );
+  if (gapMinutes < 1) return null;
+  const hhmm = (d: Date) => clockLabel(d) || "";
+  return `Offline scan: finger at ${hhmm(scan.time)}, reached the server ${hhmm(scan.arrivedAt)} (${gapMinutes} min later)`;
+}
+
 /** "3h 05m" for the total-hours column; null when there is no OUT yet. */
 export function hoursLabel(totalMinutes: number | null | undefined): string | null {
   if (totalMinutes === null || totalMinutes === undefined) return null;
@@ -185,8 +312,12 @@ export function daysBetween(a: string, b: string): number {
 
 /**
  * Every "YYYY-MM-DD" column of the sheet, oldest first, and never more than
- * SHEET_MAX_DAYS of them: a month-long range is cut back to the week that
- * still fits the printed paper. A reversed range is turned the right way up.
+ * SHEET_RANGE_MAX_DAYS (30) of them. A reversed range is turned the right way
+ * up, and a range longer than a month is cut back to the first 30 days so one
+ * request can never pull the whole history.
+ *
+ * The week limit moved to the PAGE (owner, Oct 2026): 30 days are shown and
+ * printed as pages of SHEET_MAX_DAYS days - see sheetPages().
  */
 export function sheetDates(from: string | null | undefined, to: string | null | undefined): string[] {
   if (!from || !to) return [];
@@ -197,10 +328,31 @@ export function sheetDates(from: string | null | undefined, to: string | null | 
     start = end;
     end = swap;
   }
-  const span = Math.min(daysBetween(start, end), SHEET_MAX_DAYS - 1);
+  const span = Math.min(daysBetween(start, end), SHEET_RANGE_MAX_DAYS - 1);
   const out: string[] = [];
   for (let i = 0; i <= span; i++) out.push(addDays(start, i));
   return out;
+}
+
+/**
+ * The printed pages of a sheet: SHEET_MAX_DAYS (7) day-columns each, so a
+ * 30-day range comes out as 7 + 7 + 7 + 7 + 2. The admin sees one page at a
+ * time (the page numbers appear below the sheet only when there is more than
+ * one), and printing emits every page in order, each on its own paper.
+ */
+export function sheetPages(dates: string[]): string[][] {
+  const list = Array.isArray(dates) ? dates : [];
+  const width = Math.max(1, SHEET_MAX_DAYS);
+  const pages: string[][] = [];
+  for (let i = 0; i < list.length; i += width) pages.push(list.slice(i, i + width));
+  return pages;
+}
+
+/** Which page (0-based) a date column belongs to, or -1 when it is not there. */
+export function pageIndexOfDate(dates: string[], date: string | null | undefined): number {
+  if (!date) return -1;
+  const at = (Array.isArray(dates) ? dates : []).indexOf(date);
+  return at < 0 ? -1 : Math.floor(at / Math.max(1, SHEET_MAX_DAYS));
 }
 
 /* ─── the colours of one box on the paper sheet ──────────────────────────── */
@@ -237,4 +389,188 @@ export function outStatusOf(log: SheetLog | null | undefined): OutStatus {
   if (log.isOvertime) return "overtime";
   if (log.earlyOut || log.status === "early_out") return "early_out";
   return "completed";
+}
+
+/* ─── the leaderboard: who spent the most time at work ───────────────────── */
+
+/**
+ * ADMIN -> ATTENDANCE -> LEADERBOARD (owner, Oct 2026: "add 1 category that
+ * says leaderboard that shows highest time that is spent in work ... category
+ * by role then the name with rank").
+ *
+ * One card per role, the people of that role ranked by the hours they really
+ * spent inside the range. A day that is still open counts too (the time since
+ * the IN, marked "still in"), so the board is honest at 4 pm and does not wait
+ * for everybody to scan out before it says anything.
+ */
+
+export type LeaderLog = {
+  memberId?: number | null;
+  clockIn?: Date | string | null;
+  clockOut?: Date | string | null;
+  totalMinutes?: number | null;
+  isOvertime?: boolean | null;
+};
+
+export type LeaderMember = {
+  id: number;
+  name: string;
+  roleId?: number | null;
+  roleName?: string | null;
+};
+
+export type LeaderRow = {
+  rank: number;
+  memberId: number;
+  name: string;
+  /** Closed days: the total the OUT scan wrote down. */
+  workedMinutes: number;
+  /** The day that is open right now: minutes since the IN, if there is one. */
+  openMinutes: number;
+  totalMinutes: number;
+  /** "40h 05m" - the same label the sheet and Today Live use. */
+  totalHours: string;
+  days: number;
+  overtimeDays: number;
+  stillIn: boolean;
+};
+
+export type LeaderGroup = {
+  roleId: number | null;
+  roleName: string;
+  rows: LeaderRow[];
+  totalMinutes: number;
+  /** Active people of this role with no scan at all inside the range. */
+  notSeen: number;
+};
+
+const asTime = (d: Date | string | null | undefined): number | null => {
+  if (!d) return null;
+  const t = d instanceof Date ? d.getTime() : new Date(d).getTime();
+  return Number.isNaN(t) ? null : t;
+};
+
+/**
+ * The minutes one log line adds to the board: the OUT total when the day is
+ * closed, otherwise the time since the IN (never negative, never in the
+ * future).
+ */
+export function leaderMinutesOf(
+  log: LeaderLog | null | undefined,
+  now: Date | string = new Date()
+): { workedMinutes: number; openMinutes: number } {
+  const at = asTime(now) ?? Date.now();
+  const inAt = asTime(log?.clockIn);
+  const outAt = asTime(log?.clockOut);
+  if (inAt === null) return { workedMinutes: 0, openMinutes: 0 };
+  if (outAt !== null) {
+    const stored = Math.max(0, Math.round(Number(log?.totalMinutes) || 0));
+    // A row without its total (an old import, a manual fix) still counts: the
+    // two stamps are right there.
+    return { workedMinutes: stored || Math.max(0, Math.round((outAt - inAt) / 60000)), openMinutes: 0 };
+  }
+  return { workedMinutes: 0, openMinutes: Math.max(0, Math.round((at - inAt) / 60000)) };
+}
+
+/**
+ * Rank the people of every role by the hours they spent at work inside the
+ * range. Roles are listed alphabetically ("No role" last) so the cards do not
+ * jump around when one day is busier than the next; inside a card the rank is
+ * by hours, and two equal hours are ordered by name.
+ */
+export function buildLeaderboard(
+  logs: LeaderLog[] | null | undefined,
+  members: LeaderMember[] | null | undefined,
+  now: Date | string = new Date()
+): LeaderGroup[] {
+  const people = (members || []).filter((m) => m && Number.isFinite(m.id));
+  const totals = new Map<
+    number,
+    { workedMinutes: number; openMinutes: number; days: number; overtimeDays: number; stillIn: boolean }
+  >();
+
+  for (const log of logs || []) {
+    const id = Number(log?.memberId);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const { workedMinutes, openMinutes } = leaderMinutesOf(log, now);
+    if (workedMinutes <= 0 && openMinutes <= 0 && !log?.clockIn) continue;
+    const row = totals.get(id) ?? { workedMinutes: 0, openMinutes: 0, days: 0, overtimeDays: 0, stillIn: false };
+    row.workedMinutes += workedMinutes;
+    row.openMinutes += openMinutes;
+    if (log?.clockIn) row.days += 1;
+    if (log?.isOvertime) row.overtimeDays += 1;
+    if (openMinutes > 0) row.stillIn = true;
+    totals.set(id, row);
+  }
+
+  const byRole = new Map<string, LeaderGroup>();
+  for (const person of people) {
+    const roleId = Number.isFinite(Number(person.roleId)) && person.roleId ? Number(person.roleId) : null;
+    const roleName = String(person.roleName || (roleId ? "No role" : "No role")).trim() || "No role";
+    const key = `${roleId ?? "none"}|${roleName}`;
+    if (!byRole.has(key)) byRole.set(key, { roleId, roleName, rows: [], totalMinutes: 0, notSeen: 0 });
+    const group = byRole.get(key)!;
+    const t = totals.get(person.id);
+    if (!t || (t.workedMinutes <= 0 && t.openMinutes <= 0 && t.days <= 0)) {
+      group.notSeen += 1;
+      continue;
+    }
+    const totalMinutes = t.workedMinutes + t.openMinutes;
+    group.rows.push({
+      rank: 0,
+      memberId: person.id,
+      name: person.name,
+      workedMinutes: t.workedMinutes,
+      openMinutes: t.openMinutes,
+      totalMinutes,
+      totalHours: hoursLabel(totalMinutes) || "0h 00m",
+      days: t.days,
+      overtimeDays: t.overtimeDays,
+      stillIn: t.stillIn,
+    });
+    group.totalMinutes += totalMinutes;
+  }
+
+  return [...byRole.values()]
+    .map((group) => {
+      const rows = group.rows
+        .sort((a, b) => b.totalMinutes - a.totalMinutes || a.name.localeCompare(b.name))
+        .map((row, i) => ({ ...row, rank: i + 1 }));
+      return { ...group, rows };
+    })
+    .sort((a, b) => {
+      const aNone = a.roleName === "No role" ? 1 : 0;
+      const bNone = b.roleName === "No role" ? 1 : 0;
+      return aNone - bNone || a.roleName.localeCompare(b.roleName);
+    });
+}
+
+/** "40h 05m" as the plain hours the owner reads on the board ("40 hours"). */
+export function wholeHoursOf(totalMinutes: number | null | undefined): number {
+  return Math.floor(Math.max(0, Math.round(Number(totalMinutes) || 0)) / 60);
+}
+
+/* ─── the supervisor countdown on the door tablet ────────────────────────── */
+
+/**
+ * The door tablet locks the backup PIN again after two minutes with no
+ * activity (owner, Oct 2026). This is the clock the tablet shows while it is
+ * unlocked: 120000 -> "2:00", 75000 -> "1:15", 0 -> "0:00". Never negative.
+ */
+export function countdownLabel(msLeft: number | null | undefined): string {
+  const total = Math.max(0, Math.round(Number(msLeft) || 0));
+  const seconds = Math.ceil(total / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/** True when the idle time has run out and the tablet must ask again. */
+export function supervisorIdleExpired(
+  lastActivityAt: Date | number | null | undefined,
+  now: Date | number = Date.now(),
+  timeoutMinutes: number = SUPERVISOR_IDLE_TIMEOUT_MINUTES
+): boolean {
+  const last = lastActivityAt instanceof Date ? lastActivityAt.getTime() : Number(lastActivityAt);
+  const at = now instanceof Date ? now.getTime() : Number(now);
+  if (!Number.isFinite(last) || !Number.isFinite(at)) return true;
+  return at - last >= Math.max(0, timeoutMinutes) * 60000;
 }

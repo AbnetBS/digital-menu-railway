@@ -16,7 +16,12 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-10-1";
+// 2026-10-16-1: staff_users.role widened to varchar(40) in the drizzle schema
+// (the attendance supervisor role is 21 characters). Step 2c below normalizes
+// that column to text, but the warm path skips the whole migration when the
+// recorded version matches, so the bump is what makes an existing database fix
+// its narrow role column on the first request after this deploy.
+const SCHEMA_VERSION = "2026-10-16-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database

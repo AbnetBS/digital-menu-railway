@@ -8,6 +8,8 @@ import {
 } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { verifySecret } from "@/lib/auth";
+import { deviceAllowed } from "@/lib/attendance-device";
+import { requireSupervisor } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { and, eq } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
@@ -18,8 +20,10 @@ import {
   hoursLabel,
   isEarlyOut,
   lateMinutesFor,
+  offlineScanNote,
   pickShift,
   rescanAction,
+  scannedTimeOf,
   type RoleShift,
 } from "@/lib/attendance";
 
@@ -38,10 +42,33 @@ import {
  *     hour the next scan is the OUT.
  *   • EARLY OUT: leaving before the time out of that role is written down, so
  *     the sheet can colour that box.
+ *
+ * AN OFFLINE SCAN KEEPS ITS OWN TIME (owner, Oct 2026: "if someone place his
+ * finger it will store it and put it in list in that scanned time when the
+ * connection is back"). The device stores a scan it could not deliver and
+ * sends it again when the internet is back, with `scannedAt` - the moment of
+ * the finger. That moment decides the day row, the IN, the OUT and the late
+ * minutes, so a person who scanned on time during an outage is not written
+ * down late, and an IN and an OUT that were both queued are not swallowed by
+ * the one-hour repeat lock. Only the DEVICE may say when a scan happened, and
+ * only inside the limits in src/lib/attendance.ts (never in the future, never
+ * older than three days); a PIN typed in a browser always counts as now. The
+ * arrival time is written to `updated_at` and to the notes, so nothing hides.
+ *
+ * THE PIN IS LOCKED (owner, Oct 2026: "it is risky since someone can write for
+ * them"): a PIN clock-in only works while an ATTENDANCE SUPERVISOR has the door
+ * tablet open, which lasts two minutes from his last touch. The check is here,
+ * on the server, so hiding the keypad in the browser would not be enough. The
+ * fingerprint branch is untouched - the scanner keeps posting straight in.
  */
 
+/** The Ethiopian calendar day a moment falls on, as the sheet's date key. */
+function dayKeyOf(d: Date): string {
+  return etDayKey(d) || d.toISOString().slice(0, 10);
+}
+
 function getTodayKey(): string {
-  return etDayKey(new Date()) || new Date().toISOString().slice(0, 10);
+  return dayKeyOf(new Date());
 }
 
 /** The periods of the member's role, ordered by their entrance time. */
@@ -68,6 +95,7 @@ export async function POST(request: Request) {
       deviceId = "entrance",
       method = "fingerprint",
       pin,
+      scannedAt,
     } = body;
 
     /* ── who is scanning? ──────────────────────────────────────────────── */
@@ -75,7 +103,16 @@ export async function POST(request: Request) {
     let memberName = "";
     let fingerId: number | null = null;
 
+    /* The supervisor who opened the door tablet's keypad. Only a PIN entry
+     * needs one: the ESP32 posts fingerprints straight here, and that main way
+     * in must never wait for a person with a password. */
+    let supervisorName: string | null = null;
+
     if (method === "pin") {
+      const supervisor = await requireSupervisor();
+      if (!supervisor.ok) return supervisor.response;
+      supervisorName = supervisor.session.name;
+
       // The backup for a wet or dirty finger: name from the dropdown + PIN.
       const id = Number(directMemberId);
       if (!id) return NextResponse.json({ error: "Select a name first", led: "red", buzzer: "error" }, { status: 400 });
@@ -132,8 +169,23 @@ export async function POST(request: Request) {
     const roleId = member[0]?.roleId ?? null;
     const shifts = await roleShiftsOf(roleId);
 
-    const todayKey = getTodayKey();
-    const now = new Date();
+    /* Only the door device may back-date a scan: it is the one that keeps a
+     * scan through an outage. A PIN typed in a browser (or a correction typed
+     * by the admin) always counts as now, so nobody can write history by
+     * sending a time. deviceAllowed() is the same check the rest of the
+     * device routes use, and scannedTimeOf() refuses a future moment and one
+     * older than three days. */
+    const scan = scannedTimeOf(
+      method === "fingerprint" && deviceAllowed(request) ? scannedAt : undefined
+    );
+    const arrivedAt = scan.arrivedAt;
+    const offlineNote = offlineScanNote(scan);
+
+    const todayKey = dayKeyOf(scan.time);
+    // `now` is the moment this scan happened: the device's own time when it can
+    // be trusted, otherwise the arrival. Everything below - the day row, the
+    // IN, the OUT, the late minutes - is counted on it.
+    const now = scan.time;
     const nowMinutes = etMinutes(now);
     const clockInShift = pickShift(shifts, nowMinutes);
 
@@ -151,10 +203,18 @@ export async function POST(request: Request) {
       memberName,
       fingerprintId: fingerId,
       date: todayKey,
+      // Who opened the keypad, when this line came in through the backup PIN.
+      supervisor: supervisorName,
     };
 
     /* ── no line yet today: this scan is the IN ────────────────────────── */
     if (existingLogs.length === 0 || !existingLogs[0].clockIn) {
+      const inNote = [
+        supervisorName ? `PIN keypad opened by supervisor ${supervisorName}` : "",
+        offlineNote || "",
+      ]
+        .filter(Boolean)
+        .join(" • ");
       const lateMinutes = lateMinutesFor(clockInShift, nowMinutes);
       const status = lateMinutes > 0 ? "late" : "on_time";
       const inTime = clockLabel(now) || "";
@@ -168,7 +228,11 @@ export async function POST(request: Request) {
         lateMinutes,
         status,
         deviceId,
-        updatedAt: now,
+        updatedAt: arrivedAt,
+        // The audit the owner asked for: a typed IN names the supervisor who
+        // had the door tablet open at that moment, and a scan the device had
+        // to keep through an outage names both of its times.
+        ...(inNote ? { notes: inNote } : {}),
       };
 
       const row =
@@ -231,6 +295,13 @@ export async function POST(request: Request) {
 
       // One hour has passed: this scan is the OUT.
       const totalMinutes = Math.round((now.getTime() - new Date(existing.clockIn!).getTime()) / 60000);
+      const outNote = [
+        existing.notes || "",
+        supervisorName ? `OUT by PIN, keypad opened by supervisor ${supervisorName}` : "",
+        offlineNote || "",
+      ]
+        .filter(Boolean)
+        .join(" • ");
       const inShift =
         pickShift(shifts, etMinutes(existing.clockIn!)) || clockInShift;
       const early = isEarlyOut(inShift, nowMinutes);
@@ -245,7 +316,10 @@ export async function POST(request: Request) {
             totalMinutes,
             status,
             earlyOut: early,
-            updatedAt: now,
+            updatedAt: arrivedAt,
+            // Same audit as the IN: an OUT typed on the keypad names the
+            // supervisor, and keeps whatever the IN already recorded.
+            ...(outNote ? { notes: outNote } : {}),
           })
           .where(eq(attendanceLogs.id, existing.id))
           .returning()

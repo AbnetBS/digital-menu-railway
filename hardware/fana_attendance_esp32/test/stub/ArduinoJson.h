@@ -25,6 +25,11 @@ public:
 
   template <typename T> T as() const;
   int operator|(int fallback) const { return kind == NUM ? (int)num : fallback; }
+  // An epoch does not fit the int overload's headroom after 2038, and the
+  // sketch reads the scan time as an unsigned long.
+  unsigned long operator|(unsigned long fallback) const {
+    return kind == NUM ? (unsigned long)num : fallback;
+  }
   const char *operator|(const char *fallback) const { return kind == STR ? str.c_str() : fallback; }
 
   void set(int v) { kind = NUM; num = v; }
@@ -191,7 +196,15 @@ inline void jsonWrite(const JsonVariant &v, std::string &out) {
   switch (v.kind) {
     case JsonVariant::NUM: {
       char b[32];
-      snprintf(b, sizeof(b), "%g", v.num);
+      // ArduinoJson writes a whole number as a whole number. %g would print an
+      // epoch second as 1.79214e+09 and lose the very time the queue exists to
+      // keep, so integers are printed exactly.
+      const double d = v.num;
+      if (d == (double)(long long)d && d >= -9.0e15 && d <= 9.0e15) {
+        snprintf(b, sizeof(b), "%lld", (long long)d);
+      } else {
+        snprintf(b, sizeof(b), "%g", d);
+      }
       out += b;
       break;
     }

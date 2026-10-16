@@ -177,9 +177,32 @@ static void resetAll() {
   stubMinute = 5;
   stubSecond = 30;
   screensSeen.clear();
+  // Flash: nothing stored, and the "last known real time" pair forgotten, so
+  // every case starts from a device that has not seen NTP since this boot.
+  littleFsFiles.clear();
+  epochAtSync = 0;
+  millisAtSync = 0;
+  lastWallClockNote = 0;   // the once-a-second throttle must not skip a test
+  timeReady = false;
   startLcd();
   lcdClearCalls = 0;   // the one clear of startLcd() is the allowed one
   lcdWriteCalls = 0;
+}
+
+// True when the glass showed this text at any point (a message that the next
+// screen has already replaced).
+static bool screenShowed(const std::string &needle) {
+  for (const std::string &snap : screensSeen)
+    if (snap.find(needle) != std::string::npos) return true;
+  return false;
+}
+
+// The "scannedAt" number inside a queued line or a posted payload, 0 if absent.
+static unsigned long scannedAtIn(const std::string &text) {
+  const std::string key = "\"scannedAt\":";
+  const size_t at = text.find(key);
+  if (at == std::string::npos) return 0;
+  return strtoul(text.c_str() + at + key.size(), nullptr, 10);
 }
 
 /* ── reading the simulated glass ──────────────────────────────────────────── */
@@ -481,6 +504,144 @@ int main() {
   checkLcdHealth();
   check("a later retry finds the LCD again", lcdReady, "startLcd() still fails");
   check("the found LCD shows the idle screen", rowEquals(1, "Place finger        "), rowText(1));
+
+  printf("\n=== 11. an offline scan keeps the moment of the finger ===\n");
+
+  /* ── the internet goes down, a finger comes, the internet comes back ──── */
+  resetAll();
+  fingerprintToStaff[4] = "Tigist";
+  stubHour = 12; stubMinute = 30; stubSecond = 0;   // the finger at 12:30:00
+  delay(1000);
+  noteWallClock();                                  // the device knows the time
+  const unsigned long atFinger = scanEpochNow();
+  check("the device knows the real time before the outage",
+        atFinger > 0, std::to_string(atFinger));
+
+  stubWifiStatus = WL_DISCONNECTED;
+  handleVerifiedFinger(4);
+  check("a scan nobody could deliver is kept in flash, not dropped",
+        littleFsFiles.count("/queue.json") == 1 && !littleFsFiles["/queue.json"].empty(),
+        littleFsFiles.count("/queue.json") ? littleFsFiles["/queue.json"] : "no queue file");
+  check("the glass says it was saved and will sync",
+        screenShowed("Saved offline") && screenShowed("Will sync when"));
+  check("the kept scan carries the moment of the finger",
+        scannedAtIn(littleFsFiles["/queue.json"]) == atFinger,
+        littleFsFiles["/queue.json"]);
+
+  stubHour = 13; stubMinute = 10; stubSecond = 5;   // 40 minutes of outage
+  delay(40 * 60 * 1000);
+  stubWifiStatus = WL_CONNECTED;
+  httpCalls.clear();
+  httpQueue.clear();
+  httpQueue.push_back({200, "{\"success\":true,\"action\":\"clock_in\"}"});
+  syncOfflineQueue();
+  check("the kept scan is delivered once the internet is back",
+        httpCalls.size() == 1, std::to_string(httpCalls.size()) + " calls");
+  check("it goes to the clock route and says it came late",
+        httpCalls.size() == 1 &&
+          httpCalls[0].find("/api/attendance/clock") != std::string::npos &&
+          httpCalls[0].find("_offline") != std::string::npos,
+        httpCalls.empty() ? "" : httpCalls[0]);
+  check("and it still says WHEN THE FINGER WAS PLACED, not when the internet came back",
+        httpCalls.size() == 1 && scannedAtIn(httpCalls[0]) == atFinger,
+        httpCalls.empty() ? "" : httpCalls[0]);
+  check("a delivered scan leaves the queue empty",
+        littleFsFiles.count("/queue.json") == 0);
+
+  /* ── NTP itself is unreachable: the last good clock plus millis ───────── */
+  resetAll();
+  fingerprintToStaff[4] = "Tigist";
+  stubHour = 9; stubMinute = 0; stubSecond = 0;
+  delay(1000);
+  noteWallClock();
+  const unsigned long atNine = scanEpochNow();
+  stubTimeValid = false;              // NTP stops answering
+  stubWifiStatus = WL_DISCONNECTED;
+  delay(90 * 1000);                   // 90 seconds later somebody scans
+  const unsigned long carried = scanEpochNow();
+  check("a scan made while NTP is silent still gets a real time",
+        carried >= atNine + 90 && carried <= atNine + 120,
+        "carried=" + std::to_string(carried) + " expected about " + std::to_string(atNine + 90));
+  handleVerifiedFinger(4);
+  check("and that time is what is written into the queue",
+        scannedAtIn(littleFsFiles["/queue.json"]) == carried,
+        littleFsFiles["/queue.json"]);
+
+  /* ── a device that has NEVER seen NTP must not invent a time ──────────── */
+  resetAll();
+  fingerprintToStaff[4] = "Tigist";
+  stubTimeValid = false;
+  stubWifiStatus = WL_DISCONNECTED;
+  handleVerifiedFinger(4);
+  check("a device that never got a time keeps the scan but claims no time",
+        scanEpochNow() == 0 &&
+          littleFsFiles.count("/queue.json") == 1 &&
+          littleFsFiles["/queue.json"].find("scannedAt") == std::string::npos,
+        littleFsFiles.count("/queue.json") ? littleFsFiles["/queue.json"] : "no queue file");
+  stubWifiStatus = WL_CONNECTED;
+  httpCalls.clear();
+  httpQueue.clear();
+  httpQueue.push_back({200, "{}"});
+  syncOfflineQueue();
+  check("so it sends no time, and the website stamps the arrival as it always did",
+        httpCalls.size() == 1 && httpCalls[0].find("scannedAt") == std::string::npos,
+        httpCalls.empty() ? "" : httpCalls[0]);
+
+  /* ── a line queued by older firmware has no time and gets none ────────── */
+  resetAll();
+  littleFsFiles["/queue.json"] =
+      "{\"deviceId\":\"door\",\"fingerprintId\":4,\"staffName\":\"Tigist\",\"timestamp\":\"81234\"}\n";
+  stubWifiStatus = WL_CONNECTED;
+  httpCalls.clear();
+  httpQueue.clear();
+  httpQueue.push_back({200, "{}"});
+  syncOfflineQueue();
+  check("an older queued line is still delivered, without a made-up time",
+        httpCalls.size() == 1 &&
+          httpCalls[0].find("\"fingerprintId\":4") != std::string::npos &&
+          httpCalls[0].find("scannedAt") == std::string::npos,
+        httpCalls.empty() ? "" : httpCalls[0]);
+
+  /* ── two kept scans go oldest first, so the IN arrives before the OUT ─── */
+  resetAll();
+  littleFsFiles["/queue.json"] =
+      "{\"deviceId\":\"door\",\"fingerprintId\":4,\"scannedAt\":1760000000}\n"
+      "{\"deviceId\":\"door\",\"fingerprintId\":4,\"scannedAt\":1760014400}\n";
+  stubWifiStatus = WL_CONNECTED;
+  httpCalls.clear();
+  httpQueue.clear();
+  httpQueue.push_back({200, "{}"});
+  httpQueue.push_back({200, "{}"});
+  syncOfflineQueue();
+  check("both kept scans are delivered, oldest first",
+        httpCalls.size() == 2 &&
+          scannedAtIn(httpCalls[0]) == 1760000000UL &&
+          scannedAtIn(httpCalls[1]) == 1760014400UL,
+        httpCalls.size() == 2 ? httpCalls[0] + " || " + httpCalls[1] : std::to_string(httpCalls.size()) + " calls");
+
+  /* ── refused is dropped, unreachable is kept ──────────────────────────── */
+  resetAll();
+  littleFsFiles["/queue.json"] =
+      "{\"deviceId\":\"door\",\"fingerprintId\":7,\"scannedAt\":1760000000}\n";
+  stubWifiStatus = WL_CONNECTED;
+  httpCalls.clear();
+  httpQueue.clear();
+  httpQueue.push_back({404, "{\"error\":\"Fingerprint not enrolled\"}"});
+  syncOfflineQueue();
+  check("a scan the website refuses is dropped, not retried for ever",
+        littleFsFiles.count("/queue.json") == 0);
+
+  resetAll();
+  littleFsFiles["/queue.json"] =
+      "{\"deviceId\":\"door\",\"fingerprintId\":7,\"scannedAt\":1760000000}\n";
+  stubWifiStatus = WL_CONNECTED;
+  httpCalls.clear();
+  httpQueue.clear();                 // nothing answers: the post cannot go out
+  syncOfflineQueue();
+  check("a scan that still cannot reach the website stays queued, with its time",
+        littleFsFiles.count("/queue.json") == 1 &&
+          scannedAtIn(littleFsFiles["/queue.json"]) == 1760000000UL,
+        littleFsFiles.count("/queue.json") ? littleFsFiles["/queue.json"] : "queue was dropped");
 
   printf("\n%s (%d failed)\n", failures ? "HARNESS FAILED" : "HARNESS PASSED", failures);
   return failures ? 1 : 0;

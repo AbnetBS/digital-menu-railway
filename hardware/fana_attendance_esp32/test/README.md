@@ -54,8 +54,10 @@ follows the protocol as this repository documents it:
 | 8 | an ID that already belongs to somebody | never deleted, no ADD command sent |
 | 9 | the **old** command ordering | it did violate rule 1; the new ordering does not |
 | 10 | the 20x4 LCD: idle (online + offline), a long line followed by a short one, an unchanged screen, the result screen, the enrollment progress bar, a missing LCD and the retry | every row is a full 20 characters with no leftovers, nothing wraps past column 19, an unchanged row is not rewritten (no flicker), progress is text, and a device without an LCD still runs |
+| 11 | the offline queue: a scan during an outage, 40 minutes of outage, NTP itself unreachable, a device that never reached NTP, a line queued by older firmware, two kept scans, a refused scan and an unreachable website | the scan is kept in flash and delivered oldest first, carrying the moment of the finger (`scannedAt`) and not the moment the internet came back; a device that never saw NTP claims no time, so the website stamps the arrival as it always did |
 
-`scripts/verify-fingerprint-enroll.ts` and `scripts/verify-lcd-upgrade.ts` run
+`scripts/verify-fingerprint-enroll.ts`, `scripts/verify-lcd-upgrade.ts` and
+`scripts/verify-offline-scan-time.ts` run
 this suite as part of `npm test` and also check the wiring between the
 firmware, the API and the admin page. The LCD guard additionally proves the
 sketch no longer references Adafruit SSD1306/GFX, that it never calls the

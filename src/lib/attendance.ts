@@ -155,6 +155,117 @@ export function rescanAction(
   return minutes < REPEAT_SCAN_LOCK_MINUTES ? "already_registered" : "clock_out";
 }
 
+/* ─── an offline scan keeps the moment of the finger ───────────────────────
+ * The door device stores a scan it could not deliver and sends it again when
+ * the internet is back (owner, Oct 2026: "if someone place his finger it will
+ * store it and put it in list in that scanned time when the connection is
+ * back"). Stored is not enough: stamped with the ARRIVAL time an on-time person
+ * is written down late, and when both the IN and the OUT of one shift were
+ * queued they arrive seconds apart, so the one-hour repeat lock swallows the
+ * OUT and the day stays open with no hours at all.
+ *
+ * So the device sends `scannedAt` - the moment of the finger, from the same
+ * NTP clock that drives its LCD row - and this function decides whether that
+ * moment can be believed. It is deliberately strict, because it is the one
+ * field a client could use to write history:
+ *
+ *   • nothing sensible to read            -> the arrival time (as before)
+ *   • a moment in the future              -> the arrival time
+ *   • a moment older than 3 days          -> the arrival time (a queue that
+ *                                            survived a long outage is still
+ *                                            delivered, just not back-dated
+ *                                            into another week)
+ *
+ * Whatever happens, `arrivedAt` is kept so the log can say both times and
+ * nothing is hidden from the owner.
+ */
+
+/** How far back a queued scan may reach and still be written at its own time. */
+export const OFFLINE_SCAN_MAX_AGE_DAYS = 3;
+
+/** A device clock may run slightly fast; this much ahead is still "now". */
+export const OFFLINE_SCAN_FUTURE_GRACE_MINUTES = 2;
+
+export type ScannedTimeReason =
+  | "used"
+  | "missing"
+  | "unreadable"
+  | "in_the_future"
+  | "too_old";
+
+export type ScannedTime = {
+  /** The moment to write down: the device's own time when it is trusted. */
+  time: Date;
+  /** True when `time` came from the device rather than from the arrival. */
+  trusted: boolean;
+  /** Why the device's time was or was not used - for the audit note. */
+  reason: ScannedTimeReason;
+  /** The moment the scan reached the server. Always kept. */
+  arrivedAt: Date;
+};
+
+const MS_PER_MINUTE = 60000;
+const MS_PER_DAY = 24 * 60 * MS_PER_MINUTE;
+
+/** Seconds since 1970 for a date before 2001 - anything below is not a scan. */
+const PLAUSIBLE_EPOCH_SECONDS = 1000000000;
+
+/**
+ * Read the moment a scan really happened. Accepts the epoch SECONDS the device
+ * sends (and, tolerantly, epoch milliseconds or an ISO stamp), and falls back
+ * to the arrival time whenever the value cannot be trusted.
+ */
+export function scannedTimeOf(raw: unknown, arrivedAt: Date = new Date()): ScannedTime {
+  const fallback = (reason: ScannedTimeReason): ScannedTime => ({
+    time: arrivedAt,
+    trusted: false,
+    reason,
+    arrivedAt,
+  });
+
+  if (raw === null || raw === undefined || raw === "") return fallback("missing");
+
+  let time: Date | null = null;
+  if (raw instanceof Date) {
+    time = Number.isNaN(raw.getTime()) ? null : raw;
+  } else if (typeof raw === "number" && Number.isFinite(raw)) {
+    // The device sends SECONDS. A number too big for seconds is taken as
+    // milliseconds, so a hand-written correction is not thrown away either.
+    time = new Date(raw > PLAUSIBLE_EPOCH_SECONDS * 1000 ? raw : raw * 1000);
+  } else if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+      const n = Number(trimmed);
+      time = Number.isFinite(n)
+        ? new Date(n > PLAUSIBLE_EPOCH_SECONDS * 1000 ? n : n * 1000)
+        : null;
+    } else {
+      const parsed = new Date(trimmed);
+      time = Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+  }
+
+  if (!time || Number.isNaN(time.getTime())) return fallback("unreadable");
+  if (time.getTime() > arrivedAt.getTime() + OFFLINE_SCAN_FUTURE_GRACE_MINUTES * MS_PER_MINUTE) {
+    return fallback("in_the_future");
+  }
+  if (time.getTime() < arrivedAt.getTime() - OFFLINE_SCAN_MAX_AGE_DAYS * MS_PER_DAY) {
+    return fallback("too_old");
+  }
+  return { time, trusted: true, reason: "used", arrivedAt };
+}
+
+/** One line for the log's `notes`, so a back-dated scan is never a secret. */
+export function offlineScanNote(scan: ScannedTime): string | null {
+  if (!scan.trusted) return null;
+  const gapMinutes = Math.round(
+    (scan.arrivedAt.getTime() - scan.time.getTime()) / MS_PER_MINUTE
+  );
+  if (gapMinutes < 1) return null;
+  const hhmm = (d: Date) => clockLabel(d) || "";
+  return `Offline scan: finger at ${hhmm(scan.time)}, reached the server ${hhmm(scan.arrivedAt)} (${gapMinutes} min later)`;
+}
+
 /** "3h 05m" for the total-hours column; null when there is no OUT yet. */
 export function hoursLabel(totalMinutes: number | null | undefined): string | null {
   if (totalMinutes === null || totalMinutes === undefined) return null;

@@ -13,6 +13,10 @@ public:
   int read() override { return pos < content.size() ? (unsigned char)content[pos++] : -1; }
   size_t write(const uint8_t *b, size_t n) override { content.append((const char *)b, n); return n; }
   void print(const String &s) { content += s.c_str(); }
+  // The real File writes these INTO the file; Stream's versions print to the
+  // serial port, so without these overrides a queued scan would vanish.
+  void println(const String &s) { content += s.c_str(); content += "\n"; }
+  void println(const char *s) { content += s ? s : ""; content += "\n"; }
   String readString() { std::string r = content.substr(pos); pos = content.size(); return String(r); }
   String readStringUntil(char sep) {
     size_t e = content.find(sep, pos);
@@ -30,6 +34,9 @@ public:
     File f;
     f.path = p;
     if (mode[0] == 'w') { f.isOpen = true; f.content = ""; }
+    // "a" is what the offline queue uses: keep what is already stored and add
+    // to it, so a scan queued an hour ago is still there when the next one comes.
+    else if (mode[0] == 'a') { f.isOpen = true; f.content = littleFsFiles.count(p) ? littleFsFiles[p] : ""; }
     else if (littleFsFiles.count(p)) { f.isOpen = true; f.content = littleFsFiles[p]; }
     return f;
   }

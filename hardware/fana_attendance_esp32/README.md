@@ -165,7 +165,8 @@ When you press **Add Fingerprint** on the website, the device shows the person's
    and the device is told INSTANTLY (no 2-second polling). A slow 15 s fallback poll runs only if the stream is down.
 4. Admin /admin -> Attendance tab shows paper sheet view like your photo: Employee Name | Date | IN Time & Finger | OUT Time & Finger | Total Hours | Late
    - Print button: In Paper Sheet View, click "Print Hard Copy" -> prints only the table like normal paper (landscape, black border, FANA CAFÉ header) for hard copy filing
-5. Offline: Saves to LittleFS queue, syncs when internet back; the LCD says "Wifi Not Connected" on row 2 and keeps working from local cache
+5. Offline: Saves to LittleFS queue, syncs when internet back; the LCD says "Wifi Not Connected" on row 2 and keeps working from local cache.
+   **A kept scan carries its own time.** Each queued line stores `scannedAt` (the moment the finger was placed, from the same NTP clock as the LCD row) and sends it with the scan, so the website writes it at the time it really happened and not at the time the internet came back. Without that, a person who scanned on time during an outage would be marked late, and an IN and an OUT that were both kept would arrive seconds apart and lose the OUT to the one-hour repeat lock. The website refuses a `scannedAt` in the future or older than 3 days and stamps the arrival time instead, and the log note keeps both times. If the device has not reached NTP since it was powered on it claims no time at all, and the scan is stamped on arrival exactly as before. Kept scans are delivered oldest first, so the IN always arrives before its OUT.
 6. Sales: Owner reports now show only last 7 days daily sales sliding window (7th removed when new day starts) — total sales all-time replaced
 
 ## New Features Oct 2026
@@ -209,7 +210,7 @@ A person is marked absent only from their registration date through Ethiopian to
 
 - Power bank 10,000mAh with pass-through: Charger -> Power bank -> ESP32
 - When power lost, power bank continues 30 hours
-- ESP32 still logs offline, syncs later
+- ESP32 still logs offline, syncs later - and each kept scan is stamped with the moment of the finger, so a night without internet does not move anybody's hours
 
 ## Troubleshooting
 
@@ -244,5 +245,5 @@ A person is marked absent only from their registration date through Ethiopian to
 5. Open /admin -> Attendance tab, should show Today Live + Paper Sheet View + Staff Fingerprints
 6. Test Paper Sheet View Print Hard Copy button -> prints hard copy like paper
 7. Check Reports tab -> Daily Sales Last 7 Days sliding window shows 7 days, oldest removed next day
-8. Verify offline queue: disconnect WiFi, scan finger, reconnect, check queue syncs
+8. Verify offline queue: disconnect WiFi, scan finger, note the LCD clock, reconnect, check the queue syncs AND the sheet shows the time of the scan (not the time it arrived); the log note of that line says "Offline scan: finger at HH:MM, reached the server HH:MM"
 9. Final: Enroll all staff 40-50 x 1-2 fingers each via device + link in admin panel

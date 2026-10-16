@@ -39,6 +39,10 @@ function pass(name, cond) {
 //    touch a status, a payment, a price or a quantity). scripts/verify-order-status.mjs
 //    re-checks all of that on every `npm test`.
 //  • /api/attendance/clock — biometric hardware (ESP32) and attendance kiosk scans.
+//    Its PIN branch is NOT public: it refuses a clock-in unless an attendance
+//    supervisor opened the door tablet less than two minutes ago (section 4b).
+//  • /api/attendance/supervisor — the door tablet's supervisor login/logout
+//    itself (the account it checks lives in Staff Accounts).
 const PUBLIC_MUTATION_ROUTES = new Set([
   join(API, "admin", "login", "route.ts"),
   join(API, "admin", "verify", "route.ts"),
@@ -46,6 +50,7 @@ const PUBLIC_MUTATION_ROUTES = new Set([
   join(API, "translate", "route.ts"),
   join(API, "table-status", "route.ts"),
   join(API, "attendance", "clock", "route.ts"),
+  join(API, "attendance", "supervisor", "route.ts"),
 ]);
 
 function walk(dir) {
@@ -105,6 +110,33 @@ for (const file of walk(API)) {
   pass("staff login has a DELETE logout handler", /export async function DELETE/.test(login));
 }
 
+// ── 4b: the door tablet's supervisor unlock (two minutes, server-side) ──────
+{
+  const sup = readFileSync(join(API, "attendance", "supervisor", "route.ts"), "utf8");
+  const clock = readFileSync(join(API, "attendance", "clock", "route.ts"), "utf8");
+  const session = readFileSync(join(root, "src", "lib", "session.ts"), "utf8");
+  const kiosk = readFileSync(join(root, "src", "app", "(internal)", "attendance", "page.tsx"), "utf8");
+  const staffTab = readFileSync(join(root, "src", "components", "rms", "StaffTab.tsx"), "utf8");
+  const stations = readFileSync(join(root, "src", "lib", "stations.ts"), "utf8");
+
+  pass("the supervisor login signs a session cookie of its own", sup.includes("signToken") && sup.includes("SUPERVISOR_COOKIE"));
+  pass("the supervisor login is rate limited like the other PIN logins", sup.includes("checkRateLimit("));
+  pass("the supervisor login has a DELETE that locks the keypad again", /export async function DELETE/.test(sup));
+  pass("it only accepts Staff Accounts with the attendance supervisor role", sup.includes("ATTENDANCE_SUPERVISOR_ROLE") && sup.includes("staffUsers"));
+  pass("it never says which names exist (one answer for a bad name and a bad PIN)", sup.includes("Incorrect name or PIN"));
+  pass("the supervisor session carries an expiry and the reader enforces it", session.includes("exp: now + SUPERVISOR_IDLE_TIMEOUT_MS") && session.includes("Date.now() > exp"));
+  pass(
+    "a PIN clock-in is refused without an unlocked tablet",
+    clock.includes('if (method === "pin") {') &&
+      clock.includes("requireSupervisor()") &&
+      clock.includes("if (!supervisor.ok) return supervisor.response;") &&
+      session.includes("needsSupervisor: true")
+  );
+  pass("the fingerprint clock-in needs no supervisor (the main way in stays open)", !/else\s*{[\s\S]{0,400}requireSupervisor/.test(clock));
+  pass("the tablet locks itself after the two minutes of inactivity", kiosk.includes("SUPERVISOR_IDLE_TIMEOUT_MS") && kiosk.includes("Locked again"));
+  pass("the supervisor role can be handed out in Staff Accounts", staffTab.includes("ATTENDANCE_SUPERVISOR_ROLE") && stations.includes("ATTENDANCE_SUPERVISOR_ROLE"));
+}
+
 // ── 5: customer order path public, staff path guarded ───────────────────────
 {
   const tickets = readFileSync(join(API, "tickets", "route.ts"), "utf8");
@@ -122,3 +154,4 @@ console.log("\n✅ Auth guard regression test PASSED");
 console.log("   • all mutation routes guarded (except public login/logout)");
 console.log("   • destructive endpoints require admin");
 console.log("   • admin + staff sessions are cryptographically signed");
+console.log("   • the door tablet's PIN needs a supervisor unlock that dies after 2 min");

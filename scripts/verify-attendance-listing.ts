@@ -15,14 +15,21 @@
  *      12:45 is on time, 12:46 is late.
  *   4. A second scan inside ONE HOUR of the IN only says "already registered";
  *      after the hour the next scan is the OUT.
- *   5. The paper sheet prints at most 7 days, takes its names from the
- *      attendance list, and colours every box: red absent, yellow late, green
- *      on time, plus its own colours for early out and overtime.
+ *   5. The paper sheet reaches 30 days, takes its names from the attendance
+ *      list, and colours every box: red absent, yellow late, green on time,
+ *      plus its own colours for early out and overtime. A range wider than a
+ *      week is shown and printed one page of 7 days at a time.
  *   6. Add Fingerprint opens a pending job the ESP32 picks up (?pending), and
  *      the page prints "Fingerprint Added ✓" when the device posts the mapping.
  *   7. The kiosk is clean: no big clock, no device chatter, no demo buttons, no
  *      wall of absent names. Name dropdown + PIN keypad on the left third, the
  *      live sheet on the right, and an Overtime button.
+ *   8. The kiosk's PIN keypad is LOCKED until an attendance supervisor opens it
+ *      ("it is risky since someone can write for them"), and it locks itself
+ *      again after two minutes with no activity. The fingerprint scanner and
+ *      the Overtime button never need a supervisor.
+ *   9. The Leaderboard tab ranks the people of every role by the hours they
+ *      spent at work in the chosen range.
  *
  * The rules are imported from the real module (src/lib/attendance.ts), so a
  * change to the numbers or the colours fails here, not in the cafe.
@@ -46,20 +53,29 @@ import {
   LATE_GRACE_MINUTES,
   REPEAT_SCAN_LOCK_MINUTES,
   SHEET_MAX_DAYS,
+  SHEET_RANGE_MAX_DAYS,
+  SUPERVISOR_IDLE_TIMEOUT_MINUTES,
   addDays,
+  buildLeaderboard,
   clockLabel,
+  countdownLabel,
   daysBetween,
   hoursLabel,
   inStatusOf,
   isEarlyOut,
   isAttendanceExpectedOnDate,
   lateMinutesFor,
+  leaderMinutesOf,
   outStatusOf,
+  pageIndexOfDate,
   parseHHMM,
   pickShift,
   rescanAction,
   sheetDates,
+  sheetPages,
+  supervisorIdleExpired,
   toHHMM,
+  wholeHoursOf,
 } from "../src/lib/attendance";
 
 let failures = 0;
@@ -89,7 +105,9 @@ const firmware = read("hardware/fana_attendance_esp32/fana_attendance_esp32.ino"
 
 pass("late is decided 15 minutes after the entrance time", LATE_GRACE_MINUTES === 15);
 pass("a repeated scan is only \"already registered\" for one hour", REPEAT_SCAN_LOCK_MINUTES === 60);
-pass("a sheet is at most 7 days", SHEET_MAX_DAYS === 7);
+pass("one printed page of the sheet is 7 days wide", SHEET_MAX_DAYS === 7);
+pass("a sheet range reaches 30 days (owner: \"make it up to 30 days\")", SHEET_RANGE_MAX_DAYS === 30);
+pass("the door tablet's supervisor lock times out after 2 minutes", SUPERVISOR_IDLE_TIMEOUT_MINUTES === 2);
 
 const morning = { label: "Morning", startTime: "12:30", endTime: "18:00" };
 const afternoon = { label: "Afternoon", startTime: "18:00", endTime: "23:00" };
@@ -136,12 +154,40 @@ pass(
 
 pass("3 days asked for are 3 columns", sheetDates("2026-10-06", "2026-10-08").length === 3);
 pass("7 days asked for are 7 columns", sheetDates("2026-10-02", "2026-10-08").length === 7);
+pass("30 days asked for are 30 columns, oldest first", sheetDates("2026-09-01", "2026-09-30").length === 30);
 pass(
-  "a month asked for is cut back to 7 columns, oldest first",
-  sheetDates("2026-09-01", "2026-09-30").join(",") ===
-    ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07"].join(",")
+  "the 30 columns start on the first day asked for and end on the last",
+  sheetDates("2026-09-01", "2026-09-30")[0] === "2026-09-01" &&
+    sheetDates("2026-09-01", "2026-09-30")[29] === "2026-09-30"
+);
+pass(
+  "a range longer than a month is cut back to 30 columns, oldest first",
+  sheetDates("2026-08-01", "2026-09-30").length === SHEET_RANGE_MAX_DAYS &&
+    sheetDates("2026-08-01", "2026-09-30")[0] === "2026-08-01" &&
+    sheetDates("2026-08-01", "2026-09-30")[29] === "2026-08-30"
 );
 pass("a reversed range is turned the right way up", sheetDates("2026-10-08", "2026-10-06").length === 3);
+
+/* ── 2b. the printed pages of a range wider than a week ──────────────────── */
+
+const month = sheetDates("2026-09-01", "2026-09-30");
+const monthPages = sheetPages(month);
+pass("30 days are split into five printed pages of 7, 7, 7, 7 and 2 days",
+  monthPages.map((pg) => pg.length).join(",") === "7,7,7,7,2", monthPages.map((pg) => pg.length).join(","));
+pass(
+  "page 1 is the first 7 days and page 2 the next 7 (the owner's own example)",
+  monthPages[0][0] === "2026-09-01" && monthPages[0][6] === "2026-09-07" &&
+    monthPages[1][0] === "2026-09-08" && monthPages[1][6] === "2026-09-14"
+);
+pass(
+  "no day is lost, repeated or reordered by the paging",
+  monthPages.flat().join(",") === month.join(",")
+);
+pass("a week or less is a single page (so no page numbers are shown)", sheetPages(sheetDates("2026-10-02", "2026-10-08")).length === 1);
+pass("one day is one page", sheetPages(["2026-10-08"]).length === 1 && sheetPages([]).length === 0);
+pass("a day knows which page it is printed on",
+  pageIndexOfDate(month, "2026-09-01") === 0 && pageIndexOfDate(month, "2026-09-08") === 1 &&
+    pageIndexOfDate(month, "2026-09-30") === 4 && pageIndexOfDate(month, "2026-01-01") === -1);
 pass("crossing a month end still steps one day at a time", addDays("2026-10-31", 1) === "2026-11-01");
 pass("the days between two keys are counted", daysBetween("2026-10-01", "2026-10-08") === 7);
 pass(
@@ -425,8 +471,21 @@ pass(
   "the sheet colours a box red, yellow or green, and has its own colours for early out and overtime",
   ["bg-emerald-200", "bg-amber-200", "bg-rose-200", "bg-sky-200", "bg-violet-200"].every((c) => adminTab.includes(c))
 );
-pass("the sheet says how many days it prints at most", adminTab.includes("SHEET_MAX_DAYS"));
+pass("the sheet says how wide a page is and how long a range may be",
+  adminTab.includes("SHEET_MAX_DAYS") && adminTab.includes("SHEET_RANGE_MAX_DAYS"));
 pass("a too-long range is cut in the date pickers too", adminTab.includes("setFromCapped") && adminTab.includes("setToCapped"));
+pass("the pickers cut at 30 days, not at 7", /days > SHEET_RANGE_MAX_DAYS/.test(adminTab) && !/days > SHEET_MAX_DAYS/.test(adminTab));
+pass("the sheet API answers with the printed pages", logsApi.includes("sheetPages(dates)") && logsApi.includes("pageCount: pages.length"));
+pass("the admin reads those pages and keeps one of them on screen",
+  adminTab.includes("sheetPagesList") && adminTab.includes("safeSheetPage") && adminTab.includes('className={`sheet-page'));
+pass("the page numbers appear only when the admin chose more than 7 days",
+  adminTab.includes("sheetPageCount > 1") && adminTab.includes("setSheetPage(i)"));
+pass("a fresh range starts again on its first page", adminTab.includes("setSheetPage(0)"));
+pass("printing emits every page, each starting on its own paper",
+  adminTab.includes("break-after: page") && adminTab.includes("page-break-after: always") &&
+    adminTab.includes("#attendance-print-area .sheet-page:last-child"));
+pass("the printed pages carry the page number in their own header",
+  adminTab.includes("Page {pageIndex + 1} of {sheetPageCount}"));
 pass("the Staff Fingerprints tab is still there", adminTab.includes("Staff Fingerprints"));
 
 const printsView = adminTab.split('{activeView === "prints" && (')[1]?.split("{/* Print styles")[0] ?? "";
@@ -490,10 +549,112 @@ pass(
   )
 );
 pass("the fingerprint is still called the main way and the PIN the backup", kiosk.includes("Fingerprint on the scanner is the main way"));
+pass("the door tablet is titled after the company (owner's wording)", kiosk.includes("Fana Cafe and restaurant plc - Attendance"));
+
+/* The supervisor lock: the owner's risk was that "someone can write for them". */
+pass("the keypad is locked until a supervisor opens it", kiosk.includes("Supervisor login required") && kiosk.includes("const locked ="));
+pass("the tablet asks the supervisor endpoint to unlock, renew and lock",
+  kiosk.includes('fetch("/api/attendance/supervisor"') && kiosk.includes("touch: true") && kiosk.includes('method: "DELETE"'));
+pass("only Staff Accounts with the supervisor role are offered on the door",
+  kiosk.includes("s.role === ATTENDANCE_SUPERVISOR_ROLE") && kiosk.includes("/api/staff?public=1"));
+pass("the two minutes start again on every touch of the keypad",
+  kiosk.includes("noteActivity()") && /at \+ SUPERVISOR_IDLE_TIMEOUT_MS/.test(kiosk));
+pass("the tablet says how long the unlock still lasts, and can be locked at once",
+  kiosk.includes("countdownLabel(") && kiosk.includes("Lock now"));
+pass("the timeout is announced when it locks itself", kiosk.includes("Locked again") && kiosk.includes("Two minutes passed"));
+pass("a PIN refused by the server sends the tablet back to the login",
+  kiosk.includes("d.needsSupervisor") && kiosk.includes("Supervisor login needed"));
+pass("the fingerprint scanner and the Overtime button never need a supervisor",
+  !kiosk.includes("locked ? unlockKeypad : markOvertime") && kiosk.includes("onClick={markOvertime}"));
+
+const at = new Date("2026-10-15T09:00:00Z").getTime();
+pass("two minutes of nothing expire the unlock", supervisorIdleExpired(at, at + 2 * 60000) === true);
+pass("119 seconds of nothing do not", supervisorIdleExpired(at, at + 119000) === false);
+pass("a touch starts the two minutes again", supervisorIdleExpired(at + 100000, at + 150000) === false);
+pass("a tablet with no recorded activity is locked", supervisorIdleExpired(null, at) === true);
+pass("the countdown reads 2:00, 1:15 and never goes negative",
+  countdownLabel(120000) === "2:00" && countdownLabel(75000) === "1:15" && countdownLabel(-5000) === "0:00");
+
+/* ── 10. the leaderboard: the hours of every role, ranked ────────────────── */
+
+const leaderApi = read("src/app/api/attendance/leaderboard/route.ts");
+const people = [
+  { id: 1, name: "Alem", roleId: 1, roleName: "Waiter" },
+  { id: 2, name: "Abel", roleId: 1, roleName: "Waiter" },
+  { id: 3, name: "Sara", roleId: 2, roleName: "Cleaner" },
+  { id: 4, name: "Mulu", roleId: 1, roleName: "Waiter" },   // never came
+  { id: 5, name: "Nahom", roleId: null, roleName: "No role" },
+];
+const days = (memberId: number, hours: number, count: number) =>
+  Array.from({ length: count }, (_, i) => ({ memberId, clockIn: new Date(Date.UTC(2026, 9, 1 + i, 6)), clockOut: new Date(Date.UTC(2026, 9, 1 + i, 6 + hours)), totalMinutes: hours * 60 }));
+const board = buildLeaderboard(
+  [...days(1, 8, 5), ...days(2, 7, 5), ...days(3, 6, 5), { memberId: 5, clockIn: new Date(Date.UTC(2026, 9, 1, 6)), clockOut: new Date(Date.UTC(2026, 9, 1, 9)), totalMinutes: 180 }],
+  people,
+  new Date("2026-10-15T12:00:00Z")
+);
+const waiters = board.find((g) => g.roleName === "Waiter")!;
+pass("the board is grouped by role, alphabetically, with \"No role\" last",
+  board.map((g) => g.roleName).join(",") === "Cleaner,Waiter,No role", board.map((g) => g.roleName).join(","));
+pass("the owner's own example: Alem first with 40 hours, Abel second with 35",
+  waiters.rows[0].name === "Alem" && waiters.rows[0].rank === 1 && waiters.rows[0].totalHours === "40h 00m" &&
+    waiters.rows[1].name === "Abel" && waiters.rows[1].rank === 2 && waiters.rows[1].totalHours === "35h 00m",
+  JSON.stringify(waiters.rows.map((r) => [r.rank, r.name, r.totalHours])));
+pass("the rank follows the hours, and the plain hours read as the owner writes them",
+  waiters.rows[0].totalMinutes > waiters.rows[1].totalMinutes && wholeHoursOf(waiters.rows[0].totalMinutes) === 40);
+pass("somebody who never came is not ranked, but he is counted",
+  waiters.rows.length === 2 && waiters.notSeen === 1 && !waiters.rows.some((r) => r.name === "Mulu"));
+pass("each role card carries its own total", hoursLabel(board.find((g) => g.roleName === "Cleaner")!.totalMinutes) === "30h 00m");
+pass("a day that is still open counts the time so far and says so",
+  (() => {
+    const open = buildLeaderboard(
+      [{ memberId: 1, clockIn: new Date("2026-10-15T06:00:00Z"), clockOut: null, totalMinutes: null }],
+      [{ id: 1, name: "Alem", roleId: 1, roleName: "Waiter" }],
+      new Date("2026-10-15T08:30:00Z")
+    );
+    const row = open[0].rows[0];
+    return row.totalMinutes === 150 && row.stillIn === true && row.totalHours === "2h 30m" && row.workedMinutes === 0;
+  })());
+pass("a closed day counts its OUT total, and a missing total falls back to the two stamps",
+  leaderMinutesOf({ clockIn: new Date("2026-10-15T06:00:00Z"), clockOut: new Date("2026-10-15T14:00:00Z"), totalMinutes: 480 }).workedMinutes === 480 &&
+    leaderMinutesOf({ clockIn: new Date("2026-10-15T06:00:00Z"), clockOut: new Date("2026-10-15T14:00:00Z"), totalMinutes: null }).workedMinutes === 480);
+pass("a line with no IN adds nothing", leaderMinutesOf({ clockIn: null, clockOut: null }).workedMinutes === 0);
+pass("equal hours are ordered by name, so the board does not jump around",
+  (() => {
+    const tie = buildLeaderboard(
+      [
+        { memberId: 2, clockIn: new Date("2026-10-14T06:00:00Z"), clockOut: new Date("2026-10-14T14:00:00Z"), totalMinutes: 480 },
+        { memberId: 1, clockIn: new Date("2026-10-14T06:00:00Z"), clockOut: new Date("2026-10-14T14:00:00Z"), totalMinutes: 480 },
+      ],
+      [
+        { id: 1, name: "Zelalem", roleId: 1, roleName: "Waiter" },
+        { id: 2, name: "Abel", roleId: 1, roleName: "Waiter" },
+      ]
+    );
+    return tie[0].rows.map((r) => r.name).join(",") === "Abel,Zelalem";
+  })());
+pass("overtime days are counted on the row", buildLeaderboard(
+  [{ memberId: 1, clockIn: new Date("2026-10-14T06:00:00Z"), clockOut: new Date("2026-10-14T14:00:00Z"), totalMinutes: 480, isOvertime: true }],
+  [{ id: 1, name: "Alem", roleId: 1, roleName: "Waiter" }]
+)[0].rows[0].overtimeDays === 1);
+pass("the leaderboard is an admin-only read of the attendance list",
+  leaderApi.includes("requireAdmin()") && leaderApi.includes("attendanceMembers") && !leaderApi.includes("staffUsers"));
+pass("the leaderboard reaches no further than the sheet's 30 days",
+  leaderApi.includes("sheetDates(from, to)") && leaderApi.includes("SHEET_RANGE_MAX_DAYS"));
+pass("the board is a tab of its own, between the sheet and the fingerprints",
+  adminTab.includes('"leaderboard"') && adminTab.indexOf('"sheet"') < adminTab.indexOf('"leaderboard"') &&
+    adminTab.indexOf('"leaderboard"') < adminTab.indexOf('"prints"'));
+pass("the leaderboard tab reads the role cards with rank, name and hours",
+  adminTab.includes("/api/attendance/leaderboard") && adminTab.includes("group.rows.map((row)") &&
+    adminTab.includes("{row.rank}") && adminTab.includes("{row.totalHours}") && adminTab.includes("group.roleName"));
+pass("the leaderboard has its own range and role filter",
+  adminTab.includes("All roles") && adminTab.includes("setLeaderRange(") && adminTab.includes("Load Leaderboard"));
 
 if (failures > 0) {
   console.error(`\n❌ ATTENDANCE LISTING GUARD FAILED (${failures})\n`);
   process.exit(1);
 }
 console.log("\n✅ Attendance listing guard PASSED");
-console.log("   • roles own the times, the members are their own list, the sheet is coloured and 7 days at most");
+console.log("   • roles own the times, the members are their own list, the sheet is coloured and reaches 30 days");
+console.log("   • a range wider than a week is shown and printed one page of 7 days at a time");
+console.log("   • the door tablet's PIN keypad needs a supervisor and locks itself after 2 minutes");
+console.log("   • the leaderboard ranks every role by the hours its people spent at work");

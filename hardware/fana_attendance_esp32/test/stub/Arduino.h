@@ -152,6 +152,29 @@ public:
   bool operator!() const { return false; }
 };
 
+/* ── the wall clock: NTP on the device, a fixed stub here ────────────────────
+ * The sketch reads the time through the ESP32 core's own getLocalTime(), so the
+ * host build gets the same call with an answer the tests control: they can move
+ * the clock forward, and they can pretend NTP never answered at all. */
+#include <ctime>
+extern bool stubTimeValid;   // false = NTP has not answered yet
+extern int  stubHour;
+extern int  stubMinute;
+extern int  stubSecond;
+static inline void configTime(long, int, const char *, const char * = nullptr, const char * = nullptr) {}
+static inline bool getLocalTime(struct tm *info, uint32_t = 5000) {
+  (void)info;
+  if (!stubTimeValid || !info) return false;
+  memset(info, 0, sizeof(*info));
+  info->tm_year = 2026 - 1900;
+  info->tm_mon = 9;          // October
+  info->tm_mday = 15;
+  info->tm_hour = stubHour;
+  info->tm_min = stubMinute;
+  info->tm_sec = stubSecond;
+  return true;
+}
+
 // Set by the test harness: called for every command written to a UART, and it
 // appends whatever the simulated device answers.
 extern bool (*serialWriteHook)(int portId, const uint8_t *buf, size_t n, std::deque<uint8_t> &rxOut);

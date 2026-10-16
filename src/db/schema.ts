@@ -86,7 +86,13 @@ export const galleryItems = pgTable("gallery_items", {
 export const staffUsers = pgTable("staff_users", {
   id: serial("id").primaryKey(),
   name: varchar("name", { length: 100 }).notNull(),
-  role: varchar("role", { length: 20 }).notNull().default("waiter"), // waiter | cashier
+  // WIDENED from varchar(20) to varchar(40) (owner, Oct 2026): the attendance
+  // supervisor role is written "attendance_supervisor" (21 characters), and a
+  // 20-character column would have rejected - or on a loose database silently
+  // cut - every supervisor account, which would lock the door tablet's backup
+  // PIN keypad with nobody able to open it. The migration normalizes this
+  // column to text, so the two never disagree again.
+  role: varchar("role", { length: 40 }).notNull().default("waiter"), // waiter | cashier | station | attendance_supervisor | admin
   pin: varchar("pin", { length: 100 }).notNull(), // bcrypt hash (60 chars) or legacy plaintext
   // POCKET OFF-DUTY SWITCH (owner's decision, Sept 2026): staff phones kept
   // ringing at home long after the shift ended. Each person can switch their

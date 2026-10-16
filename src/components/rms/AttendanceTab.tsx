@@ -12,11 +12,16 @@ import {
   Settings,
   Timer,
   Trash2,
+  Trophy,
   UserPlus,
   Users,
   X,
 } from "lucide-react";
-import { isAttendanceExpectedOnDate } from "@/lib/attendance";
+import {
+  SHEET_MAX_DAYS,
+  SHEET_RANGE_MAX_DAYS,
+  isAttendanceExpectedOnDate,
+} from "@/lib/attendance";
 import { useStaffT } from "@/lib/staff-i18n";
 
 /**
@@ -29,9 +34,16 @@ import { useStaffT } from "@/lib/staff-i18n";
  * The people on this page are the ATTENDANCE list (Staff Members), not the
  * station logins: a cleaner or a chef clocks in with a finger and never logs in
  * anywhere, so he must be addable here without creating a login.
+ *
+ * Two of the owner's later asks live here too:
+ *   • PAPER SHEET VIEW reaches 30 days and splits itself into printed pages of
+ *     7 days, with the page numbers below the sheet (only when there is more
+ *     than one page) and a print that comes out divided the same way.
+ *   • LEADERBOARD ranks the people of every role by the hours they spent at
+ *     work in the chosen range.
  */
 
-type ViewKey = "today" | "roles" | "members" | "sheet" | "prints";
+type ViewKey = "today" | "roles" | "members" | "sheet" | "leaderboard" | "prints";
 
 interface RoleShift {
   id?: number;
@@ -99,7 +111,39 @@ const LEGEND = [
   { label: "Overtime", className: "bg-violet-200 text-violet-950 border-violet-500" },
 ];
 
-const SHEET_MAX_DAYS = 7;
+/** One ranked person of the leaderboard, as the API returns him. */
+interface LeaderRow {
+  rank: number;
+  memberId: number;
+  name: string;
+  workedMinutes: number;
+  openMinutes: number;
+  totalMinutes: number;
+  totalHours: string;
+  wholeHours: number;
+  days: number;
+  overtimeDays: number;
+  stillIn: boolean;
+}
+
+/** One role card of the leaderboard. */
+interface LeaderGroup {
+  roleId: number | null;
+  roleName: string;
+  rows: LeaderRow[];
+  totalMinutes: number;
+  totalHours: string | null;
+  notSeen: number;
+}
+
+interface Leaderboard {
+  from: string;
+  to: string;
+  days: number;
+  roles: Array<{ id: number; name: string }>;
+  groups: LeaderGroup[];
+  totals: { people: number; minutes: number; hours: string | null };
+}
 
 export default function AttendanceTab() {
   const { t: Lraw } = useStaffT();
@@ -124,14 +168,29 @@ export default function AttendanceTab() {
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [todayLogs, setTodayLogs] = useState<any>(null);
   const [sheetData, setSheetData] = useState<any>(null);
+  // Which printed page of the sheet is on screen (0-based). One page is 7 days
+  // wide; the page numbers below the sheet appear only when there is more than
+  // one, and printing emits every page whether it is on screen or not.
+  const [sheetPage, setSheetPage] = useState(0);
 
-  // Sheet range: this week, at most 7 days.
+  // Sheet range: up to a month, at most SHEET_RANGE_MAX_DAYS (30) days.
   const [fromDate, setFromDate] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() - 6);
     return d.toISOString().slice(0, 10);
   });
   const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+  // Leaderboard: its own range (a month by default) and its own role filter.
+  const [leaderboard, setLeaderboard] = useState<Leaderboard | null>(null);
+  const [leaderLoading, setLeaderLoading] = useState(false);
+  const [leaderFrom, setLeaderFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - (SHEET_RANGE_MAX_DAYS - 1));
+    return d.toISOString().slice(0, 10);
+  });
+  const [leaderTo, setLeaderTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [leaderRoleId, setLeaderRoleId] = useState<string>("");
 
   // Role form
   const [roleFormOpen, setRoleFormOpen] = useState(false);
@@ -201,6 +260,9 @@ export default function AttendanceTab() {
       const r = await fetch(`/api/attendance/logs?from=${fromDate}&to=${toDate}`);
       if (r.ok) {
         setSheetData(await r.json());
+        // A fresh range starts on its first page: the page that was open may
+        // not even exist any more (30 days -> 5 pages, 3 days -> 1 page).
+        setSheetPage(0);
       } else {
         const d = await r.json().catch(() => ({}));
         say(d.error || "Could not load the sheet", true);
@@ -209,6 +271,23 @@ export default function AttendanceTab() {
       say("Network error. Try again.", true);
     }
   }, [fromDate, toDate]);
+
+  const loadLeaderboard = useCallback(async () => {
+    setLeaderLoading(true);
+    try {
+      const r = await fetch(`/api/attendance/leaderboard?from=${leaderFrom}&to=${leaderTo}`);
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {
+        say(d?.error || "Could not load the leaderboard", true);
+        return;
+      }
+      setLeaderboard(d as Leaderboard);
+    } catch {
+      say("Network error. Try again.", true);
+    } finally {
+      setLeaderLoading(false);
+    }
+  }, [leaderFrom, leaderTo]);
 
   useEffect(() => {
     loadRoles();
@@ -246,6 +325,10 @@ export default function AttendanceTab() {
   useEffect(() => {
     if (activeView === "sheet") loadSheet();
   }, [activeView, loadSheet]);
+
+  useEffect(() => {
+    if (activeView === "leaderboard") loadLeaderboard();
+  }, [activeView, loadLeaderboard]);
 
   // Refresh members whenever Staff Fingerprints is opened so the list and
   // dropdown reflect the latest server mappings, including manual additions.
@@ -586,17 +669,24 @@ export default function AttendanceTab() {
     }
   };
 
-  /* ── the sheet range never grows past a week ──────────────────────────── */
+  /* ── the sheet range never grows past a month ─────────────────────────── *
+   * The owner asked for "up to 30 days": a longer ask is cut back here, in the
+   * pickers, and the sheet itself is then shown and printed one page of
+   * SHEET_MAX_DAYS (7) days at a time. Cutting from the date the admin moved
+   * keeps the day he just chose on screen.
+   * ──────────────────────────────────────────────────────────────────────── */
   const setFromCapped = (value: string) => {
     setFromDate(value);
     const to = new Date(toDate);
     const from = new Date(value);
     const days = Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
-    if (days > SHEET_MAX_DAYS) {
+    if (days > SHEET_RANGE_MAX_DAYS) {
       const cut = new Date(from);
-      cut.setDate(cut.getDate() + SHEET_MAX_DAYS - 1);
+      cut.setDate(cut.getDate() + SHEET_RANGE_MAX_DAYS - 1);
       setToDate(cut.toISOString().slice(0, 10));
-      say(`A sheet prints ${SHEET_MAX_DAYS} days at most: the To Date moved to ${cut.toISOString().slice(0, 10)}`);
+      say(
+        `A sheet covers ${SHEET_RANGE_MAX_DAYS} days at most (${SHEET_MAX_DAYS} per page): the To Date moved to ${cut.toISOString().slice(0, 10)}`
+      );
     }
   };
   const setToCapped = (value: string) => {
@@ -604,12 +694,32 @@ export default function AttendanceTab() {
     const from = new Date(fromDate);
     const to = new Date(value);
     const days = Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
-    if (days > SHEET_MAX_DAYS) {
+    if (days > SHEET_RANGE_MAX_DAYS) {
       const cut = new Date(to);
-      cut.setDate(cut.getDate() - (SHEET_MAX_DAYS - 1));
+      cut.setDate(cut.getDate() - (SHEET_RANGE_MAX_DAYS - 1));
       setFromDate(cut.toISOString().slice(0, 10));
-      say(`A sheet prints ${SHEET_MAX_DAYS} days at most: the From Date moved to ${cut.toISOString().slice(0, 10)}`);
+      say(
+        `A sheet covers ${SHEET_RANGE_MAX_DAYS} days at most (${SHEET_MAX_DAYS} per page): the From Date moved to ${cut.toISOString().slice(0, 10)}`
+      );
     }
+  };
+
+  /** The printed pages of the sheet that is on screen right now. */
+  const sheetPagesList: string[][] = Array.isArray(sheetData?.pages) && sheetData.pages.length > 0
+    ? sheetData.pages
+    : Array.isArray(sheetData?.dates) && sheetData.dates.length > 0
+      ? [sheetData.dates]
+      : [];
+  const sheetPageCount = sheetPagesList.length;
+  const safeSheetPage = Math.min(Math.max(0, sheetPage), Math.max(0, sheetPageCount - 1));
+
+  /** One of the leaderboard's quick ranges: "last 7 days", "last 30 days". */
+  const setLeaderRange = (days: number) => {
+    const to = new Date();
+    const from = new Date();
+    from.setDate(from.getDate() - (days - 1));
+    setLeaderFrom(from.toISOString().slice(0, 10));
+    setLeaderTo(to.toISOString().slice(0, 10));
   };
 
   return (
@@ -624,6 +734,7 @@ export default function AttendanceTab() {
             loadToday();
             loadRoles();
             loadMembers();
+            if (activeView === "leaderboard") loadLeaderboard();
             say("");
           }}
           className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl"
@@ -641,6 +752,7 @@ export default function AttendanceTab() {
             { key: "roles", label: "Role & Time", icon: <Timer className="w-4 h-4" /> },
             { key: "members", label: "Staff Members", icon: <Users className="w-4 h-4" /> },
             { key: "sheet", label: "Paper Sheet View", icon: <Calendar className="w-4 h-4" /> },
+            { key: "leaderboard", label: "Leaderboard", icon: <Trophy className="w-4 h-4" /> },
             { key: "prints", label: "Staff Fingerprints", icon: <Fingerprint className="w-4 h-4" /> },
           ] as Array<{ key: ViewKey; label: string; icon: ReactNode }>
         ).map((v) => (
@@ -1216,9 +1328,33 @@ export default function AttendanceTab() {
                 <Printer className="w-4 h-4" /> Print Hard Copy
               </button>
             )}
+            <div className="flex flex-wrap gap-2">
+              {[
+                { label: "Last 7 days", days: 7 },
+                { label: "Last 14 days", days: 14 },
+                { label: "Last 30 days", days: SHEET_RANGE_MAX_DAYS },
+              ].map((preset) => (
+                <button
+                  key={preset.days}
+                  onClick={() => {
+                    const to = new Date();
+                    const from = new Date();
+                    from.setDate(from.getDate() - (preset.days - 1));
+                    setFromDate(from.toISOString().slice(0, 10));
+                    setToDate(to.toISOString().slice(0, 10));
+                  }}
+                  className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-300 font-bold text-[11px] px-3 py-2.5 rounded-xl"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
             <p className="text-[11px] text-stone-400">
-              One box per person per day, {SHEET_MAX_DAYS} days at most: green = on time, yellow = late, and red = absent
-              from registration through today. Dates before registration and after today stay blank.
+              One box per person per day, up to {SHEET_RANGE_MAX_DAYS} days: {SHEET_MAX_DAYS} days per page. The page
+              numbers below the sheet appear only when the range is wider than one page, and Print Hard Copy prints
+              every page in order (the first {SHEET_MAX_DAYS} days, then the next {SHEET_MAX_DAYS}, ...). Green = on
+              time, yellow = late, red = absent from registration through today.
+              {" Dates before registration and after today stay blank."}
             </p>
           </div>
 
@@ -1234,126 +1370,334 @@ export default function AttendanceTab() {
           </div>
 
           {sheetData && (
-            <div
-              id="attendance-print-area"
-              className="bg-white text-black rounded-2xl overflow-hidden shadow-xl print:shadow-none print:rounded-none print:border print:border-black"
-            >
-              <div className="p-4 bg-[#1C120F] text-white text-center border-b-4 border-[#C9A227]">
-                <h2 className="font-serif font-black text-lg">FANA CAFÉ & RESTAURANT</h2>
-                <p className="text-xs text-amber-200">
-                  Attendance Sheet - {sheetData.from} to {sheetData.to}
-                </p>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-sm">
-                  <thead>
-                    <tr className="bg-stone-100 border-b-2 border-black">
-                      <th className="p-2 border border-black font-black text-[15px]">Employee Name</th>
-                      {sheetData.dates.map((d: string) => (
-                        <th
-                          key={d}
-                          colSpan={2}
-                          className="p-2 border border-black font-black text-center bg-amber-100 text-[15px]"
-                        >
-                          {d}
-                          <br />
-                          <span className="text-[12px] font-bold">
-                            {new Date(`${d}T00:00:00`).toLocaleDateString("en-US", { weekday: "short" })} Day
-                          </span>
-                        </th>
-                      ))}
-                    </tr>
-                    <tr className="bg-stone-50 border-b border-black">
-                      <th className="p-2 border border-black" />
-                      {sheetData.dates.map((d: string) => (
-                        <Fragment key={`${d}-sub`}>
-                          <th className="p-1 border border-black text-[12px] font-black text-center">
-                            IN (TIME & SGN.)
-                          </th>
-                          <th className="p-1 border border-black text-[12px] font-black text-center">
-                            OUT (TIME & SGN.)
-                          </th>
-                        </Fragment>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sheetData.staffList.map((s: any) => (
-                      <tr key={s.id} className="border-b border-black">
-                        <td className="p-2 border border-black font-black text-[15px] whitespace-nowrap">
-                          {s.name}
-                          <span className="block text-[11px] font-bold text-stone-600">{s.role}</span>
-                        </td>
-                        {sheetData.dates.map((d: string) => {
-                          const attendanceExpected = isAttendanceExpectedOnDate(d, s.registeredOn, sheetData.today);
-                          const cell = attendanceExpected ? sheetData.matrix[s.id]?.[d] ?? null : null;
-                          const inClass = cell
-                            ? IN_STYLE[cell.inStatus] || ""
-                            : attendanceExpected
-                              ? IN_STYLE.absent
-                              : "";
-                          const outClass = cell
-                            ? OUT_STYLE[cell.outStatus] || ""
-                            : attendanceExpected
-                              ? OUT_STYLE.none
-                              : "";
-                          return (
-                            <Fragment key={`${s.id}-${d}`}>
-                              <td
-                                className={`p-2 border border-black text-center font-mono font-black text-[14px] ${inClass}`}
-                              >
-                                {cell?.clockInTime ? (
-                                  <>
-                                    <div>{cell.clockInTime}</div>
-                                    <div className="text-[11px] font-bold">
-                                      {cell.fingerprintId ? `ID ${cell.fingerprintId}` : "PIN"}
-                                    </div>
-                                    {cell.lateMinutes > 0 && (
-                                      <div className="text-[11px] font-black">Late {cell.lateMinutes}m</div>
-                                    )}
-                                  </>
-                                ) : attendanceExpected ? (
-                                  <span className="text-[12px] font-black">Absent</span>
-                                ) : null}
-                              </td>
-                              <td
-                                className={`p-2 border border-black text-center font-mono font-black text-[14px] ${outClass}`}
-                              >
-                                {cell?.clockOutTime ? (
-                                  <>
-                                    <div>{cell.clockOutTime}</div>
-                                    <div className="text-[11px] font-bold">{cell.totalHours}</div>
-                                    {cell.isOvertime && <div className="text-[11px] font-black">Overtime</div>}
-                                    {!cell.isOvertime && cell.earlyOut && (
-                                      <div className="text-[11px] font-black">Early out</div>
-                                    )}
-                                  </>
-                                ) : attendanceExpected && cell?.clockInTime ? (
-                                  <span className="text-[12px] font-black">Still In</span>
-                                ) : attendanceExpected ? (
-                                  <span className="text-[12px] font-black">-</span>
-                                ) : null}
-                              </td>
-                            </Fragment>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                    {sheetData.staffList.length === 0 && (
-                      <tr>
-                        <td colSpan={1 + sheetData.dates.length * 2} className="p-6 text-center text-stone-500">
-                          Nobody on the attendance list yet. Add the people in Staff Members and they appear here.
-                        </td>
-                      </tr>
+            <div id="attendance-print-area" className="space-y-4 print:space-y-0">
+              {sheetPagesList.map((pageDates: string[], pageIndex: number) => (
+                <section
+                  key={pageDates[0] || pageIndex}
+                  className={`sheet-page bg-white text-black rounded-2xl overflow-hidden shadow-xl print:shadow-none print:rounded-none print:border print:border-black ${
+                    pageIndex === safeSheetPage ? "is-active" : ""
+                  }`}
+                >
+                  <div className="p-4 bg-[#1C120F] text-white text-center border-b-4 border-[#C9A227]">
+                    <h2 className="font-serif font-black text-lg">FANA CAFÉ & RESTAURANT</h2>
+                    <p className="text-xs text-amber-200">
+                      Attendance Sheet - {pageDates[0]} to {pageDates[pageDates.length - 1]}
+                    </p>
+                    {sheetPageCount > 1 && (
+                      <p className="text-[11px] font-black text-amber-100 mt-0.5">
+                        Page {pageIndex + 1} of {sheetPageCount} • days {pageIndex * SHEET_MAX_DAYS + 1}-
+                        {Math.min((pageIndex + 1) * SHEET_MAX_DAYS, sheetData.dates.length)} of{" "}
+                        {sheetData.dates.length}
+                      </p>
                     )}
-                  </tbody>
-                </table>
-              </div>
-              <div className="p-3 bg-stone-100 text-[11px] text-stone-700 text-center font-bold">
-                Digital signature = fingerprint scan • Green = on time • Yellow = late (15 minutes after his role
-                starts) • Red = absent from registration through today • Blank = before registration or future • Blue =
-                early out • Violet = overtime • Total hours = OUT - IN
-              </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse text-sm">
+                      <thead>
+                        <tr className="bg-stone-100 border-b-2 border-black">
+                          <th className="p-2 border border-black font-black text-[15px]">Employee Name</th>
+                          {pageDates.map((d: string) => (
+                            <th
+                              key={d}
+                              colSpan={2}
+                              className="p-2 border border-black font-black text-center bg-amber-100 text-[15px]"
+                            >
+                              {d}
+                              <br />
+                              <span className="text-[12px] font-bold">
+                                {new Date(`${d}T00:00:00`).toLocaleDateString("en-US", { weekday: "short" })} Day
+                              </span>
+                            </th>
+                          ))}
+                        </tr>
+                        <tr className="bg-stone-50 border-b border-black">
+                          <th className="p-2 border border-black" />
+                          {pageDates.map((d: string) => (
+                            <Fragment key={`${d}-sub`}>
+                              <th className="p-1 border border-black text-[12px] font-black text-center">
+                                IN (TIME & SGN.)
+                              </th>
+                              <th className="p-1 border border-black text-[12px] font-black text-center">
+                                OUT (TIME & SGN.)
+                              </th>
+                            </Fragment>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sheetData.staffList.map((s: any) => (
+                          <tr key={s.id} className="border-b border-black">
+                            <td className="p-2 border border-black font-black text-[15px] whitespace-nowrap">
+                              {s.name}
+                              <span className="block text-[11px] font-bold text-stone-600">{s.role}</span>
+                            </td>
+                            {pageDates.map((d: string) => {
+                              const attendanceExpected = isAttendanceExpectedOnDate(d, s.registeredOn, sheetData.today);
+                              const cell = attendanceExpected ? sheetData.matrix[s.id]?.[d] ?? null : null;
+                              const inClass = cell
+                                ? IN_STYLE[cell.inStatus] || ""
+                                : attendanceExpected
+                                  ? IN_STYLE.absent
+                                  : "";
+                              const outClass = cell
+                                ? OUT_STYLE[cell.outStatus] || ""
+                                : attendanceExpected
+                                  ? OUT_STYLE.none
+                                  : "";
+                              return (
+                                <Fragment key={`${s.id}-${d}`}>
+                                  <td
+                                    className={`p-2 border border-black text-center font-mono font-black text-[14px] ${inClass}`}
+                                  >
+                                    {cell?.clockInTime ? (
+                                      <>
+                                        <div>{cell.clockInTime}</div>
+                                        <div className="text-[11px] font-bold">
+                                          {cell.fingerprintId ? `ID ${cell.fingerprintId}` : "PIN"}
+                                        </div>
+                                        {cell.lateMinutes > 0 && (
+                                          <div className="text-[11px] font-black">Late {cell.lateMinutes}m</div>
+                                        )}
+                                      </>
+                                    ) : attendanceExpected ? (
+                                      <span className="text-[12px] font-black">Absent</span>
+                                    ) : null}
+                                  </td>
+                                  <td
+                                    className={`p-2 border border-black text-center font-mono font-black text-[14px] ${outClass}`}
+                                  >
+                                    {cell?.clockOutTime ? (
+                                      <>
+                                        <div>{cell.clockOutTime}</div>
+                                        <div className="text-[11px] font-bold">{cell.totalHours}</div>
+                                        {cell.isOvertime && <div className="text-[11px] font-black">Overtime</div>}
+                                        {!cell.isOvertime && cell.earlyOut && (
+                                          <div className="text-[11px] font-black">Early out</div>
+                                        )}
+                                      </>
+                                    ) : attendanceExpected && cell?.clockInTime ? (
+                                      <span className="text-[12px] font-black">Still In</span>
+                                    ) : attendanceExpected ? (
+                                      <span className="text-[12px] font-black">-</span>
+                                    ) : null}
+                                  </td>
+                                </Fragment>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                        {sheetData.staffList.length === 0 && (
+                          <tr>
+                            <td colSpan={1 + pageDates.length * 2} className="p-6 text-center text-stone-500">
+                              Nobody on the attendance list yet. Add the people in Staff Members and they appear here.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="p-3 bg-stone-100 text-[11px] text-stone-700 text-center font-bold">
+                    Digital signature = fingerprint scan • Green = on time • Yellow = late (15 minutes after his role
+                    starts) • Red = absent from registration through today • Blank = before registration or future •
+                    Blue = early out • Violet = overtime • Total hours = OUT - IN
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
+
+          {/* ── the page numbers: only when the range is wider than one page ── */}
+          {sheetData && sheetPageCount > 1 && (
+            <div className="print:hidden bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-3 flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-black uppercase text-amber-200">Page</span>
+              <button
+                onClick={() => setSheetPage(Math.max(0, safeSheetPage - 1))}
+                disabled={safeSheetPage === 0}
+                className="px-3 py-2 rounded-xl bg-[#3D2314] text-stone-200 text-[11px] font-bold hover:bg-white/10 disabled:opacity-40"
+              >
+                ‹ Prev
+              </button>
+              {sheetPagesList.map((pageDates: string[], i: number) => (
+                <button
+                  key={pageDates[0] || i}
+                  onClick={() => setSheetPage(i)}
+                  title={`${pageDates[0]} to ${pageDates[pageDates.length - 1]}`}
+                  className={`min-w-10 px-3 py-2 rounded-xl text-[11px] font-black ${
+                    i === safeSheetPage
+                      ? "bg-[#C9A227] text-[#2C1B17]"
+                      : "bg-[#3D2314] text-stone-300 hover:bg-white/10"
+                  }`}
+                >
+                  {i + 1}
+                </button>
+              ))}
+              <button
+                onClick={() => setSheetPage(Math.min(sheetPageCount - 1, safeSheetPage + 1))}
+                disabled={safeSheetPage >= sheetPageCount - 1}
+                className="px-3 py-2 rounded-xl bg-[#3D2314] text-stone-200 text-[11px] font-bold hover:bg-white/10 disabled:opacity-40"
+              >
+                Next ›
+              </button>
+              <span className="text-[11px] text-stone-400 ml-auto">
+                {sheetData.dates.length} days on {sheetPageCount} pages • page {safeSheetPage + 1} shows{" "}
+                {sheetPagesList[safeSheetPage]?.[0]} to{" "}
+                {sheetPagesList[safeSheetPage]?.[sheetPagesList[safeSheetPage].length - 1]} • Print Hard Copy prints
+                every page, each on its own paper
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── LEADERBOARD: who spent the most time at work, by role ───────── */}
+      {activeView === "leaderboard" && (
+        <div className="space-y-4">
+          <div className="bg-[#2C1B17] p-4 rounded-2xl border border-[#C9A227]/30 flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="block text-[10px] font-bold text-amber-200 mb-1">From Date</label>
+              <input
+                type="date"
+                value={leaderFrom}
+                onChange={(e) => setLeaderFrom(e.target.value)}
+                className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-amber-200 mb-1">To Date</label>
+              <input
+                type="date"
+                value={leaderTo}
+                onChange={(e) => setLeaderTo(e.target.value)}
+                className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-amber-200 mb-1">Role</label>
+              <select
+                value={leaderRoleId}
+                onChange={(e) => setLeaderRoleId(e.target.value)}
+                className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white min-w-40"
+              >
+                <option value="">All roles</option>
+                {(leaderboard?.roles ?? []).map((r) => (
+                  <option key={r.id} value={String(r.id)}>
+                    {r.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={loadLeaderboard}
+              disabled={leaderLoading}
+              className="bg-[#C9A227] hover:bg-amber-400 disabled:opacity-60 text-[#2C1B17] font-black text-xs px-5 py-2.5 rounded-xl flex items-center gap-2"
+            >
+              <RefreshCw className={`w-4 h-4 ${leaderLoading ? "animate-spin" : ""}`} /> Load Leaderboard
+            </button>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { label: "Today", days: 1 },
+                { label: "Last 7 days", days: 7 },
+                { label: "Last 30 days", days: SHEET_RANGE_MAX_DAYS },
+              ].map((preset) => (
+                <button
+                  key={preset.days}
+                  onClick={() => setLeaderRange(preset.days)}
+                  className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-300 font-bold text-[11px] px-3 py-2.5 rounded-xl"
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-stone-400">
+              The hours of every day in the range (IN → OUT), ranked inside each role. A day that is still open counts
+              its time so far and is marked &quot;still in&quot;, so the board is right in the middle of a shift and
+              not only after everybody scanned out.
+            </p>
+          </div>
+
+          {leaderboard && (
+            <div className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 flex flex-wrap items-center gap-4">
+              <h3 className="font-bold text-amber-100 flex items-center gap-2">
+                <Trophy className="w-4 h-4 text-[#C9A227]" /> Leaderboard • {leaderboard.from} to {leaderboard.to} (
+                {leaderboard.days} day{leaderboard.days === 1 ? "" : "s"})
+              </h3>
+              <span className="text-[11px] text-stone-400">
+                {leaderboard.totals.people} people • {leaderboard.totals.hours ?? "0h 00m"} worked in this range
+              </span>
+            </div>
+          )}
+
+          {leaderLoading && !leaderboard && <p className="text-xs text-stone-400">Loading the leaderboard...</p>}
+
+          {leaderboard && (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {leaderboard.groups
+                .filter((g) => !leaderRoleId || String(g.roleId ?? "") === leaderRoleId)
+                .map((group) => (
+                  <div key={`${group.roleId ?? "none"}-${group.roleName}`} className="bg-[#2C1B17] rounded-2xl border border-stone-800 overflow-hidden">
+                    <div className="bg-[#3D2314] px-4 py-3 flex items-center justify-between border-b border-[#C9A227]/30">
+                      <div>
+                        <p className="text-[10px] uppercase font-black text-amber-200/70">Role</p>
+                        <p className="font-black text-white text-sm">{group.roleName}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] uppercase font-black text-amber-200/70">Total</p>
+                        <p className="font-mono font-black text-[#C9A227] text-sm">{group.totalHours ?? "0h 00m"}</p>
+                      </div>
+                    </div>
+                    <div className="divide-y divide-stone-800">
+                      {group.rows.map((row) => (
+                        <div key={row.memberId} className="px-4 py-3 flex items-center gap-3">
+                          <span
+                            className={`w-8 h-8 shrink-0 rounded-xl flex items-center justify-center font-black text-xs ${
+                              row.rank === 1
+                                ? "bg-[#C9A227] text-[#2C1B17]"
+                                : row.rank === 2
+                                  ? "bg-stone-300 text-stone-800"
+                                  : row.rank === 3
+                                    ? "bg-amber-800 text-amber-100"
+                                    : "bg-[#3D2314] text-stone-300"
+                            }`}
+                          >
+                            {row.rank}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-white text-sm truncate">{row.name}</p>
+                            <p className="text-[10px] text-stone-400 font-bold">
+                              {row.days} day{row.days === 1 ? "" : "s"}
+                              {row.overtimeDays > 0 ? ` • ${row.overtimeDays} overtime` : ""}
+                              {row.stillIn ? " • still in now" : ""}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="font-mono font-black text-[#C9A227] text-sm">{row.totalHours}</p>
+                            <p className="text-[10px] text-stone-500 font-bold">
+                              {row.wholeHours} hour{row.wholeHours === 1 ? "" : "s"}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                      {group.rows.length === 0 && (
+                        <p className="p-4 text-[11px] text-stone-500 text-center">
+                          Nobody of this role scanned in during this range.
+                        </p>
+                      )}
+                    </div>
+                    {group.notSeen > 0 && (
+                      <p className="px-4 py-2 text-[10px] text-stone-500 border-t border-stone-800">
+                        {group.notSeen} more {group.notSeen === 1 ? "person" : "people"} of this role had no scan in
+                        this range.
+                      </p>
+                    )}
+                  </div>
+                ))}
+              {leaderboard.groups.filter((g) => !leaderRoleId || String(g.roleId ?? "") === leaderRoleId).length ===
+                0 && (
+                <p className="text-xs text-stone-500 md:col-span-2 xl:col-span-3">
+                  No roles yet. Add the roles in Role & Time and the people in Staff Members, and the board ranks them
+                  here by the hours they worked.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -1515,6 +1859,15 @@ export default function AttendanceTab() {
 
       {/* Print styles: only the sheet, colours included, landscape paper */}
       <style jsx global>{`
+        /* On screen the sheet shows ONE page of 7 days at a time; the other
+           pages stay in the document (hidden) so printing can emit them too. */
+        #attendance-print-area .sheet-page {
+          display: none;
+        }
+        #attendance-print-area .sheet-page.is-active {
+          display: block;
+        }
+
         @media print {
           body * {
             visibility: hidden;
@@ -1532,6 +1885,19 @@ export default function AttendanceTab() {
             color: black !important;
             -webkit-print-color-adjust: exact;
             print-color-adjust: exact;
+          }
+          /* The owner's rule: "when he wants to click print it will be printed
+             divided like the 1st 7 days then next 7 days". Every page of the
+             range comes out, in order, each starting on its own paper. */
+          #attendance-print-area .sheet-page {
+            display: block !important;
+            break-after: page;
+            page-break-after: always;
+            break-inside: auto;
+          }
+          #attendance-print-area .sheet-page:last-child {
+            break-after: auto;
+            page-break-after: auto;
           }
           #attendance-print-area td,
           #attendance-print-area th,

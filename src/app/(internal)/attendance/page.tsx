@@ -1,7 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, AlertCircle, Clock, Fingerprint, Timer } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CheckCircle2, AlertCircle, Clock, Fingerprint, Lock, ShieldCheck, Timer } from "lucide-react";
+import {
+  ATTENDANCE_SUPERVISOR_ROLE,
+  SUPERVISOR_IDLE_TIMEOUT_MS,
+  countdownLabel,
+} from "@/lib/attendance-supervisor";
 
 /**
  * THE DOOR TABLET (/attendance).
@@ -14,11 +19,27 @@ import { CheckCircle2, AlertCircle, Clock, Fingerprint, Timer } from "lucide-rea
  *   the days his finger is wet or dirty, and the Overtime button.
  *   RIGHT: today, live, as the paper sheet - name, IN (time & signature), OUT
  *   (time & signature), total hours, status. Real time: the server pushes the
- *   moment a scan is clocked in/out (SSE), so there is no polling at all.
+ * moment a scan is clocked in/out (SSE), so there is no polling at all.
  *
  * The fingerprint stays the main way: the ESP32 posts the scan straight to
  * /api/attendance/clock and this page picks it up instantly. The PIN
  * is only the second option.
+ *
+ * THE SUPERVISOR LOCK (owner, Oct 2026: "the 2nd option is good but it is
+ * risky since someone can write for them"): the PIN keypad is locked until an
+ * ATTENDANCE SUPERVISOR opens it with his own name and PIN - a normal Staff
+ * Account with the role "Attendance Supervisor (/attendance)". Two minutes
+ * after the last touch of the keypad the tablet locks itself again and asks for
+ * the login once more. What the lock never touches:
+ *
+ *   • the fingerprint scanner (the ESP32 posts straight to the server, so the
+ *     main way in needs no supervisor and never queues behind one),
+ *   • the live sheet on the right,
+ *   • the Overtime button, which is pressed right after a person's own scan.
+ *
+ * The two minutes are counted on the server too: /api/attendance/clock refuses
+ * a PIN entry whose supervisor cookie has expired, so hiding the keypad in the
+ * browser would not be enough.
  */
 
 interface Member {
@@ -26,6 +47,12 @@ interface Member {
   name: string;
   role: string;
   hasPin: boolean;
+}
+
+interface Supervisor {
+  id: number;
+  name: string;
+  role: string;
 }
 
 interface TodayLog {
@@ -61,13 +88,29 @@ type Flash = { kind: "ok" | "bad" | "info"; title: string; detail?: string } | n
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "ok"];
 
+/** How often the tablet renews its two minutes on the server while in use. */
+const TOUCH_EVERY_MS = 20000;
+
 export default function AttendanceKiosk() {
   const [today, setToday] = useState<TodayData | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
+  const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
   const [memberId, setMemberId] = useState<string>("");
   const [pin, setPin] = useState("");
   const [flash, setFlash] = useState<Flash>(null);
   const [busy, setBusy] = useState(false);
+
+  /* ── the supervisor unlock ─────────────────────────────────────────────── */
+  const [supervisorName, setSupervisorName] = useState<string | null>(null);
+  const [supervisorId, setSupervisorId] = useState<string>("");
+  const [supervisorPin, setSupervisorPin] = useState("");
+  /** Epoch ms when the keypad locks itself again; null while it is locked. */
+  const [unlockExpiresAt, setUnlockExpiresAt] = useState<number | null>(null);
+  /** Ticks once a second: it drives the countdown and the automatic lock. */
+  const [now, setNow] = useState(() => Date.now());
+  const lastTouchSent = useRef(0);
+
+  const locked = unlockExpiresAt === null || now >= unlockExpiresAt;
 
   const fetchToday = useCallback(async () => {
     try {
@@ -87,9 +130,50 @@ export default function AttendanceKiosk() {
     }
   }, []);
 
+  /** The supervisors are Staff Accounts with their own role; only their names
+   *  are read here (the public login list never carries a PIN). */
+  const fetchSupervisors = useCallback(async () => {
+    try {
+      const r = await fetch("/api/staff?public=1");
+      if (!r.ok) return;
+      const list = (await r.json()) as Supervisor[];
+      setSupervisors(list.filter((s) => s.role === ATTENDANCE_SUPERVISOR_ROLE));
+    } catch {
+      /* the list simply stays as it was */
+    }
+  }, []);
+
+  /** Lock now: the supervisor's own button, and what the timeout does. */
+  const lockNow = useCallback((message?: Flash) => {
+    setUnlockExpiresAt(null);
+    setSupervisorName(null);
+    setSupervisorId("");
+    setSupervisorPin("");
+    setPin("");
+    if (message) setFlash(message);
+    fetch("/api/attendance/supervisor", { method: "DELETE" }).catch(() => {
+      /* the server cookie dies on its own two minutes after the last touch */
+    });
+  }, []);
+
   useEffect(() => {
     fetchToday();
     fetchMembers();
+    fetchSupervisors();
+    // A refresh of the page keeps whatever is left of the two minutes, so the
+    // supervisor is not asked again for no reason.
+    fetch("/api/attendance/supervisor")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.active) {
+          setSupervisorName(d.name);
+          setUnlockExpiresAt(Date.now() + Math.max(0, Number(d.secondsLeft) || 0) * 1000);
+          lastTouchSent.current = Date.now();
+        }
+      })
+      .catch(() => {
+        /* no answer: stay locked, the keypad simply asks for the login */
+      });
     // Real time: the server pushes when a scan is clocked in/out, so the
     // board updates instantly and there is no polling. If the stream cannot
     // be opened (e.g. an older server), fall back to the old 8 s refresh.
@@ -113,7 +197,23 @@ export default function AttendanceKiosk() {
       if (es) es.close();
       if (poll) clearInterval(poll);
     };
-  }, [fetchToday, fetchMembers]);
+  }, [fetchToday, fetchMembers, fetchSupervisors]);
+
+  // The countdown of the unlock, and the second counter that drives it.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Two minutes with no activity: the tablet locks itself and asks again.
+  useEffect(() => {
+    if (unlockExpiresAt === null || now < unlockExpiresAt) return;
+    lockNow({
+      kind: "info",
+      title: "Locked again",
+      detail: "Two minutes passed with nothing happening. Ask the supervisor to open the PIN keypad again.",
+    });
+  }, [now, unlockExpiresAt, lockNow]);
 
   // A message on the door must not stay there forever.
   useEffect(() => {
@@ -122,7 +222,81 @@ export default function AttendanceKiosk() {
     return () => clearTimeout(t);
   }, [flash]);
 
-  /** The backup way in: name from the list + PIN. */
+  /**
+   * Any touch of the keypad starts the two minutes again - here, and on the
+   * server (at most one renewal every 20 seconds, so a person typing his PIN
+   * does not send a request per finger).
+   */
+  const noteActivity = useCallback(() => {
+    const at = Date.now();
+    setNow(at);
+    setUnlockExpiresAt((prev) => (prev === null ? prev : at + SUPERVISOR_IDLE_TIMEOUT_MS));
+    if (at - lastTouchSent.current < TOUCH_EVERY_MS) return;
+    lastTouchSent.current = at;
+    fetch("/api/attendance/supervisor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ touch: true }),
+    })
+      .then((r) => {
+        if (r.status === 403) {
+          lockNow({
+            kind: "bad",
+            title: "Supervisor login ended",
+            detail: "The two minutes ran out on the server. Log in again to keep using the PIN keypad.",
+          });
+        }
+      })
+      .catch(() => {
+        /* offline: the local two minutes still lock the keypad on time */
+      });
+  }, [lockNow]);
+
+  /** The supervisor opens the keypad for the next two minutes. */
+  const unlockKeypad = useCallback(async () => {
+    const chosen = supervisors.find((s) => String(s.id) === supervisorId);
+    if (!chosen) {
+      setFlash({ kind: "bad", title: "Select the supervisor first" });
+      return;
+    }
+    if (!supervisorPin) {
+      setFlash({ kind: "bad", title: "Type your PIN" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await fetch("/api/attendance/supervisor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: chosen.name, pin: supervisorPin }),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d?.success) {
+        setFlash({ kind: "bad", title: d?.error || "Incorrect name or PIN" });
+        setSupervisorPin("");
+        return;
+      }
+      const seconds = Number(d.secondsLeft) || Math.round(SUPERVISOR_IDLE_TIMEOUT_MS / 1000);
+      setSupervisorName(d.name || chosen.name);
+      setUnlockExpiresAt(Date.now() + seconds * 1000);
+      lastTouchSent.current = Date.now();
+      setSupervisorPin("");
+      setMemberId("");
+      setPin("");
+      setNow(Date.now());
+      setFlash({
+        kind: "ok",
+        title: `${d.name || chosen.name} opened the keypad`,
+        detail: "It locks itself again after two minutes with no activity.",
+      });
+    } catch {
+      setFlash({ kind: "bad", title: "Network error. Try again." });
+    } finally {
+      setBusy(false);
+    }
+  }, [supervisors, supervisorId, supervisorPin]);
+
+  /** The backup way in: name from the list + PIN (supervisor unlocked only). */
   const submitPin = async () => {
     if (!memberId) {
       setFlash({ kind: "bad", title: "Select your name first" });
@@ -141,10 +315,24 @@ export default function AttendanceKiosk() {
       });
       const d = await r.json();
       if (!r.ok) {
+        // The two minutes ran out while the person was typing: back to the
+        // supervisor login instead of a bare "Incorrect PIN".
+        if (r.status === 403 || d.needsSupervisor) {
+          setPin("");
+          lockNow({
+            kind: "bad",
+            title: "Supervisor login needed",
+            detail: d.error || "The keypad locked itself. Ask the supervisor to open it again.",
+          });
+          return;
+        }
         setFlash({ kind: "bad", title: d.error || "Incorrect PIN" });
         setPin("");
         return;
       }
+      // A successful entry is activity too: the supervisor standing there with
+      // a queue of wet fingers is not asked to log in again in the middle.
+      noteActivity();
       // A second scan inside the hour is not an error: it says "already
       // registered" and leaves the IN alone.
       setFlash({
@@ -163,6 +351,21 @@ export default function AttendanceKiosk() {
 
   const press = (key: string) => {
     setFlash(null);
+    // One keypad, two jobs: while the tablet is locked it types the
+    // SUPERVISOR's PIN, once it is open it types the person's backup PIN.
+    if (locked) {
+      if (key === "clear") {
+        setSupervisorPin((p) => p.slice(0, -1));
+        return;
+      }
+      if (key === "ok") {
+        unlockKeypad();
+        return;
+      }
+      setSupervisorPin((p) => (p.length >= 8 ? p : p + key));
+      return;
+    }
+    noteActivity();
     if (key === "clear") {
       setPin((p) => p.slice(0, -1));
       return;
@@ -204,6 +407,7 @@ export default function AttendanceKiosk() {
   };
 
   const lastScan = today?.lastScan ?? null;
+  const typedPin = locked ? supervisorPin : pin;
 
   return (
     <div className="min-h-screen bg-[#0F0A08] text-white flex flex-col">
@@ -213,7 +417,7 @@ export default function AttendanceKiosk() {
           <div className="w-9 h-9 rounded-xl bg-[#C9A227] flex items-center justify-center">
             <Fingerprint className="w-5 h-5 text-[#2C1B17]" />
           </div>
-          <h1 className="font-serif font-black text-lg text-amber-100">FANA CAFÉ - Attendance</h1>
+          <h1 className="font-serif font-black text-lg text-amber-100">Fana Cafe and restaurant plc - Attendance</h1>
         </div>
         <a href="/admin" className="text-xs bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-xl">
           Admin
@@ -221,32 +425,102 @@ export default function AttendanceKiosk() {
       </div>
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-4 p-4 max-w-7xl mx-auto w-full">
-        {/* LEFT: name + PIN + overtime */}
+        {/* LEFT: supervisor lock + name + PIN + overtime */}
         <div className="lg:col-span-1 space-y-4">
           <div className="bg-[#1C120F] rounded-3xl border border-[#C9A227]/30 p-4 space-y-4">
-            <div>
-              <label className="block text-[11px] font-bold text-amber-200 mb-1 uppercase">Name</label>
-              <select
-                value={memberId}
-                onChange={(e) => {
-                  setMemberId(e.target.value);
-                  setFlash(null);
-                }}
-                className="w-full bg-black/40 border border-stone-700 rounded-2xl p-4 text-base text-white"
-              >
-                <option value="">Select your name</option>
-                {members.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} - {m.role}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {locked ? (
+              <>
+                <div className="flex items-start gap-3 bg-amber-950/40 border border-amber-700 rounded-2xl p-3">
+                  <Lock className="w-5 h-5 text-amber-300 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-xs font-black uppercase text-amber-200">Supervisor login required</p>
+                    <p className="text-[11px] text-stone-300 mt-1">
+                      The fingerprint scanner keeps working. Only the backup PIN keypad is locked, so nobody can type
+                      a day in for somebody else: the supervisor picks his own name, types his PIN, and the keypad
+                      stays open for two minutes after the last touch.
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-amber-200 mb-1 uppercase">Supervisor</label>
+                  <select
+                    value={supervisorId}
+                    onChange={(e) => {
+                      setSupervisorId(e.target.value);
+                      setFlash(null);
+                    }}
+                    className="w-full bg-black/40 border border-stone-700 rounded-2xl p-4 text-base text-white"
+                  >
+                    <option value="">Select the supervisor</option>
+                    {supervisors.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                  {supervisors.length === 0 && (
+                    <p className="text-[11px] text-rose-300 mt-2 font-bold">
+                      No attendance supervisor yet. Admin → Staff Accounts → add the person with the role
+                      &quot;Attendance Supervisor (/attendance)&quot;, then reload this page.
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-3 bg-emerald-950/50 border border-emerald-700 rounded-2xl p-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <ShieldCheck className="w-5 h-5 text-emerald-300 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-black uppercase text-emerald-200 truncate">
+                        Opened by {supervisorName}
+                      </p>
+                      <p className="text-[10px] text-stone-400">locks itself after 2 min with no activity</p>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="font-mono font-black text-xl text-emerald-300 leading-none">
+                      {countdownLabel((unlockExpiresAt ?? 0) - now)}
+                    </p>
+                    <button
+                      onClick={() => lockNow({ kind: "info", title: "Keypad locked" })}
+                      className="text-[10px] font-bold text-stone-300 hover:text-white underline mt-1"
+                    >
+                      Lock now
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-amber-200 mb-1 uppercase">Name</label>
+                  <select
+                    value={memberId}
+                    onChange={(e) => {
+                      setMemberId(e.target.value);
+                      setFlash(null);
+                      noteActivity();
+                    }}
+                    className="w-full bg-black/40 border border-stone-700 rounded-2xl p-4 text-base text-white"
+                  >
+                    <option value="">Select your name</option>
+                    {members.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} - {m.role}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
 
             <div className="bg-black/40 border border-stone-700 rounded-2xl px-4 py-3 text-center">
               <span className="text-2xl tracking-[0.4em] font-mono text-amber-100">
-                {pin ? "•".repeat(pin.length) : "\u00A0"}
+                {typedPin ? "•".repeat(typedPin.length) : "\u00A0"}
               </span>
+              <p className="text-[10px] text-stone-500 mt-1 font-bold uppercase">
+                {locked ? "Supervisor PIN" : "Staff backup PIN"}
+              </p>
             </div>
 
             <div className="grid grid-cols-3 gap-2">
@@ -280,11 +554,11 @@ export default function AttendanceKiosk() {
             </div>
 
             <button
-              onClick={submitPin}
+              onClick={locked ? unlockKeypad : submitPin}
               disabled={busy}
               className="w-full bg-[#C9A227] hover:bg-amber-400 disabled:opacity-60 text-[#2C1B17] font-black text-sm uppercase rounded-2xl py-4"
             >
-              Submit
+              {locked ? "Unlock the keypad" : "Submit"}
             </button>
 
             <button

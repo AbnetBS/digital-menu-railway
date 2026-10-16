@@ -8,6 +8,7 @@ import {
 } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { verifySecret } from "@/lib/auth";
+import { requireSupervisor } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { and, eq } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
@@ -38,6 +39,12 @@ import {
  *     hour the next scan is the OUT.
  *   • EARLY OUT: leaving before the time out of that role is written down, so
  *     the sheet can colour that box.
+ *
+ * THE PIN IS LOCKED (owner, Oct 2026: "it is risky since someone can write for
+ * them"): a PIN clock-in only works while an ATTENDANCE SUPERVISOR has the door
+ * tablet open, which lasts two minutes from his last touch. The check is here,
+ * on the server, so hiding the keypad in the browser would not be enough. The
+ * fingerprint branch is untouched - the scanner keeps posting straight in.
  */
 
 function getTodayKey(): string {
@@ -75,7 +82,16 @@ export async function POST(request: Request) {
     let memberName = "";
     let fingerId: number | null = null;
 
+    /* The supervisor who opened the door tablet's keypad. Only a PIN entry
+     * needs one: the ESP32 posts fingerprints straight here, and that main way
+     * in must never wait for a person with a password. */
+    let supervisorName: string | null = null;
+
     if (method === "pin") {
+      const supervisor = await requireSupervisor();
+      if (!supervisor.ok) return supervisor.response;
+      supervisorName = supervisor.session.name;
+
       // The backup for a wet or dirty finger: name from the dropdown + PIN.
       const id = Number(directMemberId);
       if (!id) return NextResponse.json({ error: "Select a name first", led: "red", buzzer: "error" }, { status: 400 });
@@ -151,6 +167,8 @@ export async function POST(request: Request) {
       memberName,
       fingerprintId: fingerId,
       date: todayKey,
+      // Who opened the keypad, when this line came in through the backup PIN.
+      supervisor: supervisorName,
     };
 
     /* ── no line yet today: this scan is the IN ────────────────────────── */
@@ -169,6 +187,9 @@ export async function POST(request: Request) {
         status,
         deviceId,
         updatedAt: now,
+        // The audit the owner asked for: a typed IN names the supervisor who
+        // had the door tablet open at that moment.
+        ...(supervisorName ? { notes: `PIN keypad opened by supervisor ${supervisorName}` } : {}),
       };
 
       const row =
@@ -246,6 +267,13 @@ export async function POST(request: Request) {
             status,
             earlyOut: early,
             updatedAt: now,
+            // Same audit as the IN: an OUT typed on the keypad names the
+            // supervisor, and keeps whatever the IN already recorded.
+            ...(supervisorName
+              ? {
+                  notes: `${existing.notes ? `${existing.notes} • ` : ""}OUT by PIN, keypad opened by supervisor ${supervisorName}`,
+                }
+              : {}),
           })
           .where(eq(attendanceLogs.id, existing.id))
           .returning()

@@ -184,6 +184,81 @@ pass(
     displayCalls.some((args) => args.includes('"HOLD STILL"'))
 );
 
+/* ── C2. the idle screen of Oct 2026: name, finger, WiFi word, wall clock ─── */
+
+/* `firmware` has its comments stripped, so the slice has to come from the raw
+ * text with a code anchor at both ends. */
+const idleStart = rawFirmware.indexOf("void showIdleScreen() {");
+const idleEnd = rawFirmware.indexOf("void startTimeSync() {");
+const idleScreen =
+  idleStart >= 0 && idleEnd > idleStart ? rawFirmware.slice(idleStart, idleEnd) : "";
+pass("the idle screen is where the guard expects it", idleScreen.length > 100);
+pass(
+  "row 0 is the cafe, row 1 asks for the finger",
+  idleScreen.includes('lcdWriteRow(0, "Fana Cafe Attendance")') &&
+    idleScreen.includes('lcdWriteRow(1, sensorReady ? "Place finger" : String("SENSOR OFFLINE!"))')
+);
+pass(
+  "row 2 says in one word whether the WiFi is connected",
+  idleScreen.includes(
+    'lcdWriteRow(2, WiFi.status() == WL_CONNECTED ? "Wifi Connected" : "Wifi Not Connected")'
+  )
+);
+pass(
+  "row 3 is the wall clock, and says so when NTP never answered",
+  idleScreen.includes("const String clock = wallClockText();") &&
+    idleScreen.includes('"Time " + clock') &&
+    idleScreen.includes('String("Time not set yet")')
+);
+pass(
+  "the IP address and the template count left the idle screen (they are on the status page)",
+  !idleScreen.includes("localIP()") && !idleScreen.includes("Templates:") &&
+    firmware.includes('html += "<p>IP: " + WiFi.localIP().toString() + "</p>";') &&
+    firmware.includes('doc["templates"] = templateCount;')
+);
+pass(
+  "every literal handed straight to a row still fits 20 characters",
+  [...firmware.matchAll(/lcdWriteRow\(\d,\s*"([^"\n]*)"/g)].every((m) => m[1].length <= 20),
+  [...firmware.matchAll(/lcdWriteRow\(\d,\s*"([^"\n]*)"/g)]
+    .filter((m) => m[1].length > 20)
+    .map((m) => `${m[1]} (${m[1].length})`)
+    .join(", ")
+);
+
+pass(
+  "the clock comes from NTP on Ethiopian time (UTC+3, no daylight saving)",
+  firmware.includes("#include <time.h>") &&
+    /#define ET_UTC_OFFSET_SEC 10800/.test(firmware) &&
+    firmware.includes("configTime(ET_UTC_OFFSET_SEC, 0, NTP_SERVER_A, NTP_SERVER_B)")
+);
+pass(
+  "reading the clock never blocks the loop (timeout 0), so a dead NTP server cannot hide a finger",
+  firmware.includes("if (!getLocalTime(&t, 0)")
+);
+pass(
+  "NTP is asked again when the WiFi comes back",
+  /wifiConnected && !wifiWasConnected\)\s*{[\s\S]{0,260}startTimeSync\(\);/.test(firmware)
+);
+pass(
+  "the clock row is refreshed once a second, and only while the idle screen is up",
+  /#define IDLE_CLOCK_REFRESH_MS\s+1000/.test(firmware) &&
+    firmware.includes("refreshIdleClock();") &&
+    firmware.includes("if (!idleVisible || enrollmentActive || !lcdReady) return;") &&
+    firmware.includes("if (millis() - lastClockDraw < IDLE_CLOCK_REFRESH_MS) return;")
+);
+pass(
+  "a result, a warning or an enrollment screen switches that refresh off",
+  (firmware.match(/idleVisible = false;/g) || []).length >= 3 &&
+    firmware.includes("idleVisible = true;") &&
+    firmware.indexOf("idleVisible = false;") < firmware.indexOf("void showBig(")
+);
+pass(
+  "the README and the sketch header document the four new rows",
+  readme.includes("Fana Cafe Attendance / Place finger / Wifi Connected / Time 14:05:30") &&
+    readme.includes("Time not set yet") &&
+    rawFirmware.includes("*   Idle:   \"Fana Cafe Attendance / Place finger / Wifi Connected / Time")
+);
+
 /* ── D. the host-test stubs and the docs match ────────────────────────────── */
 
 pass(
@@ -220,6 +295,11 @@ pass(
 pass(
   "the host-test README documents the LCD simulation",
   testReadme.includes("hd44780") && testReadme.includes("20x4")
+);
+pass(
+  "the wall clock is stubbed too, so the tests can move it and can switch NTP off",
+  read("hardware/fana_attendance_esp32/test/stub/Arduino.h").includes("bool getLocalTime(struct tm *info") &&
+    read("hardware/fana_attendance_esp32/test/globals.cpp").includes("bool stubTimeValid = true;")
 );
 pass(
   "the level shifter and the ESP32 5 V caution are spelled out",
@@ -268,6 +348,26 @@ if (!existsSync(path.join(testDir, "run.sh"))) {
         out.includes("PASS a dead sensor is still reported on the LCD")
     );
     pass(
+      "the idle screen really shows the four rows the owner asked for",
+      out.includes("PASS idle row 0 is the cafe name") &&
+        out.includes("PASS idle row 1 asks for the finger") &&
+        out.includes("PASS idle row 2 says the WiFi is connected") &&
+        out.includes("PASS idle row 3 shows the wall clock") &&
+        out.includes("PASS the IP address and the template count left the glass")
+    );
+    pass(
+      "the clock moves once a second, on its own row only, and never over a message",
+      out.includes("PASS the clock row is not redrawn more often than once a second") &&
+        out.includes("PASS the clock row follows the seconds") &&
+        out.includes("PASS and only that one row was rewritten (no flicker on the other three)") &&
+        out.includes("PASS the clock never overwrites a result message") &&
+        out.includes("PASS the clock comes back with the idle screen")
+    );
+    pass(
+      "a clock that never synced says so instead of showing a wrong time",
+      out.includes("PASS a clock that never synced says so instead of guessing")
+    );
+    pass(
       "a device with no LCD still runs, and the retry finds it again",
       out.includes("PASS without an LCD nothing is written and nothing crashes") &&
         out.includes("PASS a later retry finds the LCD again")
@@ -284,3 +384,4 @@ console.log("   • the sketch drives a 20x4 I2C LCD through the hd44780 library
 console.log("   • the address is found at run time, never assumed");
 console.log("   • every row is 20 characters, updates do not flicker, progress is text");
 console.log("   • the fingerprint flow and the GPIO23 buzzer are untouched");
+console.log("   • idle reads: Fana Cafe Attendance / Place finger / Wifi Connected / Time HH:MM:SS");

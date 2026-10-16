@@ -172,6 +172,10 @@ static void resetAll() {
   lcdWrapHits = 0;
   lcdBacklightOn = false;
   stubWifiStatus = WL_CONNECTED;
+  stubTimeValid = true;      // NTP answered: 14:05:30 on the glass
+  stubHour = 14;
+  stubMinute = 5;
+  stubSecond = 30;
   screensSeen.clear();
   startLcd();
   lcdClearCalls = 0;   // the one clear of startLcd() is the allowed one
@@ -377,24 +381,60 @@ int main() {
   printf("\n=== 10. the 20x4 LCD: every screen, and the characters that must not be left over ===\n");
   resetAll();
   showIdleScreen();
-  check("idle row 0 is the cafe name", rowEquals(0, "FANA CAFE Attendance"), rowText(0));
+  check("idle row 0 is the cafe name", rowEquals(0, "Fana Cafe Attendance"), rowText(0));
   check("idle row 1 asks for the finger", rowEquals(1, "Place finger        "), rowText(1));
-  check("idle row 2 shows the online address", rowShows(2, "Online"), rowText(2));
-  check("idle row 3 counts the templates", rowShows(3, "Templates:"), rowText(3));
+  check("idle row 2 says the WiFi is connected", rowEquals(2, "Wifi Connected      "), rowText(2));
+  check("idle row 3 shows the wall clock", rowEquals(3, "Time 14:05:30       "), rowText(3));
+  check("the IP address and the template count left the glass",
+        !rowShows(2, "192.168") && !rowShows(3, "Templates:"), rowText(2) + " | " + rowText(3));
 
   stubWifiStatus = WL_DISCONNECTED;   // the internet dropped
   sensorReady = false;                // ... and so did the sensor
   showIdleScreen();
-  check("offline is still reported on the LCD", rowEquals(2, "Offline, scans saved"), rowText(2));
-  check("a dead sensor is still reported on the LCD", rowEquals(3, "SENSOR OFFLINE!     "), rowText(3));
+  check("offline is still reported on the LCD", rowEquals(2, "Wifi Not Connected  "), rowText(2));
+  check("a dead sensor is still reported on the LCD", rowEquals(1, "SENSOR OFFLINE!     "), rowText(1));
 
-  // A long line, then a short one: the short one must wipe the leftovers.
+  // A router that blocks NTP: the row says the time is not set instead of
+  // showing a wrong one, and the rest of the screen keeps working.
   stubWifiStatus = WL_CONNECTED;
   sensorReady = true;
+  stubTimeValid = false;
+  showIdleScreen();
+  check("a clock that never synced says so instead of guessing",
+        rowEquals(3, "Time not set yet    "), rowText(3));
+
+  // The clock moves: once a second, one row only, and never over a message.
+  stubTimeValid = true;
+  showIdleScreen();
+  const int writesBeforeClock = lcdWriteCalls;
+  refreshIdleClock();                 // inside the same second: nothing to do
+  check("the clock row is not redrawn more often than once a second",
+        lcdWriteCalls == writesBeforeClock,
+        std::to_string(lcdWriteCalls - writesBeforeClock) + " characters rewritten");
+  delay(IDLE_CLOCK_REFRESH_MS + 1);
+  stubSecond = 31;
+  refreshIdleClock();
+  check("the clock row follows the seconds", rowEquals(3, "Time 14:05:31       "), rowText(3));
+  check("and only that one row was rewritten (no flicker on the other three)",
+        lcdWriteCalls - writesBeforeClock == LCD_STUB_COLS,
+        std::to_string(lcdWriteCalls - writesBeforeClock) + " characters rewritten");
+
+  showBig("Abebe", "VERIFIED", "Sending...");   // a result covers the idle screen
+  const int writesAfterResult = lcdWriteCalls;
+  delay(IDLE_CLOCK_REFRESH_MS + 1);
+  stubSecond = 45;
+  refreshIdleClock();
+  check("the clock never overwrites a result message",
+        lcdWriteCalls == writesAfterResult && rowEquals(1, "      VERIFIED      "), rowText(1));
+  showIdleScreen();                   // back to idle, and the clock with it
+  check("the clock comes back with the idle screen", rowEquals(3, "Time 14:05:45       "), rowText(3));
+
+  // A long line, then a short one: the short one must wipe the leftovers.
+  stubSecond = 30;
   showLines("A very long name that gets cut", "second", "third", "fourth");
   showIdleScreen();
   check("a shorter line leaves no leftovers from a longer one",
-        rowEquals(0, "FANA CAFE Attendance"), rowText(0));
+        rowEquals(0, "Fana Cafe Attendance"), rowText(0));
   check("the shorter line filled its row completely (no leftovers)", noLeftovers());
 
   // Same screen twice: the second draw must not touch the glass (= no flicker).

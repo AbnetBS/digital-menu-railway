@@ -110,7 +110,13 @@ the buzzer driver, and the buzzer driver has nothing to do with the LCD.
 6. Select Board: ESP32 Dev Module, Port: COMx, Upload Speed: 921600.
 7. Upload the sketch from `hardware/fana_attendance_esp32/fana_attendance_esp32.ino`.
 8. First boot: Phone WiFi -> connect to "Fana-Attendance-Setup" (password "fana12345") -> set restaurant WiFi.
-9. The LCD shows `FANA CAFE Attendance / Place finger / Online <IP> / Templates: n`.
+9. The LCD shows `Fana Cafe Attendance / Place finger / Wifi Connected / Time 14:05:30`.
+   Row 2 says in one plain word whether the scan will reach the website (`Wifi Not Connected`
+   when it will not - the scans are then saved on the device and synced later), and row 3 is the
+   wall clock from NTP on Ethiopian time (UTC+3). `Time not set yet` means the WiFi is up but NTP
+   never answered: check that the router lets the device out on UDP 123. The device's IP address
+   and the template count moved to its own status page (`http://<device-ip>/`) and to the Serial
+   monitor, so the person at the door reads only what he needs.
    If it is blank or shows only blocks, run the LCD check below (the contrast
    pot and the level shifter are the first things to look at). Then test with a
    mapped staff finger; it should beep and POST to the server.
@@ -151,14 +157,15 @@ When you press **Add Fingerprint** on the website, the device shows the person's
 
 ## Workflow
 
-1. Idle: the LCD shows "Place finger", tablet /attendance shows live clock
+1. Idle: the LCD shows `Fana Cafe Attendance / Place finger / Wifi Connected / Time HH:MM:SS`
+   (the clock row moves once a second, from NTP, on Ethiopian time), tablet /attendance shows the live sheet
 2. Scan: one placement = one scan. The finger is matched and **VERIFIED** shows at once, then the website answers in about 1-2 seconds (IN / OUT / late / not registered). The device goes back to "Place finger" by itself. A finger that stays on the sensor is never posted twice.
 3. Tablet /attendance updates in REAL TIME (SSE push from the server) the moment a scan lands - no polling
 4. The ESP32 keeps one real-time event stream open (/api/attendance/events): the admin presses "Add Fingerprint"
    and the device is told INSTANTLY (no 2-second polling). A slow 15 s fallback poll runs only if the stream is down.
 4. Admin /admin -> Attendance tab shows paper sheet view like your photo: Employee Name | Date | IN Time & Finger | OUT Time & Finger | Total Hours | Late
    - Print button: In Paper Sheet View, click "Print Hard Copy" -> prints only the table like normal paper (landscape, black border, FANA CAFÉ header) for hard copy filing
-5. Offline: Saves to LittleFS queue, syncs when internet back; the LCD shows "Offline, scans saved" and keeps working from local cache
+5. Offline: Saves to LittleFS queue, syncs when internet back; the LCD says "Wifi Not Connected" on row 2 and keeps working from local cache
 6. Sales: Owner reports now show only last 7 days daily sales sliding window (7th removed when new day starts) — total sales all-time replaced
 
 ## New Features Oct 2026
@@ -216,6 +223,9 @@ A person is marked absent only from their registration date through Ethiopian to
 - If fingerprint not found (but scans work): the finger is not enrolled -
   the LCD says **NOT REGISTERED / Finger not enrolled / Ask admin to add it**
 - If WiFi fails: reset WiFiManager by uncommenting wm.resetSettings() and re-upload
+- If the LCD's bottom row stays on `Time not set yet`: the WiFi is up but NTP never answered.
+  The router must let the device out on UDP 123 (`pool.ntp.org`, `time.nist.gov`). Nothing else
+  depends on it - scans, enrollment and the queue all work without the clock.
 - If POST fails: check serverURL https, check VPSDime firewall allows ESP32 IP, check Coolify domain
 - Serial Monitor commands (115200 baud): `enroll <id>` (manual enrollment, 1-1000), `list`, `test`, `empty confirm` (deletes ALL fingerprints on the sensor; plain `empty` only prints a warning)
 

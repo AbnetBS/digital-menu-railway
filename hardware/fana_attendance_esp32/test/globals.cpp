@@ -24,4 +24,10 @@ bool lcdBacklightOn = false;
 int  lcdBeginStatus = 0;    // 0 = backpack found; set nonzero to simulate none
 int  lcdAddress = 0x27;     // what getProp(Prop_addr) reports
 int  stubWifiStatus = WL_CONNECTED;
+/* The wall clock of the idle screen: a fixed 14:05:30 unless a test moves it,
+ * so "the screen is not redrawn while it is unchanged" stays deterministic. */
+bool stubTimeValid = true;
+int  stubHour = 14;
+int  stubMinute = 5;
+int  stubSecond = 30;
 void (*screenHook)(const std::string &) = nullptr;

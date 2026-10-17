@@ -9,18 +9,20 @@ import { REST_WAKE_KEY, restSliceSeconds } from "@/lib/attendance";
  * The owner's words: "i want the system to start working if he changes the time
  * for that particular person to register". A board in its rest hours cannot
  * hear a push, a socket or a knock, so this module leaves one small sign that a
- * resting board reads the next time it wakes: a stamp saying the hours were just
- * changed. While the stamp is young the device shortens its own sleep to about
- * 45 seconds instead of ten minutes, which is how an edit reaches the door in
- * well under a minute without adding hardware, a second channel or a wire.
+ * resting board reads it the next time its timer wakes: a stamp saying the role
+ * hours just changed. The server then caps each *subsequent* rest slice at 45
+ * seconds during the grace period instead of ten minutes. An awake board can
+ * refresh immediately over the device event channel, but a board already in
+ * deep sleep cannot be interrupted remotely and may first take its existing
+ * timer wake (up to ten minutes).
  *
  * Nothing here can fail a request: the stamp is a hint, not a record. If it
- * cannot be written, the board simply takes its normal long sleep and the change
- * still lands at the next wake.
+ * cannot be written, the board still fetches the schedule at its next timer
+ * wake, but uses its normal sleep slice after that.
  */
 
 export type RestWakeHint = {
-  /** When an admin last changed the hours, if at all. */
+  /** When an admin last requested a scanner refresh, if at all. */
   wakeRequestedAt: string | null;
   /** Whether somebody is expected at the sensor to register a finger. */
   jobWaiting: boolean;
@@ -28,8 +30,8 @@ export type RestWakeHint = {
   sliceSeconds: number;
 };
 
-/** Leave the sign. Called by every write on the Activity panel and by an
- * "Add Fingerprint" job, which is the case the owner named. */
+/** Leave the sign for the device's next server read. Called by scanner override
+ * writes, Role & Time mutations and "Add Fingerprint" jobs. */
 export async function markRestWakeRequested(): Promise<void> {
   const value = new Date().toISOString();
   try {

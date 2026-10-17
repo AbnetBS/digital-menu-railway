@@ -197,7 +197,9 @@ pass("a database hiccup on the overtime never loses the clock-out itself",
 // view starts. Every claim below is about that block, so a string living in
 // another tab can never make it pass by accident.
 const otStart = adminTab.indexOf('{activeView === "overtime" && (');
-const otEnd = adminTab.indexOf('{activeView === "prints" && (');
+const activityStart = adminTab.indexOf('{activeView === "activity" && (', otStart);
+const printsStart = adminTab.indexOf('{activeView === "prints" && (', otStart);
+const otEnd = activityStart >= 0 ? activityStart : printsStart;
 const otView = otStart >= 0 && otEnd > otStart ? adminTab.slice(otStart, otEnd) : "";
 
 pass("the Overtime view exists as its own block", otStart >= 0);

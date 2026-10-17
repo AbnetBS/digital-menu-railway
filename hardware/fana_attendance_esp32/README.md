@@ -118,9 +118,9 @@ it answered. Run it once on each supply and write the two lines down:
    part because it answers more often.
 
 Whichever wins, say so in the ordering note for the next device, because "3.3 V or 5 V,
-whatever" is the sentence that started this. The Activity rest windows also help the case
-temperature on purpose: in the closed hours the reader is not imaging at all and the screen
-is dark.
+whatever" is the sentence that started this. The role-derived Activity rest windows also help
+the case temperature on purpose: in the gaps between padded shifts, the reader is not imaging
+and the screen is dark.
 
 **Keep the sensor's red wire out of the 5 V rail row that feeds the LCD backpack
 and the buzzer.** On a breadboard those two rows sit next to each other, and the
@@ -270,61 +270,13 @@ and nothing on the sensor is wiped by this change.
   for him, with the hours measured as exactly the time past the end of the shift. The LCD says
   `OUT 19:12 / OT 2h 12m`. A number an admin or the tablet typed for that day is never
   overwritten by the stopwatch.
-- **Activity: the hours the scanner is awake (owner, 2026-10-17).** Admin -> Attendance ->
-  **Activity** -> `Add time interval` -> pick `From` and `To` -> `Add`. Each interval gets its
-  own **On/Off** button, and you may list as many as you need because the intervals are not the
-  same. **The interval you type is the time the door ANSWERS**; outside every interval the board
-  puts itself to sleep: the LCD goes dark, the reader stops imaging, and no finger is answered.
-  It wakes itself when the next interval starts and carries on like nothing happened.
-  Why it is worth it: an idle scanner is not idle, it asks the module for a search every second
-  and each search lights the reader and takes a picture. That is thousands of pictures an hour
-  with nobody standing there, which is exactly the wear the owner wanted to avoid
-  ("protect the system for over using power").
-  The rules in one line: clock times that repeat every day (like a shift, not a date); a `To`
-  earlier than the `From` runs across midnight (`22:00` to `06:00`); `To` is not included
-  (`12:00`-`15:00` answers at `14:59` and sleeps at `15:00`); `From` = `To` means the whole day;
-  **no intervals, or every interval switched off, means awake all day** - so the panel can never
-  lock you out of your own door.
-- **Somebody at the door during a rest period** has two ways in, both from the admin page
-  (Attendance -> Activity): switch that one interval **Off** (the board wakes within a minute and
-  he scans), or press **Keep it awake now** / **Awake for that long, then rest** and leave the
-  intervals as they are. Switch it back and the board sleeps again until the next interval. The
-  third way needs nobody: the **name + PIN keypad on the tablet** at /attendance is unaffected by
-  the rest and clocks people in all night, so the paper sheet and the overtime rows stay complete.
-  There is no wiring for this and no new part: the sensor stays powered, it is simply never asked
-  to image while the door is closed.
-- **What "asleep" means, and its one limit.** The board uses a real deep sleep (no polling loop,
-  no screen, ~a few microamps) and wakes itself by timer. Because a sleeping board cannot hear a
-  click on the admin page, long rests are slept in **slices of at most 10 minutes**: every slice
-  ends in a short boot that re-reads the schedule from the website, re-checks NTP and delivers any
-  kept scan. And the website tells the board how short to make that slice: **45 seconds while
-  something is expected** (you changed the hours a moment ago, or an `Add Fingerprint` job is waiting
-  for a person), **10 minutes on a quiet night**. So a switch you flip is obeyed in about a minute and
-  an interval that starts at
-  06:00 opens the door at 06:00 (give or take the few seconds of that boot). If you need the board
-  awake this second, press `Keep it awake now`, or type `rest off` on the Serial monitor - that
-  last one is the escape hatch if the website is ever unreachable.
-  An `Add Fingerprint` job you press while the board is resting is not lost and it does not wait ten
-  minutes either: opening the job marks the moment, so the board shortens its next sleep to about 45
-  seconds, opens the event stream at that wake (a 15 s fallback poll runs while the stream is closed)
-  and starts the registration. That is "I want the system to start working if he changes the time for
-  that particular person to register": change the hours or open the job, and the door answers again in
-  about a minute, with no new wire and no second channel - and an enrollment that has started is
-  never cut short by the next sleep.
-  Safety rails, all of them deliberate: the board never sleeps while a finger is being scanned or
-  an enrollment is running, never while a result is still on the screen (8 s grace), never before
-  NTP has answered at least once since power-on (no clock, no guessing an hour), and never while
-  the schedule is unknown to it. The schedule is cached in flash (`/rest.json`), so a dead internet
-  at 03:00 changes nothing: the last hours you saved are still the hours obeyed.
-- **The intervals are editable, not one-way.** Each row has a pencil button that puts its times back
-  into the form, `Save changes` writes them in place and `Cancel` leaves the row alone, so a 15:00
-  that should have been 15:30 is corrected without deleting the row. The panel also says how soon the
-  device will look again, so nobody has to guess whether the board has heard the change.
-- **`rest` on the Serial monitor** (115200) is the same switch without the website:
-  `rest show` (what it believes, the hour it thinks it is, and awake/resting), `rest off`
-  (stay awake), `rest on` (obey the saved hours again, re-read from the website), `rest reload`
-  (fetch the schedule now). `/status` on the device's own IP answers `restAwake`, `restKnown`,
-  `restKeptAwake` and `restNextOpen` as well.
+- **Automatic scanner hours from Role & Time (owner, 2026-10-18).** The Activity tab no longer needs manually typed intervals. It reads every saved shift under Attendance -> **Role & Time** and pads it by one hour: a role shift of `12:00` to `20:00` makes the scanner awake `11:00` to `21:00`. Overlapping or touching padded periods merge; gaps remain deep-sleep periods. For example, shifts `06:00-07:00` and `08:00-09:00` produce one awake period `05:00-10:00`. All times repeat daily on the Addis Ababa clock; role schedules currently have no weekday field.
+  Edit a role's entrance or time-out under **Role & Time** and the Activity preview updates automatically. A board that is awake receives the live device refresh immediately. A board already in deep sleep cannot hear a push, so it loads the new schedule at its next timer wake (up to 10 minutes, or sooner if a generated window is due). The server marks the change so the board uses 45-second rest slices after that fetch while the change is fresh. The ESP32 caches the generated windows, so it keeps the last schedule if the website goes offline.
+  No saved role shifts means **stay awake all day** (a safe default, not a locked door). If the generated schedule exceeds the ESP32's supported window count, it also stays awake all day rather than miss a worker's shift. The Activity tab shows the generated periods and retains the temporary **Keep scanner awake** override controls. The tablet PIN keypad, paper sheet and admin page work independently of scanner sleep.
+  Outside the generated periods, the ESP32 deep-sleeps: LCD dark, fingerprint reader not polled, no fingerprint scan answered. It wakes itself for the next period. The sensor stays powered; the code simply does not ask it to image while nobody is expected.
+- **Somebody at the door during a rest period** can be let in with the Activity tab's **Keep scanner awake** button, or the timed keep-awake override. **Use role schedule again** clears the override. A fingerprint enrollment job follows the same timer-wake limit: an already-sleeping board first sees it at its next scheduled wake; after that, the job keeps its rest slices to 45 seconds. The tablet's **name + PIN keypad** at `/attendance` is unaffected and can clock people in while the scanner rests.
+- **What "asleep" means, and its one limit.** The board uses real deep sleep (no polling loop, no screen, ~a few microamps) and wakes itself by timer. Long rests are slept in **slices of at most 10 minutes**: every slice ends in a short boot that re-reads role times from the website, re-checks NTP and delivers any kept scan. A fresh role-time change or waiting `Add Fingerprint` job makes the server ask for **45-second slices on subsequent sleeps**; this cannot shorten a sleep timer the board has already started. If you need the board awake right now, press **Keep scanner awake**, or type `rest off` on the Serial monitor; `rest on` returns to the generated role schedule.
+  An `Add Fingerprint` job opened while the board is resting is not lost: it is read at the next timer wake (up to 10 minutes if the board had just entered deep sleep), opens the event stream, and starts registration. The board never sleeps while scanning or enrolling, while a result is being read on the LCD (8 s grace), before NTP has answered since power-on, or while the schedule is unknown. The generated schedule is cached in flash (`/rest.json`), so a dead internet at 03:00 changes nothing: the last role-derived hours are still obeyed.
 
 - **The supervisor keypad no longer locks itself after 2 minutes (owner: it "doesnt have
   benefit").** The door tablet's backup PIN keypad is still locked until an attendance
@@ -345,8 +297,8 @@ and nothing on the sensor is wiped by this change.
 - POST /api/attendance/mappings {action: "job_failed", jobId, reason} -> device reports a failed enrollment job (marks it failed on the website, and the page prints the reason)
 - POST /api/attendance/overtime {memberId, type: holiday|free_week|shift, hours?, shiftLabel?} -> write one overtime row (the tablet and the admin page both call this; empty `hours` means the day's own worked hours). Without `type` it is the old plain switch that only flags the day.
 - GET /api/attendance/overtime?from&to -> the rows of a range with the name, the times and the hours; DELETE /api/attendance/overtime?id=n (admin) takes one row back
-- GET /api/attendance/activity -> the awake intervals, the admin override, and what the device would do right now (`awakeNow`, `changeInMinutes`, `nextChangeLabel`, plus a flat `device` block the ESP32 caches). Admin session or the device token.
-- POST /api/attendance/activity {action: "add"|"update"|"toggle"|"remove", id?, from?, to?, label?, mode?, minutes?} -> the Activity panel's edits, admin only. Every one of them pushes an event on the `device` channel, so an awake board refetches its schedule at once. `mode` is `awake` | `minutes` | `schedule` for the keep-it-awake override.
+- GET /api/attendance/activity -> the hours derived from all saved role shifts (1-hour buffer before/after), the admin override, and what the device would do now (`awakeNow`, `changeInMinutes`, `nextChangeLabel`, plus the flat `device` block the ESP32 caches). Admin session or device token.
+- POST /api/attendance/activity {action: "override", mode: "awake"|"minutes"|"schedule", minutes?} -> temporary keep-awake override, admin only. Manual interval writes are rejected; edit role start/end times under Attendance -> Role & Time. Role saves publish a `device` event for an awake board and set a wake hint; a board already in deep sleep loads the change at its next timer wake (up to 10 minutes), then uses 45-second sleep slices while the hint is fresh.
 
 The device itself serves only its status page (`/` and `/status`). It has no `/enroll`, `/logs` or `/mappings` routes.
 - GET /api/attendance/members -> admin member list, including each member's fingers[] IDs
@@ -373,9 +325,9 @@ MOSFET on the sensor.
 Hours on one charge = `6000 mAh / average current`, and the day's average is
 `(awake hours x 250 + resting hours x 38) / 24`:
 
-| open hours listed in Activity | average | on a 10000 mAh bank |
+| scanner-awake hours generated from role shifts | average | on a 10000 mAh bank |
 |---|---|---|
-| 24 h a day, no intervals | ~250 mA | **~24 h** |
+| 24 h a day (no role shifts or roles covering all day) | ~250 mA | **~24 h** |
 | 16 h (e.g. 06:00-22:00) | ~180 mA | ~33 h |
 | 12 h | ~145 mA | ~41 h |
 | 8 h | ~109 mA | ~55 h |
@@ -383,10 +335,7 @@ Hours on one charge = `6000 mAh / average current`, and the day's average is
 | 4 h | ~73 mA | ~82 h |
 | 2 h | ~56 mA | ~108 h |
 
-Two things to read off that table. First, the intervals are what buys the time: **one day becomes two
-to four days**, and a 20000 mAh bank turns that into a week. Second, below about 6 open hours the
-bank is being spent by the sleep floor rather than by the scanner, so a bigger bank helps more than
-tighter timing does.
+Two things to read off that table. First, the gaps between the padded role shifts are what buy the time: **one day becomes two to four days**, and a 20000 mAh bank turns that into a week. The hours shown in Activity are generated from Role & Time, not entered there. Second, below about 6 scanner-awake hours the bank is being spent by the sleep floor rather than by the scanner, so a bigger bank helps more than tighter timing does.
 
 For "charger in, power bank in the middle, ESP32 on the bank, so a cut in the mains does not stop the
 system", two traps are worth knowing before the first night:
@@ -396,7 +345,8 @@ system", two traps are worth knowing before the first night:
    cannot ask for power again - the door would look broken at 03:00 with nothing wrong in the sketch.
    Turn on the bank's low-current / always-on mode (on Xiaomi-style banks a double press of the power
    button, some have a 12 h mode), or use a bank or UPS module that has no auto-shutoff. Test it on
-   purpose: list one interval that closes for an hour and see whether the bank is still answering.
+   purpose: adjust Role & Time so the padded schedule leaves about an hour of deep sleep, and see
+   whether the bank is still answering.
 2. **Pass-through (charging while it powers the load) is not on every bank,** and where it exists it
    is slow and warm: the bank refills over hours, not minutes. The load here is small so that is
    fine, but daily cycling of a phone-grade cell is a year or two of life; a purpose-built 18650 UPS
@@ -406,8 +356,8 @@ system", two traps are worth knowing before the first night:
 Nothing is lost when the bank does die: kept scans are in the ESP32's flash (LittleFS is built to
 survive a cut in the middle of a write), and names, hours and pending jobs are re-read from the
 website at the next boot. The tablet at /attendance works through a rest period and through a power
-cut either way, and a scan made while everything is off is simply not recorded - which is the same
-behaviour as a scanner without the intervals at all.
+cut either way, and a scan made while everything is off is simply not recorded - the same as any
+scanner without power.
 
 If more hours are wanted later, the next 20 % is the LCD backlight during the open hours (~50-60 mA
 of the ~250): blanking it after a minute or two with nobody at the sensor and lighting it again when
@@ -464,8 +414,8 @@ A person is marked absent only from their registration date through Ethiopian to
   Continuous imaging is *not* the heat source at the rates this sketch uses: a
   SEARCH that answers in a fraction of a second once every 1.5 s leaves the
   reader imaging a few percent of the time, which is warm at most. (And since
-  the Activity rest windows shipped, in the closed hours it is not imaging at all
-  and the screen is dark.)
+  the role-derived Activity rest windows shipped, in the gaps between padded
+  shifts it is not imaging and the screen is dark.)
 - **The LCD works, the WiFi says connected, and a finger does nothing.** There
   are four causes, and the board now says which one it is:
   1. **The module stopped answering while the board was running.** (And the
@@ -487,21 +437,22 @@ A person is marked absent only from their registration date through Ethiopian to
      looks dead. That wait now has a hard end (12 s per attempt, 180 s in the
      hotspot, then a restart that tries again). If the screen shows the hotspot
      or an address like 192.168.4.1, that is this, not the sensor.
-  3. **It is resting.** Check the clock against the hours in Attendance ->
-     Activity. A rest leaves the screen DARK (the backlight is switched off), so
-     "the LCD is lit" normally rules this out; if it is lit and `Time` is shown,
-     it is not the schedule. `rest show` on the Serial monitor prints what the
-     board believes.
+  3. **It is resting.** Check the clock against the generated-window preview in
+     Attendance -> Activity (the hours come from Role & Time). A rest leaves the
+     screen DARK (the backlight is switched off), so "the LCD is lit" normally
+     rules this out; if it is lit and `Time` is shown, it is not the schedule.
+     `rest show` on the Serial monitor prints what the board believes.
   4. **It is scanning and the finger is simply not enrolled.** That case is
      loud, not silent: the screen says `NOT REGISTERED / Finger not enrolled /
      Ask admin to add it`, so a red LED and a beep with no text at all is not
      this one.
 
 - **"The scanner does not answer, the screen is dark"** - look at the clock first. If it is
-  outside the hours in Attendance -> Activity, that is the rest working: it wakes itself when the
-  next interval starts. To open the door now, switch that interval Off or press `Keep it awake
-  now`; `rest show` on the Serial monitor prints what the board believes. A board that has never
-  reached NTP since power-on refuses to sleep at all, so a dark screen is never a wrong clock.
+  outside the generated hours shown in Attendance -> Activity (from Role & Time), that is the rest
+  working: the board wakes itself for the next role window. To open the door now, press **Keep
+  scanner awake** in Activity or type `rest off` on the Serial monitor; `rest show` prints what the
+  board believes. A board that has never reached NTP since power-on refuses to sleep at all, so a
+  dark screen is never a wrong clock.
 
 - If the LCD is blank or shows blocks: run `diagnostics/lcd_check/lcd_check.ino` (see the LCD check above). Blank/blocks with the backlight on is the contrast pot; no I2C address answering is wiring or power, and the sketch never assumes the address.
 - **Enrollment says HOLD STILL (sensor status 6, image unclear):** keep the finger flat and still. The device retries the same step on its own, and retries the whole three-step sequence up to 3 times. If it keeps failing, clean the sensor and check the physical checklist above. The admin page prints the exact step and status, so you can see where it stopped.

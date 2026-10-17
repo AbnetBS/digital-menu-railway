@@ -276,31 +276,21 @@ export function hoursLabel(totalMinutes: number | null | undefined): string | nu
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
 }
 
-/* ─── rest windows: when the door scanner may be awake ────────────────────
- * The owner's ask (Oct 2026): the scanner should not be imaging and answering
- * all night and all afternoon, because that is what wears an optical reader
- * out. So the admin lists the hours the door is OPEN, and outside every one of
- * them the device puts itself to sleep: the sensor stops being polled, the LCD
- * goes dark, no finger is answered. When the next listed hour starts it is
- * awake again, by itself.
+/* ─── automatic scanner hours: role shifts plus a one-hour buffer ──────────
+ * Every configured role shift is extended by one hour before its start and one
+ * hour after its end. Overlapping or touching windows are merged; any gaps
+ * remain rest periods. These are recurring Addis Ababa clock times, matching
+ * the role-shift form and the ESP32's local clock.
  *
- *   • the intervals the admin types are ACTIVE windows, not quiet ones - that
- *     is the owner's own reading ("1st activity time is 12:00-3:00, a person
- *     at 3:05 cannot scan"), and it means a cafe that forgets to add anything
- *     keeps a working door instead of a sleeping one;
- *   • an empty list is "awake all day", never "asleep all day";
- *   • every row has its own on/off, which is the "off button beside each
- *     interval" he asked for: turn it off, the door lights up for the person
- *     standing there, turn it back on and the schedule rules again;
- *   • the name + PIN keypad on the tablet is NOT part of this. The sheet, the
- *     admin page and the PIN path keep working while the scanner rests.
- *
- * These functions are pure and the device keeps its own copy of the same
- * arithmetic, because the schedule must still be obeyed when the internet is
- * down. Morning 12:30 -> 15:00 is awake at 14:59 and resting at 15:00.
+ * An empty role-shift list is deliberately fail-open: the scanner stays awake
+ * all day rather than risk closing the door because the schedule is missing.
+ * If the schedule would exceed the ESP32's supported window count, it also
+ * fails open to all-day awake rather than silently omitting a worker's shift.
+ * The keypad, paper sheet and admin page work independently of scanner sleep.
  */
 
 export const REST_MAX_WINDOWS = 12;
+export const SCANNER_SHIFT_BUFFER_MINUTES = 60;
 
 /** The site_settings key that holds the "keep it awake anyway" override. */
 export const REST_OVERRIDE_KEY = "attendance_rest_override";
@@ -314,6 +304,75 @@ export type ActiveWindow = {
   label?: string | null;
   enabled?: boolean | null;
 };
+
+export type RoleScannerSchedule = {
+  windows: ActiveWindow[];
+  /** Number of valid configured role shifts used to build this schedule. */
+  shiftCount: number;
+  /** True only when the safe all-day fallback is used due to too many windows. */
+  overflow: boolean;
+};
+
+/**
+ * Convert every role's recurring shift into scanner-awake windows. For example,
+ * 12:00-20:00 becomes 11:00-21:00. Windows that overlap or touch are merged,
+ * including across midnight. The output is limited to the ESP32's fixed
+ * capacity; overflow fails open to all-day awake so no shift is silently lost.
+ */
+export function roleShiftsToScannerSchedule(
+  shifts: Array<Pick<RoleShift, "startTime" | "endTime"> | null | undefined>,
+  paddingMinutes = SCANNER_SHIFT_BUFFER_MINUTES
+): RoleScannerSchedule {
+  const padding = Number.isFinite(Number(paddingMinutes)) ? Math.max(0, Math.floor(Number(paddingMinutes))) : SCANNER_SHIFT_BUFFER_MINUTES;
+  const valid = (Array.isArray(shifts) ? shifts : [])
+    .map((shift) => ({ start: parseHHMM(shift?.startTime), end: parseHHMM(shift?.endTime) }))
+    .filter((shift): shift is { start: number; end: number } => shift.start !== null && shift.end !== null);
+  const shiftCount = valid.length;
+  const allDay = (label: string, overflow = false): RoleScannerSchedule => ({
+    windows: [{ from: "00:00", to: "00:00", label, enabled: true }],
+    shiftCount,
+    overflow,
+  });
+
+  if (shiftCount === 0) return { windows: [], shiftCount: 0, overflow: false };
+
+  const open = new Uint8Array(24 * 60);
+  for (const shift of valid) {
+    let end = shift.end;
+    // As elsewhere in attendance, an end at/before the start belongs to the
+    // following day; equal times therefore mean a full-day shift.
+    if (end <= shift.start) end += 24 * 60;
+    const intervalStart = shift.start - padding;
+    const intervalEnd = end + padding;
+    if (intervalEnd - intervalStart >= 24 * 60) return allDay("Role shifts cover all day");
+    for (let minute = intervalStart; minute < intervalEnd; minute++) {
+      const normalized = ((minute % (24 * 60)) + 24 * 60) % (24 * 60);
+      open[normalized] = 1;
+    }
+  }
+
+  const activeMinutes = open.reduce((sum, minute) => sum + minute, 0);
+  if (activeMinutes === 24 * 60) return allDay("Role shifts cover all day");
+
+  const windows: ActiveWindow[] = [];
+  for (let start = 0; start < open.length; start++) {
+    const previous = (start + open.length - 1) % open.length;
+    if (!open[start] || open[previous]) continue;
+    let length = 0;
+    while (length < open.length && open[(start + length) % open.length]) length++;
+    windows.push({
+      from: toHHMM(start),
+      to: toHHMM((start + length) % open.length),
+      label: "Automatic from role shifts",
+      enabled: true,
+    });
+  }
+
+  if (windows.length > REST_MAX_WINDOWS) {
+    return allDay("Safety fallback: too many separate role periods", true);
+  }
+  return { windows, shiftCount, overflow: false };
+}
 
 /** Only the enabled rows count. */
 export function enabledWindows(windows: ActiveWindow[] | null | undefined): ActiveWindow[] {
@@ -397,21 +456,21 @@ export function parseRestOverride(value: string | null | undefined, now: Date = 
 }
 
 /* ── how fast a change reaches a board that is resting ────────────────────
- * A sleeping ESP32 cannot hear a click, so an edit on the Activity panel is
- * carried by the board itself at the end of its next sleep slice. The trick
- * that keeps the power saving AND keeps the panel feeling alive: the sleep is
- * sliced, and the slice is SHORT while something is expected. Two of the three
- * reasons to be eager are things only the server knows, so the server says how
- * long the next sleep may be:
+ * A sleeping ESP32 cannot hear a click, so a Role & Time edit is picked up at
+ * the end of its next sleep slice. The sleep is sliced, and the slice is short
+ * while something is expected. Two of the three reasons to hurry are things
+ * only the server knows, so the server says how long the next sleep may be:
  *
- *   • an admin has just changed the hours, or pressed Keep it awake   (10 min grace)
+ *   • an admin has just changed a role shift or pressed Keep scanner awake (10 min grace)
  *   • a "place your finger" job is waiting for somebody to register
- *   • (the third one the board handles alone: an interval opening soon is
- *     slept exactly to that boundary whenever it is nearer than the cap)
+ *   • the board handles a nearby generated-window boundary itself, sleeping
+ *     only until that boundary when it is nearer than the slice cap
  *
- * So changing a person's time to register makes the system start answering
- * within about 45 seconds, with no new wire and no second channel, and a quiet
- * night is still slept in ten minute pieces.
+ * An awake scanner refreshes immediately through the device event channel. A
+ * scanner already in deep sleep cannot be interrupted remotely: it first reads
+ * the change on its next timer wake (up to the normal ten-minute slice), then
+ * uses the short slice during the grace period. Quiet rest otherwise stays in
+ * ten-minute pieces.
  */
 export const REST_SLICE_SECONDS = 600;
 export const REST_SLICE_FAST_SECONDS = 45;
@@ -419,7 +478,7 @@ export const REST_SLICE_FAST_SECONDS = 45;
 export const REST_SLICE_FLOOR_SECONDS = 30;
 /** How long an admin edit counts as "just now". */
 export const REST_WAKE_GRACE_MS = 10 * 60000;
-/** The site_settings key holding the moment the hours were last changed. */
+/** The site_settings key holding the moment a scanner refresh was requested. */
 export const REST_WAKE_KEY = "attendance_rest_wake_at";
 
 /** How long a resting device may sleep in one go, right now, in seconds. */

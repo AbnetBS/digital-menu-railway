@@ -862,10 +862,10 @@ int main() {
     check("...and awake at 05:00", scheduleAwaits(wrap, 1, 300));
     check("...and resting at 12:00", scheduleAwaits(wrap, 1, 720) == false);
 
-    const RestWindow off[] = {{720, 900, false}};   // the row's own on/off switch
-    check("the escape hatch: switching his only interval off wakes the board", scheduleAwaits(off, 1, 800));
+    const RestWindow off[] = {{720, 900, false}};   // disabled cache entries fail open
+    check("a disabled cached window cannot close the door", scheduleAwaits(off, 1, 800));
     const RestWindow mixed[] = {{720, 900, false}, {0, 60, true}};
-    check("a switched-off interval no longer opens the door", scheduleAwaits(mixed, 2, 800) == false);
+    check("a disabled cached window stays asleep outside its remaining periods", scheduleAwaits(mixed, 2, 800) == false);
     check("while its enabled neighbour runs, the board is awake", scheduleAwaits(mixed, 2, 30));
     const RestWindow wholeDay[] = {{600, 600, true}};
     check("from == to means the whole day, never nothing",
@@ -967,7 +967,7 @@ int main() {
     restKeptAwake = true;
     before = stubDeepSleepCalls;
     maybeRest();
-    check("but not while the admin has switched the rest off", stubDeepSleepCalls == before);
+    check("but not while a keep-awake override is active", stubDeepSleepCalls == before);
     restKeptAwake = false;
 
     delay(REST_AFTER_MESSAGE_MS + 50);

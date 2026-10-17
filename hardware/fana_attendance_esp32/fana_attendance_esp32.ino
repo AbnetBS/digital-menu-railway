@@ -178,11 +178,10 @@ WebServer server(80);
 #define EVENT_STREAM_STALL_MS   75000
 #define IDLE_CLOCK_REFRESH_MS   1000   // the idle screen's clock row moves once a second
 
-/* Rest windows: the hours the scanner is AWAKE (admin -> Attendance ->
- * Activity). Outside them the board sleeps, so the optical reader is not
- * imaging an empty doorway all night. */
+/* Rest windows: automatic awake hours generated from Role & Time shifts,
+ * padded one hour before and after. Activity shows the same intervals. */
 #define REST_FILE               "/rest.json"  // the schedule, cached for offline nights
-#define REST_MAX_ROWS           12            // same ceiling as the website's panel
+#define REST_MAX_ROWS           12            // generated-window safety cap shared with the API
 #define REST_SLICE_MAX_MS       600000UL      // sleep at most 10 min in one go
 #define REST_MIN_SLEEP_MS       120000UL      // under 2 min a restart costs more than it saves
 #define REST_SLICE_FLOOR_MS     30000UL       // the website can hurry the board, not make it churn
@@ -202,6 +201,15 @@ enum EnrollResult : uint8_t {
    * device's "it says added, then it says NOT REGISTERED". */
   ENROLL_NOT_CONFIRMED,
   ENROLL_FAILED
+};
+
+/* Keep custom parameter types above the first function definition. Arduino IDE
+ * inserts generated prototypes before setup(); types declared later in the
+ * sketch are invisible to those prototypes. */
+struct RestWindow {
+  uint16_t fromMin;
+  uint16_t toMin;
+  bool enabled;
 };
 
 /* ── Configuration ────────────────────────────────────────────────────────── */
@@ -458,7 +466,7 @@ void setup() {
   startTimeSync();
 
   loadMappingsFromServer();
-  // The hours the door is open, before anything else can decide to sleep.
+  // Role & Time-derived scanner hours, before anything can decide to sleep.
   loadRestScheduleFromServer();
   loadRestCache();
 
@@ -568,38 +576,26 @@ void checkLcdHealth() {
 }
 
 /* ── LCD helpers (all text fits 20 columns) ───────────────────────────────── */
-/* ── Rest windows: the hours the door scanner is awake ─────────────────────
- * The owner's ask (Oct 2026): "the system doesnt expect scans" during the hours
- * he lists, "this will protect the system for over using power and less the
- * being damaged by continues power supply". Idle here is not idle: every pass
- * of loop() asks the module for a SEARCH, and a SEARCH lights the reader and
- * takes a picture. That is thousands of pictures an hour with nobody standing
- * there.
+/* ── Automatic scanner rest windows ────────────────────────────────────────
+ * The server derives these windows from every saved Role & Time shift: each
+ * shift is padded one hour before and after, then overlapping or touching
+ * windows (including across midnight) are merged. Role schedules recur daily
+ * because there are no weekday fields. The ESP32 receives the already-generated
+ * windows in GET /api/attendance/activity's existing device payload and caches
+ * that payload in LittleFS; the fingerprint reader sleeps only in the gaps.
  *
- * So the admin lists the hours the door is OPEN, and outside them this device
- * deep-sleeps: no polling, dark LCD, no finger answered, and it wakes itself
- * when the next open hour starts. Three rules make that safe:
+ * A missing/empty schedule fails open to awake all day, and a schedule too
+ * large for REST_MAX_ROWS also arrives as an all-day awake window. That prevents
+ * a missing or truncated schedule from locking the door. The tablet PIN and
+ * paper sheet do not depend on this scanner schedule.
  *
- *   • the schedule lives in the device (cached in LittleFS) and the SAME
- *     arithmetic runs here and on the website (src/lib/attendance.ts), so a
- *     dead internet at 3 a.m. changes nothing;
- *   • no hours listed at all means ALWAYS AWAKE, never always asleep - an owner
- *     who clears the panel cannot lock his own door;
- *   • the sleep is SLICED (at most REST_SLICE_MAX_MS): a board that is asleep
- *     can hear nothing, so "keep it awake" from the admin page is picked up at
- *     the end of the next slice instead of never. Each slice restarts the normal
- *     boot path: WiFi, NTP, the offline queue, the schedule.
- *
- * A sleep is only ever entered from loop(), between actions, never during a
- * scan, an enrollment or a queue flush - and never while a message is being
- * read on the LCD.
+ * An awake board refreshes from the live device event. A board already in deep
+ * sleep cannot hear a push: it fetches changes at its next timer wake (at most
+ * the normal 10-minute slice, or sooner at a scheduled boundary). A fresh
+ * change then shortens subsequent slices to 45 seconds. The cached schedule
+ * continues to work offline. Sleep is entered only between actions, never
+ * during a scan, enrollment, queue flush, or an LCD result message.
  */
-
-struct RestWindow {
-  uint16_t fromMin;
-  uint16_t toMin;
-  bool enabled;
-};
 
 RestWindow restWindows[REST_MAX_ROWS];
 uint8_t restWindowCount = 0;
@@ -607,13 +603,14 @@ uint8_t restWindowCount = 0;
  * Until then the device never sleeps: guessing with nothing to go on is how a
  * door ends up closed. */
 bool restScheduleKnown = false;
-/* The admin's "keep it awake", and its "for N minutes" form. Both come from the
- * website so a toggle made at the office reaches every wake of the device. */
+/* The admin's "keep it awake" override and its "for N minutes" form. Both
+ * come from the website and are cached across timer wakes. */
 bool restKeptAwake = false;
 unsigned long restWakeUntilEpoch = 0;
-/* The longest sleep the website will allow right now, in seconds: about 45 s
- * after an admin changes the hours or opens a "place your finger" job, 600 s on
- * a quiet night. 0 means "nobody said, use the default". */
+/* The longest sleep the website will allow after the next schedule read, in
+ * seconds: about 45 s after an admin changes role hours or opens a "place your
+ * finger" job, 600 s on a quiet night. A timer already running in deep sleep
+ * cannot be shortened remotely. 0 means "use the default". */
 uint16_t restSliceSeconds = 0;
 /* The last moment the LCD showed something, so a rest never cuts a result off
  * while the person is still reading it. */
@@ -659,13 +656,11 @@ bool windowHasMinute(uint16_t fromMin, uint16_t toMin, uint16_t minuteOfDay) {
 
 /* Should the scanner be awake at this minute?
  *
- * No interval, or no ENABLED one, means yes - all day. That is not sloppiness,
- * it is the owner's own way of opening a closed door: somebody is standing there
- * at 04:00, he switches the interval off, the board wakes and scans him, then he
- * switches it back on and it sleeps until the next interval. A rule that made
- * "everything off" mean "closed for ever" would lock him out of his own system,
- * so an empty schedule is open, never shut. The website's isAwakeAt() runs the
- * same rule, and the two must not disagree. */
+ * Role & Time generates the active rows. No generated window, or no enabled
+ * cached row, means yes - all day. That is a fail-open safety rule: a missing or
+ * stale schedule cannot lock the owner out. Keep-awake overrides handle
+ * temporary access; the website's isAwakeAt() applies the same empty-schedule
+ * rule, and the two must not disagree. */
 bool scheduleAwaits(const RestWindow *rows, uint8_t count, uint16_t minuteOfDay) {
   bool anyEnabled = false;
   for (uint8_t i = 0; i < count; i++) {
@@ -773,8 +768,8 @@ bool parseRestPayload(const String &payload) {
   restWindowCount = n;
   restKeptAwake = src["keptAwake"].isNull() ? false : src["keptAwake"].as<bool>();
   restWakeUntilEpoch = src["wakeUntilEpoch"] | 0UL;
-  // "sleep at most N seconds in one go for a while", so an admin edit is
-  // obeyed in about a minute instead of at the end of the next ten minutes.
+  // "sleep at most N seconds on subsequent slices for a while". A request
+  // cannot interrupt a timer that was already started before this fetch.
   restSliceSeconds = (uint16_t)(src["sliceSeconds"] | 0UL);
   restScheduleKnown = true;
   return true;

@@ -578,7 +578,7 @@ void checkLcdHealth() {
 /* ── LCD helpers (all text fits 20 columns) ───────────────────────────────── */
 /* ── Automatic scanner rest windows ────────────────────────────────────────
  * The server derives these windows from every saved Role & Time shift: each
- * shift is padded one hour before and after, then overlapping or touching
+ * shift is padded one hour before and after, then overlapping or adjacent
  * windows (including across midnight) are merged. Role schedules recur daily
  * because there are no weekday fields. The ESP32 receives the already-generated
  * windows in GET /api/attendance/activity's existing device payload and caches

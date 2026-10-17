@@ -7,6 +7,7 @@ import {
   attendanceRoleShifts,
 } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
+import { recordShiftOvertimeAtClockOut } from "@/lib/attendance-overtime";
 import { verifySecret } from "@/lib/auth";
 import { deviceAllowed } from "@/lib/attendance-device";
 import { requireSupervisor } from "@/lib/session";
@@ -20,6 +21,7 @@ import {
   hoursLabel,
   isEarlyOut,
   lateMinutesFor,
+  shiftOtMinutesFor,
   offlineScanNote,
   pickShift,
   rescanAction,
@@ -35,7 +37,7 @@ import {
  * list (Attendance -> Staff Members), never on the staff login list.
  *
  * The owner's three rules live here and nowhere else:
- *   • LATE: 15 minutes after the entrance time of the role he belongs to
+ *   • LATE: 30 minutes after the entrance time of the role he belongs to
  *     (role Morning 12:30 -> late from 12:46). src/lib/attendance.ts.
  *   • SCAN TWICE: a second scan inside one hour of the IN only answers
  *     "already registered" - a wet finger must not close the day. After the
@@ -307,6 +309,12 @@ export async function POST(request: Request) {
       const early = isEarlyOut(inShift, nowMinutes);
       const status = early ? "early_out" : "completed";
 
+      // THE AUTOMATIC SHIFT OT (owner, Oct 2026: "if someone stay after his
+      // shift 1.30 it is overtime"). The tap that closes the day also measures
+      // how far past the end of the shift it closed, so nobody has to remember
+      // a button. 0 means "he went home inside the hour and a half".
+      const shiftOtMinutes = shiftOtMinutesFor(inShift, now);
+
       const row = (
         await db
           .update(attendanceLogs)
@@ -316,6 +324,9 @@ export async function POST(request: Request) {
             totalMinutes,
             status,
             earlyOut: early,
+            // Staying past the shift is overtime whether or not anybody pressed
+            // the button, and the sheet's violet box follows the row.
+            isOvertime: Boolean(existing.isOvertime) || shiftOtMinutes > 0,
             updatedAt: arrivedAt,
             // Same audit as the IN: an OUT typed on the keypad names the
             // supervisor, and keeps whatever the IN already recorded.
@@ -327,6 +338,22 @@ export async function POST(request: Request) {
 
       const outTime = clockLabel(now) || "";
       const hours = hoursLabel(totalMinutes) || "";
+
+      // The row itself is written after the line, and a number somebody typed
+      // for that day is never overwritten by the stopwatch.
+      let overtimeMinutes = shiftOtMinutes;
+      try {
+        overtimeMinutes = await recordShiftOvertimeAtClockOut({
+          memberId: row.memberId ?? 0,
+          date: row.date,
+          logId: row.id,
+          shift: inShift,
+          clockOutAt: now,
+        });
+      } catch (e) {
+        console.warn("[attendance] Could not record the automatic shift overtime:", e);
+      }
+      const otLabel = overtimeMinutes > 0 ? hoursLabel(overtimeMinutes) || "" : "";
 
       publish(CHANNELS.attendance);
 
@@ -342,12 +369,14 @@ export async function POST(request: Request) {
         totalHours: hours,
         earlyOut: early,
         isOvertime: Boolean(row.isOvertime),
+        overtimeMinutes,
+        overtimeLabel: otLabel || null,
         status,
-        message: `${memberName} OUT ${outTime} • ${hours}${early ? " • Early out" : ""}`,
+        message: `${memberName} OUT ${outTime} • ${hours}${otLabel ? ` • OT ${otLabel}` : ""}${early ? " • Early out" : ""}`,
         oled: {
           line1: memberName.substring(0, 20),
           line2: `OUT ${outTime}`,
-          line3: early ? `Early out ${hours}` : hours,
+          line3: otLabel ? `OT ${otLabel}` : early ? `Early out ${hours}` : hours,
         },
         buzzer: "success_out",
         led: "green",

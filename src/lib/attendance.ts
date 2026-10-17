@@ -1,6 +1,8 @@
 /**
  * ATTENDANCE RULES - one place for the owner's numbers and colours
- * (owner, Oct 2026: "the person is considered late if he is 15 min late",
+ * (owner, Oct 2026: "the person is considered late if he is 15 min late" -
+ *  raised to 30 minutes on 2026-10-16: "change the 15 min maximum late time
+ *  to 30 so if person come after 30 it will be described as late";
  * "when someone clicks more than once it says already registered but after
  * 1 hour the next scan is printed in the OUT", "make it up to 30 days ...
  * if he select more than 7 days add page below ... when he click print it
@@ -18,8 +20,12 @@
  */
 import { etHour, etMinute } from "@/lib/timezone";
 
-/** A person is late from 15 minutes after the shift of his role starts. */
-export const LATE_GRACE_MINUTES = 15;
+/**
+ * A person is late from 30 minutes after the shift of his role starts. It was
+ * 15 until the owner moved it (2026-10-16); one constant, so the door screen,
+ * the admin page and the printed sheet can never disagree about who is late.
+ */
+export const LATE_GRACE_MINUTES = 30;
 
 /**
  * A second scan inside this window after the IN is only "already registered":
@@ -41,9 +47,6 @@ export const SHEET_MAX_DAYS = 7;
  * divided the same way: the first 7 days, then the next 7, and so on.
  */
 export const SHEET_RANGE_MAX_DAYS = 30;
-
-/** The supervisor's door-tablet login times out after this much inactivity. */
-export const SUPERVISOR_IDLE_TIMEOUT_MINUTES = 2;
 
 /** FPC1020A templates per person we allow the admin to enroll. */
 export const MAX_FINGERS_PER_MEMBER = 5;
@@ -111,9 +114,9 @@ export function pickShift(shifts: RoleShift[] | null | undefined, minutes: numbe
 }
 
 /**
- * Minutes late for a clock-in: 0 up to 15 minutes after the shift start, then
- * every minute past that. Morning shift 12:30 -> 12:45 is still on time,
- * 12:46 is 1 minute late.
+ * Minutes late for a clock-in: 0 up to LATE_GRACE_MINUTES (30) after the
+ * shift start, then every minute past that. Morning shift 12:30 -> 13:00 is
+ * still on time, 13:01 is 1 minute late.
  */
 export function lateMinutesFor(shift: RoleShift | null | undefined, clockInMinutes: number): number {
   const start = parseHHMM(shift?.startTime ?? null);
@@ -271,6 +274,300 @@ export function hoursLabel(totalMinutes: number | null | undefined): string | nu
   if (totalMinutes === null || totalMinutes === undefined) return null;
   const mins = Math.max(0, Math.round(Number(totalMinutes) || 0));
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
+}
+
+/* ─── rest windows: when the door scanner may be awake ────────────────────
+ * The owner's ask (Oct 2026): the scanner should not be imaging and answering
+ * all night and all afternoon, because that is what wears an optical reader
+ * out. So the admin lists the hours the door is OPEN, and outside every one of
+ * them the device puts itself to sleep: the sensor stops being polled, the LCD
+ * goes dark, no finger is answered. When the next listed hour starts it is
+ * awake again, by itself.
+ *
+ *   • the intervals the admin types are ACTIVE windows, not quiet ones - that
+ *     is the owner's own reading ("1st activity time is 12:00-3:00, a person
+ *     at 3:05 cannot scan"), and it means a cafe that forgets to add anything
+ *     keeps a working door instead of a sleeping one;
+ *   • an empty list is "awake all day", never "asleep all day";
+ *   • every row has its own on/off, which is the "off button beside each
+ *     interval" he asked for: turn it off, the door lights up for the person
+ *     standing there, turn it back on and the schedule rules again;
+ *   • the name + PIN keypad on the tablet is NOT part of this. The sheet, the
+ *     admin page and the PIN path keep working while the scanner rests.
+ *
+ * These functions are pure and the device keeps its own copy of the same
+ * arithmetic, because the schedule must still be obeyed when the internet is
+ * down. Morning 12:30 -> 15:00 is awake at 14:59 and resting at 15:00.
+ */
+
+export const REST_MAX_WINDOWS = 12;
+
+/** The site_settings key that holds the "keep it awake anyway" override. */
+export const REST_OVERRIDE_KEY = "attendance_rest_override";
+
+export type ActiveWindow = {
+  id?: number;
+  /** "HH:MM" on the Addis clock. */
+  from: string;
+  /** "HH:MM". A time before `from` means the window runs across midnight. */
+  to: string;
+  label?: string | null;
+  enabled?: boolean | null;
+};
+
+/** Only the enabled rows count. */
+export function enabledWindows(windows: ActiveWindow[] | null | undefined): ActiveWindow[] {
+  return (Array.isArray(windows) ? windows : []).filter((w) => w && w.enabled !== false);
+}
+
+/**
+ * Is this minute inside this window? Half-open [from, to), so the last minute
+ * of an open hour is the minute BEFORE it closes. `from === to` is the whole
+ * day and not nothing: "open 06:00 to 06:00" can only mean always open, and an
+ * admin must never be able to close his own door by accident.
+ */
+export function windowContainsMinute(window: ActiveWindow, minuteOfDay: number): boolean {
+  const from = parseHHMM(window?.from ?? null);
+  const to = parseHHMM(window?.to ?? null);
+  if (from === null || to === null) return false;
+  const m = Math.max(0, Math.min(24 * 60 - 1, Math.round(Number(minuteOfDay) || 0)));
+  if (from === to) return true;
+  return from < to ? m >= from && m < to : m >= from || m < to;
+}
+
+/** Should the scanner be awake at this minute of the day? */
+export function isAwakeAt(windows: ActiveWindow[] | null | undefined, minuteOfDay: number): boolean {
+  const open = enabledWindows(windows);
+  if (open.length === 0) return true;
+  return open.some((w) => windowContainsMinute(w, minuteOfDay));
+}
+
+/**
+ * How long until the answer changes, in minutes: from awake to resting, or
+ * from resting to awake. Walking the clock a minute at a time is deliberate -
+ * 1440 cheap steps, no boundary arithmetic to get wrong, and a window that
+ * wraps midnight needs no special case. 1440 means "it never changes" (no
+ * windows at all, or one that covers the whole day).
+ */
+export function minutesUntilChange(windows: ActiveWindow[] | null | undefined, minuteOfDay: number): number {
+  const now = Math.max(0, Math.min(24 * 60 - 1, Math.round(Number(minuteOfDay) || 0)));
+  const awake = isAwakeAt(windows, now);
+  for (let step = 1; step <= 24 * 60; step++) {
+    if (isAwakeAt(windows, (now + step) % (24 * 60)) !== awake) return step;
+  }
+  return 24 * 60;
+}
+
+/** "06:00" for a minute of the day, for the panel's "wakes at" line. */
+export function clockLabelOfMinute(minuteOfDay: number): string {
+  const m = ((Math.round(Number(minuteOfDay) || 0) % (24 * 60)) + 24 * 60) % (24 * 60);
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+/** The minute of the day (0..1439) of a moment, on the Addis clock. */
+export function minuteOfDayET(at: Date | string | number = new Date()): number {
+  const d = at instanceof Date ? at : new Date(at);
+  if (Number.isNaN(d.getTime())) return 0;
+  return etHour(d) * 60 + etMinute(d);
+}
+
+/**
+ * THE OVERRIDE. "Keep it awake" is what the admin taps when somebody stands at
+ * a closed door: the schedule stays exactly as it is and simply does not sleep
+ * the device until the owner says so (or until the minutes he typed run out).
+ * It is stored as one setting value, so there is nothing to clean up: an
+ * expired "awake until" reads as plain "schedule" from the moment it passes.
+ */
+export type RestOverride =
+  | { mode: "schedule" }
+  | { mode: "awake" }
+  | { mode: "awake_until"; untilAt: string };
+
+export function parseRestOverride(value: string | null | undefined, now: Date = new Date()): RestOverride {
+  const v = String(value ?? "").trim();
+  if (v === "awake") return { mode: "awake" };
+  if (v.startsWith("awake_until=")) {
+    const untilAt = v.slice("awake_until=".length);
+    const until = new Date(untilAt);
+    if (!Number.isNaN(until.getTime()) && until.getTime() > now.getTime()) {
+      return { mode: "awake_until", untilAt };
+    }
+  }
+  return { mode: "schedule" };
+}
+
+/* ── how fast a change reaches a board that is resting ────────────────────
+ * A sleeping ESP32 cannot hear a click, so an edit on the Activity panel is
+ * carried by the board itself at the end of its next sleep slice. The trick
+ * that keeps the power saving AND keeps the panel feeling alive: the sleep is
+ * sliced, and the slice is SHORT while something is expected. Two of the three
+ * reasons to be eager are things only the server knows, so the server says how
+ * long the next sleep may be:
+ *
+ *   • an admin has just changed the hours, or pressed Keep it awake   (10 min grace)
+ *   • a "place your finger" job is waiting for somebody to register
+ *   • (the third one the board handles alone: an interval opening soon is
+ *     slept exactly to that boundary whenever it is nearer than the cap)
+ *
+ * So changing a person's time to register makes the system start answering
+ * within about 45 seconds, with no new wire and no second channel, and a quiet
+ * night is still slept in ten minute pieces.
+ */
+export const REST_SLICE_SECONDS = 600;
+export const REST_SLICE_FAST_SECONDS = 45;
+/** The board is never asked to wake faster than this: a reboot costs seconds. */
+export const REST_SLICE_FLOOR_SECONDS = 30;
+/** How long an admin edit counts as "just now". */
+export const REST_WAKE_GRACE_MS = 10 * 60000;
+/** The site_settings key holding the moment the hours were last changed. */
+export const REST_WAKE_KEY = "attendance_rest_wake_at";
+
+/** How long a resting device may sleep in one go, right now, in seconds. */
+export function restSliceSeconds(input: {
+  wakeRequestedAt?: Date | string | number | null;
+  jobWaiting?: boolean | null;
+  now?: Date;
+}): number {
+  if (input.jobWaiting) return REST_SLICE_FAST_SECONDS;
+  const raw = input.wakeRequestedAt;
+  if (raw === null || raw === undefined || raw === "") return REST_SLICE_SECONDS;
+  const at = raw instanceof Date ? raw : new Date(raw);
+  if (Number.isNaN(at.getTime())) return REST_SLICE_SECONDS;
+  const now = input.now ?? new Date();
+  return now.getTime() - at.getTime() < REST_WAKE_GRACE_MS ? REST_SLICE_FAST_SECONDS : REST_SLICE_SECONDS;
+}
+
+/** What a device is allowed to obey: a whole number of seconds, never churn. */
+export function clampRestSliceSeconds(value: unknown): number {
+  const n = Math.round(Number(value) || 0);
+  if (!Number.isFinite(n) || n <= 0) return REST_SLICE_SECONDS;
+  return Math.max(REST_SLICE_FLOOR_SECONDS, Math.min(REST_SLICE_SECONDS, n));
+}
+
+/** Does the override let the device put itself to sleep right now? */
+export function restOverrideAllowsSleep(override: RestOverride, now: Date = new Date()): boolean {
+  if (override.mode === "awake") return false;
+  if (override.mode === "awake_until") return new Date(override.untilAt).getTime() <= now.getTime();
+  return true;
+}
+
+/* ─── overtime: three kinds, three ways in ────────────────────────────────
+ * Overtime is not one flag here, it is a kind of work (owner, Oct 2026), and
+ * it can arrive from three directions:
+ *
+ *   • an admin writes it on the Overtime tab of the Attendance page
+ *     (source "admin");
+ *   • a person taps Overtime on the door tablet and picks the kind himself
+ *     ("self"), or the supervisor does it for him ("supervisor");
+ *   • nobody has to remember for Shift OT: whoever is still in the building
+ *     more than an hour and a half after his shift ends has worked overtime,
+ *     and the overtime is exactly the time past the end of the shift. That row
+ *     is written by the clock-out scan itself (source "auto").
+ *
+ * There is no approval step - the owner wants the row to "list immediately".
+ * A row IS the decision, and the day's box on the paper sheet turns violet
+ * beside it so the two views can never disagree about that day.
+ */
+
+export const OVERTIME_TYPES = ["holiday", "free_week", "shift"] as const;
+export type OvertimeType = (typeof OVERTIME_TYPES)[number];
+
+/** The three buttons the owner asked for, in the order they are offered. */
+export const OVERTIME_TYPE_LABELS: Record<OvertimeType, string> = {
+  holiday: "Holiday OT",
+  free_week: "Free week OT",
+  shift: "Shift OT",
+};
+
+/** What each kind means, for the small print under the buttons. */
+export const OVERTIME_TYPE_HINTS: Record<OvertimeType, string> = {
+  holiday: "A public holiday or a rest day that was worked.",
+  free_week: "The person's own free week that was given up.",
+  shift: "Hours past the end of the shift, on a normal working day.",
+};
+
+export const OVERTIME_SOURCES = ["admin", "supervisor", "self", "auto"] as const;
+export type OvertimeSource = (typeof OVERTIME_SOURCES)[number];
+
+/** Who wrote the row. The table shows it, because the owner reads this page
+ *  to find out who put hours on somebody's day. */
+export const OVERTIME_SOURCE_LABELS: Record<OvertimeSource, string> = {
+  admin: "admin",
+  supervisor: "supervisor",
+  self: "the person",
+  auto: "clock-out",
+};
+
+/** How far past the end of a shift a person must still be present before the
+ *  time starts counting as Shift OT (owner, Oct 2026: an hour and a half). */
+export const SHIFT_OT_GRACE_MINUTES = 90;
+
+export function isOvertimeType(value: unknown): value is OvertimeType {
+  return typeof value === "string" && (OVERTIME_TYPES as readonly string[]).includes(value);
+}
+
+export function isOvertimeSource(value: unknown): value is OvertimeSource {
+  return typeof value === "string" && (OVERTIME_SOURCES as readonly string[]).includes(value);
+}
+
+/**
+ * The Shift OT of one clock-out: the minutes between the end of the shift and
+ * the OUT scan, and only when the person stayed more than SHIFT_OT_GRACE_MINUTES
+ * past it. A shift that runs across midnight (18:00-03:00) wraps exactly the
+ * way the early-out rule wraps it, so an out at 02:00 is an hour EARLY and
+ * nothing is written, while an out at 05:00 is two hours past the end. A shift
+ * that ends before midnight is never wrapped upwards: the clock route closes a
+ * day only inside that day's own date, so an out that reads earlier than the
+ * start of the shift is a mistake, not a night of overtime, and it is ignored.
+ *
+ * Returns 0 when there is nothing to record, which is also the answer for "no
+ * shift is set for this person" - the rule can only measure against a time.
+ */
+export function shiftOtMinutesFor(
+  shift: RoleShift | null | undefined,
+  clockOutAt: Date | string | null | undefined
+): number {
+  const start = parseHHMM(shift?.startTime ?? null);
+  const end = parseHHMM(shift?.endTime ?? null);
+  if (end === null || !clockOutAt) return 0;
+  const out = clockOutAt instanceof Date ? clockOutAt : new Date(clockOutAt);
+  if (Number.isNaN(out.getTime())) return 0;
+  const crossesMidnight = start !== null && end <= start;
+  const endMinutes = crossesMidnight ? end + 24 * 60 : end;
+  const raw = etMinutes(out);
+  const outMinutes = crossesMidnight && start !== null && raw < start ? raw + 24 * 60 : raw;
+  const past = outMinutes - endMinutes;
+  return past > SHIFT_OT_GRACE_MINUTES ? past : 0;
+}
+
+/**
+ * What a day's own scans say about overtime, used when nobody typed a number:
+ * the hours actually worked that day. A day with no line has none (0), and the
+ * caller then asks for the hours instead of inventing them.
+ */
+export function overtimeMinutesFromLog(
+  log:
+    | {
+        totalMinutes?: number | null;
+        clockIn?: Date | string | null;
+        clockOut?: Date | string | null;
+      }
+    | null
+    | undefined
+): number {
+  if (!log) return 0;
+  const cap = 24 * 60;
+  const stored = Math.round(Number(log.totalMinutes) || 0);
+  if (stored > 0) return Math.min(stored, cap);
+  const inAt = log.clockIn ? new Date(log.clockIn).getTime() : NaN;
+  const outAt = log.clockOut ? new Date(log.clockOut).getTime() : NaN;
+  if (!Number.isFinite(inAt) || !Number.isFinite(outAt)) return 0;
+  return Math.max(0, Math.min(Math.round((outAt - inAt) / 60000), cap));
+}
+
+/** "2h 30m" for the table. Overtime is always spoken in hours and minutes. */
+export function overtimeHoursLabel(minutes: number | null | undefined): string {
+  return hoursLabel(minutes) ?? "0h 00m";
 }
 
 /* ─── the paper sheet window ─────────────────────────────────────────────── */
@@ -550,27 +847,3 @@ export function wholeHoursOf(totalMinutes: number | null | undefined): number {
   return Math.floor(Math.max(0, Math.round(Number(totalMinutes) || 0)) / 60);
 }
 
-/* ─── the supervisor countdown on the door tablet ────────────────────────── */
-
-/**
- * The door tablet locks the backup PIN again after two minutes with no
- * activity (owner, Oct 2026). This is the clock the tablet shows while it is
- * unlocked: 120000 -> "2:00", 75000 -> "1:15", 0 -> "0:00". Never negative.
- */
-export function countdownLabel(msLeft: number | null | undefined): string {
-  const total = Math.max(0, Math.round(Number(msLeft) || 0));
-  const seconds = Math.ceil(total / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-/** True when the idle time has run out and the tablet must ask again. */
-export function supervisorIdleExpired(
-  lastActivityAt: Date | number | null | undefined,
-  now: Date | number = Date.now(),
-  timeoutMinutes: number = SUPERVISOR_IDLE_TIMEOUT_MINUTES
-): boolean {
-  const last = lastActivityAt instanceof Date ? lastActivityAt.getTime() : Number(lastActivityAt);
-  const at = now instanceof Date ? now.getTime() : Number(now);
-  if (!Number.isFinite(last) || !Number.isFinite(at)) return true;
-  return at - last >= Math.max(0, timeoutMinutes) * 60000;
-}

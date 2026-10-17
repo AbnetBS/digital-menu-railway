@@ -39,7 +39,11 @@ Total with optional: ~11,920 Br
 ## Wiring for ESP32 WROOM + FPC1020A + 20x4 I2C LCD
 
 ```
-FPC1020A VCC (Red)    -> ESP32 3.3V (5V only if module is rated for 5V)
+FPC1020A VCC (Red)    -> ESP32 3.3V, AND ONLY 3.3V. The bare FPC1020A is a
+                        2.2-3.6 V part: 5 V on it makes it run HOT, then scan
+                        badly, then stop answering. Only a breakout board that
+                        carries its own 3.3 V regulator may be fed 5 V - know
+                        which one you hold before you power up.
 FPC1020A GND (Black)  -> ESP32 GND
 FPC1020A TX (Yellow)  -> ESP32 GPIO16 (RX2)
 FPC1020A RX (White)   -> ESP32 GPIO17 (TX2)
@@ -68,6 +72,61 @@ Red LED +             -> GPIO19 -> 220ohm -> GND
 
 The sensor needs only four wires: VCC, GND, RX, TX. The level shifter is NOT
 the buzzer driver, and the buzzer driver has nothing to do with the LCD.
+
+### Which supply does THIS module want? (this is the heat question)
+
+The Biovo / FPC1020A library ships **no voltage at all**, and its own troubleshooting
+section says only "check VCC and GND" and "check the power supply". That is not laziness:
+the sensor die and the carrier board want different things, and the two look similar on a
+desk. So decide it from the board in your hand, never from what somebody said about a
+module like yours.
+
+| what the module looks like | what to feed it | why |
+|---|---|---|
+| the sensor die on a flex / 6 pads only, no components | **3.0 to 3.3 V**, never 5 V | VCC goes straight to a 3.3 V chip. 5 V is over-voltage: hot case, then bad scans, then silence |
+| a small PCB with a 3-pin part next to VCC (marked `HT7333`, `662K`, `XC6206`, `AMS1117-3.3`, or a `ME6211`) and 4 header pins | **5 V is fine and often required** | that part IS the regulator. Feeding it 3.3 V leaves it no headroom, so the rail collapses every time the reader imaging-draws and the module resets mid-scan |
+| a metal-cased module with 5 wires (VCC, GND, TX, RX, TOUCH), often sold as AS05 / FPM10A class | follow the marking; usually **5 V** | these carry their own regulator and a touch wire; note they also usually want a different baud and packet format than this sketch uses, so if it answers at 19200 with this sketch it is the family above, not this one |
+
+Two consequences worth saying out loud, because both were argued at this door:
+
+- **"It is hot" is a verdict, not an opinion.** Whatever the marking says, a module you
+  cannot hold your finger on is being supplied wrongly or is already damaged. Do not
+  "run it a bit longer to see"; unplug it.
+- **3.3 V can be wrong too.** On a regulated module, 3.3 V in gives about 3.2 V out with no
+  room for the imaging spike, which looks exactly like "the LCD is fine and the sensor
+  ignores my finger" and is intermittent by nature. If the module came from the owner's
+  box and it worked on 5 V, that is the most likely reason 3.3 V feels dead.
+
+### Settle it with numbers, in five minutes
+
+`sensor` on the Serial monitor (115200) asks the module 20 times and prints how many times
+it answered. Run it once on each supply and write the two lines down:
+
+1. 3.3 V, `sensor` -> note `answered: N/20` and the reply times. Touch the case.
+2. 5 V, `sensor` -> same. Touch the case after the test, and again after ten minutes.
+3. The winner is the supply that answers 20/20 **and** stays warm at most. Not the fastest,
+   and not the one that answers once: a supply that answers when idle and drops out during
+   imaging is the failure mode, and the `sensor hard` run (about 8 s of continuous asking)
+   is what shows it.
+4. Then measure at the module's own pins while a scan runs. Below about 2.9 V on a 3.3 V
+   rail is a supply problem, not a code problem: a 100 uF capacitor across VCC and GND right
+   at the module is the fix, and taking the LCD backlight off the same 3V3 pin is the other.
+5. If 5 V answers reliably and does not heat the case, the owner was right for this module
+   and there is nothing to change in the sketch. If 5 V heats the case, keep the module on
+   its rated 3.0-3.3 V, put the answer-rate difference down to the supply headroom, and fix
+   THAT (a stronger 3.3 V source or the capacitor), rather than pushing 5 V into a 3.3 V
+   part because it answers more often.
+
+Whichever wins, say so in the ordering note for the next device, because "3.3 V or 5 V,
+whatever" is the sentence that started this. The Activity rest windows also help the case
+temperature on purpose: in the closed hours the reader is not imaging at all and the screen
+is dark.
+
+**Keep the sensor's red wire out of the 5 V rail row that feeds the LCD backpack
+and the buzzer.** On a breadboard those two rows sit next to each other, and the
+backpack and the buzzer genuinely want 5 V - so "it works, the screen is bright,
+the sensor is hot" is most of the time that one wire in the wrong row. The LCD
+backpack is a 5 V part, the fingerprint module is not.
 
 ### Verify before you power up (the photo was not conclusive)
 1. **Transistor leg order.** A 2N2222 in a TO-92 package is usually
@@ -126,7 +185,10 @@ the buzzer driver, and the buzzer driver has nothing to do with the LCD.
 ### Path A: automatic (recommended)
 1. In admin, open **Attendance → Staff Members** and edit the person.
 2. Press **ADD FINGERPRINT**. The server chooses a free sensor ID from 1–1000 and pushes the job to the device.
-3. Follow the LCD; the device enrolls the finger and sends the mapping back. The admin page shows **Fingerprint Added ✓**.
+3. Follow the LCD; the device enrolls the finger, **scans it once more to be sure the
+   sensor really has it**, and only then sends the mapping back. The admin page shows
+   **Fingerprint Added ✓** - and since October 2026 that ✓ means the finger actually works,
+   not just that the commands were answered.
 
 ### Path B: manual (enroll on the device, then map it)
 1. Open the device Serial Monitor at **115200 baud**.
@@ -136,17 +198,39 @@ the buzzer driver, and the buzzer driver has nothing to do with the LCD.
 5. The page confirms **Fingerprint Added for …**. The ID must match the one stored on the device.
 
 ### Automatic enrollment, step by step
-When you press **Add Fingerprint** on the website, the device shows the person's name and walks them through six scans taken from ONE placement:
+When you press **Add Fingerprint** on the website, the device shows the person's name and walks
+them through the fingerprint module's own enrollment protocol: **three steps, one placement each,
+and then three confirm scans**. Six placements in total, and the bar counts all six.
 
 - The admin page says **Waiting for the device** and then **Device is ready • ID n** the moment the scanner picked the job up. If it never changes, the scanner is offline.
-- If a finger is already resting on the glass the LCD says **LIFT YOUR FINGER** first. Take it off - a finger that was there before the job started is what used to make the automatic enrollment fail while the Serial command worked.
-- The LCD then says **PLACE FINGER** once, then **KEEP STILL** while the five remaining scans are taken. The second row shows `ID 7 [######] 2/6`: one `#` per accepted capture. Do not lift the finger until the device is done.
-- Between the six captures the device sends the sensor NOTHING but the six ADD commands. Any other command mid-enrollment makes the module refuse the next scan with status 1 - this is what broke enrollment in PR #50 and is fixed now (see FINGERPRINT_FIX.md).
-- The order is fixed: one scan of step 1, four scans of step 2, one scan of step 3 - the same finger, flat and still on the sensor the whole time.
-- Each ADD command gives the module up to 30 seconds. If no finger is seen for 30 seconds in total, the job ends with "no finger was placed".
-- If the image is not clear (sensor status 6), the LCD says **HOLD STILL** and the same scan is retried about a second later. After three unclear images it says **LIFT, PLACE AGAIN**.
-- If the six scans still cannot be finished, the device asks for a fresh lift and placement and starts the whole sequence again - up to 3 attempts - before it gives up.
-- If nobody places a finger within 30 seconds, or all 3 attempts fail, the job is marked **failed**. The LCD shows **Not added** with the first 20 characters of the reason, and the admin page prints the same reason (which scan, which sensor status) with a **Try again** button. The device does not loop on its own.
+- If a finger is already resting on the glass the LCD says **LIFT YOUR FINGER** first. Take it off - the module has to see a finger coming DOWN, and a finger that was there before the job started is what used to make the automatic enrollment fail while the Serial command worked.
+- **Step 1:** the LCD says **PLACE FINGER**. Put the finger flat and still; the module takes the picture itself, so hold it there until the row moves.
+- **Steps 2 and 3:** the LCD says **LIFT YOUR FINGER** and then **PLACE FINGER** again - the SAME finger, freshly placed each time. This is what the sensor's own three-step protocol asks for, and it is what makes a template that can be found again later.
+- The second row shows `ID 7 [......] 1/6`: one `#` per accepted step, then one per confirm scan that found the finger. Work up to `6/6` and it is done.
+- **Confirm scans (4/6 to 6/6):** after the third step the device asks for the same finger three more times, freshly placed each time, and searches after every placement. The finger is only reported as **ADDED** when the module answers **all three** with this ID. Nothing is sent to the website before that.
+- Between the three ADD commands the device sends the sensor NOTHING. Any other command mid-enrollment makes the module refuse the next step with status 1 - this is what broke enrollment in PR #50 and is still true (see FINGERPRINT_FIX.md).
+- Each ADD command gives the module up to 30 seconds. If no finger is seen for 30 seconds, the step ends with "no finger was placed".
+- If the image is not clear (sensor status 6), the LCD says **HOLD STILL** and the same step is retried about a second later. After three unclear images it says **LIFT, PLACE AGAIN**.
+- If a session cannot be finished - or one of the confirm scans does not find the finger - the device frees the slot, asks for a fresh lift and placement and starts the whole sequence again, up to 3 attempts.
+- If nobody places a finger, or all 3 attempts fail, the job is marked **failed** and the device says so out loud: the LCD shows **DOES NOT SCAN**, the reason, and **Not saved - retry**. A finger that was not confirmed is NEVER reported as added, so the admin page cannot print a ✓ for it; the page shows the same reason (which step, which sensor status) with a **Try again** button. The device does not loop on its own.
+
+### Why the LCD has to say ADDED only after a scan
+The module answers `OK` to an enrollment command when it has *taken and merged the
+pictures*. That is not the same as "this finger can be found again". The first releases
+of this sketch sent six commands from one unmoving press, every command answered OK, the
+admin page printed **Fingerprint Added ✓** - and the next scan said **NOT REGISTERED**,
+because the stored model could never be matched. That is why `enrollFingerprint()` now
+finishes with three confirm scans, and why a finger the module cannot find again is a
+**failed job** whose reason says the finger **does not scan successfully** - on the LCD at
+the door and on the admin page, in the same words, so nobody reads a success that was
+never measured.
+
+**After flashing this build:** every finger that was added with the old recipe has to be
+enrolled again - the sensor never held a usable template for those, only a record the
+website believed. For each person: admin -> Attendance -> Staff Fingerprints -> remove their
+old entry, then press **ADD FINGERPRINT** once more and have them place the same finger for
+the three steps and the three confirm scans. Fingers that already scan correctly are unaffected,
+and nothing on the sensor is wiped by this change.
 
 ### Physical checklist
 - Remove the sensor's protective film; clean the sensor surface.
@@ -175,6 +259,78 @@ When you press **Add Fingerprint** on the website, the device shows the person's
 - Print Attendance Sheet: Admin -> Attendance -> Paper Sheet View -> Print Hard Copy -> hard copy like paper sheet image you sent. Uses @media print landscape.
 - Last 7 Days Sales: Reports tab now shows Daily Sales Last 7 Days sliding window. API /api/reports returns last7DaysSales array (date, label, revenue, orders) reversed oldest->newest. When new Ethiopian day starts, oldest drops automatically.
 - Ready for hardware connect tomorrow: All APIs tested, typecheck passes, build passes 54 pages, mappings public, clock public, today/logs admin, biometrics admin, shifts admin.
+- **Overtime, three kinds (owner, 2026-10-16).** The door tablet's `Overtime` button now asks
+  *which kind*: **Holiday OT**, **Free week OT** or **Shift OT**, with an optional hours box.
+  Leave the hours empty and the overtime is the time the person actually worked that day, read
+  off his own scans. The row is on the admin page (Attendance -> **Overtime**, beside the
+  Leaderboard) the moment it is saved, and that day's box on the paper sheet turns violet. There
+  is no approval queue: what is written is the record.
+- **Shift OT does not need anybody to remember it.** When a person's OUT scan is more than
+  **1 h 30 min** past the end of his role's shift, the clock-out itself writes the Shift OT row
+  for him, with the hours measured as exactly the time past the end of the shift. The LCD says
+  `OUT 19:12 / OT 2h 12m`. A number an admin or the tablet typed for that day is never
+  overwritten by the stopwatch.
+- **Activity: the hours the scanner is awake (owner, 2026-10-17).** Admin -> Attendance ->
+  **Activity** -> `Add time interval` -> pick `From` and `To` -> `Add`. Each interval gets its
+  own **On/Off** button, and you may list as many as you need because the intervals are not the
+  same. **The interval you type is the time the door ANSWERS**; outside every interval the board
+  puts itself to sleep: the LCD goes dark, the reader stops imaging, and no finger is answered.
+  It wakes itself when the next interval starts and carries on like nothing happened.
+  Why it is worth it: an idle scanner is not idle, it asks the module for a search every second
+  and each search lights the reader and takes a picture. That is thousands of pictures an hour
+  with nobody standing there, which is exactly the wear the owner wanted to avoid
+  ("protect the system for over using power").
+  The rules in one line: clock times that repeat every day (like a shift, not a date); a `To`
+  earlier than the `From` runs across midnight (`22:00` to `06:00`); `To` is not included
+  (`12:00`-`15:00` answers at `14:59` and sleeps at `15:00`); `From` = `To` means the whole day;
+  **no intervals, or every interval switched off, means awake all day** - so the panel can never
+  lock you out of your own door.
+- **Somebody at the door during a rest period** has two ways in, both from the admin page
+  (Attendance -> Activity): switch that one interval **Off** (the board wakes within a minute and
+  he scans), or press **Keep it awake now** / **Awake for that long, then rest** and leave the
+  intervals as they are. Switch it back and the board sleeps again until the next interval. The
+  third way needs nobody: the **name + PIN keypad on the tablet** at /attendance is unaffected by
+  the rest and clocks people in all night, so the paper sheet and the overtime rows stay complete.
+  There is no wiring for this and no new part: the sensor stays powered, it is simply never asked
+  to image while the door is closed.
+- **What "asleep" means, and its one limit.** The board uses a real deep sleep (no polling loop,
+  no screen, ~a few microamps) and wakes itself by timer. Because a sleeping board cannot hear a
+  click on the admin page, long rests are slept in **slices of at most 10 minutes**: every slice
+  ends in a short boot that re-reads the schedule from the website, re-checks NTP and delivers any
+  kept scan. And the website tells the board how short to make that slice: **45 seconds while
+  something is expected** (you changed the hours a moment ago, or an `Add Fingerprint` job is waiting
+  for a person), **10 minutes on a quiet night**. So a switch you flip is obeyed in about a minute and
+  an interval that starts at
+  06:00 opens the door at 06:00 (give or take the few seconds of that boot). If you need the board
+  awake this second, press `Keep it awake now`, or type `rest off` on the Serial monitor - that
+  last one is the escape hatch if the website is ever unreachable.
+  An `Add Fingerprint` job you press while the board is resting is not lost and it does not wait ten
+  minutes either: opening the job marks the moment, so the board shortens its next sleep to about 45
+  seconds, opens the event stream at that wake (a 15 s fallback poll runs while the stream is closed)
+  and starts the registration. That is "I want the system to start working if he changes the time for
+  that particular person to register": change the hours or open the job, and the door answers again in
+  about a minute, with no new wire and no second channel - and an enrollment that has started is
+  never cut short by the next sleep.
+  Safety rails, all of them deliberate: the board never sleeps while a finger is being scanned or
+  an enrollment is running, never while a result is still on the screen (8 s grace), never before
+  NTP has answered at least once since power-on (no clock, no guessing an hour), and never while
+  the schedule is unknown to it. The schedule is cached in flash (`/rest.json`), so a dead internet
+  at 03:00 changes nothing: the last hours you saved are still the hours obeyed.
+- **The intervals are editable, not one-way.** Each row has a pencil button that puts its times back
+  into the form, `Save changes` writes them in place and `Cancel` leaves the row alone, so a 15:00
+  that should have been 15:30 is corrected without deleting the row. The panel also says how soon the
+  device will look again, so nobody has to guess whether the board has heard the change.
+- **`rest` on the Serial monitor** (115200) is the same switch without the website:
+  `rest show` (what it believes, the hour it thinks it is, and awake/resting), `rest off`
+  (stay awake), `rest on` (obey the saved hours again, re-read from the website), `rest reload`
+  (fetch the schedule now). `/status` on the device's own IP answers `restAwake`, `restKnown`,
+  `restKeptAwake` and `restNextOpen` as well.
+
+- **The supervisor keypad no longer locks itself after 2 minutes (owner: it "doesnt have
+  benefit").** The door tablet's backup PIN keypad is still locked until an attendance
+  supervisor opens it with his own name and PIN, and it still needs that unlock on the server -
+  but it now stays open until someone presses **Lock now**, with no countdown, no auto-lock and
+  no renewal traffic. Fingerprint scans never needed it, and still do not.
 
 ## API Endpoints (on your VPSDime VPS)
 
@@ -187,11 +343,76 @@ When you press **Add Fingerprint** on the website, the device shows the person's
 - GET /api/attendance/biometrics?pending=1 -> device reads the pending job
 - POST /api/attendance/mappings {action: "job_started", jobId, fingerprintId} -> device says it picked the job up, BEFORE it touches the sensor; the admin page shows "Device is ready"
 - POST /api/attendance/mappings {action: "job_failed", jobId, reason} -> device reports a failed enrollment job (marks it failed on the website, and the page prints the reason)
+- POST /api/attendance/overtime {memberId, type: holiday|free_week|shift, hours?, shiftLabel?} -> write one overtime row (the tablet and the admin page both call this; empty `hours` means the day's own worked hours). Without `type` it is the old plain switch that only flags the day.
+- GET /api/attendance/overtime?from&to -> the rows of a range with the name, the times and the hours; DELETE /api/attendance/overtime?id=n (admin) takes one row back
+- GET /api/attendance/activity -> the awake intervals, the admin override, and what the device would do right now (`awakeNow`, `changeInMinutes`, `nextChangeLabel`, plus a flat `device` block the ESP32 caches). Admin session or the device token.
+- POST /api/attendance/activity {action: "add"|"update"|"toggle"|"remove", id?, from?, to?, label?, mode?, minutes?} -> the Activity panel's edits, admin only. Every one of them pushes an event on the `device` channel, so an awake board refetches its schedule at once. `mode` is `awake` | `minutes` | `schedule` for the keep-it-awake override.
 
 The device itself serves only its status page (`/` and `/status`). It has no `/enroll`, `/logs` or `/mappings` routes.
 - GET /api/attendance/members -> admin member list, including each member's fingers[] IDs
 - GET/POST /api/attendance/shifts -> Morning/Afternoon shifts
 - GET /api/reports -> now includes last7DaysSales sliding window 7 days
+
+## Running on a power bank (the 22.5 W / 10000 mAh one, Oct 2026)
+
+Worked from datasheet currents, not from the label. The cells are 3.7 V, so
+`10000 mAh x 3.7 V = 37 Wh`, and the 5 V USB port gives back about 80-85 % of that after the boost
+converter: **roughly 30 Wh of real energy, about 6000 mAh at 5 V.** The 22.5 W figure is the port's
+ceiling and is not what this system asks for: it wants about 1.2 W, so any 5 V USB port is enough.
+
+| state | what is running | current at 5 V |
+|---|---|---|
+| awake | WiFi, a SEARCH every 1.5 s (the reader imaging), LCD lit | ~230-260 mA |
+| resting, on a normal devkit board | board in deep sleep, LCD dark, sensor powered but never imaged | ~30-45 mA |
+| resting, on a bare module with a low-quiescent 3.3 V regulator | as above | ~15-20 mA |
+
+That 30-45 mA floor is not the sleep failing. It is the devkit board's own regulator and USB chip,
+which stay awake whatever the ESP32 does. It is also why a deep sleep is worth having without any
+MOSFET on the sensor.
+
+Hours on one charge = `6000 mAh / average current`, and the day's average is
+`(awake hours x 250 + resting hours x 38) / 24`:
+
+| open hours listed in Activity | average | on a 10000 mAh bank |
+|---|---|---|
+| 24 h a day, no intervals | ~250 mA | **~24 h** |
+| 16 h (e.g. 06:00-22:00) | ~180 mA | ~33 h |
+| 12 h | ~145 mA | ~41 h |
+| 8 h | ~109 mA | ~55 h |
+| 6 h | ~91 mA | ~66 h |
+| 4 h | ~73 mA | ~82 h |
+| 2 h | ~56 mA | ~108 h |
+
+Two things to read off that table. First, the intervals are what buys the time: **one day becomes two
+to four days**, and a 20000 mAh bank turns that into a week. Second, below about 6 open hours the
+bank is being spent by the sleep floor rather than by the scanner, so a bigger bank helps more than
+tighter timing does.
+
+For "charger in, power bank in the middle, ESP32 on the bank, so a cut in the mains does not stop the
+system", two traps are worth knowing before the first night:
+
+1. **Auto-shutoff is the one that will bite.** Many banks stop supplying when the load falls under
+   ~50-80 mA, and a resting board sits right at that line. If the bank cuts out, the board is off and
+   cannot ask for power again - the door would look broken at 03:00 with nothing wrong in the sketch.
+   Turn on the bank's low-current / always-on mode (on Xiaomi-style banks a double press of the power
+   button, some have a 12 h mode), or use a bank or UPS module that has no auto-shutoff. Test it on
+   purpose: list one interval that closes for an hour and see whether the bank is still answering.
+2. **Pass-through (charging while it powers the load) is not on every bank,** and where it exists it
+   is slow and warm: the bank refills over hours, not minutes. The load here is small so that is
+   fine, but daily cycling of a phone-grade cell is a year or two of life; a purpose-built 18650 UPS
+   module (load sharing, no auto-shutoff) does the same job for less money and no guessing. Worth it
+   only if the cuts are a daily event.
+
+Nothing is lost when the bank does die: kept scans are in the ESP32's flash (LittleFS is built to
+survive a cut in the middle of a write), and names, hours and pending jobs are re-read from the
+website at the next boot. The tablet at /attendance works through a rest period and through a power
+cut either way, and a scan made while everything is off is simply not recorded - which is the same
+behaviour as a scanner without the intervals at all.
+
+If more hours are wanted later, the next 20 % is the LCD backlight during the open hours (~50-60 mA
+of the ~250): blanking it after a minute or two with nobody at the sensor and lighting it again when
+a finger is placed. It is not switched on by default, because a dark screen during opening hours
+looks like a breakdown to the person standing there, and that trade is the owner's to make.
 
 ## Paper Sheet Design (like your photo)
 
@@ -214,11 +435,80 @@ A person is marked absent only from their registration date through Ethiopian to
 
 ## Troubleshooting
 
+- **The fingerprint module gets hot.** This is not normal and it is not the
+  sketch: nothing in the code can push more current into a module than its own
+  supply does. Work through it in this order, with a multimeter, powered off
+  between steps:
+  1. **Measure VCC to GND at the sensor's own pins**, not at the ESP32 board. It
+     must read 3.0-3.3 V. Anything above 3.6 V means the module is being fed 5 V
+     (see the wiring note above): that is the heat, and it will also be the
+     reason it answers badly before it stops answering altogether.
+  2. **Polarity.** Red to VCC, black to GND. A swapped pair makes a module hot
+     and stone dead at the same time, which is often exactly what "it got hot and
+     now it never scans" means. If the module has already been run like this for
+     a while, test it on a known-good 3.3 V supply before blaming the code: a
+     cooked module answers 0 out of 20 no matter who asks.
+  3. **Which part is hot?** Touch the small flat module and the ESP32 board's
+     regulator separately. If the *board's* regulator is the hot one, the sensor
+     is drawing its imaging current through the ESP32's 3V3 pin (which is behind
+     a small LDO, shared with the LCD backlight); power the sensor from the same
+     regulated 3.3 V but not through the board's pin, or take the backlight off
+     that rail. A 3.3 V supply sagging below ~2.9 V while a scan runs is the
+     classic cause of a module that resets itself mid-command.
+  4. **Confirm it with the link test**: `sensor` on the Serial monitor (115200)
+     asks the module 20 times and prints how many times it answered; `sensor
+     hard` hammers it for about 8 seconds, which is the way to see whether it
+     fails only once it is warm. Every round answered = wiring, baud and module
+     are fine and the heat is a supply or airflow question. Silence = power or
+     wiring. Garbled = levels, baud, or the voltage drooping during imaging.
+  Continuous imaging is *not* the heat source at the rates this sketch uses: a
+  SEARCH that answers in a fraction of a second once every 1.5 s leaves the
+  reader imaging a few percent of the time, which is warm at most. (And since
+  the Activity rest windows shipped, in the closed hours it is not imaging at all
+  and the screen is dark.)
+- **The LCD works, the WiFi says connected, and a finger does nothing.** There
+  are four causes, and the board now says which one it is:
+  1. **The module stopped answering while the board was running.** (And the
+     mirror of it: a module that answers a slow COUNT but misses scans is BUSY,
+     usually a few hundred templates to search through, and the board says
+     `Sensor is busy, not dead` while it waits longer for scans, up to 4 s. That
+     is not a fault and nothing has to be fixed.) The row that
+     used to read `Place finger` now reads `SENSOR OFFLINE!`, and the screen says
+     "SENSOR NOT / answering. Check / power 3.3V and / wiring TX/RX". This is a
+     link watchdog (6 silent checks in a row): a module that answers "no finger"
+     is alive and nothing is reported, so an occasional garbled frame does not
+     drop the sensor. The board keeps looking for it every 5 seconds and the
+     screen says `Sensor back!` when it returns - no reboot, no reflash. The
+     counters are also on the device's own status page (`sensorSilentPasses`,
+     `sensorStatus`, `sensorSilentMs`) for whoever is standing there with a phone.
+  2. **The board is sitting in its setup hotspot** (`Fana-Attendance-Setup`),
+     because the saved router did not answer. While WiFiManager waits there, the
+     loop does not run at all, so nothing is scanned - a perfectly wired door
+     looks dead. That wait now has a hard end (12 s per attempt, 180 s in the
+     hotspot, then a restart that tries again). If the screen shows the hotspot
+     or an address like 192.168.4.1, that is this, not the sensor.
+  3. **It is resting.** Check the clock against the hours in Attendance ->
+     Activity. A rest leaves the screen DARK (the backlight is switched off), so
+     "the LCD is lit" normally rules this out; if it is lit and `Time` is shown,
+     it is not the schedule. `rest show` on the Serial monitor prints what the
+     board believes.
+  4. **It is scanning and the finger is simply not enrolled.** That case is
+     loud, not silent: the screen says `NOT REGISTERED / Finger not enrolled /
+     Ask admin to add it`, so a red LED and a beep with no text at all is not
+     this one.
+
+- **"The scanner does not answer, the screen is dark"** - look at the clock first. If it is
+  outside the hours in Attendance -> Activity, that is the rest working: it wakes itself when the
+  next interval starts. To open the door now, switch that interval Off or press `Keep it awake
+  now`; `rest show` on the Serial monitor prints what the board believes. A board that has never
+  reached NTP since power-on refuses to sleep at all, so a dark screen is never a wrong clock.
+
 - If the LCD is blank or shows blocks: run `diagnostics/lcd_check/lcd_check.ino` (see the LCD check above). Blank/blocks with the backlight on is the contrast pot; no I2C address answering is wiring or power, and the sketch never assumes the address.
-- **Enrollment says HOLD STILL (sensor status 6, image unclear):** keep the finger flat and still. The device retries the same scan on its own, and retries the whole six-scan sequence up to 3 times. If it keeps failing, clean the sensor and check the physical checklist above. The admin page now prints the exact scan and status, so you can see where it stopped.
+- **Enrollment says HOLD STILL (sensor status 6, image unclear):** keep the finger flat and still. The device retries the same step on its own, and retries the whole three-step sequence up to 3 times. If it keeps failing, clean the sensor and check the physical checklist above. The admin page prints the exact step and status, so you can see where it stopped.
+- **The admin page says Fingerprint Added, but the scanner says NOT REGISTERED:** fixed in October 2026, and it cannot happen silently any more. NOT REGISTERED is the module's own answer (status 5) to a scan of a finger it has no template for - so the enrollment had been *accepted* but never *stored in a usable way*. The device now runs three confirm scans before it reports a finger as added, and the enrollment follows the module's own three steps with a fresh placement per step. A finger it cannot find on every one of those scans is a failed job, on the LCD and on the admin page, with the reason `the finger does not scan successfully: the sensor did not find it on N fresh scan(s) after saving it (status 5: NOT REGISTERED)`. See FINGERPRINT_FIX.md.
 - **The admin page stays on "Waiting for the device":** the scanner never picked the job up. Check that it is powered, on the same WiFi, and that `serverURL` in the sketch points at the live domain.
 - **Run the enrollment tests without the hardware:** `bash hardware/fana_attendance_esp32/test/run.sh` compiles the real sketch against host stubs and runs the enrollment state machine on a simulated sensor.
-- **Enrollment keeps failing on the device:** flash `diagnostics/enroll_diagnostic/enroll_diagnostic.ino` INSTEAD of the product sketch and send `a`, `b` or `c` in the Serial Monitor (115200 baud). It runs one six-scan test enrollment and prints every sensor reply with a timestamp; `a` replays the old PR #50 strategy, `b` the lift-pause strategy, `c` the current keep-the-finger-on strategy. Share the log so the statuses can be compared.
+- **Enrollment keeps failing on the device:** flash `diagnostics/enroll_diagnostic/enroll_diagnostic.ino` INSTEAD of the product sketch and send `a`, `b`, `c` or `d` in the Serial Monitor (115200 baud). It runs one test enrollment under ID 999, prints every sensor reply with a timestamp, and then **verifies** - a fresh placement that must SEARCH back to ID 999, which is the difference between "the commands were answered" and "this finger works". `a` replays the old PR #50 strategy, `b` the lift-pause strategy, `c` the six-commands-from-one-press strategy that produced the "added but NOT REGISTERED" report, `d` the current three-step strategy. Run `c` and then `d` with the same finger: `c` should end in `VERIFY FAILED`, `d` in `VERIFY OK`. Share the log if `d` does not.
 - If fingerprint sensor not answering: check wiring TX->16 RX->17 cross,
   GND, VCC 3.3V (or 5V if the module is a 5V version), **baud 19200** (8N1)
 - If fingerprint not found (but scans work): the finger is not enrolled -
@@ -228,7 +518,7 @@ A person is marked absent only from their registration date through Ethiopian to
   The router must let the device out on UDP 123 (`pool.ntp.org`, `time.nist.gov`). Nothing else
   depends on it - scans, enrollment and the queue all work without the clock.
 - If POST fails: check serverURL https, check VPSDime firewall allows ESP32 IP, check Coolify domain
-- Serial Monitor commands (115200 baud): `enroll <id>` (manual enrollment, 1-1000), `list`, `test`, `empty confirm` (deletes ALL fingerprints on the sensor; plain `empty` only prints a warning)
+- Serial Monitor commands (115200 baud): `enroll <id>` (manual enrollment, 1-1000), `list`, `test`, `sensor` (20 checks: how many answers the module gives, and how fast), `sensor hard` (about 8 seconds of continuous asking, the way to see a failure that only appears when the module is warm), `rest show` / `rest off` / `rest on` / `rest reload`, `empty confirm` (deletes ALL fingerprints on the sensor; plain `empty` only prints a warning)
 
 ## Next Steps After Hardware Buy (Tomorrow Connect Checklist)
 

@@ -13,7 +13,7 @@
  *      `lcd.println()` (the library makes that a compile error), clear() only
  *      in the init function, the four display functions rewritten for 20x4,
  *   B. the buzzer stayed on GPIO23 and did not grow a connection to the LCD,
- *   C. the enrollment flow still sends the sensor NOTHING but its six ADD
+ *   C. the enrollment flow still sends the sensor NOTHING but its ADD
  *      commands (the display code must not talk to the sensor or the network),
  *   D. the wiring documentation and the host-test stubs match the sketch,
  *   E. the compiled host test still proves the 20x4 behaviour on a simulated
@@ -147,23 +147,33 @@ pass(
 
 /* ── C. the enrollment rule survives the display change ───────────────────── */
 
+/* The captures themselves: from runCaptureSession up to the confirm scan. The
+ * module accepts nothing but the ADD steps while a session is open, so this
+ * slice must not contain a single other sensor call. */
 const captureSession = firmware.slice(
   firmware.indexOf("EnrollResult runCaptureSession("),
-  firmware.indexOf("EnrollResult enrollFingerprint(")
+  firmware.indexOf("EnrollResult confirmEnrolledFinger(")
 );
 pass(
-  "between the six captures the display code sends the sensor nothing",
+  "between the captures the display code sends the sensor nothing",
   !/finger\.(?!enroll|getLastStatus)/.test(captureSession) &&
     !captureSession.includes("getCount(") &&
+    !captureSession.includes("search(") &&
+    !captureSession.includes("searchGlass(") &&
     !/\bhttp\b/i.test(captureSession)
 );
 pass(
-  "the six-capture order and the prompts the simulated person needs are intact",
-  firmware.includes("const uint8_t captureSteps[6] = {1, 2, 2, 2, 2, 3}") &&
-    firmware.includes("finger.enroll((uint16_t)id, captureSteps[cap]") &&
+  "the confirm scan is the only sensor call after the session, and it searches",
+  /EnrollResult confirmEnrolledFinger\([\s\S]*?searchGlass\(matchedId, ENROLL_ADD_TIMEOUT_MS\)/.test(firmware) &&
+    firmware.indexOf("EnrollResult confirmEnrolledFinger(") > firmware.indexOf("EnrollResult runCaptureSession(")
+);
+pass(
+  "the three steps and the prompts the simulated person needs are intact",
+  firmware.includes("#define ENROLL_STEPS            3") &&
+    firmware.includes("finger.enroll((uint16_t)id, step, ENROLL_ADD_TIMEOUT_MS)") &&
     firmware.includes('"LIFT YOUR FINGER"') &&
     firmware.includes('"PLACE FINGER"') &&
-    firmware.includes('"KEEP STILL"') &&
+    firmware.includes('"HOLD STILL"') &&
     firmware.includes('"LIFT, PLACE AGAIN"')
 );
 const displayCalls = [...firmware.matchAll(/show(?:Lines|Big|EnrollScreen)\(([\s\S]*?)\);/g)].map(
@@ -342,7 +352,7 @@ if (!existsSync(path.join(testDir, "run.sh"))) {
     );
     pass(
       "the enrollment progress is text and the idle/offline lines survived",
-      out.includes("PASS the enrollment screen shows the ID and the six-cell text bar") &&
+      out.includes("PASS the enrollment screen shows the ID and the text bar") &&
         out.includes("PASS the bar is followed by the accepted-scan count") &&
         out.includes("PASS offline is still reported on the LCD") &&
         out.includes("PASS a dead sensor is still reported on the LCD")

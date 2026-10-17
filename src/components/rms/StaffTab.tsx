@@ -29,7 +29,7 @@ const ROLE_OPTIONS: Array<{ value: RoleChoice; label: StaffPhrase }> = [
   { value: "buna", label: "Buna Maker (/buna)" },
   { value: "juice", label: "Juice Maker (/juice)" },
   // The door tablet's supervisor (owner, Oct 2026): it opens no screen of its
-  // own, it unlocks the backup PIN keypad on /attendance for two minutes.
+  // own, it unlocks the backup PIN keypad on /attendance until it is locked.
   { value: ATTENDANCE_SUPERVISOR_ROLE, label: "Attendance Supervisor (/attendance)" },
   { value: "admin", label: "Admin (owner dashboard)" },
 ];
@@ -200,7 +200,7 @@ export default function StaffTab() {
         {role === ATTENDANCE_SUPERVISOR_ROLE && (
           <p className="mt-3 text-[11px] text-stone-400">
             {L(
-              "The Attendance Supervisor opens the backup PIN keypad on /attendance for 2 minutes after the last touch; fingerprint scans never need it."
+              "The Attendance Supervisor opens the backup PIN keypad on /attendance and it stays open until someone locks it again; fingerprint scans never need it."
             )}
           </p>
         )}

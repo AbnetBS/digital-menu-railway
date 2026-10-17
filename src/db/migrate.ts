@@ -21,7 +21,14 @@ import { sql } from "drizzle-orm";
 // that column to text, but the warm path skips the whole migration when the
 // recorded version matches, so the bump is what makes an existing database fix
 // its narrow role column on the first request after this deploy.
-const SCHEMA_VERSION = "2026-10-16-1";
+// 2026-10-17-1: the attendance release adds two tables no deployed database
+// has yet (attendance_active_windows for the open-hours intervals,
+// attendance_overtime for the three kinds of overtime) plus their indexes. The
+// warm path above returns as soon as the RECORDED version matches, so without
+// this bump an already-migrated production DB skips both CREATEs forever and
+// every overtime POST and activity GET dies on "relation does not exist".
+// Moving the stamp is what makes them appear on the first request after deploy.
+const SCHEMA_VERSION = "2026-10-17-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -437,6 +444,44 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    // REST WINDOWS (owner, Oct 2026): the hours the door scanner is AWAKE.
+    // Outside them the device deep-sleeps so the optical reader is not imaging
+    // 24 hours a day. The rows repeat every day; "enabled" is the per-row
+    // on/off the owner asked for, and no rows at all means always awake.
+    "attendance_active_windows",
+    `CREATE TABLE IF NOT EXISTS attendance_active_windows (
+      id serial PRIMARY KEY,
+      from_time varchar(5) NOT NULL,
+      to_time varchar(5) NOT NULL,
+      label varchar(40),
+      enabled boolean DEFAULT true,
+      sort_order integer DEFAULT 0,
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    // OVERTIME (owner, Oct 2026): the three kinds, whoever writes them. The
+    // Attendance tab and the door tablet insert here; a Shift OT row is also
+    // written by the clock-out scan itself when a person is still around more
+    // than an hour and a half after his shift ends. One row per member, per
+    // day, per kind (the unique index below makes a second tap update instead
+    // of double-counting).
+    "attendance_overtime",
+    `CREATE TABLE IF NOT EXISTS attendance_overtime (
+      id serial PRIMARY KEY,
+      member_id integer NOT NULL,
+      date varchar(10) NOT NULL,
+      type varchar(20) NOT NULL,
+      minutes integer NOT NULL DEFAULT 0,
+      shift_label varchar(40),
+      log_id integer,
+      source varchar(12) NOT NULL DEFAULT 'admin',
+      entered_by varchar(100),
+      note text,
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
     // THE BARISTA HAND-OVER (owner's decision, Sept 2026): one row per
     // registered shift owner per station per Ethiopian day. A barista's FIRST
     // accept of the shift writes it (logging in alone registers nothing);
@@ -822,6 +867,8 @@ async function runFullMigrate(force: boolean) {
     "attendance_members",
     "attendance_biometrics",
     "attendance_enroll_jobs",
+    "attendance_overtime",
+    "attendance_active_windows",
   ];
   for (const t of serialTables) {
     await run(`CREATE SEQUENCE IF NOT EXISTS ${t}_id_seq`);
@@ -996,6 +1043,17 @@ async function runFullMigrate(force: boolean) {
   //       barista racing the same shift loses on this index, never silently.
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS station_shift_claims_owner_key ON station_shift_claims (station, day_key, shift_name)`);
   await run(`CREATE INDEX IF NOT EXISTS station_shift_claims_station_day_idx ON station_shift_claims (station, day_key)`);
+
+  //  13. attendance_overtime(member_id, date, type, shift_label): ONE overtime
+  //      row per person per day per kind (owner, Oct 2026). A second tap that
+  //      means the same thing updates the hours instead of counting them twice;
+  //      a person who worked a holiday AND gave up a free week keeps two rows.
+  //      COALESCE is in the key because Postgres treats NULLs as distinct, and
+  //      "no shift picked" is a real, repeatable choice, not an unknown one.
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS attendance_overtime_member_day_type_key ON attendance_overtime (member_id, date, type, COALESCE(shift_label, ''))`
+  );
+  await run(`CREATE INDEX IF NOT EXISTS attendance_overtime_date_idx ON attendance_overtime (date)`);
 
   //  • payment_status backfill: existing paid/completed bills get a concrete
   //    status derived from their stored method so reports/history stay correct

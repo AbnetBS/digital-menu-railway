@@ -4,6 +4,7 @@ import { attendanceBiometrics, attendanceEnrollJobs, attendanceMembers } from "@
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
+import { markRestWakeRequested } from "@/lib/attendance-rest";
 import { and, desc, eq } from "drizzle-orm";
 import { ENROLL_JOB_TTL_MINUTES, MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
 
@@ -95,7 +96,7 @@ export async function GET(request: Request) {
           fingerprintId: job.fingerprintId,
           status: job.status,
           // The device's own words: "Device is ready - place the finger now"
-          // while it waits, "scan 2/6 not accepted: ... (status 6)" if it fails.
+          // while it waits, "step 2/3 not accepted: ... (status 6)" if it fails.
           detail: job.detail,
           startedAt: job.startedAt,
           completedAt: job.completedAt,
@@ -212,6 +213,10 @@ export async function POST(request: Request) {
 
       // A finger is waiting: push the ESP32 instantly instead of it polling.
       publish(CHANNELS.device);
+      // A finger job is the one case where waiting ten minutes is worse than
+      // useless: the person is standing at the door to register, so the board is
+      // told to look again within about a minute.
+      await markRestWakeRequested();
 
       return NextResponse.json({
         job: {

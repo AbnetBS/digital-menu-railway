@@ -11,8 +11,9 @@
  *   2. Role & Time owns the hours: every role has its periods (Morning
  *      entrance/out, Afternoon entrance/out, and any extra one), and the
  *      Shifts tab is gone.
- *   3. LATE = 15 minutes after the entrance time of the role. Morning 12:30 ->
- *      12:45 is on time, 12:46 is late.
+ *   3. LATE = 30 minutes after the entrance time of the role (the owner moved
+ *      it from 15 on 2026-10-16). Morning 12:30 -> 13:00 is on time,
+ *      13:01 is 1 minute late.
  *   4. A second scan inside ONE HOUR of the IN only says "already registered";
  *      after the hour the next scan is the OUT.
  *   5. The paper sheet reaches 30 days, takes its names from the attendance
@@ -25,8 +26,10 @@
  *      wall of absent names. Name dropdown + PIN keypad on the left third, the
  *      live sheet on the right, and an Overtime button.
  *   8. The kiosk's PIN keypad is LOCKED until an attendance supervisor opens it
- *      ("it is risky since someone can write for them"), and it locks itself
- *      again after two minutes with no activity. The fingerprint scanner and
+ *      ("it is risky since someone can write for them"). It stays open until
+ *      somebody presses "Lock now" - the old two-minute auto-lock is gone
+ *      (owner, 2026-10-16: "remove the 2 min section in 2nd pin attendance
+ *      option because it doesnt have benefit"). The fingerprint scanner and
  *      the Overtime button never need a supervisor.
  *   9. The Leaderboard tab ranks the people of every role by the hours they
  *      spent at work in the chosen range.
@@ -54,11 +57,9 @@ import {
   REPEAT_SCAN_LOCK_MINUTES,
   SHEET_MAX_DAYS,
   SHEET_RANGE_MAX_DAYS,
-  SUPERVISOR_IDLE_TIMEOUT_MINUTES,
   addDays,
   buildLeaderboard,
   clockLabel,
-  countdownLabel,
   daysBetween,
   hoursLabel,
   inStatusOf,
@@ -73,7 +74,6 @@ import {
   rescanAction,
   sheetDates,
   sheetPages,
-  supervisorIdleExpired,
   toHHMM,
   wholeHoursOf,
 } from "../src/lib/attendance";
@@ -103,11 +103,28 @@ const firmware = read("hardware/fana_attendance_esp32/fana_attendance_esp32.ino"
 
 /* ── 1. the rules themselves (imported, not re-implemented) ──────────────── */
 
-pass("late is decided 15 minutes after the entrance time", LATE_GRACE_MINUTES === 15);
+pass("late is decided 30 minutes after the entrance time (owner, 2026-10-16)", LATE_GRACE_MINUTES === 30);
 pass("a repeated scan is only \"already registered\" for one hour", REPEAT_SCAN_LOCK_MINUTES === 60);
 pass("one printed page of the sheet is 7 days wide", SHEET_MAX_DAYS === 7);
 pass("a sheet range reaches 30 days (owner: \"make it up to 30 days\")", SHEET_RANGE_MAX_DAYS === 30);
-pass("the door tablet's supervisor lock times out after 2 minutes", SUPERVISOR_IDLE_TIMEOUT_MINUTES === 2);
+{
+  const supervisorLib = read("src/lib/attendance-supervisor.ts");
+  const sessionLib = read("src/lib/session.ts");
+  const rules = read("src/lib/attendance.ts");
+  pass("the unlock has no idle window any more (owner: it has no benefit)",
+    !/SUPERVISOR_IDLE_TIMEOUT|countdownLabel|supervisorIdleExpired/.test(rules + supervisorLib + sessionLib));
+  const supRoute = read("src/app/api/attendance/supervisor/route.ts");
+  pass("an unlock outlives a reboot of the tablet and ends only on \"Lock now\"",
+    supervisorLib.includes("SUPERVISOR_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60") &&
+      supRoute.includes("maxAge: SUPERVISOR_COOKIE_MAX_AGE_SECONDS") &&
+      supRoute.includes("cookies.delete(SUPERVISOR_COOKIE)"));
+  pass("the signed supervisor payload carries no expiry",
+    sessionLib.includes("kind: \"attendance_supervisor\",") &&
+      !/exp: now \+ SUPERVISOR/.test(sessionLib) &&
+      !sessionLib.includes("Date.now() > exp"));
+  pass("the server still refuses a PIN clock-in without an open keypad",
+    sessionLib.includes('needsSupervisor: true') && read("src/app/api/attendance/clock/route.ts").includes("requireSupervisor()"));
+}
 
 const morning = { label: "Morning", startTime: "12:30", endTime: "18:00" };
 const afternoon = { label: "Afternoon", startTime: "18:00", endTime: "23:00" };
@@ -121,16 +138,17 @@ pass("a scan before every start belongs to the earliest one", pickShift(shifts, 
 pass("a role with no times is never late", lateMinutesFor(null, 900) === 0);
 
 pass(
-  "Morning 12:30 -> arriving 12:45 is ON TIME (the owner's own example)",
-  lateMinutesFor(pickShift(shifts, parseHHMM("12:45")!), parseHHMM("12:45")!) === 0
+  "Morning 12:30 -> arriving 13:00 is ON TIME (the last minute of the 30)",
+  lateMinutesFor(pickShift(shifts, parseHHMM("13:00")!), parseHHMM("13:00")!) === 0
 );
 pass(
-  "Morning 12:30 -> arriving 12:46 is 1 minute late",
-  lateMinutesFor(pickShift(shifts, parseHHMM("12:46")!), parseHHMM("12:46")!) === 1
+  "Morning 12:30 -> arriving 13:01 is 1 minute late",
+  lateMinutesFor(pickShift(shifts, parseHHMM("13:01")!), parseHHMM("13:01")!) === 1
 );
 pass(
-  "Morning 12:30 -> arriving 13:30 is 45 minutes late",
-  lateMinutesFor(pickShift(shifts, parseHHMM("13:30")!), parseHHMM("13:30")!) === 45
+  "Morning 12:30 -> arriving 13:30 is 30 minutes late, 12:45 is not late at all",
+  lateMinutesFor(pickShift(shifts, parseHHMM("13:30")!), parseHHMM("13:30")!) === 30 &&
+    lateMinutesFor(pickShift(shifts, parseHHMM("12:45")!), parseHHMM("12:45")!) === 0
 );
 
 pass("leaving before the time out is an early out", isEarlyOut(morning, parseHHMM("16:00")!) === true);
@@ -337,7 +355,7 @@ pass(
   ["Role Name", "Time of Entrance", "Time Out", "Add another shift"].every((t) => adminTab.includes(t))
 );
 pass("the role form starts with a Morning and an Afternoon period", adminTab.includes('"Morning"') && adminTab.includes('"Afternoon"'));
-pass("late and early out are explained on the role form", adminTab.includes("15 minutes after the time of entrance"));
+pass("late and early out are explained on the role form", adminTab.includes("30 minutes after the time of entrance"));
 
 /* ── 6. the members form and the fingerprint flow ────────────────────────── */
 
@@ -379,10 +397,13 @@ pass(
     biometricsApi.includes("publish(CHANNELS.device)")
 );
 pass(
-  "firmware follows the six-capture sequence: 1x step 1, 4x step 2, 1x step 3",
-  /const uint8_t captureSteps\[6\] = \{1, 2, 2, 2, 2, 3\}/.test(firmware) &&
-    firmware.includes("finger.enroll((uint16_t)id, captureSteps[cap]") &&
-    firmware.includes("Six scans: place the same finger flat and still")
+  "firmware follows the module's own protocol: three steps, each its own placement",
+  firmware.includes("#define ENROLL_STEPS            3") &&
+    firmware.includes("finger.enroll((uint16_t)id, step, ENROLL_ADD_TIMEOUT_MS)") &&
+    firmware.includes("Three steps: place the same finger flat and still") &&
+    firmware.includes('showEnrollScreen(who, id, ENROLL_STEPS + found, "PLACE FINGER",') &&
+    firmware.includes("#define ENROLL_VERIFY_PLACEMENTS 3") &&
+    firmware.includes("#define ENROLL_SCANS            (ENROLL_STEPS + ENROLL_VERIFY_PLACEMENTS)")
 );
 pass(
   "status 6 retries the same capture while holding still and lifts only after repeated failures",
@@ -428,7 +449,7 @@ pass(
 
 /* ── 7. the clock rules ──────────────────────────────────────────────────── */
 
-pass("the clock uses the shared 15 minute rule", clockApi.includes("lateMinutesFor"));
+pass("the clock uses the shared 30 minute rule", clockApi.includes("lateMinutesFor"));
 pass("the clock uses the shared one hour rule", clockApi.includes("REPEAT_SCAN_LOCK_MINUTES"));
 pass("a repeated scan answers \"already registered\" and writes nothing", clockApi.includes('action: "already_registered"'));
 pass("an early out is written on the line", clockApi.includes("earlyOut: early") && clockApi.includes("isEarlyOut"));
@@ -553,27 +574,31 @@ pass("the door tablet is titled after the company (owner's wording)", kiosk.incl
 
 /* The supervisor lock: the owner's risk was that "someone can write for them". */
 pass("the keypad is locked until a supervisor opens it", kiosk.includes("Supervisor login required") && kiosk.includes("const locked ="));
-pass("the tablet asks the supervisor endpoint to unlock, renew and lock",
-  kiosk.includes('fetch("/api/attendance/supervisor"') && kiosk.includes("touch: true") && kiosk.includes('method: "DELETE"'));
+pass("the tablet asks the supervisor endpoint to unlock and to lock",
+  kiosk.includes('fetch("/api/attendance/supervisor"') && kiosk.includes('method: "DELETE"'));
 pass("only Staff Accounts with the supervisor role are offered on the door",
   kiosk.includes("s.role === ATTENDANCE_SUPERVISOR_ROLE") && kiosk.includes("/api/staff?public=1"));
-pass("the two minutes start again on every touch of the keypad",
-  kiosk.includes("noteActivity()") && /at \+ SUPERVISOR_IDLE_TIMEOUT_MS/.test(kiosk));
-pass("the tablet says how long the unlock still lasts, and can be locked at once",
-  kiosk.includes("countdownLabel(") && kiosk.includes("Lock now"));
-pass("the timeout is announced when it locks itself", kiosk.includes("Locked again") && kiosk.includes("Two minutes passed"));
+pass("no countdown, no renewal, no self-lock is left on the tablet",
+  !kiosk.includes("noteActivity") && !kiosk.includes("countdownLabel") &&
+    !kiosk.includes("unlockExpiresAt") && !kiosk.includes("Two minutes passed"));
+pass("the tablet says the keypad stays open, and Lock now is the way to end it",
+  kiosk.includes("open until someone locks it") && kiosk.includes("Lock now") &&
+    kiosk.includes("stays open until he locks it again"));
+{
+  const supRoute = read("src/app/api/attendance/supervisor/route.ts");
+  pass("the endpoint no longer has a renewal half",
+    !supRoute.includes("body.touch") && !supRoute.includes("secondsLeft") && !supRoute.includes("idleTimeoutMs"));
+}
 pass("a PIN refused by the server sends the tablet back to the login",
   kiosk.includes("d.needsSupervisor") && kiosk.includes("Supervisor login needed"));
 pass("the fingerprint scanner and the Overtime button never need a supervisor",
-  !kiosk.includes("locked ? unlockKeypad : markOvertime") && kiosk.includes("onClick={markOvertime}"));
-
-const at = new Date("2026-10-15T09:00:00Z").getTime();
-pass("two minutes of nothing expire the unlock", supervisorIdleExpired(at, at + 2 * 60000) === true);
-pass("119 seconds of nothing do not", supervisorIdleExpired(at, at + 119000) === false);
-pass("a touch starts the two minutes again", supervisorIdleExpired(at + 100000, at + 150000) === false);
-pass("a tablet with no recorded activity is locked", supervisorIdleExpired(null, at) === true);
-pass("the countdown reads 2:00, 1:15 and never goes negative",
-  countdownLabel(120000) === "2:00" && countdownLabel(75000) === "1:15" && countdownLabel(-5000) === "0:00");
+  !kiosk.includes("locked ? unlockKeypad : openOvertime") && kiosk.includes("onClick={openOvertime}"));
+{
+  const overtimeLib = read("src/lib/attendance.ts");
+  pass("the Overtime button on the door tablet asks WHICH kind, and the three kinds are the admin's three",
+    kiosk.includes("Which kind of overtime?") &&
+      /export const OVERTIME_TYPES = \["holiday", "free_week", "shift"\]/.test(overtimeLib));
+}
 
 /* ── 10. the leaderboard: the hours of every role, ranked ────────────────── */
 
@@ -656,5 +681,5 @@ if (failures > 0) {
 console.log("\n✅ Attendance listing guard PASSED");
 console.log("   • roles own the times, the members are their own list, the sheet is coloured and reaches 30 days");
 console.log("   • a range wider than a week is shown and printed one page of 7 days at a time");
-console.log("   • the door tablet's PIN keypad needs a supervisor and locks itself after 2 minutes");
+console.log("   • the door tablet's PIN keypad needs a supervisor and stays open until it is locked");
 console.log("   • the leaderboard ranks every role by the hours its people spent at work");

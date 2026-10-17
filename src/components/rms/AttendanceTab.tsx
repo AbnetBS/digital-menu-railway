@@ -48,9 +48,9 @@ import { useStaffT } from "@/lib/staff-i18n";
  *     than one page) and a print that comes out divided the same way.
  *   • LEADERBOARD ranks the people of every role by the hours they spent at
  *     work in the chosen range.
- *   • ACTIVITY (owner, Oct 2026) lists the hours the door scanner is awake; outside
- *     them the ESP32 sleeps instead of imaging an empty doorway, and each interval
- *     has its own on/off for the person who arrives at a closed hour.
+ *   • ACTIVITY (owner, Oct 2026) previews scanner hours generated from every saved
+ *     Role & Time shift, padded one hour on both ends and merged when they touch
+ *     or overlap. The ESP32 sleeps only in the gaps; keep-awake overrides remain.
  *   • OVERTIME (owner, Oct 2026) sits beside the Leaderboard: three kinds
  *     (Holiday OT, Free week OT, Shift OT), one employee + date + shift per
  *     row, and a table of employee name / date / type / total hours. What is
@@ -111,16 +111,20 @@ interface OvertimeRow {
 
 /** The Activity panel's whole picture, as /api/attendance/activity answers it. */
 interface ActivityState {
-  windows: Array<{ id: number; from: string; to: string; label: string | null; enabled: boolean }>;
+  windows: Array<{ from: string; to: string; label: string | null; enabled: boolean }>;
+  shiftCount: number;
+  overflow: boolean;
+  alwaysAwake: boolean;
   override: { mode: "schedule" | "awake" | "awake_until"; untilAt?: string };
   awakeNow: boolean;
+  scheduleAwakeNow: boolean;
   at: string;
   changeInMinutes: number;
   changeTo: string;
   nextChangeLabel: string;
-  maxWindows: number;
-  // How soon a resting device will look at these hours again. 45 s right after
-  // a change or while a finger job waits, ten minutes on a quiet night.
+  // Sleep-slice cap sent to the device when it next fetches the schedule: 45 s
+  // after a role-time edit or while a finger job waits, ten minutes when quiet.
+  // A timer already running in deep sleep cannot be interrupted by the server.
   sliceSeconds: number;
   jobWaiting: boolean;
 }
@@ -272,21 +276,13 @@ export default function AttendanceTab() {
     label: string;
   } | null>(null);
 
-  // ACTIVITY: the hours the door scanner is awake. Outside them it sleeps, so
-  // the optical reader is not imaging an empty doorway all night (owner, Oct
-  // 2026). Every row carries its own on/off, because the person who arrives at
-  // a closed hour is let in by the admin, not by a reflash.
+  // ACTIVITY: the scanner's daily hours are derived automatically from every
+  // Role & Time shift, padded one hour before and after. Only awake overrides
+  // are changed on this panel.
   const [activity, setActivity] = useState<ActivityState | null>(null);
   const [actLoading, setActLoading] = useState(false);
   const [actSaving, setActSaving] = useState(false);
-  const [actFormOpen, setActFormOpen] = useState(false);
-  const [actFrom, setActFrom] = useState("06:00");
-  const [actTo, setActTo] = useState("22:00");
-  const [actLabel, setActLabel] = useState("");
   const [actWakeMinutes, setActWakeMinutes] = useState("15");
-  // "the intervals are workable": a wrong time is corrected in place instead of
-  // deleted and typed again, so the form doubles as an editor.
-  const [actEditingId, setActEditingId] = useState<number | null>(null);
 
   // Role form
   const [roleFormOpen, setRoleFormOpen] = useState(false);
@@ -550,26 +546,6 @@ export default function AttendanceTab() {
     }
   };
 
-  const saveActivityWindow = async () => {
-    const editing = actEditingId !== null;
-    const body: Record<string, unknown> = editing
-      ? { action: "update", id: actEditingId, from: actFrom, to: actTo, label: actLabel || null }
-      : { action: "add", from: actFrom, to: actTo, label: actLabel || null };
-    if (await postActivity(body)) {
-      setActFormOpen(false);
-      setActEditingId(null);
-      setActLabel("");
-    }
-  };
-
-  const editActivityWindow = (w: { id: number; from: string; to: string; label: string | null }) => {
-    setActEditingId(w.id);
-    setActFrom(w.from);
-    setActTo(w.to);
-    setActLabel(w.label ?? "");
-    setActFormOpen(true);
-  };
-
   const removeOvertime = async (id: number) => {
     try {
       const r = await fetch(`/api/attendance/overtime?id=${id}`, { method: "DELETE" });
@@ -755,6 +731,7 @@ export default function AttendanceTab() {
       setRoleFormOpen(false);
       setEditingRoleId(null);
       loadRoles();
+      void loadActivity();
     } catch {
       say("Network error. Try again.", true);
     }
@@ -771,6 +748,7 @@ export default function AttendanceTab() {
       }
       say("Role deleted");
       loadRoles();
+      void loadActivity();
     } catch {
       say("Network error. Try again.", true);
     }
@@ -1217,6 +1195,11 @@ export default function AttendanceTab() {
       {/* ── ROLE & TIME ────────────────────────────────────────────────── */}
       {activeView === "roles" && (
         <div className="space-y-4">
+          <p className="rounded-xl border border-amber-800/60 bg-amber-950/20 p-3 text-[11px] leading-relaxed text-stone-300">
+            Scanner hours are automatic: it wakes 1 hour before each role shift and stays awake until 1 hour after
+            that shift ends. Overlapping hours merge. These shifts repeat every day because this form has no weekday
+            setting. Edit shift times here; the Activity tab shows the combined scanner hours.
+          </p>
           {!roleFormOpen && (
             <button
               onClick={() => openRoleForm()}
@@ -2241,29 +2224,26 @@ export default function AttendanceTab() {
         </div>
       )}
 
-      {/* ── ACTIVITY: the hours the door scanner is awake ───────────────────
-          * Owner, Oct 2026: the reader should not be imaging an empty doorway
-          * all night. He lists the hours the door is OPEN; outside them the
-          * device sleeps by itself and wakes by itself. Every row has its own
-          * on/off, because the person who arrives at a closed hour is let in
-          * by the admin flipping that row, not by an edit of the schedule. ── */}
+      {/* ── ACTIVITY: automatic scanner hours from role shifts ──────────── */}
       {activeView === "activity" && (
         <div className="space-y-4">
           <div className="bg-[#2C1B17] p-5 rounded-2xl border border-[#C9A227]/30 space-y-4">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-sm font-bold text-amber-200">When the scanner is awake</h3>
+                <h3 className="text-sm font-bold text-amber-200">Automatic scanner hours</h3>
                 <p className="text-[11px] text-stone-400 mt-1 leading-relaxed max-w-2xl">
-                  Inside these hours the door answers a finger. Outside them the device sleeps: dark screen, no scan
-                  answered, nothing lost. The name + PIN keypad on the tablet, the paper sheet and this page keep
-                  working the whole time, and with no hours listed at all the scanner simply stays awake.
+                  These hours are calculated from the shifts in <strong>Role &amp; Time</strong>. The scanner opens
+                  one hour before a shift starts and stays open until one hour after it ends. Overlapping periods
+                  join together; it sleeps in the gaps and wakes for the next one. These shift times repeat daily;
+                  Role &amp; Time does not have weekday settings yet.
                 </p>
               </div>
               <button
                 onClick={loadActivity}
                 disabled={actLoading}
                 className="shrink-0 p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl"
-                aria-label={L("Reload the activity hours")}
+                aria-label={L("Refresh automatic scanner hours")}
+                title="Refresh role-derived hours"
               >
                 <RefreshCw className={`w-4 h-4 ${actLoading ? "animate-spin" : ""}`} />
               </button>
@@ -2275,37 +2255,41 @@ export default function AttendanceTab() {
               ) : (
                 <Moon className="w-5 h-5 text-indigo-300 shrink-0" />
               )}
-              <p className="text-xs text-stone-200">
-                Now {activity?.at ?? "--:--"}: {" "}
-                <span className="font-black uppercase">{activity?.awakeNow ? "awake" : "resting"}</span>
-                {activity
-                  ? ` • ${L(activity.changeTo === "awake" ? "awake again" : "goes to sleep")} in ${
-                      activity.changeInMinutes
-                    } min, at ${activity.nextChangeLabel}`
-                  : ""}
-              </p>
-              {activity && (
-                <p className="text-[10px] text-stone-400">
-                  {activity.sliceSeconds <= 120
-                    ? `The device is checking these hours every ${activity.sliceSeconds} s right now` +
-                      (activity.jobWaiting
-                        ? ", because a fingerprint registration is waiting for somebody."
-                        : ", because you have just changed them. It starts answering within about a minute.")
-                    : `A resting device looks at these hours again every ${Math.round(
-                        activity.sliceSeconds / 60
-                      )} min. After a change it shortens that to under a minute by itself, so nothing has to be pressed on the scanner.`}
+              <div className="text-xs text-stone-200">
+                <p>
+                  Now {activity?.at ?? "--:--"}: {" "}
+                  <span className="font-black uppercase">{activity?.awakeNow ? "awake" : "resting"}</span>
+                  {activity?.alwaysAwake
+                    ? " • the schedule keeps the scanner awake all day"
+                    : activity
+                      ? ` • schedule ${activity.changeTo === "awake" ? "opens" : "closes"} in ${activity.changeInMinutes} min, at ${activity.nextChangeLabel}`
+                      : ""}
                 </p>
-              )}
+                {activity && !activity.alwaysAwake && activity.override.mode !== "schedule" && (
+                  <p className="mt-1 text-[10px] text-amber-200">
+                    The admin override is keeping the scanner awake beyond its role schedule.
+                  </p>
+                )}
+              </div>
               {activity && activity.override.mode !== "schedule" && (
                 <span className="text-[10px] font-black uppercase bg-amber-900/60 text-amber-200 border border-amber-700 rounded-full px-3 py-1">
                   {activity.override.mode === "awake"
-                    ? "Kept awake by the admin"
+                    ? "Kept awake by admin"
                     : `Kept awake until ${new Date(String(activity.override.untilAt)).toLocaleTimeString("en-GB", {
                         hour: "2-digit",
                         minute: "2-digit",
                         timeZone: "Africa/Addis_Ababa",
                       })}`}
                 </span>
+              )}
+              {activity && (
+                <p className="w-full text-[10px] text-stone-400">
+                  {activity.sliceSeconds <= 120
+                    ? activity.jobWaiting
+                      ? "A sleeping scanner checks for the fingerprint job at its next timer wake (up to 10 minutes if already asleep); then it uses 45-second rest slices while the job waits."
+                      : "An awake scanner refreshes immediately. One already in deep sleep cannot be interrupted: it loads changed role times at its next timer wake (up to 10 minutes), then uses 45-second rest slices for a short while."
+                    : `During a quiet rest, the device checks again at most every ${Math.round(activity.sliceSeconds / 60)} minutes.`}
+                </p>
               )}
             </div>
 
@@ -2315,7 +2299,7 @@ export default function AttendanceTab() {
                 disabled={actSaving}
                 className="bg-[#C9A227] hover:bg-amber-400 disabled:opacity-60 text-[#2C1B17] font-black text-xs px-4 py-2.5 rounded-xl"
               >
-                Keep it awake now
+                Keep scanner awake
               </button>
               <div className="flex items-end gap-2">
                 <div>
@@ -2334,7 +2318,7 @@ export default function AttendanceTab() {
                   disabled={actSaving}
                   className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-200 font-bold text-xs px-4 py-2.5 rounded-xl"
                 >
-                  Awake for that long, then rest
+                  Keep awake this long
                 </button>
               </div>
               <button
@@ -2342,129 +2326,52 @@ export default function AttendanceTab() {
                 disabled={actSaving}
                 className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-200 font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2"
               >
-                <Moon className="w-4 h-4" /> Let the schedule rule again
+                <Moon className="w-4 h-4" /> Use role schedule again
               </button>
             </div>
 
             <div className="space-y-2">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[10px] font-black uppercase text-amber-200">
-                  Open hours of the scanner {activity ? `(${activity.windows.length}/${activity.maxWindows})` : ""}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[10px] font-black uppercase text-amber-200">Generated from Role &amp; Time</p>
+                <p className="text-[10px] text-stone-400">
+                  {activity ? `${activity.shiftCount} shift${activity.shiftCount === 1 ? "" : "s"} used · 1-hour buffer on both ends` : "Loading shifts…"}
                 </p>
-                <button
-                  onClick={() => setActFormOpen((v) => !v)}
-                  className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-200 font-bold text-[11px] px-3 py-2 rounded-xl flex items-center gap-1.5"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Add time interval
-                </button>
               </div>
 
-              {actFormOpen && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end bg-black/20 border border-stone-700 rounded-2xl p-3">
-                  <div>
-                    <label className="block text-[10px] font-bold text-amber-200 mb-1">From</label>
-                    <input
-                      type="time"
-                      value={actFrom}
-                      onChange={(e) => setActFrom(e.target.value)}
-                      className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-amber-200 mb-1">To</label>
-                    <input
-                      type="time"
-                      value={actTo}
-                      onChange={(e) => setActTo(e.target.value)}
-                      className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-amber-200 mb-1">Name (optional)</label>
-                    <input
-                      value={actLabel}
-                      onChange={(e) => setActLabel(e.target.value)}
-                      placeholder="Morning, Evening..."
-                      className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
-                    />
-                  </div>
-                  <button
-                    onClick={saveActivityWindow}
-                    disabled={actSaving}
-                    className="bg-[#C9A227] hover:bg-amber-400 disabled:opacity-60 text-[#2C1B17] font-black text-xs px-4 py-2.5 rounded-xl"
-                  >
-                    {actEditingId === null ? "Add" : "Save changes"}
-                  </button>
-                  {actEditingId !== null && (
-                    <button
-                      onClick={() => {
-                        setActEditingId(null);
-                        setActLabel("");
-                        setActFormOpen(false);
-                      }}
-                      className="text-[11px] font-bold text-stone-400 hover:text-white px-2 py-2.5"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                  <p className="col-span-2 md:col-span-4 text-[10px] text-stone-500">
-                    A To time earlier than the From time runs across midnight, like 22:00 to 06:00. The device is
-                    awake from From up to the minute before To.
-                  </p>
+              {activity?.alwaysAwake && activity.shiftCount === 0 && (
+                <p className="rounded-xl border border-stone-700 bg-black/20 px-4 py-3 text-[11px] text-stone-300">
+                  No role shift times are saved. For safety, the scanner stays awake all day. Add shift start and end
+                  times under <strong>Role &amp; Time</strong> to let it sleep between shifts.
+                </p>
+              )}
+              {activity?.alwaysAwake && activity.shiftCount > 0 && !activity.overflow && (
+                <p className="rounded-xl border border-stone-700 bg-black/20 px-4 py-3 text-[11px] text-stone-300">
+                  Role hours cover the whole day, so the scanner stays awake continuously.
+                </p>
+              )}
+              {activity?.overflow && (
+                <p className="rounded-xl border border-amber-700 bg-amber-950/30 px-4 py-3 text-[11px] text-amber-100">
+                  There are too many separate shift periods for the device to store safely. It is staying awake all day
+                  rather than risk missing a worker&apos;s shift.
+                </p>
+              )}
+
+              {!activity?.alwaysAwake && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {(activity?.windows ?? []).map((w) => (
+                    <div key={`${w.from}-${w.to}`} className="rounded-xl border border-emerald-800 bg-emerald-950/30 px-4 py-3">
+                      <p className="font-mono font-black text-sm text-emerald-100">{w.from} – {w.to}</p>
+                      <p className="mt-1 text-[10px] text-emerald-200/70">Scanner awake · Addis Ababa time</p>
+                    </div>
+                  ))}
                 </div>
               )}
 
-              <div className="divide-y divide-stone-700/60 border border-stone-700/60 rounded-2xl overflow-hidden">
-                {(activity?.windows ?? []).map((w) => (
-                  <div
-                    key={w.id}
-                    className={`flex flex-wrap items-center gap-3 px-4 py-3 ${w.enabled ? "" : "opacity-50"}`}
-                  >
-                    <p className="font-mono font-black text-sm text-white whitespace-nowrap">
-                      {w.from} - {w.to}
-                    </p>
-                    {w.label ? <p className="text-[11px] text-stone-400">{w.label}</p> : null}
-                    <p className="ml-auto text-[10px] uppercase font-bold text-stone-500">
-                      {w.enabled ? "on" : "off, scanner awake outside its hours too"}
-                    </p>
-                    <button
-                      onClick={() => editActivityWindow(w)}
-                      disabled={actSaving}
-                      className="p-2 text-stone-400 hover:text-amber-200"
-                      aria-label={L("Edit this interval")}
-                      title={L("Edit this interval")}
-                    >
-                      <Pencil className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => postActivity({ action: "toggle", id: w.id })}
-                      disabled={actSaving}
-                      className={`text-[10px] font-black uppercase px-3 py-2 rounded-xl border ${
-                        w.enabled
-                          ? "bg-emerald-900/60 border-emerald-700 text-emerald-200 hover:bg-emerald-800"
-                          : "bg-[#3D2314] border-stone-700 text-stone-300 hover:bg-white/10"
-                      }`}
-                      aria-label={w.enabled ? "Turn this interval off" : "Turn this interval on"}
-                    >
-                      {w.enabled ? "On" : "Off"}
-                    </button>
-                    <button
-                      onClick={() => postActivity({ action: "remove", id: w.id })}
-                      disabled={actSaving}
-                      className="p-2 text-rose-400 hover:text-rose-300"
-                      aria-label={L("Remove this interval")}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-                {(activity?.windows ?? []).length === 0 && (
-                  <p className="px-4 py-4 text-[11px] text-stone-500">
-                    No intervals yet, so the scanner stays awake all day and rests never. Add the hours the door is
-                    open and it sleeps in between, on its own.
-                  </p>
-                )}
-              </div>
+              <p className="text-[10px] leading-relaxed text-stone-500">
+                Example: shifts at 06:00 and 08:00 are each padded by one hour. Their awake periods merge if they
+                touch or overlap. The ESP32 sleeps only in the gaps. This schedule controls the fingerprint scanner;
+                the tablet PIN clock-in and paper sheet remain available.
+              </p>
             </div>
           </div>
         </div>

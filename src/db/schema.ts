@@ -385,12 +385,10 @@ export const staffBiometrics = pgTable("staff_biometrics", {
 // decides "late" (30 minutes after the entrance time of that role).
 
 /**
- * THE HOURS THE DOOR SCANNER IS AWAKE (owner, Oct 2026). Outside every enabled
- * window the ESP32 sleeps: the sensor stops being polled, the LCD is dark, no
- * finger is answered. One row is one open interval, repeating every day; the
- * enabled flag is the per-row on/off the owner asked for, so a person at 15:05
- * is let in by switching the row off for a moment instead of editing the
- * schedule. An empty table means "awake all day", never "asleep all day".
+ * Legacy manual scanner windows from the first Activity editor. The current
+ * Activity API derives awake windows from attendance_role_shifts instead. Keep
+ * this table in place so existing installations upgrade without destructive
+ * schema changes; these rows are no longer the scanner schedule's source.
  */
 export const attendanceActiveWindows = pgTable("attendance_active_windows", {
   id: serial("id").primaryKey(),

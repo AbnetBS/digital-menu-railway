@@ -22,11 +22,11 @@ import { sql } from "drizzle-orm";
 // recorded version matches, so the bump is what makes an existing database fix
 // its narrow role column on the first request after this deploy.
 // 2026-10-17-1: the attendance release adds two tables no deployed database
-// has yet (attendance_active_windows for the open-hours intervals,
-// attendance_overtime for the three kinds of overtime) plus their indexes. The
-// warm path above returns as soon as the RECORDED version matches, so without
-// this bump an already-migrated production DB skips both CREATEs forever and
-// every overtime POST and activity GET dies on "relation does not exist".
+// has yet (attendance_active_windows, retained as a legacy table after scanner
+// hours moved to Role & Time, and attendance_overtime for the three overtime
+// kinds) plus their indexes. The warm path above returns as soon as the
+// RECORDED version matches, so without this bump an already-migrated production
+// DB skips both CREATEs forever and overtime requests fail on a missing table.
 // Moving the stamp is what makes them appear on the first request after deploy.
 const SCHEMA_VERSION = "2026-10-17-1";
 

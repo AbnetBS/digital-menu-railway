@@ -1,38 +1,15 @@
 #!/usr/bin/env tsx
 /**
- * Regression guard: ACTIVITY / REST WINDOWS (owner, Oct 2026).
+ * Regression guard: automatic scanner hours from role shifts (Oct 2026).
  *
- * The ask, in his words: "on attendance page add a button Activity. inside it
- * Add time interval ... the intervals arent same so i may add many intervals.
- * in the closed time the system wont answer or stop completely ... this will
- * protect the system for over using power and less the being damaged by
- * continues power supply", and each interval gets "on/off button".
- *
- * What that means in code, checked here:
- *
- *   1. An interval is the AWAKE window, not the closed one. The owner types the
- *      hours his door is open; outside all of them the board sleeps. He named
- *      12:00-03:00 as his example: at 03:05 a person cannot scan.
- *   2. Times are clock times that repeat every day (like a shift), never dates.
- *      An interval whose end is before its start runs across midnight.
- *   3. Half-open: 12:00-15:00 is awake at 14:59 and resting at 15:00.
- *   4. from === to is the whole day, never nothing. A mistyped pair must not be
- *      able to close a door.
- *   5. No intervals, or no ENABLED interval, means awake all day. The on/off
- *      switch on a row is the owner's escape hatch when somebody is standing at
- *      a closed door: switch the row off, the board wakes, switch it back.
- *   6. The admin can also keep the device awake outright (forever, or for the
- *      minutes he types) without touching the intervals themselves.
- *   7. Resting is the device's own decision, from a schedule it caches: the
- *      website being down at 03:00 changes nothing. The same arithmetic is
- *      written twice, here and in the firmware, and it has to agree minute for
- *      minute - so the same cases are asserted on both sides.
- *   8. The tablet at /attendance (name + PIN) keeps working through a rest
- *      period: the owner's other answer for a latecomer. Only the fingerprint
- *      board sleeps.
+ * Every Role & Time shift is padded by one hour on both ends. Overlapping or
+ * adjacent padded windows merge; gaps remain deep-sleep periods. Missing role
+ * times and schedules too large for the ESP32 fail open to awake-all-day. The
+ * server sends this same generated schedule to the website and cached device.
  *
  * Run with: npx tsx scripts/verify-attendance-activity.ts
  */
+
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -43,6 +20,7 @@ import {
   REST_SLICE_SECONDS,
   REST_WAKE_GRACE_MS,
   REST_WAKE_KEY,
+  SCANNER_SHIFT_BUFFER_MINUTES,
   clampRestSliceSeconds,
   clockLabelOfMinute,
   enabledWindows,
@@ -50,6 +28,7 @@ import {
   minuteOfDayET,
   minutesUntilChange,
   parseRestOverride,
+  roleShiftsToScannerSchedule,
   restOverrideAllowsSleep,
   restSliceSeconds,
   windowContainsMinute,
@@ -77,11 +56,11 @@ const sliceOf = (text: string, from: string, to: string, label: string) => {
 const win = (from: string, to: string, enabled = true): ActiveWindow => ({ from, to, enabled });
 const hhmm = (h: number, m: number) => h * 60 + m;
 
-console.log("\n=== Activity: the hours the scanner is awake ===\n");
+console.log("\n=== Activity: role-derived scanner hours ===\n");
 
-/* ── 1. the window itself ─────────────────────────────────────────────────── */
+/* ── 1. the awake-window helpers used by the generated schedule ─────────── */
 pass(
-  "an interval is the AWAKE window: 12:00-15:00 is awake at 12:00",
+  "a generated window is awake at its inclusive start: 12:00-15:00 is awake at 12:00",
   windowContainsMinute(win("12:00", "15:00"), hhmm(12, 0))
 );
 pass(
@@ -89,43 +68,91 @@ pass(
   windowContainsMinute(win("12:00", "15:00"), hhmm(14, 59)) && !windowContainsMinute(win("12:00", "15:00"), hhmm(15, 0))
 );
 pass(
-  "before it opens the board rests: 11:59 in a 12:00-15:00 day",
+  "before a generated window opens, the board rests: 11:59 before 12:00",
   !windowContainsMinute(win("12:00", "15:00"), hhmm(11, 59))
 );
-// The owner's own example, in his words: "12:00-3:00", and somebody at 3:05.
+// A generic generated overnight window remains half-open at its end.
 pass(
-  "the owner's example: 12:00-03:00 is awake at 12:01 and at 02:59",
+  "an overnight generated window is awake at 12:01 and at 02:59",
   windowContainsMinute(win("12:00", "03:00"), hhmm(12, 1)) && windowContainsMinute(win("12:00", "03:00"), hhmm(2, 59))
 );
 pass(
-  "...and a person at 03:05 cannot scan (his words: the system wont answer)",
+  "and 03:05 is outside the overnight window",
   !windowContainsMinute(win("12:00", "03:00"), hhmm(3, 5)) && !windowContainsMinute(win("12:00", "03:00"), hhmm(9, 0))
 );
 pass(
-  "from === to means the whole day, so a mistyped pair cannot close a door",
+  "from === to means the whole day, so an all-day generated window stays open",
   windowContainsMinute(win("06:00", "06:00"), hhmm(0, 0)) && windowContainsMinute(win("06:00", "06:00"), hhmm(23, 59))
 );
 pass(
-  "a row whose times are not times counts for nothing",
+  "a window whose times are invalid counts for nothing",
   !windowContainsMinute(win("", ""), hhmm(10, 0)) && !windowContainsMinute(win("9:00", "25:00"), hhmm(10, 0))
 );
 
-/* ── 2. many intervals, each with its own switch ──────────────────────────── */
+/* ── 1b. role shifts generate automatic scanner-open periods ──────────────── */
+const shift = (startTime: string, endTime: string) => ({ startTime, endTime });
+const oneRoleWindow = roleShiftsToScannerSchedule([shift("12:00", "20:00")]);
+pass("a 12:00-20:00 role shift opens 1 hour early and closes 1 hour late",
+  oneRoleWindow.windows.length === 1 && oneRoleWindow.windows[0].from === "11:00" && oneRoleWindow.windows[0].to === "21:00");
+pass("the automatic buffer is exactly 60 minutes", SCANNER_SHIFT_BUFFER_MINUTES === 60);
+const overlappingRoleWindows = roleShiftsToScannerSchedule([shift("12:00", "20:00"), shift("13:00", "20:00")]);
+pass("overlapping padded role windows merge into one scanner period",
+  overlappingRoleWindows.windows.length === 1 && overlappingRoleWindows.windows[0].from === "11:00" && overlappingRoleWindows.windows[0].to === "21:00");
+const nearbyRoleWindows = roleShiftsToScannerSchedule([shift("06:00", "07:00"), shift("08:00", "09:00")]);
+pass("the 06:00 and 08:00 shifts merge through their padded overlap (05:00-10:00)",
+  nearbyRoleWindows.windows.length === 1 && nearbyRoleWindows.windows[0].from === "05:00" && nearbyRoleWindows.windows[0].to === "10:00");
+const touchingRoleWindows = roleShiftsToScannerSchedule([shift("06:00", "07:00"), shift("09:00", "10:00")]);
+pass("padded windows that touch exactly at 08:00 merge without a one-minute sleep gap",
+  touchingRoleWindows.windows.length === 1 && touchingRoleWindows.windows[0].from === "05:00" &&
+  touchingRoleWindows.windows[0].to === "11:00");
+const gappedRoleWindows = roleShiftsToScannerSchedule([shift("06:00", "08:00"), shift("12:00", "20:00")]);
+pass("a real gap between role shifts remains a sleep period",
+  gappedRoleWindows.windows.length === 2 && gappedRoleWindows.windows[0].from === "05:00" &&
+  gappedRoleWindows.windows[0].to === "09:00" && gappedRoleWindows.windows[1].from === "11:00" &&
+  gappedRoleWindows.windows[1].to === "21:00");
+const nightRoleWindow = roleShiftsToScannerSchedule([shift("22:00", "06:00")]);
+pass("overnight shifts wrap across midnight with the one-hour buffer (21:00-07:00)",
+  nightRoleWindow.windows.length === 1 && nightRoleWindow.windows[0].from === "21:00" && nightRoleWindow.windows[0].to === "07:00");
+const midnightAdjacentWindows = roleShiftsToScannerSchedule([shift("21:00", "23:00"), shift("01:00", "03:00")]);
+pass("two padded periods touching across midnight merge into one window",
+  midnightAdjacentWindows.windows.length === 1 && midnightAdjacentWindows.windows[0].from === "20:00" &&
+  midnightAdjacentWindows.windows[0].to === "04:00");
+const noRoleTimes = roleShiftsToScannerSchedule([]);
+pass("no configured role shifts returns the safe all-day default (empty windows)",
+  noRoleTimes.shiftCount === 0 && noRoleTimes.windows.length === 0 && isAwakeAt(noRoleTimes.windows, hhmm(2, 0)));
+const invalidRoleTimes = roleShiftsToScannerSchedule([shift("not a time", "25:00")]);
+pass("if every saved shift time is invalid, fail open to awake all day",
+  invalidRoleTimes.shiftCount === 0 && isAwakeAt(invalidRoleTimes.windows, hhmm(17, 0)));
+const allDayRoleShift = roleShiftsToScannerSchedule([shift("10:00", "10:00")]);
+pass("a role shift with equal start and end safely keeps the scanner awake all day",
+  allDayRoleShift.windows.length === 1 && allDayRoleShift.windows[0].from === "00:00" &&
+  allDayRoleShift.windows[0].to === "00:00");
+const overflowShifts = Array.from({ length: 13 }, (_, i) => {
+  const start = i * 110;
+  return shift(`${String(Math.floor(start / 60)).padStart(2, "0")}:${String(start % 60).padStart(2, "0")}`,
+    `${String(Math.floor((start + 1) / 60)).padStart(2, "0")}:${String((start + 1) % 60).padStart(2, "0")}`);
+});
+const overflowSchedule = roleShiftsToScannerSchedule(overflowShifts, 0);
+pass("too many separate generated periods fail open to an all-day window",
+  overflowSchedule.overflow && overflowSchedule.windows.length === 1 &&
+  overflowSchedule.windows[0].from === "00:00" && overflowSchedule.windows[0].to === "00:00");
+
+/* ── 2. generated-window membership and safe handling of legacy flags ───── */
 const dayShift = [win("06:00", "10:00"), win("12:00", "15:00"), win("18:00", "22:00")];
 pass(
-  "with several intervals the board is awake in any of them",
+  "with several generated windows the board is awake in any one of them",
   isAwakeAt(dayShift, hhmm(13, 0)) && isAwakeAt(dayShift, hhmm(6, 30))
 );
-pass("...and resting in the gaps between them", !isAwakeAt(dayShift, hhmm(10, 30)) && !isAwakeAt(dayShift, hhmm(23, 30)));
+pass("...and resting in the gaps between generated windows", !isAwakeAt(dayShift, hhmm(10, 30)) && !isAwakeAt(dayShift, hhmm(23, 30)));
 pass(
-  "a switched-off interval stops opening the door",
+  "a disabled cached legacy window does not open the door",
   !isAwakeAt([win("06:00", "22:00", false), win("12:00", "13:00")], hhmm(20, 0))
 );
-pass("only the enabled rows are counted", enabledWindows([win("01:00", "02:00"), win("03:00", "04:00", false)]).length === 1);
+pass("the firmware-compatible window helper counts only enabled entries", enabledWindows([win("01:00", "02:00"), win("03:00", "04:00", false)]).length === 1);
 
-/* ── 3. an empty schedule is OPEN, never shut ─────────────────────────────── */
-pass("no intervals at all means awake all day (a new panel cannot lock the owner out)", isAwakeAt([], hhmm(3, 0)));
-pass("and a panel whose every row is switched off also means awake", isAwakeAt([win("00:00", "23:59", false)], hhmm(3, 0)));
+/* ── 3. empty or disabled schedules fail open, never shut ───────────────── */
+pass("no generated windows means awake all day (missing roles cannot lock the owner out)", isAwakeAt([], hhmm(3, 0)));
+pass("a list with no enabled windows also means awake as a safe fallback", isAwakeAt([win("00:00", "23:59", false)], hhmm(3, 0)));
 pass("an absent list is treated the same way", isAwakeAt(null, hhmm(3, 0)) && isAwakeAt(undefined, hhmm(3, 0)));
 
 /* ── 4. the wait, which is what the board sleeps for ──────────────────────── */
@@ -134,7 +161,7 @@ pass("resting at 15:00, tomorrow's 06:00 is 900 minutes away", minutesUntilChang
 pass("an all-day schedule never changes", minutesUntilChange([win("06:00", "06:00")], hhmm(4, 0)) === 1440);
 pass("an empty schedule never changes either", minutesUntilChange([], hhmm(4, 0)) === 1440);
 pass(
-  "the boundary of a row that wraps midnight is measured, not guessed",
+  "the boundary of an overnight generated window is measured, not guessed",
   minutesUntilChange([win("22:00", "06:00")], hhmm(5, 50)) === 10 &&
     minutesUntilChange([win("22:00", "06:00")], hhmm(6, 0)) === 960
 );
@@ -176,57 +203,35 @@ pass(
 pass("the override lives in one site_settings key", REST_OVERRIDE_KEY === "attendance_rest_override");
 pass("the panel is capped, like the route says", REST_MAX_WINDOWS === 12);
 
-/* ── 6. the table, created by the app's own migration ─────────────────────── */
+/* ── 6. Role & Time is the source of the scanner schedule ───────────────── */
 const schema = read("src/db/schema.ts");
-const schemaSlice = sliceOf(schema, "export const attendanceActiveWindows = pgTable(", "\n});", "the schedule table");
-pass(
-  "one row per interval, with its own on/off switch and an order",
-  schemaSlice.includes('pgTable("attendance_active_windows"') &&
-    schemaSlice.includes("fromTime") &&
-    schemaSlice.includes("toTime") &&
-    schemaSlice.includes("enabled") &&
-    schemaSlice.includes("sortOrder")
-);
-const migrate = read("src/db/migrate.ts");
-pass("the app creates it on boot, like the other attendance tables", migrate.includes("attendance_active_windows"));
-// Creating it is only half of it: a database that already stamped the previous
-// version SKIPS the whole migration, so the release that adds a table has to
-// move SCHEMA_VERSION or production never sees the table at all.
-pass("an already-migrated database gets the table too: the version gate moved",
-  (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-17-1");
-pass("and it is listed with the other tables the boot health check reads",
-  /serialTables = \[[\s\S]*?"attendance_active_windows",/.test(migrate));
-pass(
-  "a row keeps its label and its times as text the device can read without a parser",
-  schemaSlice.includes("label") && schemaSlice.includes("updatedAt")
-);
+pass("role shifts persist their entrance and exit times",
+  schema.includes('pgTable("attendance_role_shifts"') && schema.includes("startTime") && schema.includes("endTime"));
+pass("the automatic scanner buffer and firmware window cap are explicit", SCANNER_SHIFT_BUFFER_MINUTES === 60 && REST_MAX_WINDOWS === 12);
 
-/* ── 7. the API: the page writes it, the device reads it ──────────────────── */
+/* ── 7. the API gives the same generated hours to the panel and ESP32 ─────── */
 const routePath = "src/app/api/attendance/activity/route.ts";
 pass("the endpoint exists", existsSync(path.join(ROOT, routePath)));
 const route = read(routePath);
 const getSlice = sliceOf(route, "export async function GET(", "export async function POST(", "the GET handler");
-const postSlice = sliceOf(route, "export async function POST(", "\n}\n", "the POST handler");
+const postSlice = sliceOf(route, "export async function POST(", "\n}", "the POST handler");
 pass("a device may read the schedule with its own token, no admin session", getSlice.includes("deviceAllowed(request)"));
-pass("a device may not write it: the POST is admin only", !postSlice.includes("deviceAllowed"));
-pass("the answer carries both views: the panel's and the device's", getSlice.includes("device:") && getSlice.includes("nextChangeLabel"));
-pass("the device view is numbers-only, because the ESP32 has no date parser", getSlice.includes("wakeUntilEpoch") && getSlice.includes("keptAwake"));
-pass("it also says what the board would do right now", getSlice.includes("awakeNow") && getSlice.includes("changeInMinutes"));
-pass("every change is pushed to the awake devices at once", route.includes("publish(") && route.includes("CHANNELS.device"));
-pass("the five edits the panel makes are the only ones", ["add", "update", "toggle", "remove", "override"].every((a) => route.includes(`"${a}"`)));
-pass("the cap is enforced in the route, not only in the form", route.includes("REST_MAX_WINDOWS"));
-pass(
-  "the override modes the library understands are the ones the route writes",
-  route.includes('"awake"') && route.includes("awake_until=") && route.includes("writeOverride")
-);
-pass("a toggle flips the row and rewrites nothing else", postSlice.includes('"toggle"') && postSlice.includes("enabled"));
-pass("an interval is added with its name, trimmed to what the column holds", postSlice.includes('"add"') && postSlice.includes("slice(0, 40)"));
-pass("the same pair of times twice is refused instead of doubling the row", postSlice.includes("is already listed"));
-pass("and the panel's cap is the answer, in words the owner can act on", postSlice.includes("Remove one first"));
-pass("a half-typed interval is refused, not stored", postSlice.includes("Both times are needed"));
-pass("changing and deleting a row that is gone says so instead of pretending", postSlice.includes("That interval is gone already"));
+pass("the schedule GET reads role shifts and calls the tested window generator",
+  getSlice.includes("attendanceRoleShifts") && getSlice.includes("roleShiftsToScannerSchedule(shiftRows)"));
+pass("the same derived windows go to the device cache", getSlice.includes("windows: windows.map") && getSlice.includes("device:"));
+pass("the panel receives shift count, overflow fallback, and always-awake status",
+  getSlice.includes("shiftCount: schedule.shiftCount") && getSlice.includes("overflow: schedule.overflow") && getSlice.includes("alwaysAwake"));
+pass("the device still receives its awake override and sleep-slice hint",
+  getSlice.includes("keptAwake") && getSlice.includes("wakeUntilEpoch") && getSlice.includes("sliceSeconds"));
+pass("manual interval writes are rejected with a pointer to Role & Time",
+  postSlice.includes('action !== "override"') && postSlice.includes("Edit the shifts under Attendance → Role & Time"));
+pass("Activity still supports temporary awake overrides",
+  postSlice.includes('action !== "override"') && postSlice.includes('mode === "minutes"') && postSlice.includes('mode === "awake"'));
+const roleRoute = read("src/app/api/attendance/roles/route.ts");
+pass("creating, editing, or deleting role times marks and publishes a scanner refresh",
+  roleRoute.includes("notifyScannerScheduleChanged") && roleRoute.includes("markRestWakeRequested") && roleRoute.includes("publish(CHANNELS.device)"));
 
-/* ── 8. the admin panel: the button, the form, the switches ───────────────── */
+/* ── 8. the Activity page explains the generated hours without manual rows ─ */
 const panel = read("src/components/rms/AttendanceTab.tsx");
 pass(
   "Activity sits on the Attendance page, beside Leaderboard and Overtime",
@@ -234,37 +239,23 @@ pass(
     panel.includes('{ key: "overtime", label: "Overtime"') &&
     panel.includes('{ key: "leaderboard", label: "Leaderboard"')
 );
-pass(
-  "it loads its own data when it is opened, without polling the server",
-  panel.includes('if (v.key === "activity") void loadActivity();') && !panel.includes("setInterval(loadActivity")
-);
-pass("the panel offers Add time interval, in his words", panel.includes("Add time interval"));
-pass("a new interval is picked with two clock inputs and a name", panel.includes("actFrom") && panel.includes("actTo") && panel.includes("actLabel"));
-pass("every row carries its own on/off button", panel.includes('postActivity({ action: "toggle", id: w.id })'));
-pass("a row can be deleted as well as switched", panel.includes('postActivity({ action: "remove", id: w.id })'));
+pass("it loads its own data when opened", panel.includes('if (v.key === "activity") void loadActivity();'));
 const viewSlice = sliceOf(panel, 'activeView === "activity"', "STAFF FINGERPRINTS", "the activity view");
-pass(
-  "the panel shows the schedule's own verdict, not a guess",
-  viewSlice.includes("awakeNow") && viewSlice.includes("changeInMinutes") && viewSlice.includes("nextChangeLabel")
-);
-pass(
-  "the panel says what resting means at the door, so it is not mistaken for a breakdown",
-  viewSlice.includes("dark screen, no scan") &&
-    viewSlice.includes("The name + PIN keypad on the tablet") &&
-    viewSlice.includes("working the whole time")
-);
-pass(
-  "a switched-off row says the scanner stays awake, not that the door is shut",
-  viewSlice.includes('w.enabled ? "on" : "off, scanner awake outside its hours too"')
-);
-pass(
-  "the three buttons the admin has are the three the route writes",
-  viewSlice.includes('mode: "awake"') && viewSlice.includes('mode: "minutes"') && viewSlice.includes('mode: "schedule"')
-);
-pass("the form's own rule about midnight is on the page, in words", viewSlice.includes("runs across midnight, like 22:00 to 06:00"));
-pass("the escape hatch for a locked-out person is next to the intervals", viewSlice.includes("actWakeMinutes"));
-pass("the interval list says plainly what an empty panel means", panel.includes("so the scanner stays awake all day and rests never"));
-pass("the cap the page was given is the cap in the library", panel.includes("maxWindows"));
+pass("the Activity panel names Role & Time as the schedule source", viewSlice.includes("Generated from Role &amp; Time"));
+pass("it explains the one-hour-before / one-hour-after rule and merges overlap",
+  viewSlice.includes("one hour before a shift starts") && viewSlice.includes("one hour after it ends") && viewSlice.includes("Overlapping periods"));
+pass("the Activity preview states that shifts repeat daily because weekdays are not configurable",
+  viewSlice.includes("These shift times repeat daily") && viewSlice.includes("does not have weekday settings yet"));
+pass("no role shifts means a clear all-day awake fallback", viewSlice.includes("No role shift times are saved") && viewSlice.includes("stays awake all day"));
+pass("a window-cap fallback is not mislabeled as full-day shift coverage", viewSlice.includes("activity.shiftCount > 0 && !activity.overflow"));
+pass("the panel preserves temporary awake overrides but removes manual interval editing",
+  viewSlice.includes('mode: "awake"') && viewSlice.includes('mode: "minutes"') && viewSlice.includes('mode: "schedule"') &&
+    !viewSlice.includes("Add time interval") && !viewSlice.includes('action: "toggle"'));
+pass("the status shows when the automatic schedule opens or closes", viewSlice.includes("schedule ${activity.changeTo") && viewSlice.includes("nextChangeLabel"));
+pass("the panel says only the fingerprint scanner sleeps; the PIN and paper routes remain",
+  viewSlice.includes("tablet PIN clock-in and paper sheet remain available"));
+pass("Role & Time tells the admin that shift edits drive scanner hours automatically",
+  panel.includes("Scanner hours are automatic") && panel.includes("Edit shift times here"));
 
 /* ── 9. the device obeys the same rules, offline ─────────────────────────── */
 const INO = "hardware/fana_attendance_esp32/fana_attendance_esp32.ino";
@@ -303,10 +294,10 @@ pass(
   fw.includes("millis() - lastLcdMessageMs < REST_AFTER_MESSAGE_MS") && fw.includes("lastLcdMessageMs = millis();")
 );
 pass("and never on a clock it has not been given: no NTP, no sleep", fw.includes("if (epoch == 0UL) return;"));
-pass("a sleep is sliced, so an admin switch is obeyed without hardware", fw.includes("#define REST_SLICE_MAX_MS") && fw.includes("if (ms > REST_SLICE_MAX_MS) ms = REST_SLICE_MAX_MS;"));
+pass("a long rest is divided into timer slices so the board can re-fetch the role schedule", fw.includes("#define REST_SLICE_MAX_MS") && fw.includes("if (ms > REST_SLICE_MAX_MS) ms = REST_SLICE_MAX_MS;"));
 pass("a wait too short to pay for a reboot is not slept at all", fw.includes("if (waitMs < REST_MIN_SLEEP_MS) return false;"));
 pass("the board reads the schedule at boot", fw.includes("loadRestScheduleFromServer();") && loopSlice.length > 0);
-pass("and again the moment an admin changes it", sliceOf(fw, "void pumpEventStream()", "\n}", "the real-time pump").includes("loadRestScheduleFromServer();"));
+pass("and immediately when a device event reaches an awake board", sliceOf(fw, "void pumpEventStream()", "\n}", "the real-time pump").includes("loadRestScheduleFromServer();"));
 pass("the escape hatch without the website: rest off on the Serial monitor", fw.includes("restCommand(cmd.substring(4));") && fw.includes("Rest is OFF"));
 pass("the status page reports what the board believes", fw.includes("restAwake") && fw.includes("restKeptAwake"));
 const hostTest = read("hardware/fana_attendance_esp32/test/enroll_host_test.cpp");
@@ -315,11 +306,11 @@ pass(
   hostTest.includes("restShouldSleep") && hostTest.includes("maybeRest()") && hostTest.includes("parseRestPayload")
 );
 pass(
-  "the suite asserts the owner's example and the safety rules too",
+  "the suite asserts overnight behavior and the safety rules too",
   hostTest.includes("3:05 example") &&
     hostTest.includes("cannot lock his own door") &&
     hostTest.includes("with no clock it stays awake") &&
-    hostTest.includes("switching his only interval off wakes the board")
+    hostTest.includes("a disabled cached window cannot close the door")
 );
 pass("and the sleep is stubbed so a test can read the decision", existsSync(path.join(ROOT, "hardware/fana_attendance_esp32/test/stub/esp_sleep.h")));
 
@@ -336,13 +327,10 @@ pass("nobody has to remember the rest: the tablet page was not touched", !staff.
 pass("the hardware notes tell the owner what the button does", read("hardware/fana_attendance_esp32/README.md").includes("Activity"));
 
 
-/* ── 11. a change at the panel reaches the door in about a minute ─────────
- * The owner's follow-up (2026-10-17): "i want the system to start working if he
- * changes the time for that particular person to register" and "i want the
- * intervals to be workable". A sleeping board cannot hear a push, so the way to
- * be instant without new hardware is to make the board itself look again soon:
- * the website leaves a stamp, the stamp shortens the next sleep to about 45 s,
- * and the intervals can be edited in place instead of deleted and retyped.
+/* ── 11. role changes refresh awake boards and shorten later rest slices ───
+ * A sleeping board cannot hear a push; it first reads the schedule at its
+ * existing timer wake (up to ten minutes). The server hint shortens subsequent
+ * slices to 45 seconds while the change is fresh.
  */
 const slice = restSliceSeconds;
 const t = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60000);
@@ -368,25 +356,20 @@ pass("a stamp that cannot be written never fails the admin save",
   restStore.includes("markRestWakeRequested") && restStore.includes("try {"));
 pass("the hint also looks at the place-your-finger queue, because that is a person waiting",
   restStore.includes("attendanceEnrollJobs") && restStore.includes('"pending"'));
-pass("every edit of the hours marks it, before any branch can return early",
-  getSlice.includes("readRestWakeHint") && route.includes("markRestWakeRequested()") &&
-    route.indexOf("markRestWakeRequested()") < route.indexOf('action === "add"'));
+pass("role-time changes publish an immediate event and mark the next device fetch",
+  roleRoute.includes("markRestWakeRequested()") && roleRoute.includes("publish(CHANNELS.device)"));
 pass("the device is told the number in the block it caches", getSlice.includes("sliceSeconds,"));
 const bio = read("src/app/api/attendance/biometrics/route.ts");
 const enrollSlice = sliceOf(bio, 'if (action === "enroll") {', "\n    }", "the enroll branch");
 pass("opening an Add Fingerprint job is the same signal, so a registration does not wait for morning",
   enrollSlice.includes("markRestWakeRequested()"));
 
-pass("the panel says how soon the device will hear it, instead of leaving the admin to guess",
-  viewSlice.includes("checking these hours every") && viewSlice.includes("starts answering within about a minute"));
-pass("and it says so differently while a finger job is waiting", viewSlice.includes("fingerprint registration is waiting"));
-pass("the intervals are editable in place, which is what workable means here",
-  panel.includes("actEditingId") && panel.includes("editActivityWindow") && panel.includes('"Save changes"'));
-pass("the form doubles as the editor and can be backed out of",
-  panel.includes('"Cancel"') && panel.includes("setActEditingId(null)"));
-pass("each row carries the pencil beside its switch", panel.includes("<Pencil"));
-pass("the edit goes through the same route the add uses",
-  panel.includes('action: "update"') && postSlice.includes('"update"'));
+pass("the panel explains immediate refresh for an awake board and the deep-sleep timer limit",
+  viewSlice.includes("An awake scanner refreshes immediately") && viewSlice.includes("at its next timer wake (up to 10 minutes)"));
+pass("and explains the next timer wake and shorter slices for a waiting fingerprint job",
+  viewSlice.includes("fingerprint job at its next timer wake") && viewSlice.includes("45-second rest slices while the job waits"));
+pass("there are no manual interval editors that can disagree with Role & Time",
+  !panel.includes("actEditingId") && !panel.includes("editActivityWindow") && !panel.includes("Add time interval"));
 
 pass("the device reads the number and clamps it before obeying it",
   fw.includes('src["sliceSeconds"] | 0UL') && fw.includes("uint32_t restSliceMs()"));
@@ -406,7 +389,8 @@ pass("the host suite drives the clamp and the short slice",
 pass("and it says out loud that a hurried sleep still promises the real opening hour",
   hostTest.includes("the real opening hour is still what the board promises"));
 const readme = read("hardware/fana_attendance_esp32/README.md");
-pass("the notes promise about a minute, not ten", readme.includes("45 seconds while"));
+pass("the notes accurately explain the deep-sleep timer limit and 45-second follow-up slices",
+  readme.includes("up to 10 minutes") && readme.includes("45-second rest slices"));
 pass("the notes warn about the one thing that kills a battery setup: the bank cutting out",
   readme.includes("Auto-shutoff"));
 pass("and the notes do the arithmetic in Wh, not in mAh on the label",

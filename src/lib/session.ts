@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { SUPERVISOR_IDLE_TIMEOUT_MS } from "@/lib/attendance-supervisor";
+import { SUPERVISOR_COOKIE_MAX_AGE_SECONDS } from "@/lib/attendance-supervisor";
 
 /**
  * Stateless, cryptographically-signed session tokens (HMAC-SHA256).
@@ -16,10 +16,10 @@ import { SUPERVISOR_IDLE_TIMEOUT_MS } from "@/lib/attendance-supervisor";
  *                                                → cookie "fana_staff_auth"
  *   - ATTENDANCE SUPERVISOR (the door tablet): set by
  *     /api/attendance/supervisor → cookie "fana_attendance_supervisor". A
- *     deliberately SHORT third one: it unlocks the backup PIN keypad on
- *     /attendance for two minutes of activity and then dies by itself. Its
- *     `exp` is checked on every read, so a copied or a leftover cookie is
- *     refused even before the browser drops it.
+ *     third one: it unlocks the backup PIN keypad on /attendance. It has no
+ *     expiry (owner, 2026-10-16: the two-minute window "doesn't have benefit")
+ *     and ends when the supervisor presses "Lock now", which calls
+ *     DELETE /api/attendance/supervisor and drops the cookie server-side.
  */
 
 export const ADMIN_COOKIE = "fana_admin_auth";
@@ -28,14 +28,14 @@ export const SUPERVISOR_COOKIE = "fana_attendance_supervisor";
 
 export type AdminSession = { kind: "admin"; iat: number };
 export type StaffSession = { kind: "staff"; staffId: number; name: string; role: string; iat: number };
-/** Who unlocked the door tablet, and the instant that unlock stops counting. */
+/** Who unlocked the door tablet, and when. An unlock stops when the
+ *  supervisor locks the keypad again - it does not time out (owner, Oct 2026:
+ *  the two-minute window "doesn't have benefit"). */
 export type SupervisorSession = {
   kind: "attendance_supervisor";
   staffId: number;
   name: string;
   iat: number;
-  /** Epoch ms: two minutes after the last unlock/renewal. */
-  exp: number;
 };
 
 const DEV_SECRET = "fana-dev-session-secret-do-not-use-in-production";
@@ -105,8 +105,9 @@ export async function readStaffSession(): Promise<StaffSession | null> {
 }
 
 /**
- * The payload of a fresh supervisor unlock: two minutes of allowed inactivity,
- * counted from `now`. The route signs this; every reader checks `exp`.
+ * The payload of a fresh supervisor unlock. It carries no expiry: the keypad
+ * stays open until it is locked by hand, and `iat` is kept only so the tablet
+ * can say who opened it.
  */
 export function supervisorPayload(staffId: number, name: string, now: number = Date.now()): SupervisorSession {
   return {
@@ -114,7 +115,6 @@ export function supervisorPayload(staffId: number, name: string, now: number = D
     staffId,
     name,
     iat: now,
-    exp: now + SUPERVISOR_IDLE_TIMEOUT_MS,
   };
 }
 
@@ -126,18 +126,9 @@ export async function readSupervisorSession(): Promise<SupervisorSession | null>
   if (!value) return null;
   const obj = verifyToken(value, secret);
   if (obj?.kind !== "attendance_supervisor" || typeof obj.staffId !== "number") return null;
-  const exp = Number(obj.exp);
-  // The two minutes are enforced HERE and not only on the tablet: a cookie that
-  // outlived the idle window is dead wherever it is presented.
-  if (!Number.isFinite(exp) || Date.now() > exp) return null;
   return obj as unknown as SupervisorSession;
 }
 
-/** Seconds left of the two-minute unlock, for the tablet's countdown. */
-export function supervisorSecondsLeft(session: SupervisorSession | null, now: number = Date.now()): number {
-  if (!session) return 0;
-  return Math.max(0, Math.round((Number(session.exp) - now) / 1000));
-}
 
 type GuardResult<T> =
   | { ok: true; session: T }

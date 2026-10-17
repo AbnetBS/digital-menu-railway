@@ -6,10 +6,13 @@ import {
   Clock,
   Fingerprint,
   LogOut,
+  Moon,
+  Pencil,
   Plus,
   Printer,
   RefreshCw,
   Settings,
+  Sun,
   Timer,
   Trash2,
   Trophy,
@@ -18,9 +21,13 @@ import {
   X,
 } from "lucide-react";
 import {
+  OVERTIME_TYPE_HINTS,
+  OVERTIME_TYPE_LABELS,
   SHEET_MAX_DAYS,
   SHEET_RANGE_MAX_DAYS,
   isAttendanceExpectedOnDate,
+  overtimeHoursLabel,
+  type OvertimeType,
 } from "@/lib/attendance";
 import { useStaffT } from "@/lib/staff-i18n";
 
@@ -41,9 +48,16 @@ import { useStaffT } from "@/lib/staff-i18n";
  *     than one page) and a print that comes out divided the same way.
  *   • LEADERBOARD ranks the people of every role by the hours they spent at
  *     work in the chosen range.
+ *   • ACTIVITY (owner, Oct 2026) lists the hours the door scanner is awake; outside
+ *     them the ESP32 sleeps instead of imaging an empty doorway, and each interval
+ *     has its own on/off for the person who arrives at a closed hour.
+ *   • OVERTIME (owner, Oct 2026) sits beside the Leaderboard: three kinds
+ *     (Holiday OT, Free week OT, Shift OT), one employee + date + shift per
+ *     row, and a table of employee name / date / type / total hours. What is
+ *     saved is the record: there is no approval queue.
  */
 
-type ViewKey = "today" | "roles" | "members" | "sheet" | "leaderboard" | "prints";
+type ViewKey = "today" | "roles" | "members" | "sheet" | "leaderboard" | "overtime" | "activity" | "prints";
 
 interface RoleShift {
   id?: number;
@@ -75,6 +89,42 @@ interface Member {
   fingers: Finger[];
 }
 
+/** One overtime row, exactly as /api/attendance/overtime answers it. */
+interface OvertimeRow {
+  id: number;
+  memberId: number;
+  memberName: string;
+  date: string;
+  type: OvertimeType;
+  typeLabel: string;
+  minutes: number;
+  hoursLabel: string;
+  shiftLabel: string | null;
+  logId: number | null;
+  source: "admin" | "supervisor" | "self" | "auto";
+  enteredBy: string | null;
+  note: string | null;
+  clockInLabel: string | null;
+  clockOutLabel: string | null;
+  workedLabel: string | null;
+}
+
+/** The Activity panel's whole picture, as /api/attendance/activity answers it. */
+interface ActivityState {
+  windows: Array<{ id: number; from: string; to: string; label: string | null; enabled: boolean }>;
+  override: { mode: "schedule" | "awake" | "awake_until"; untilAt?: string };
+  awakeNow: boolean;
+  at: string;
+  changeInMinutes: number;
+  changeTo: string;
+  nextChangeLabel: string;
+  maxWindows: number;
+  // How soon a resting device will look at these hours again. 45 s right after
+  // a change or while a finger job waits, ten minutes on a quiet night.
+  sliceSeconds: number;
+  jobWaiting: boolean;
+}
+
 interface EnrollJob {
   jobId: number;
   fingerprintId: number;
@@ -104,7 +154,7 @@ const OUT_STYLE: Record<string, string> = {
 
 const LEGEND = [
   { label: "On time", className: "bg-emerald-200 text-emerald-950 border-emerald-500" },
-  { label: "Late (15 min+)", className: "bg-amber-200 text-amber-950 border-amber-500" },
+  { label: "Late (30 min+)", className: "bg-amber-200 text-amber-950 border-amber-500" },
   { label: "Absent", className: "bg-rose-200 text-rose-950 border-rose-500" },
   { label: "Still in", className: "bg-amber-100 text-amber-950 border-amber-400" },
   { label: "Early out", className: "bg-sky-200 text-sky-950 border-sky-500" },
@@ -191,6 +241,52 @@ export default function AttendanceTab() {
   });
   const [leaderTo, setLeaderTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [leaderRoleId, setLeaderRoleId] = useState<string>("");
+
+  // OVERTIME: its own range, its own three buttons and one row being typed.
+  // The owner's ask (Oct 2026): "a button beside Leaderboard, then three
+  // buttons Holiday OT, Free week OT, Shift OT, then pick the employee, the
+  // date and the shift, and it lists immediately" - no approval step.
+  const [otFrom, setOtFrom] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - (SHEET_RANGE_MAX_DAYS - 1));
+    return d.toISOString().slice(0, 10);
+  });
+  const [otTo, setOtTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [otRows, setOtRows] = useState<OvertimeRow[]>([]);
+  const [otTotalMinutes, setOtTotalMinutes] = useState(0);
+  const [otLoading, setOtLoading] = useState(false);
+  const [otSaving, setOtSaving] = useState(false);
+  const [otType, setOtType] = useState<OvertimeType>("holiday");
+  const [otMemberId, setOtMemberId] = useState<number | "">("");
+  const [otDate, setOtDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [otShift, setOtShift] = useState<string>("");
+  const [otHours, setOtHours] = useState("");
+  const [otNote, setOtNote] = useState("");
+  /** That person's own hours on that day, so the box can start at the truth.
+   *  It carries member and date with it: a number is never shown under a
+   *  name it was not fetched for. */
+  const [otWorked, setOtWorked] = useState<{
+    memberId: number;
+    date: string;
+    minutes: number;
+    label: string;
+  } | null>(null);
+
+  // ACTIVITY: the hours the door scanner is awake. Outside them it sleeps, so
+  // the optical reader is not imaging an empty doorway all night (owner, Oct
+  // 2026). Every row carries its own on/off, because the person who arrives at
+  // a closed hour is let in by the admin, not by a reflash.
+  const [activity, setActivity] = useState<ActivityState | null>(null);
+  const [actLoading, setActLoading] = useState(false);
+  const [actSaving, setActSaving] = useState(false);
+  const [actFormOpen, setActFormOpen] = useState(false);
+  const [actFrom, setActFrom] = useState("06:00");
+  const [actTo, setActTo] = useState("22:00");
+  const [actLabel, setActLabel] = useState("");
+  const [actWakeMinutes, setActWakeMinutes] = useState("15");
+  // "the intervals are workable": a wrong time is corrected in place instead of
+  // deleted and typed again, so the form doubles as an editor.
+  const [actEditingId, setActEditingId] = useState<number | null>(null);
 
   // Role form
   const [roleFormOpen, setRoleFormOpen] = useState(false);
@@ -288,6 +384,207 @@ export default function AttendanceTab() {
       setLeaderLoading(false);
     }
   }, [leaderFrom, leaderTo]);
+
+  const loadOvertime = useCallback(async () => {
+    setOtLoading(true);
+    try {
+      const r = await fetch(`/api/attendance/overtime?from=${otFrom}&to=${otTo}`, { cache: "no-store" });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {
+        say(d?.error || "Could not load the overtime", true);
+        return;
+      }
+      setOtRows(Array.isArray(d?.rows) ? (d.rows as OvertimeRow[]) : []);
+      setOtTotalMinutes(Number(d?.totalMinutes) || 0);
+    } catch {
+      say("Network error. Try again.", true);
+    } finally {
+      setOtLoading(false);
+    }
+  }, [otFrom, otTo]);
+
+  // Opening the tab (the button below) and saving a row are what load the
+  // list, both from an event handler - and a save comes straight back in the
+  // table (owner: "the row lists immediately").
+
+  const setOtRange = (days: number) => {
+    const to = new Date();
+    const from = new Date();
+    from.setDate(from.getDate() - (days - 1));
+    setOtTo(to.toISOString().slice(0, 10));
+    setOtFrom(from.toISOString().slice(0, 10));
+  };
+
+  // The shift choices of the picked person: his role's own times, because an
+  // overtime "belongs to" the shift he was called for.
+  const otMember = members.find((m) => String(m.id) === String(otMemberId)) || null;
+  const otRole = otMember?.roleId ? roles.find((r) => r.id === otMember.roleId) || null : null;
+  const otShifts = otRole?.shifts ?? [];
+
+  // What that day's scan says the person worked. Nothing is shown when there
+  // is no line: then the admin types the hours, and the server asks for them
+  // rather than inventing a number.
+  useEffect(() => {
+    if (!otMemberId || !otDate) return;
+    const wanted = { memberId: Number(otMemberId), date: otDate };
+    let cancelled = false;
+    fetch(`/api/attendance/logs?from=${wanted.date}&to=${wanted.date}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled) return;
+        const log =
+          ((d?.logs ?? []) as Array<Record<string, unknown>>).find(
+            (l) => Number(l.memberId) === wanted.memberId && String(l.date) === wanted.date
+          ) || null;
+        const minutes = Number(log?.totalMinutes) || 0;
+        setOtWorked(
+          minutes > 0
+            ? {
+                ...wanted,
+                minutes,
+                label: String(log?.totalHours || "") || overtimeHoursLabel(minutes),
+              }
+            : null
+        );
+      })
+      .catch(() => {
+        /* the box simply stays empty, and an empty box means "use the scan" */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [otMemberId, otDate]);
+
+  /** Only ever the number that belongs to the person and day now selected. */
+  const otWorkedNow =
+    otWorked && otWorked.memberId === Number(otMemberId) && otWorked.date === otDate ? otWorked : null;
+
+  const saveOvertime = async () => {
+    if (!otMemberId) {
+      say("Pick the employee first", true);
+      return;
+    }
+    if (!otDate) {
+      say("Pick the date", true);
+      return;
+    }
+    const hours = Number(otHours);
+    if (otHours !== "" && (!Number.isFinite(hours) || hours <= 0)) {
+      say("The hours must be a number, like 2 or 1.5", true);
+      return;
+    }
+    setOtSaving(true);
+    try {
+      const r = await fetch("/api/attendance/overtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          memberId: Number(otMemberId),
+          date: otDate,
+          type: otType,
+          // Blank means "the hours he actually worked that day", which the
+          // server reads off the scan (owner's default).
+          hours: otHours === "" ? undefined : hours,
+          shiftLabel: otShift || null,
+          note: otNote || null,
+        }),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d?.success) {
+        say(d?.error || "Could not save the overtime", true);
+        return;
+      }
+      say(d.replaced ? `Corrected: ${d.message}` : d.message);
+      setOtHours("");
+      setOtNote("");
+      await loadOvertime();
+      loadToday();
+    } catch {
+      say("Network error. Try again.", true);
+    } finally {
+      setOtSaving(false);
+    }
+  };
+
+  const loadActivity = useCallback(async () => {
+    setActLoading(true);
+    try {
+      const r = await fetch("/api/attendance/activity", { cache: "no-store" });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {
+        say(d?.error || "Could not load the activity hours", true);
+        return;
+      }
+      setActivity(d as ActivityState);
+    } catch {
+      say("Network error. Try again.", true);
+    } finally {
+      setActLoading(false);
+    }
+  }, []);
+
+  /** Every change goes through here: post it, then show the new truth. The
+   *  device is told on its own event stream by the server, so there is no
+   *  "apply" step for the admin to remember. */
+  const postActivity = async (body: Record<string, unknown>) => {
+    setActSaving(true);
+    try {
+      const r = await fetch("/api/attendance/activity", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d?.success) {
+        say(d?.error || "Could not save that", true);
+        return false;
+      }
+      say(d.message || "Saved");
+      await loadActivity();
+      return true;
+    } catch {
+      say("Network error. Try again.", true);
+      return false;
+    } finally {
+      setActSaving(false);
+    }
+  };
+
+  const saveActivityWindow = async () => {
+    const editing = actEditingId !== null;
+    const body: Record<string, unknown> = editing
+      ? { action: "update", id: actEditingId, from: actFrom, to: actTo, label: actLabel || null }
+      : { action: "add", from: actFrom, to: actTo, label: actLabel || null };
+    if (await postActivity(body)) {
+      setActFormOpen(false);
+      setActEditingId(null);
+      setActLabel("");
+    }
+  };
+
+  const editActivityWindow = (w: { id: number; from: string; to: string; label: string | null }) => {
+    setActEditingId(w.id);
+    setActFrom(w.from);
+    setActTo(w.to);
+    setActLabel(w.label ?? "");
+    setActFormOpen(true);
+  };
+
+  const removeOvertime = async (id: number) => {
+    try {
+      const r = await fetch(`/api/attendance/overtime?id=${id}`, { method: "DELETE" });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {
+        say(d?.error || "Could not remove that overtime", true);
+        return;
+      }
+      say("Overtime removed");
+      await loadOvertime();
+      loadToday();
+    } catch {
+      say("Network error. Try again.", true);
+    }
+  };
 
   useEffect(() => {
     loadRoles();
@@ -753,12 +1050,20 @@ export default function AttendanceTab() {
             { key: "members", label: "Staff Members", icon: <Users className="w-4 h-4" /> },
             { key: "sheet", label: "Paper Sheet View", icon: <Calendar className="w-4 h-4" /> },
             { key: "leaderboard", label: "Leaderboard", icon: <Trophy className="w-4 h-4" /> },
+            { key: "overtime", label: "Overtime", icon: <Timer className="w-4 h-4" /> },
+            { key: "activity", label: "Activity", icon: <Moon className="w-4 h-4" /> },
             { key: "prints", label: "Staff Fingerprints", icon: <Fingerprint className="w-4 h-4" /> },
           ] as Array<{ key: ViewKey; label: string; icon: ReactNode }>
         ).map((v) => (
           <button
             key={v.key}
-            onClick={() => setActiveView(v.key)}
+            onClick={() => {
+              setActiveView(v.key);
+              // Overtime and Activity have no data of their own until they are
+              // opened, so the tap that shows the tab is the tap that fills it.
+              if (v.key === "overtime") void loadOvertime();
+              if (v.key === "activity") void loadActivity();
+            }}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
               activeView === v.key ? "bg-[#C9A227] text-[#2C1B17]" : "bg-[#2C1B17] text-stone-300 hover:bg-white/10"
             }`}
@@ -1022,7 +1327,7 @@ export default function AttendanceTab() {
                 </button>
               </div>
               <p className="text-[11px] text-stone-400">
-                Late is 15 minutes after the time of entrance of the role. A person is an early out when he leaves
+                Late is 30 minutes after the time of entrance of the role. A person is an early out when he leaves
                 before the time out.
               </p>
             </div>
@@ -1170,7 +1475,9 @@ export default function AttendanceTab() {
               </div>
               <p className="text-[11px] text-stone-400">
                 Add Fingerprint saves the person and sends the job to the device: the scanner shows his name, he
-                places his finger, and this page prints Fingerprint Added ✓.
+                places the same finger for the three enrollment steps, and the device only prints Fingerprint Added ✓
+                after it has scanned that finger once more and the sensor really found it. A finger the sensor cannot
+                find again is reported as a failure here, never as added.
               </p>
             </div>
           )}
@@ -1238,7 +1545,7 @@ export default function AttendanceTab() {
                       </p>
                       <p className="text-[10px] text-amber-300/80 mt-1">
                         {job.startedAt
-                          ? "The scanner is waiting. Lift the finger if it is already on the glass, then place it flat and keep it there until all six scans pass."
+                          ? "The scanner is waiting. Lift the finger if it is on the glass, then follow the LCD: PLACE FINGER three times, lifting and placing the SAME finger for each step, and place it once more when it says CONFIRM."
                           : "Sending the job to the scanner. If this does not change in about 20 seconds the device is offline."}
                       </p>
                       {job.detail ? <p className="text-[10px] text-amber-200/90 mt-1 font-bold">{job.detail}</p> : null}
@@ -1497,7 +1804,7 @@ export default function AttendanceTab() {
                     </table>
                   </div>
                   <div className="p-3 bg-stone-100 text-[11px] text-stone-700 text-center font-bold">
-                    Digital signature = fingerprint scan • Green = on time • Yellow = late (15 minutes after his role
+                    Digital signature = fingerprint scan • Green = on time • Yellow = late (30 minutes after his role
                     starts) • Red = absent from registration through today • Blank = before registration or future •
                     Blue = early out • Violet = overtime • Total hours = OUT - IN
                   </div>
@@ -1700,6 +2007,466 @@ export default function AttendanceTab() {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── OVERTIME: the three kinds, typed here or tapped at the door ────
+          * Owner's ask (Oct 2026): a button beside the Leaderboard, then three
+          * type buttons, then the employee + date + shift, then the row in a
+          * table of employee name / date / type of overtime / total hour. No
+          * approval step anywhere in it: what is saved is the record. ────── */}
+      {activeView === "overtime" && (
+        <div className="space-y-4">
+          <div className="bg-[#2C1B17] p-5 rounded-2xl border border-[#C9A227]/30 space-y-4">
+            <div>
+              <h3 className="text-sm font-bold text-amber-200">Add overtime</h3>
+              <p className="text-[11px] text-stone-400 mt-1 leading-relaxed">
+                Which kind of overtime, for whom, on which day. The row appears in the list below the moment it is
+                saved, colours that day violet on the paper sheet and counts on the Leaderboard.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {(Object.keys(OVERTIME_TYPE_LABELS) as OvertimeType[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setOtType(t)}
+                  className={`text-left px-4 py-3 rounded-2xl border transition ${
+                    otType === t
+                      ? "bg-[#C9A227] text-[#2C1B17] border-[#C9A227]"
+                      : "bg-[#3D2314] text-stone-200 border-stone-700 hover:bg-white/10"
+                  }`}
+                >
+                  <span className="block text-xs font-black uppercase">{L(OVERTIME_TYPE_LABELS[t])}</span>
+                  <span className={`block text-[10px] mt-1 ${otType === t ? "text-[#2C1B17]/80" : "text-stone-400"}`}>
+                    {L(OVERTIME_TYPE_HINTS[t])}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">
+              <div className="col-span-2 md:col-span-1">
+                <label className="block text-[10px] font-bold text-amber-200 mb-1">Employee</label>
+                <select
+                  value={String(otMemberId)}
+                  onChange={(e) => {
+                    setOtMemberId(e.target.value ? Number(e.target.value) : "");
+                    setOtShift("");
+                  }}
+                  className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                >
+                  <option value="">Select the person</option>
+                  {members
+                    .filter((m) => m.active !== false)
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.roleName || "no role"})
+                      </option>
+                    ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-amber-200 mb-1">Date</label>
+                <input
+                  type="date"
+                  value={otDate}
+                  onChange={(e) => setOtDate(e.target.value)}
+                  className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-amber-200 mb-1">Shift</label>
+                <select
+                  value={otShift}
+                  onChange={(e) => setOtShift(e.target.value)}
+                  className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                >
+                  <option value="">The day as a whole</option>
+                  {otShifts.map((sh) => (
+                    <option key={sh.label} value={sh.label}>
+                      {sh.label} ({sh.startTime}-{sh.endTime})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-amber-200 mb-1">Total hours</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.25"
+                  inputMode="decimal"
+                  value={otHours}
+                  onChange={(e) => setOtHours(e.target.value)}
+                  placeholder={otWorkedNow ? otWorkedNow.label : "e.g. 2"}
+                  className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                />
+              </div>
+              <div className="col-span-2 md:col-span-3">
+                <label className="block text-[10px] font-bold text-amber-200 mb-1">Note (optional)</label>
+                <input
+                  value={otNote}
+                  onChange={(e) => setOtNote(e.target.value)}
+                  placeholder="Closing, the party, the delivery that came late..."
+                  className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                />
+              </div>
+              <button
+                onClick={saveOvertime}
+                disabled={otSaving}
+                className="bg-[#C9A227] hover:bg-amber-400 disabled:opacity-60 text-[#2C1B17] font-black text-xs px-5 py-2.5 rounded-xl flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" /> {otSaving ? "Saving..." : "Save overtime"}
+              </button>
+            </div>
+
+            <p className="text-[10px] text-stone-500">
+              {otWorkedNow
+                ? `${otMember?.name ?? "This person"} worked ${otWorkedNow.label} on ${otDate}. Leaving the hours box empty saves exactly that; typing a number uses yours.`
+                : otMember
+                  ? `No scan found for ${otMember.name} on ${otDate}, so type how many hours were worked.`
+                  : "Pick the person and the day. The hours default to what he actually worked that day when a scan exists."}
+            </p>
+          </div>
+
+          <div className="bg-[#2C1B17] p-5 rounded-2xl border border-stone-700/60 space-y-3">
+            <div className="flex flex-wrap gap-3 items-end">
+              <div>
+                <label className="block text-[10px] font-bold text-amber-200 mb-1">From Date</label>
+                <input
+                  type="date"
+                  value={otFrom}
+                  onChange={(e) => setOtFrom(e.target.value)}
+                  className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-amber-200 mb-1">To Date</label>
+                <input
+                  type="date"
+                  value={otTo}
+                  onChange={(e) => setOtTo(e.target.value)}
+                  className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                />
+              </div>
+              <button
+                onClick={loadOvertime}
+                disabled={otLoading}
+                className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-200 font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2"
+              >
+                <RefreshCw className={`w-4 h-4 ${otLoading ? "animate-spin" : ""}`} /> Load overtime
+              </button>
+              {[
+                { label: "This month", days: SHEET_RANGE_MAX_DAYS },
+                { label: "Last 7 days", days: 7 },
+                { label: "Today", days: 1 },
+              ].map((preset) => (
+                <button
+                  key={preset.days}
+                  onClick={() => setOtRange(preset.days)}
+                  className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-300 font-bold text-[11px] px-3 py-2.5 rounded-xl"
+                >
+                  {preset.label}
+                </button>
+              ))}
+              <p className="ml-auto text-[11px] text-stone-400">
+                Total in range:{" "}
+                <span className="font-black text-amber-300">{overtimeHoursLabel(otTotalMinutes)}</span>
+              </p>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-[10px] uppercase text-amber-200">
+                    <th className="py-2 pr-3 font-black">Employee Name</th>
+                    <th className="py-2 pr-3 font-black">Date</th>
+                    <th className="py-2 pr-3 font-black">Type of overtime</th>
+                    <th className="py-2 pr-3 font-black">Total Hour</th>
+                    <th className="py-2 font-black text-right">Remove</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {otRows.map((row) => (
+                    <tr key={row.id} className="border-t border-stone-700/60 align-top">
+                      <td className="py-2 pr-3">
+                        <p className="font-bold text-white">{row.memberName}</p>
+                        <p className="text-[10px] text-stone-500">
+                          {row.clockInLabel || "no IN"}
+                          {" / "}
+                          {row.clockOutLabel || "no OUT"}
+                          {row.workedLabel ? ` • worked ${row.workedLabel}` : ""}
+                        </p>
+                      </td>
+                      <td className="py-2 pr-3 text-stone-300 whitespace-nowrap">{row.date}</td>
+                      <td className="py-2 pr-3">
+                        <p className="font-bold text-amber-200 whitespace-nowrap">{L(row.typeLabel)}</p>
+                        <p className="text-[10px] text-stone-500">
+                          {row.shiftLabel ? `${row.shiftLabel} shift • ` : ""}
+                          {row.source === "auto"
+                            ? "from his clock-out scan"
+                            : row.source === "admin"
+                              ? "typed by an admin"
+                              : row.source === "supervisor"
+                                ? "typed at the door"
+                                : `tapped at the door${row.enteredBy ? ` by ${row.enteredBy}` : ""}`}
+                          {row.note ? ` • ${row.note}` : ""}
+                        </p>
+                      </td>
+                      <td className="py-2 pr-3 font-black text-violet-300 whitespace-nowrap">{row.hoursLabel}</td>
+                      <td className="py-2 text-right">
+                        <button
+                          onClick={() => removeOvertime(row.id)}
+                          className="p-2 text-rose-400 hover:text-rose-300"
+                          aria-label={L("Remove this overtime")}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {otRows.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="py-4 text-[11px] text-stone-500">
+                        No overtime in this range. Pick the kind, the person and the day above and save it, or let a
+                        person stay past his shift: the clock-out scan writes that one by itself.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── ACTIVITY: the hours the door scanner is awake ───────────────────
+          * Owner, Oct 2026: the reader should not be imaging an empty doorway
+          * all night. He lists the hours the door is OPEN; outside them the
+          * device sleeps by itself and wakes by itself. Every row has its own
+          * on/off, because the person who arrives at a closed hour is let in
+          * by the admin flipping that row, not by an edit of the schedule. ── */}
+      {activeView === "activity" && (
+        <div className="space-y-4">
+          <div className="bg-[#2C1B17] p-5 rounded-2xl border border-[#C9A227]/30 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-amber-200">When the scanner is awake</h3>
+                <p className="text-[11px] text-stone-400 mt-1 leading-relaxed max-w-2xl">
+                  Inside these hours the door answers a finger. Outside them the device sleeps: dark screen, no scan
+                  answered, nothing lost. The name + PIN keypad on the tablet, the paper sheet and this page keep
+                  working the whole time, and with no hours listed at all the scanner simply stays awake.
+                </p>
+              </div>
+              <button
+                onClick={loadActivity}
+                disabled={actLoading}
+                className="shrink-0 p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl"
+                aria-label={L("Reload the activity hours")}
+              >
+                <RefreshCw className={`w-4 h-4 ${actLoading ? "animate-spin" : ""}`} />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 bg-black/30 border border-stone-700 rounded-2xl px-4 py-3">
+              {activity?.awakeNow ? (
+                <Sun className="w-5 h-5 text-amber-300 shrink-0" />
+              ) : (
+                <Moon className="w-5 h-5 text-indigo-300 shrink-0" />
+              )}
+              <p className="text-xs text-stone-200">
+                Now {activity?.at ?? "--:--"}: {" "}
+                <span className="font-black uppercase">{activity?.awakeNow ? "awake" : "resting"}</span>
+                {activity
+                  ? ` • ${L(activity.changeTo === "awake" ? "awake again" : "goes to sleep")} in ${
+                      activity.changeInMinutes
+                    } min, at ${activity.nextChangeLabel}`
+                  : ""}
+              </p>
+              {activity && (
+                <p className="text-[10px] text-stone-400">
+                  {activity.sliceSeconds <= 120
+                    ? `The device is checking these hours every ${activity.sliceSeconds} s right now` +
+                      (activity.jobWaiting
+                        ? ", because a fingerprint registration is waiting for somebody."
+                        : ", because you have just changed them. It starts answering within about a minute.")
+                    : `A resting device looks at these hours again every ${Math.round(
+                        activity.sliceSeconds / 60
+                      )} min. After a change it shortens that to under a minute by itself, so nothing has to be pressed on the scanner.`}
+                </p>
+              )}
+              {activity && activity.override.mode !== "schedule" && (
+                <span className="text-[10px] font-black uppercase bg-amber-900/60 text-amber-200 border border-amber-700 rounded-full px-3 py-1">
+                  {activity.override.mode === "awake"
+                    ? "Kept awake by the admin"
+                    : `Kept awake until ${new Date(String(activity.override.untilAt)).toLocaleTimeString("en-GB", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        timeZone: "Africa/Addis_Ababa",
+                      })}`}
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-end gap-2">
+              <button
+                onClick={() => postActivity({ action: "override", mode: "awake" })}
+                disabled={actSaving}
+                className="bg-[#C9A227] hover:bg-amber-400 disabled:opacity-60 text-[#2C1B17] font-black text-xs px-4 py-2.5 rounded-xl"
+              >
+                Keep it awake now
+              </button>
+              <div className="flex items-end gap-2">
+                <div>
+                  <label className="block text-[10px] font-bold text-amber-200 mb-1">Minutes</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="1440"
+                    value={actWakeMinutes}
+                    onChange={(e) => setActWakeMinutes(e.target.value)}
+                    className="w-24 bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                  />
+                </div>
+                <button
+                  onClick={() => postActivity({ action: "override", mode: "minutes", minutes: Number(actWakeMinutes) })}
+                  disabled={actSaving}
+                  className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-200 font-bold text-xs px-4 py-2.5 rounded-xl"
+                >
+                  Awake for that long, then rest
+                </button>
+              </div>
+              <button
+                onClick={() => postActivity({ action: "override", mode: "schedule" })}
+                disabled={actSaving}
+                className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-200 font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2"
+              >
+                <Moon className="w-4 h-4" /> Let the schedule rule again
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[10px] font-black uppercase text-amber-200">
+                  Open hours of the scanner {activity ? `(${activity.windows.length}/${activity.maxWindows})` : ""}
+                </p>
+                <button
+                  onClick={() => setActFormOpen((v) => !v)}
+                  className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-200 font-bold text-[11px] px-3 py-2 rounded-xl flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add time interval
+                </button>
+              </div>
+
+              {actFormOpen && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end bg-black/20 border border-stone-700 rounded-2xl p-3">
+                  <div>
+                    <label className="block text-[10px] font-bold text-amber-200 mb-1">From</label>
+                    <input
+                      type="time"
+                      value={actFrom}
+                      onChange={(e) => setActFrom(e.target.value)}
+                      className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-amber-200 mb-1">To</label>
+                    <input
+                      type="time"
+                      value={actTo}
+                      onChange={(e) => setActTo(e.target.value)}
+                      className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-amber-200 mb-1">Name (optional)</label>
+                    <input
+                      value={actLabel}
+                      onChange={(e) => setActLabel(e.target.value)}
+                      placeholder="Morning, Evening..."
+                      className="w-full bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                    />
+                  </div>
+                  <button
+                    onClick={saveActivityWindow}
+                    disabled={actSaving}
+                    className="bg-[#C9A227] hover:bg-amber-400 disabled:opacity-60 text-[#2C1B17] font-black text-xs px-4 py-2.5 rounded-xl"
+                  >
+                    {actEditingId === null ? "Add" : "Save changes"}
+                  </button>
+                  {actEditingId !== null && (
+                    <button
+                      onClick={() => {
+                        setActEditingId(null);
+                        setActLabel("");
+                        setActFormOpen(false);
+                      }}
+                      className="text-[11px] font-bold text-stone-400 hover:text-white px-2 py-2.5"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <p className="col-span-2 md:col-span-4 text-[10px] text-stone-500">
+                    A To time earlier than the From time runs across midnight, like 22:00 to 06:00. The device is
+                    awake from From up to the minute before To.
+                  </p>
+                </div>
+              )}
+
+              <div className="divide-y divide-stone-700/60 border border-stone-700/60 rounded-2xl overflow-hidden">
+                {(activity?.windows ?? []).map((w) => (
+                  <div
+                    key={w.id}
+                    className={`flex flex-wrap items-center gap-3 px-4 py-3 ${w.enabled ? "" : "opacity-50"}`}
+                  >
+                    <p className="font-mono font-black text-sm text-white whitespace-nowrap">
+                      {w.from} - {w.to}
+                    </p>
+                    {w.label ? <p className="text-[11px] text-stone-400">{w.label}</p> : null}
+                    <p className="ml-auto text-[10px] uppercase font-bold text-stone-500">
+                      {w.enabled ? "on" : "off, scanner awake outside its hours too"}
+                    </p>
+                    <button
+                      onClick={() => editActivityWindow(w)}
+                      disabled={actSaving}
+                      className="p-2 text-stone-400 hover:text-amber-200"
+                      aria-label={L("Edit this interval")}
+                      title={L("Edit this interval")}
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => postActivity({ action: "toggle", id: w.id })}
+                      disabled={actSaving}
+                      className={`text-[10px] font-black uppercase px-3 py-2 rounded-xl border ${
+                        w.enabled
+                          ? "bg-emerald-900/60 border-emerald-700 text-emerald-200 hover:bg-emerald-800"
+                          : "bg-[#3D2314] border-stone-700 text-stone-300 hover:bg-white/10"
+                      }`}
+                      aria-label={w.enabled ? "Turn this interval off" : "Turn this interval on"}
+                    >
+                      {w.enabled ? "On" : "Off"}
+                    </button>
+                    <button
+                      onClick={() => postActivity({ action: "remove", id: w.id })}
+                      disabled={actSaving}
+                      className="p-2 text-rose-400 hover:text-rose-300"
+                      aria-label={L("Remove this interval")}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+                {(activity?.windows ?? []).length === 0 && (
+                  <p className="px-4 py-4 text-[11px] text-stone-500">
+                    No intervals yet, so the scanner stays awake all day and rests never. Add the hours the door is
+                    open and it sleeps in between, on its own.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

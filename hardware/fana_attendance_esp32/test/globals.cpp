@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_sleep.h>
 #include <WiFi.h>
 #include <hd44780.h>
 #include <HTTPClient.h>
@@ -31,3 +32,11 @@ int  stubHour = 14;
 int  stubMinute = 5;
 int  stubSecond = 30;
 void (*screenHook)(const std::string &) = nullptr;
+
+// ── the rest windows' deep sleep, recorded not performed (stub/esp_sleep.h) ─
+uint64_t stubSleepUs = 0;
+int stubDeepSleepCalls = 0;
+
+// ── WiFiManager's timeouts, as the sketch set them ─────────────────────────
+int stubWmConnectTimeoutSec = -1;
+unsigned long stubWmConfigPortalTimeoutSec = 0;

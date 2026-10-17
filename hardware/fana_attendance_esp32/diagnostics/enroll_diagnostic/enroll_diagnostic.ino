@@ -4,17 +4,26 @@
  * when enrollment fails, capture the Serial Monitor log, share the log.
  *
  * WHAT IT DOES
- *   Runs ONE six-scan enrollment under ID 999 and prints EVERY sensor reply
- *   with a millis() timestamp, the status byte, and the raw 8-byte frame.
- *   Three modes reproduce the three firmware strategies so the replies can
- *   be compared side by side:
+ *   Runs ONE enrollment under ID 999 and prints EVERY sensor reply with a
+ *   millis() timestamp, the status byte, and the raw 8-byte frame. Then it
+ *   VERIFIES: it asks for a fresh placement and SEARCHES, because "every ADD
+ *   answered OK" is not the same thing as "this finger is enrolled". A module
+ *   can accept the whole sequence and still answer status 5 (NOUSER) to the
+ *   next scan - which is exactly the "it says ADDED, then it says NOT
+ *   REGISTERED" report from the cafe.
+ *
+ *   Four modes, so the strategies can be compared side by side:
  *
  *     a  Mode A = PR #50 style: SEARCH commands between scans wait for the
  *        finger to lift and to be placed again.
  *     b  Mode B = ee3873b style: NO commands between scans; a 4 s lift pause,
  *        then "PLACE FINGER", 300 ms settle, then the next ADD command.
- *     c  Mode C = current firmware style: NO commands between scans; the
- *        finger is placed ONCE and kept on the sensor for all six captures.
+ *     c  Mode C = the recipe the shipped firmware used until Oct 2026: NO
+ *        commands between scans; the finger is placed ONCE and kept on the
+ *        sensor for all six captures (1, 2, 2, 2, 2, 3).
+ *     d  Mode D = the vendor's own flow, what the product sketch does now:
+ *        THREE commands (ADD_1, ADD_2, ADD_3), each from a fresh placement of
+ *        the same finger, timed lifts only, no sensor command in between.
  *
  *   t  one COUNT command (is the sensor alive?)
  *   x  delete ID 999 (cleanup; also runs automatically before each mode)
@@ -107,9 +116,9 @@ bool doAdd(uint8_t scan, uint8_t step, uint32_t timeoutMs) {
   stamp();
   Serial.print("TX ADD_");
   Serial.print(step);
-  Serial.print(" (scan ");
+  Serial.print(" (scan/step ");
   Serial.print(scan);
-  Serial.print("/6, timeout ");
+  Serial.print(", timeout ");
   Serial.print(timeoutMs);
   Serial.println(" ms)");
   const uint32_t t0 = millis();
@@ -167,7 +176,65 @@ bool waitFingerOffSearch() {
   return false;
 }
 
-/* ── The three enrollment strategies under test ──────────────────────────── */
+/* ── The proof: does the module find this finger again? ─────────────────── */
+/* The enrollment commands all answering OK is NOT the finish line. A fresh
+ * placement has to SEARCH to this very ID, or the scanner will answer status 5
+ * (NOUSER) - the "NOT REGISTERED" the person at the door sees. */
+bool doVerify(const char *mode) {
+  stamp();
+  Serial.print("[");
+  Serial.print(mode);
+  Serial.println("] VERIFY: LIFT the finger, then place the SAME finger again on the sensor.");
+  if (!waitFingerOffSearch()) return false;
+
+  const uint32_t start = millis();
+  while (millis() - start < WAIT_BUDGET_MS) {
+    uint16_t matchedId = 0;
+    uint8_t permission = 0;
+    const uint32_t t0 = millis();
+    const bool matched = finger.search(matchedId, permission, 8000) && matchedId > 0;
+    logReply("RX SEARCH (verify)", millis() - t0);
+    const uint8_t st = finger.getLastStatus();
+    if (matched && matchedId == DIAG_ID) {
+      stamp();
+      Serial.print("[");
+      Serial.print(mode);
+      Serial.println("] VERIFY OK - the sensor finds this finger as ID 999. This is a real enrollment.");
+      return true;
+    }
+    if (matched) {
+      stamp();
+      Serial.print("[");
+      Serial.print(mode);
+      Serial.print("] VERIFY: matched ID ");
+      Serial.print(matchedId);
+      Serial.println(" instead of 999 - the record is not under the ID we used.");
+      return false;
+    }
+    if (st == BIOVO_ACK_NOUSER) {
+      stamp();
+      Serial.print("[");
+      Serial.print(mode);
+      Serial.println("] VERIFY FAILED - the module sees the finger but has NO template for it.");
+      stamp();
+      Serial.println("   Every ADD above was answered OK, and the finger is still NOT REGISTERED.");
+      Serial.println("   This is the reported bug: this strategy does not produce a usable model.");
+      return false;
+    }
+    if (st == BIOVO_ACK_IMAGEMESS) {
+      stamp();
+      Serial.println("   verify: image unclear - press flat and still, and try again");
+      continue;
+    }
+  }
+  stamp();
+  Serial.print("[");
+  Serial.print(mode);
+  Serial.println("] VERIFY: no usable answer from the sensor in time.");
+  return false;
+}
+
+/* ── The four enrollment strategies under test ───────────────────────────── */
 
 const uint8_t captureSteps[6] = {1, 2, 2, 2, 2, 3};
 
@@ -196,6 +263,7 @@ void runModeA() {
   }
   Serial.println("=== MODE A: all six scans ACCEPTED ===");
   doCount("after mode A");
+  doVerify("A");
 }
 
 // Mode B - ee3873b style: no commands between scans, 4 s lift pause.
@@ -227,6 +295,7 @@ void runModeB() {
   }
   Serial.println("=== MODE B: all six scans ACCEPTED ===");
   doCount("after mode B");
+  doVerify("B");
 }
 
 // Mode C - current firmware style: one placement, finger kept on the sensor.
@@ -256,6 +325,44 @@ void runModeC() {
   }
   Serial.println("=== MODE C: all six scans ACCEPTED ===");
   doCount("after mode C");
+  // Mode C is the recipe that made the website say ADDED while the scanner said
+  // NOT REGISTERED. The count goes up and the verify is what tells the truth.
+  doVerify("C");
+}
+
+// Mode D - the vendor's flow and the product sketch now: three commands, one
+// fresh placement each, nothing but TIME between them, then the verify.
+void runModeD() {
+  Serial.println();
+  Serial.println("=== MODE D: the module's three steps, one placement each (current firmware) ===");
+  Serial.println("PLACE the finger when asked, LIFT it when asked, same finger all three times.");
+  doDelete();
+
+  for (uint8_t step = 1; step <= 3; step++) {
+    if (step == 1) {
+      stamp();
+      Serial.println("PLACE FINGER flat and still, then keep it there until the reply...");
+      delay(2500);
+    } else {
+      stamp();
+      Serial.println("LIFT your finger off the sensor (no sensor command is sent)...");
+      delay(2500);
+      stamp();
+      Serial.println("PLACE THE SAME FINGER again, flat and still...");
+      delay(2500);
+    }
+    if (!doAdd(step, step, 30000)) {
+      stamp();
+      Serial.print("STEP ");
+      Serial.print(step);
+      Serial.println("/3 FAILED - stopping this run (re-run 'd' to try again)");
+      doCount("after the failed mode D");
+      return;
+    }
+  }
+  Serial.println("=== MODE D: all three steps ACCEPTED ===");
+  doCount("after mode D");
+  doVerify("D");
 }
 
 /* ── Serial UI ───────────────────────────────────────────────────────────── */
@@ -264,7 +371,8 @@ void printHelp() {
   Serial.println("Commands:");
   Serial.println("  a = mode A: SEARCH between scans (PR #50 style)");
   Serial.println("  b = mode B: no commands between scans, 4 s lift pause (ee3873b style)");
-  Serial.println("  c = mode C: place once, keep the finger on (current firmware style)");
+  Serial.println("  c = mode C: place once, keep the finger on (the recipe that failed)");
+  Serial.println("  d = mode D: three steps, a fresh placement per step (the current firmware)");
   Serial.println("  t = sensor COUNT test");
   Serial.println("  x = delete the test ID 999");
   Serial.println("  h = this help");
@@ -293,6 +401,7 @@ void loop() {
     case 'a': runModeA(); break;
     case 'b': runModeB(); break;
     case 'c': runModeC(); break;
+    case 'd': runModeD(); break;
     case 't': doCount("manual test"); break;
     case 'x': doDelete(); break;
     case 'h': printHelp(); break;

@@ -7,7 +7,7 @@
  * just like the manual flow, but the finger was never stored, the page stopped
  * loading, and `enroll <id>` on the Serial monitor kept working. Both paths
  * called the SAME enrollFingerprint(), so the difference could only be the
- * state the sensor was in when the six captures began:
+ * state the sensor was in when the captures began:
  *
  *   1. a leftover template under the ID the server picked (the old code sent a
  *      DELETE *in the middle of the placement*, which breaks the session), and
@@ -45,6 +45,13 @@ const biometricsApi = read("src/app/api/attendance/biometrics/route.ts");
 const adminTab = read("src/components/rms/AttendanceTab.tsx");
 const migrate = read("src/db/migrate.ts");
 
+/** enrollFingerprint()'s own body, so an ordering claim means "inside that
+ * function" and not "earlier in a 1800-line file". */
+const enrollBody = firmware.slice(
+  firmware.indexOf("EnrollResult enrollFingerprint(int id, const String &who) {"),
+  firmware.indexOf('// Serial "enroll <id>":')
+);
+
 /* ── 1. both enrollment paths go through the one function ─────────────────── */
 
 pass(
@@ -53,10 +60,50 @@ pass(
     firmware.includes("result = enrollFingerprint(fingerprintId, memberName)") &&
     firmware.includes('const EnrollResult result = enrollFingerprint(id, "")')
 );
+/* The owner's second report (Oct 2026): the admin pressed Add Fingerprint,
+ * every command answered OK, the page printed Fingerprint Added - and the next
+ * scan of that finger said NOT REGISTERED on the device. "NOT REGISTERED" is
+ * the FPC1020A's own answer (status 5) to a SEARCH, so the sensor never held a
+ * usable template: the sketch was sending SIX commands (1,2,2,2,2,3) from ONE
+ * unmoving placement, while the vendor protocol is THREE steps, each captured
+ * from its own placement of the same finger. */
 pass(
-  "the six-capture order is unchanged: 1x step 1, 4x step 2, 1x step 3",
-  /const uint8_t captureSteps\[6\] = \{1, 2, 2, 2, 2, 3\}/.test(firmware) &&
-    firmware.includes("finger.enroll((uint16_t)id, captureSteps[cap]")
+  "the enrollment is the module's own three steps, one capture each",
+  firmware.includes("#define ENROLL_STEPS            3") &&
+    /for \(uint8_t step = 1; step <= ENROLL_STEPS; step\+\+\)/.test(firmware) &&
+    firmware.includes("finger.enroll((uint16_t)id, step, ENROLL_ADD_TIMEOUT_MS)") &&
+    !firmware.includes("captureSteps[6]")
+);
+pass(
+  "each step asks for its own placement of the finger, with no command in between",
+  firmware.includes('showEnrollScreen(who, id, step - 1, "LIFT YOUR FINGER"') &&
+    firmware.includes('showEnrollScreen(who, id, step - 1, "PLACE FINGER"') &&
+    /if \(step > 1\) \{[\s\S]{0,300}ENROLL_LIFT_PAUSE_MS/.test(firmware)
+);
+pass(
+  "a finger is only called enrolled after the device scans it again",
+  firmware.includes("EnrollResult confirmEnrolledFinger(int id, const String &who, uint32_t deadlineMs)") &&
+    firmware.includes("outcome = confirmEnrolledFinger(id, who, deadlineMs);") &&
+    firmware.includes("ENROLL_NOT_CONFIRMED") &&
+    enrollBody.includes("outcome = confirmEnrolledFinger(id, who, deadlineMs);") &&
+    firmware.indexOf("EnrollResult confirmEnrolledFinger(int id, const String &who, uint32_t deadlineMs) {") > 0 &&
+    enrollBody.indexOf("outcome = confirmEnrolledFinger(id, who, deadlineMs);") <
+      enrollBody.indexOf("return ENROLL_OK;") &&
+    firmware.includes("if (result == ENROLL_OK) {") &&
+    /if \(result == ENROLL_OK\) \{[\s\S]{0,140}postMappingToServer/.test(firmware)
+);
+pass(
+  "an unconfirmed finger is never posted as a mapping",
+  firmware.includes("if (result == ENROLL_OK) {") &&
+    /if \(result == ENROLL_OK\) \{[\s\S]{0,120}postMappingToServer/.test(firmware) &&
+    firmware.includes("return ENROLL_NOT_CONFIRMED;")
+);
+pass(
+  "a sensor that stored nothing fails the job with the reason the scanner shows",
+  firmware.includes('"the finger does not scan successfully: the sensor did not find it on "') &&
+    firmware.includes('" fresh scan(s) after saving it (status 5: NOT REGISTERED)"') &&
+    firmware.includes('case ENROLL_NOT_CONFIRMED: return "finger does not scan successfully";') &&
+    firmware.includes('"DOES NOT SCAN"')
 );
 
 /* ── 2. the pre-flight that makes the two paths start identically ─────────── */
@@ -64,13 +111,23 @@ pass(
 pass(
   "a leftover template is deleted BEFORE anybody is asked for a finger",
   firmware.includes("freeLeftoverTemplate(id);") &&
-    firmware.indexOf("freeLeftoverTemplate(id);") < firmware.indexOf("waitGlassEmpty(who, id, ENROLL_LIFT_BUDGET_MS)")
+    enrollBody.indexOf("freeLeftoverTemplate(id);") <
+      enrollBody.indexOf("if (!waitGlassEmpty(who, id, ENROLL_LIFT_BUDGET_MS))")
 );
 pass(
   "the device waits for a real lift, so ADD_1 always sees a finger coming down",
   firmware.includes("waitGlassEmpty(") &&
     firmware.includes("int glassHasFinger()") &&
     firmware.includes('"LIFT YOUR FINGER"')
+);
+pass(
+  "an unconfirmed session is retried, and its slot is freed before the retry",
+  (() => {
+    const retryAt = enrollBody.indexOf("if (session > 1) {");
+    const nextRun = enrollBody.indexOf("outcome = runCaptureSession(id, who, deadlineMs);");
+    const freed = enrollBody.indexOf("freeLeftoverTemplate(id);", retryAt);
+    return retryAt >= 0 && freed >= 0 && freed < nextRun;
+  })()
 );
 pass(
   "a failed session is retried from a fresh lift instead of failing the job",
@@ -104,7 +161,7 @@ pass(
   "a failure carries the exact scan and status back to the website",
   firmware.includes('doc["action"] = "job_failed"') &&
     firmware.includes("reportJobFailed(jobId, reason)") &&
-    firmware.includes('enrollDetail = "scan " + String(cap + 1) + "/6 not accepted: "') &&
+    firmware.includes('enrollDetail = "step " + String(step) + "/" + String(ENROLL_STEPS) + " not accepted: "') &&
     mappingsApi.includes("detail: reason")
 );
 pass(

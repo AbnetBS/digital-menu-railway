@@ -742,7 +742,7 @@ export const STAFF_AM = {
   "Buna Maker (/buna)": "ቡና አፊ (/buna)",
   "Juice Maker (/juice)": "ጭማቂ አዘጋጅ (/juice)",
   "Attendance Supervisor (/attendance)": "የአቴንዳንስ ተቆጣጣሪ (/attendance)",
-  "The Attendance Supervisor opens the backup PIN keypad on /attendance for 2 minutes after the last touch; fingerprint scans never need it.": "የአቴንዳንስ ተቆጣጣሪው በ/attendance ላይ ያለውን የአማራጭ PIN ኪፓድ ከመጨረሻው ንክኪ በኋላ ለ2 ደቂቃ ይከፍታል፤ የጣት አሻራ ምዝገባዎች ግን በጭራሽ አይፈልጉትም።",
+  "The Attendance Supervisor opens the backup PIN keypad on /attendance and it stays open until someone locks it again; fingerprint scans never need it.": "የአቴንዳንስ ተቆጣጣሪው በ/attendance ላይ ያለውን የአማራጭ PIN ኪፓድ ይከፍታል፤ ሰው ሲከፍለው እስኪቆልፈው ድረስ ክፍት ይቆያል፤ የጣት አሻራ ምዝገባዎች ግን በጭራሽ አይፈልጉትም።",
   "Admin (owner dashboard)": "አስተዳዳሪ (የባለቤት ማስተዳደሪያ)",
   "PIN (e.g. 4321)": "PIN (ለምሳሌ 4321)",
   "Create Account": "መለያ ፍጠር",

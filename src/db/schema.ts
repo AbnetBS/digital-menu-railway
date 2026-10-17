@@ -382,7 +382,46 @@ export const staffBiometrics = pgTable("staff_biometrics", {
 // The attendance listing is its OWN list. A cleaner, a washer or a chef clocks
 // in with a finger but has no station login, so they live here and never in
 // staff_users. Each role carries its own entrance/exit times, which is what
-// decides "late" (15 minutes after the entrance time of that role).
+// decides "late" (30 minutes after the entrance time of that role).
+
+/**
+ * THE HOURS THE DOOR SCANNER IS AWAKE (owner, Oct 2026). Outside every enabled
+ * window the ESP32 sleeps: the sensor stops being polled, the LCD is dark, no
+ * finger is answered. One row is one open interval, repeating every day; the
+ * enabled flag is the per-row on/off the owner asked for, so a person at 15:05
+ * is let in by switching the row off for a moment instead of editing the
+ * schedule. An empty table means "awake all day", never "asleep all day".
+ */
+export const attendanceActiveWindows = pgTable("attendance_active_windows", {
+  id: serial("id").primaryKey(),
+  fromTime: varchar("from_time", { length: 5 }).notNull(), // "HH:MM", Addis clock
+  toTime: varchar("to_time", { length: 5 }).notNull(), // "HH:MM"; before from = across midnight
+  label: varchar("label", { length: 40 }), // optional name: "Morning", "Evening"
+  enabled: boolean("enabled").default(true),
+  sortOrder: integer("sort_order").default(0),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+/**
+ * OVERTIME, the three kinds the owner counts (Oct 2026): a holiday worked, a
+ * free week given up, and hours past the end of a shift. One row per person per
+ * kind per day, whoever wrote it: the admin tab, the door tablet, or the
+ * clock-out scan itself (source "auto"). `minutes` is the overtime, not the
+ * whole day, and there is no approval state - a row is a decision.
+ */
+export const attendanceOvertime = pgTable("attendance_overtime", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull(), // FK to attendance_members.id
+  date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD in Africa/Addis_Ababa
+  type: varchar("type", { length: 20 }).notNull(), // holiday | free_week | shift
+  minutes: integer("minutes").notNull(), // the overtime itself
+  shiftLabel: varchar("shift_label", { length: 40 }), // which shift it belongs to, when one was picked
+  logId: integer("log_id"), // the attendance line it was written against, when there was one
+  source: varchar("source", { length: 12 }).notNull().default("admin"), // admin | supervisor | self | auto
+  enteredBy: varchar("entered_by", { length: 100 }), // whose tap or typing wrote it
+  note: text("note"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
 
 export const attendanceRoles = pgTable("attendance_roles", {
   id: serial("id").primaryKey(),
@@ -432,7 +471,8 @@ export const attendanceEnrollJobs = pgTable("attendance_enroll_jobs", {
   fingerprintId: integer("fingerprint_id").notNull(), // the ID the device must use
   status: varchar("status", { length: 20 }).default("pending"), // pending | done | cancelled
   // What the device is doing / why it stopped, in its own words
-  // ("scan 2/6 not accepted: Image unclear - press flat, clean sensor (status 6)").
+  // ("step 2/3 not accepted: Image unclear - press flat, clean sensor (status 6)"
+  //  or "sensor did not find the finger after saving it (status 5: NOT REGISTERED)").
   // Without it the admin page could only spin and then say "it did not work".
   detail: text("detail"),
   // Set the moment the ESP32 picks the job up, so the page can tell the

@@ -62,11 +62,20 @@ public:
     return JsonVariant();
   }
 
+  size_t size() const {
+    if (kind == ARR && arr) return arr->size();
+    if (kind == OBJ && obj) return obj->size();
+    return 0;
+  }
+
   struct Iter;
   Iter begin();
   Iter end();
 };
 using JsonObject = JsonVariant;
+/* An array of values is the same class here, as it is in ArduinoJson v6, where
+ * JsonObject / JsonArray are thin views of one variant. */
+using JsonArray = JsonVariant;
 
 struct JsonPairT {
   std::string k;
@@ -75,18 +84,24 @@ struct JsonPairT {
   JsonVariant value() const { return v; }
 };
 struct JsonVariant::Iter {
+  bool onArray = false;
   std::map<std::string, JsonVariant>::iterator it;
-  JsonPairT operator*() { return JsonPairT{it->first, it->second}; }
-  Iter &operator++() { ++it; return *this; }
-  bool operator!=(const Iter &o) const { return it != o.it; }
+  std::vector<JsonVariant>::iterator vit;
+  JsonPairT operator*() { return onArray ? JsonPairT{"", *vit} : JsonPairT{it->first, it->second}; }
+  Iter &operator++() { if (onArray) ++vit; else ++it; return *this; }
+  bool operator!=(const Iter &o) const { return onArray ? vit != o.vit : it != o.it; }
 };
 inline JsonVariant::Iter JsonVariant::begin() {
-  static std::map<std::string, JsonVariant> empty;
-  return Iter{obj ? obj->begin() : empty.begin()};
+  static std::map<std::string, JsonVariant> emptyMap;
+  static std::vector<JsonVariant> emptyArr;
+  if (kind == ARR && arr) return Iter{true, {}, arr->begin()};
+  return Iter{false, obj ? obj->begin() : emptyMap.begin(), {}};
 }
 inline JsonVariant::Iter JsonVariant::end() {
-  static std::map<std::string, JsonVariant> empty;
-  return Iter{obj ? obj->end() : empty.end()};
+  static std::map<std::string, JsonVariant> emptyMap;
+  static std::vector<JsonVariant> emptyArr;
+  if (kind == ARR && arr) return Iter{true, {}, arr->end()};
+  return Iter{false, obj ? obj->end() : emptyMap.end(), {}};
 }
 using JsonPair = JsonPairT;
 

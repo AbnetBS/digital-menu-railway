@@ -12,7 +12,7 @@ import { parseHHMM, type RoleShift } from "@/lib/attendance";
  * "Different roles have a different time of entrance and a different time of
  * getting out": Cleaner 06:00 -> 14:00, Chef 07:00 -> 16:00, Waiter morning
  * 08:00 -> 14:00 AND afternoon 14:00 -> 22:00. The role owns the times, so the
- * sheet needs no Shifts tab any more: late is simply "15 minutes after the
+ * sheet needs no Shifts tab any more: late is simply "30 minutes after the
  * entrance time of the role this person belongs to".
  *
  * A role is written as one row in attendance_roles plus one row per period in

@@ -40,7 +40,7 @@ function pass(name, cond) {
 //    re-checks all of that on every `npm test`.
 //  • /api/attendance/clock — biometric hardware (ESP32) and attendance kiosk scans.
 //    Its PIN branch is NOT public: it refuses a clock-in unless an attendance
-//    supervisor opened the door tablet less than two minutes ago (section 4b).
+//    supervisor has unlocked the door tablet and not locked it again (section 4b).
 //  • /api/attendance/supervisor — the door tablet's supervisor login/logout
 //    itself (the account it checks lives in Staff Accounts).
 const PUBLIC_MUTATION_ROUTES = new Set([
@@ -110,7 +110,7 @@ for (const file of walk(API)) {
   pass("staff login has a DELETE logout handler", /export async function DELETE/.test(login));
 }
 
-// ── 4b: the door tablet's supervisor unlock (two minutes, server-side) ──────
+// ── 4b: the door tablet's supervisor unlock (no expiry, server-side) ────────
 {
   const sup = readFileSync(join(API, "attendance", "supervisor", "route.ts"), "utf8");
   const clock = readFileSync(join(API, "attendance", "clock", "route.ts"), "utf8");
@@ -124,7 +124,8 @@ for (const file of walk(API)) {
   pass("the supervisor login has a DELETE that locks the keypad again", /export async function DELETE/.test(sup));
   pass("it only accepts Staff Accounts with the attendance supervisor role", sup.includes("ATTENDANCE_SUPERVISOR_ROLE") && sup.includes("staffUsers"));
   pass("it never says which names exist (one answer for a bad name and a bad PIN)", sup.includes("Incorrect name or PIN"));
-  pass("the supervisor session carries an expiry and the reader enforces it", session.includes("exp: now + SUPERVISOR_IDLE_TIMEOUT_MS") && session.includes("Date.now() > exp"));
+  pass("the supervisor session carries no expiry (owner: the 2 min window had no benefit)",
+    !session.includes("SUPERVISOR_IDLE_TIMEOUT_MS") && !session.includes("Date.now() > exp") && session.includes("kind: \"attendance_supervisor\""));
   pass(
     "a PIN clock-in is refused without an unlocked tablet",
     clock.includes('if (method === "pin") {') &&
@@ -133,7 +134,10 @@ for (const file of walk(API)) {
       session.includes("needsSupervisor: true")
   );
   pass("the fingerprint clock-in needs no supervisor (the main way in stays open)", !/else\s*{[\s\S]{0,400}requireSupervisor/.test(clock));
-  pass("the tablet locks itself after the two minutes of inactivity", kiosk.includes("SUPERVISOR_IDLE_TIMEOUT_MS") && kiosk.includes("Locked again"));
+  pass("the tablet keeps the unlock until a person locks it by hand",
+    !kiosk.includes("SUPERVISOR_IDLE_TIMEOUT_MS") && kiosk.includes("Lock now") && kiosk.includes("open until someone locks it"));
+  pass("locking the keypad from the tablet tells the server to drop the cookie",
+    kiosk.includes('fetch("/api/attendance/supervisor", { method: "DELETE" })'));
   pass("the supervisor role can be handed out in Staff Accounts", staffTab.includes("ATTENDANCE_SUPERVISOR_ROLE") && stations.includes("ATTENDANCE_SUPERVISOR_ROLE"));
 }
 

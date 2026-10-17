@@ -10,12 +10,10 @@ import {
   readSupervisorSession,
   signToken,
   supervisorPayload,
-  supervisorSecondsLeft,
 } from "@/lib/session";
 import {
   ATTENDANCE_SUPERVISOR_ROLE,
-  SUPERVISOR_IDLE_TIMEOUT_MS,
-  SUPERVISOR_SESSION_TTL_SECONDS,
+  SUPERVISOR_COOKIE_MAX_AGE_SECONDS,
 } from "@/lib/attendance-supervisor";
 import { and, eq } from "drizzle-orm";
 
@@ -24,21 +22,19 @@ import { and, eq } from "drizzle-orm";
  *
  * "even tho the 2nd option is good he said it is risky since someone can write
  * for them" - so the name + PIN keypad on /attendance is locked until an
- * attendance supervisor opens it, and it locks itself again after two minutes
- * with no activity.
+ * attendance supervisor opens it. The unlock has no stopwatch on it (owner,
+ * 2026-10-16: the two-minute window "doesnt have benefit") - the keypad stays
+ * open until the supervisor presses "Lock now" on the tablet.
  *
- *   POST {name, pin}  a supervisor unlocks the keypad (2 minutes from now)
- *   POST {touch:true} the tablet says "somebody is still using it": the two
- *                     minutes start again. Needs the unlock it renews.
- *   GET               is the keypad open right now, and for how long still
+ *   POST {name, pin}  a supervisor unlocks the keypad
+ *   GET               is the keypad open right now, and who opened it
  *   DELETE            lock it now (the supervisor's own "Lock" button)
  *
  * The accounts live in Staff Accounts with the role `attendance_supervisor`,
  * exactly like a waiter or a cashier login: name + PIN, hashed, editable and
  * removable from the admin. This route is the only place that turns one of
- * them into a two-minute cookie, and /api/attendance/clock refuses a PIN
- * clock-in without it - so the check is on the server, not in the tablet's
- * JavaScript.
+ * them into a cookie, and /api/attendance/clock refuses a PIN clock-in
+ * without it - so the check is on the server, not in the tablet's JavaScript.
  */
 
 // Brute-force protection for a short PIN typed on a shared tablet. The cafe's
@@ -50,9 +46,8 @@ function cookieOptions() {
   return {
     httpOnly: true,
     path: "/",
-    // The browser drops it when the two minutes are up, and the server refuses
-    // it a moment earlier through the signed `exp` inside.
-    maxAge: SUPERVISOR_SESSION_TTL_SECONDS,
+    // No idle window: the browser keeps it, and "Lock now" deletes it here.
+    maxAge: SUPERVISOR_COOKIE_MAX_AGE_SECONDS,
     sameSite: "lax" as const,
     secure: process.env.NODE_ENV === "production",
   };
@@ -64,8 +59,7 @@ export async function GET() {
   return NextResponse.json({
     active: Boolean(session),
     name: session?.name ?? null,
-    secondsLeft: supervisorSecondsLeft(session),
-    idleTimeoutMs: SUPERVISOR_IDLE_TIMEOUT_MS,
+    openedAt: session ? new Date(Number(session.iat)).toISOString() : null,
   });
 }
 
@@ -88,31 +82,9 @@ export async function POST(request: Request) {
     );
   }
 
-  /* ── "somebody is still using it": start the two minutes again ────────── */
-  if (String(body.touch ?? "") === "true" || body.touch === true) {
-    const session = await readSupervisorSession();
-    if (!session) {
-      return NextResponse.json(
-        { error: "Supervisor login required", needsSupervisor: true, active: false },
-        { status: 403 }
-      );
-    }
-    const response = NextResponse.json({
-      success: true,
-      active: true,
-      name: session.name,
-      secondsLeft: SUPERVISOR_SESSION_TTL_SECONDS,
-      idleTimeoutMs: SUPERVISOR_IDLE_TIMEOUT_MS,
-    });
-    response.cookies.set(
-      SUPERVISOR_COOKIE,
-      signToken(supervisorPayload(session.staffId, session.name), secret),
-      cookieOptions()
-    );
-    return response;
-  }
-
   /* ── the unlock itself ────────────────────────────────────────────────── */
+  // There is no "touch" renewal any more: nothing expires, so nothing needs
+  // to be re-armed while a queue stands at the door.
   const ip = getClientIp(request);
   const rl = checkRateLimit(`attendance-supervisor:${ip}`, SUPERVISOR_LOGIN_LIMIT, SUPERVISOR_LOGIN_WINDOW_MS);
   if (!rl.allowed) {
@@ -155,8 +127,7 @@ export async function POST(request: Request) {
       active: true,
       name: supervisor.name,
       staffId: supervisor.id,
-      secondsLeft: SUPERVISOR_SESSION_TTL_SECONDS,
-      idleTimeoutMs: SUPERVISOR_IDLE_TIMEOUT_MS,
+      openedAt: new Date().toISOString(),
       message: `${supervisor.name} unlocked the PIN keypad`,
     });
     response.cookies.set(
@@ -170,7 +141,7 @@ export async function POST(request: Request) {
   }
 }
 
-/** Lock now: the supervisor's own button, and what the tablet calls on timeout. */
+/** Lock now: the supervisor's own button - the only thing that ends an unlock. */
 export async function DELETE() {
   const response = NextResponse.json({ success: true, active: false, message: "Locked" });
   response.cookies.delete(SUPERVISOR_COOKIE);

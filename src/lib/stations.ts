@@ -79,7 +79,7 @@ export const STATION_NAMES: StationName[] = ["kitchen", "barista", "buna", "juic
  *
  * The supervisor is NOT a station: it opens no screen of its own and receives
  * no order alerts (see ALL_STAFF_ROLES in lib/alerts.ts). Its one job is to
- * unlock the backup PIN keypad on /attendance for two minutes - see
+ * unlock the backup PIN keypad on /attendance - see
  * lib/attendance-supervisor.ts.
  */
 export const STAFF_ROLES: string[] = [

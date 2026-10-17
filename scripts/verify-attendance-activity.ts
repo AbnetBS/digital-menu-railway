@@ -189,6 +189,13 @@ pass(
 );
 const migrate = read("src/db/migrate.ts");
 pass("the app creates it on boot, like the other attendance tables", migrate.includes("attendance_active_windows"));
+// Creating it is only half of it: a database that already stamped the previous
+// version SKIPS the whole migration, so the release that adds a table has to
+// move SCHEMA_VERSION or production never sees the table at all.
+pass("an already-migrated database gets the table too: the version gate moved",
+  (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-17-1");
+pass("and it is listed with the other tables the boot health check reads",
+  /serialTables = \[[\s\S]*?"attendance_active_windows",/.test(migrate));
 pass(
   "a row keeps its label and its times as text the device can read without a parser",
   schemaSlice.includes("label") && schemaSlice.includes("updatedAt")

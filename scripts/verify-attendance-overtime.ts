@@ -140,6 +140,8 @@ pass(
   migrate.includes("attendance_overtime_member_day_type_key ON attendance_overtime (member_id, date, type, COALESCE(shift_label, ''))")
 );
 pass("and a list by range is indexed", migrate.includes("CREATE INDEX IF NOT EXISTS attendance_overtime_date_idx ON attendance_overtime (date)"));
+pass("an already-migrated database gets the table too: the version gate moved",
+  (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-17-1");
 
 /* ── 5. the writer every door and page shares ───────────────────────────── */
 

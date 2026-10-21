@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-21-payroll-3";
+const SCHEMA_VERSION = "2026-10-22-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -543,6 +543,34 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    "attendance_active_windows",
+    `CREATE TABLE IF NOT EXISTS attendance_active_windows (
+      id serial PRIMARY KEY,
+      from_time varchar(5) NOT NULL,
+      to_time varchar(5) NOT NULL,
+      label varchar(40),
+      enabled boolean DEFAULT true,
+      sort_order integer DEFAULT 0,
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    "attendance_overtime",
+    `CREATE TABLE IF NOT EXISTS attendance_overtime (
+      id serial PRIMARY KEY,
+      member_id integer NOT NULL,
+      date varchar(10) NOT NULL,
+      type varchar(20) NOT NULL,
+      minutes integer NOT NULL DEFAULT 0,
+      shift_label varchar(40),
+      log_id integer,
+      source varchar(12) NOT NULL DEFAULT 'admin',
+      entered_by varchar(100),
+      note text,
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
     // THE BARISTA HAND-OVER (owner's decision, Sept 2026): one row per
     // registered shift owner per station per Ethiopian day. A barista's FIRST
     // accept of the shift writes it (logging in alone registers nothing);
@@ -938,6 +966,8 @@ async function runFullMigrate(force: boolean) {
     "attendance_members",
     "attendance_biometrics",
     "attendance_enroll_jobs",
+    "attendance_overtime",
+    "attendance_active_windows",
   ];
   for (const t of serialTables) {
     await run(`CREATE SEQUENCE IF NOT EXISTS ${t}_id_seq`);
@@ -1112,6 +1142,12 @@ async function runFullMigrate(force: boolean) {
   //       barista racing the same shift loses on this index, never silently.
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS station_shift_claims_owner_key ON station_shift_claims (station, day_key, shift_name)`);
   await run(`CREATE INDEX IF NOT EXISTS station_shift_claims_station_day_idx ON station_shift_claims (station, day_key)`);
+
+
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS attendance_overtime_member_day_type_key ON attendance_overtime (member_id, date, type, COALESCE(shift_label, ''))`
+  );
+  await run(`CREATE INDEX IF NOT EXISTS attendance_overtime_date_idx ON attendance_overtime (date)`);
 
   //  • payment_status backfill: existing paid/completed bills get a concrete
   //    status derived from their stored method so reports/history stay correct

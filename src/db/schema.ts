@@ -86,7 +86,13 @@ export const galleryItems = pgTable("gallery_items", {
 export const staffUsers = pgTable("staff_users", {
   id: serial("id").primaryKey(),
   name: varchar("name", { length: 100 }).notNull(),
-  role: varchar("role", { length: 20 }).notNull().default("waiter"), // waiter | cashier
+  // WIDENED from varchar(20) to varchar(40) (owner, Oct 2026): the attendance
+  // supervisor role is written "attendance_supervisor" (21 characters), and a
+  // 20-character column would have rejected - or on a loose database silently
+  // cut - every supervisor account, which would lock the door tablet's backup
+  // PIN keypad with nobody able to open it. The migration normalizes this
+  // column to text, so the two never disagree again.
+  role: varchar("role", { length: 40 }).notNull().default("waiter"), // waiter | cashier | station | attendance_supervisor | admin
   pin: varchar("pin", { length: 100 }).notNull(), // bcrypt hash (60 chars) or legacy plaintext
   // POCKET OFF-DUTY SWITCH (owner's decision, Sept 2026): staff phones kept
   // ringing at home long after the shift ended. Each person can switch their
@@ -376,7 +382,44 @@ export const staffBiometrics = pgTable("staff_biometrics", {
 // The attendance listing is its OWN list. A cleaner, a washer or a chef clocks
 // in with a finger but has no station login, so they live here and never in
 // staff_users. Each role carries its own entrance/exit times, which is what
-// decides "late" (15 minutes after the entrance time of that role).
+// decides "late" (30 minutes after the entrance time of that role).
+
+/**
+ * Legacy manual scanner windows from the first Activity editor. The current
+ * Activity API derives awake windows from attendance_role_shifts instead. Keep
+ * this table in place so existing installations upgrade without destructive
+ * schema changes; these rows are no longer the scanner schedule's source.
+ */
+export const attendanceActiveWindows = pgTable("attendance_active_windows", {
+  id: serial("id").primaryKey(),
+  fromTime: varchar("from_time", { length: 5 }).notNull(), // "HH:MM", Addis clock
+  toTime: varchar("to_time", { length: 5 }).notNull(), // "HH:MM"; before from = across midnight
+  label: varchar("label", { length: 40 }), // optional name: "Morning", "Evening"
+  enabled: boolean("enabled").default(true),
+  sortOrder: integer("sort_order").default(0),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+/**
+ * OVERTIME, the three kinds the owner counts (Oct 2026): a holiday worked, a
+ * free week given up, and hours past the end of a shift. One row per person per
+ * kind per day, whoever wrote it: the admin tab, the door tablet, or the
+ * clock-out scan itself (source "auto"). `minutes` is the overtime, not the
+ * whole day, and there is no approval state - a row is a decision.
+ */
+export const attendanceOvertime = pgTable("attendance_overtime", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull(), // FK to attendance_members.id
+  date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD in Africa/Addis_Ababa
+  type: varchar("type", { length: 20 }).notNull(), // holiday | free_week | shift
+  minutes: integer("minutes").notNull(), // the overtime itself
+  shiftLabel: varchar("shift_label", { length: 40 }), // which shift it belongs to, when one was picked
+  logId: integer("log_id"), // the attendance line it was written against, when there was one
+  source: varchar("source", { length: 12 }).notNull().default("admin"), // admin | supervisor | self | auto
+  enteredBy: varchar("entered_by", { length: 100 }), // whose tap or typing wrote it
+  note: text("note"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
 
 export const attendanceRoles = pgTable("attendance_roles", {
   id: serial("id").primaryKey(),
@@ -430,7 +473,8 @@ export const attendanceEnrollJobs = pgTable("attendance_enroll_jobs", {
   fingerprintId: integer("fingerprint_id").notNull(), // the ID the device must use
   status: varchar("status", { length: 20 }).default("pending"), // pending | done | cancelled
   // What the device is doing / why it stopped, in its own words
-  // ("scan 2/6 not accepted: Image unclear - press flat, clean sensor (status 6)").
+  // ("step 2/3 not accepted: Image unclear - press flat, clean sensor (status 6)"
+  //  or "sensor did not find the finger after saving it (status 5: NOT REGISTERED)").
   // Without it the admin page could only spin and then say "it did not work".
   detail: text("detail"),
   // Set the moment the ESP32 picks the job up, so the page can tell the

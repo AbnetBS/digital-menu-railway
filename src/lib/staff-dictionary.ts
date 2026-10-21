@@ -36,6 +36,9 @@ export const STAFF_AM = {
   "Name": "ስም",
   "Role": "የስራ ድርሻ",
   "Date": "ቀን",
+  "All Dates": "ሁሉም ቀናት",
+  "The list holds the newest 200 bills, so this range may be missing older ones.":
+    "ዝርዝሩ አዳዲሶቹን 200 ቢሎች ብቻ ነው የያዘው፣ ስለዚህ በዚህ ክልል ውስጥ ያረጁት ሊቀሩ ይችላሉ።",
   "Time": "ሰዓት",
   "Total": "ጠቅላላ",
   "Orders": "ትዕዛዞች",
@@ -76,6 +79,7 @@ export const STAFF_AM = {
   "juice": "ጭማቂ",
   "buna": "ቡና",
   "admin": "አስተዳዳሪ",
+  "attendance_supervisor": "የአቴንዳንስ ተቆጣጣሪ",
   "customer": "እንግዳ",
   "outdoor": "ውጪ",
 
@@ -737,6 +741,8 @@ export const STAFF_AM = {
   "Kitchen/Chef (/kitchen)": "ኩሽና/ሼፍ (/kitchen)",
   "Buna Maker (/buna)": "ቡና አፊ (/buna)",
   "Juice Maker (/juice)": "ጭማቂ አዘጋጅ (/juice)",
+  "Attendance Supervisor (/attendance)": "የአቴንዳንስ ተቆጣጣሪ (/attendance)",
+  "The Attendance Supervisor opens the backup PIN keypad on /attendance and it stays open until someone locks it again; fingerprint scans never need it.": "የአቴንዳንስ ተቆጣጣሪው በ/attendance ላይ ያለውን የአማራጭ PIN ኪፓድ ይከፍታል፤ ሰው ሲከፍለው እስኪቆልፈው ድረስ ክፍት ይቆያል፤ የጣት አሻራ ምዝገባዎች ግን በጭራሽ አይፈልጉትም።",
   "Admin (owner dashboard)": "አስተዳዳሪ (የባለቤት ማስተዳደሪያ)",
   "PIN (e.g. 4321)": "PIN (ለምሳሌ 4321)",
   "Create Account": "መለያ ፍጠር",

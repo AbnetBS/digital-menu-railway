@@ -30,6 +30,7 @@
  */
 
 import { DEFAULT_CATEGORY_ROUTING } from "@/lib/initial-data";
+import { ATTENDANCE_SUPERVISOR_ROLE } from "@/lib/attendance-supervisor";
 
 export type StationName = "kitchen" | "barista" | "buna" | "juice";
 
@@ -72,10 +73,22 @@ export const STATION_NAMES: StationName[] = ["kitchen", "barista", "buna", "juic
 
 /**
  * Every role a login account can hold: the two floor roles, the four making
- * crews, and the owner. Kept here so the API validation and the admin dropdown
- * can never drift apart when a crew is added.
+ * crews, the attendance supervisor of the door tablet, and the owner. Kept
+ * here so the API validation and the admin dropdown can never drift apart when
+ * a crew is added.
+ *
+ * The supervisor is NOT a station: it opens no screen of its own and receives
+ * no order alerts (see ALL_STAFF_ROLES in lib/alerts.ts). Its one job is to
+ * unlock the backup PIN keypad on /attendance - see
+ * lib/attendance-supervisor.ts.
  */
-export const STAFF_ROLES: string[] = ["waiter", "cashier", ...STATION_NAMES, "admin"];
+export const STAFF_ROLES: string[] = [
+  "waiter",
+  "cashier",
+  ...STATION_NAMES,
+  ATTENDANCE_SUPERVISOR_ROLE,
+  "admin",
+];
 
 export const STATION_LABELS: Record<StationName, string> = {
   kitchen: "Kitchen (Chef)",

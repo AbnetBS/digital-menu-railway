@@ -3,18 +3,34 @@
 import { useState, useEffect } from "react";
 import { Users, Plus, Trash2, ClipboardList, Monitor, RefreshCw, Pencil } from "lucide-react";
 import { StaffUser } from "@/types";
-import { useStaffT } from "@/lib/staff-i18n";
+import { useStaffT, type StaffPhrase } from "@/lib/staff-i18n";
+import { ATTENDANCE_SUPERVISOR_ROLE } from "@/lib/attendance-supervisor";
 
 /** Every screen a person can be given the keys to (server whitelist: STAFF_ROLES). */
-type RoleChoice = "waiter" | "cashier" | "barista" | "kitchen" | "buna" | "juice" | "admin";
+type RoleChoice =
+  | "waiter"
+  | "cashier"
+  | "barista"
+  | "kitchen"
+  | "buna"
+  | "juice"
+  | typeof ATTENDANCE_SUPERVISOR_ROLE
+  | "admin";
 
-const ROLE_OPTIONS: Array<{ value: RoleChoice; label: "Waiter (/waiter)" | "Cashier (/cashier)" | "Barista (/barista)" | "Kitchen/Chef (/kitchen)" | "Buna Maker (/buna)" | "Juice Maker (/juice)" | "Admin (owner dashboard)" }> = [
+/**
+ * The labels are typed as StaffPhrase on purpose: a role that is not in the
+ * hand-written dictionary cannot be added here without its አማርኛ wording.
+ */
+const ROLE_OPTIONS: Array<{ value: RoleChoice; label: StaffPhrase }> = [
   { value: "waiter", label: "Waiter (/waiter)" },
   { value: "cashier", label: "Cashier (/cashier)" },
   { value: "barista", label: "Barista (/barista)" },
   { value: "kitchen", label: "Kitchen/Chef (/kitchen)" },
   { value: "buna", label: "Buna Maker (/buna)" },
   { value: "juice", label: "Juice Maker (/juice)" },
+  // The door tablet's supervisor (owner, Oct 2026): it opens no screen of its
+  // own, it unlocks the backup PIN keypad on /attendance until it is locked.
+  { value: ATTENDANCE_SUPERVISOR_ROLE, label: "Attendance Supervisor (/attendance)" },
   { value: "admin", label: "Admin (owner dashboard)" },
 ];
 
@@ -181,6 +197,13 @@ export default function StaffTab() {
             <Plus className="w-4 h-4" /> {L("Create Account")}
           </button>
         </div>
+        {role === ATTENDANCE_SUPERVISOR_ROLE && (
+          <p className="mt-3 text-[11px] text-stone-400">
+            {L(
+              "The Attendance Supervisor opens the backup PIN keypad on /attendance and it stays open until someone locks it again; fingerprint scans never need it."
+            )}
+          </p>
+        )}
         {msg && (
           <p className={`mt-3 text-xs font-bold ${msgBad ? "text-rose-300" : "text-emerald-400"}`}>{msg}</p>
         )}

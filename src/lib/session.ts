@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { SUPERVISOR_COOKIE_MAX_AGE_SECONDS } from "@/lib/attendance-supervisor";
 
 /**
  * Stateless, cryptographically-signed session tokens (HMAC-SHA256).
@@ -13,13 +14,29 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  *   - ADMIN (owner): set by /api/admin/login  → cookie "fana_admin_auth"
  *   - STAFF (waiter/cashier/kitchen/barista): set by /api/staff/login
  *                                                → cookie "fana_staff_auth"
+ *   - ATTENDANCE SUPERVISOR (the door tablet): set by
+ *     /api/attendance/supervisor → cookie "fana_attendance_supervisor". A
+ *     third one: it unlocks the backup PIN keypad on /attendance. It has no
+ *     expiry (owner, 2026-10-16: the two-minute window "doesn't have benefit")
+ *     and ends when the supervisor presses "Lock now", which calls
+ *     DELETE /api/attendance/supervisor and drops the cookie server-side.
  */
 
 export const ADMIN_COOKIE = "fana_admin_auth";
 export const STAFF_COOKIE = "fana_staff_auth";
+export const SUPERVISOR_COOKIE = "fana_attendance_supervisor";
 
 export type AdminSession = { kind: "admin"; iat: number };
 export type StaffSession = { kind: "staff"; staffId: number; name: string; role: string; iat: number };
+/** Who unlocked the door tablet, and when. An unlock stops when the
+ *  supervisor locks the keypad again - it does not time out (owner, Oct 2026:
+ *  the two-minute window "doesn't have benefit"). */
+export type SupervisorSession = {
+  kind: "attendance_supervisor";
+  staffId: number;
+  name: string;
+  iat: number;
+};
 
 const DEV_SECRET = "fana-dev-session-secret-do-not-use-in-production";
 
@@ -87,6 +104,32 @@ export async function readStaffSession(): Promise<StaffSession | null> {
   return null;
 }
 
+/**
+ * The payload of a fresh supervisor unlock. It carries no expiry: the keypad
+ * stays open until it is locked by hand, and `iat` is kept only so the tablet
+ * can say who opened it.
+ */
+export function supervisorPayload(staffId: number, name: string, now: number = Date.now()): SupervisorSession {
+  return {
+    kind: "attendance_supervisor",
+    staffId,
+    name,
+    iat: now,
+  };
+}
+
+export async function readSupervisorSession(): Promise<SupervisorSession | null> {
+  const secret = getSessionSecret();
+  if (!secret) return null;
+  const store = await cookies();
+  const value = store.get(SUPERVISOR_COOKIE)?.value;
+  if (!value) return null;
+  const obj = verifyToken(value, secret);
+  if (obj?.kind !== "attendance_supervisor" || typeof obj.staffId !== "number") return null;
+  return obj as unknown as SupervisorSession;
+}
+
+
 type GuardResult<T> =
   | { ok: true; session: T }
   | { ok: false; response: NextResponse };
@@ -106,6 +149,25 @@ export async function requireAdmin(): Promise<GuardResult<AdminSession>> {
 export async function requireStaff(): Promise<GuardResult<StaffSession>> {
   const session = await readStaffSession();
   if (!session) return { ok: false, response: unauthorized() };
+  return { ok: true, session };
+}
+
+/**
+ * Require an unlocked door tablet (the attendance supervisor logged in less
+ * than two minutes ago). The answer says WHY, so the tablet can go straight
+ * back to its login card instead of showing a bare "Unauthorized".
+ */
+export async function requireSupervisor(): Promise<GuardResult<SupervisorSession>> {
+  const session = await readSupervisorSession();
+  if (!session) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Supervisor login required", needsSupervisor: true },
+        { status: 403 }
+      ),
+    };
+  }
   return { ok: true, session };
 }
 

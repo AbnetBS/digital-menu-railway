@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, AlertCircle, Clock, Fingerprint, Timer } from "lucide-react";
+import { CheckCircle2, AlertCircle, Clock, Fingerprint, Lock, ShieldCheck, Timer } from "lucide-react";
+import { ATTENDANCE_SUPERVISOR_ROLE } from "@/lib/attendance-supervisor";
+import { OVERTIME_TYPE_HINTS, OVERTIME_TYPE_LABELS, type OvertimeType } from "@/lib/attendance";
 
 /**
  * THE DOOR TABLET (/attendance).
@@ -14,11 +16,30 @@ import { CheckCircle2, AlertCircle, Clock, Fingerprint, Timer } from "lucide-rea
  *   the days his finger is wet or dirty, and the Overtime button.
  *   RIGHT: today, live, as the paper sheet - name, IN (time & signature), OUT
  *   (time & signature), total hours, status. Real time: the server pushes the
- *   moment a scan is clocked in/out (SSE), so there is no polling at all.
+ * moment a scan is clocked in/out (SSE), so there is no polling at all.
  *
  * The fingerprint stays the main way: the ESP32 posts the scan straight to
  * /api/attendance/clock and this page picks it up instantly. The PIN
  * is only the second option.
+ *
+ * THE SUPERVISOR LOCK (owner, Oct 2026: "the 2nd option is good but it is
+ * risky since someone can write for them"): the PIN keypad is locked until an
+ * ATTENDANCE SUPERVISOR opens it with his own name and PIN - a normal Staff
+ * Account with the role "Attendance Supervisor (/attendance)". Two minutes
+ * after the last touch of the keypad the tablet locks itself again and asks for
+ * the login once more. What the lock never touches:
+ *
+ *   • the fingerprint scanner (the ESP32 posts straight to the server, so the
+ *     main way in needs no supervisor and never queues behind one),
+ *   • the live sheet on the right,
+ *   • the Overtime button, which is pressed right after a person's own scan
+ *     and asks which of the three kinds it was (holiday, free week, past the
+ *     end of the shift). The hours may stay empty: then the day's own scan
+ *     says how long he was here.
+ *
+ * The lock is on the server too, not only in the browser: /api/attendance/clock
+ * refuses a PIN entry with no supervisor cookie, and "Lock now" deletes that
+ * cookie - so hiding the keypad on the tablet would not be enough.
  */
 
 interface Member {
@@ -26,6 +47,12 @@ interface Member {
   name: string;
   role: string;
   hasPin: boolean;
+}
+
+interface Supervisor {
+  id: number;
+  name: string;
+  role: string;
 }
 
 interface TodayLog {
@@ -64,10 +91,25 @@ const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "ok"];
 export default function AttendanceKiosk() {
   const [today, setToday] = useState<TodayData | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
+  const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
   const [memberId, setMemberId] = useState<string>("");
   const [pin, setPin] = useState("");
   const [flash, setFlash] = useState<Flash>(null);
   const [busy, setBusy] = useState(false);
+
+  /* ── the overtime panel (three kinds, owner Oct 2026) ──────────────────── */
+  const [otOpen, setOtOpen] = useState(false);
+  const [otType, setOtType] = useState<OvertimeType>("holiday");
+  const [otHours, setOtHours] = useState("");
+
+  /* ── the supervisor unlock ─────────────────────────────────────────────── */
+  const [supervisorName, setSupervisorName] = useState<string | null>(null);
+  const [supervisorId, setSupervisorId] = useState<string>("");
+  const [supervisorPin, setSupervisorPin] = useState("");
+
+  // The keypad is open while a supervisor's name is on it. There is no timer:
+  // it stays open until somebody presses "Lock now" (owner, Oct 2026).
+  const locked = supervisorName === null;
 
   const fetchToday = useCallback(async () => {
     try {
@@ -87,9 +129,45 @@ export default function AttendanceKiosk() {
     }
   }, []);
 
+  /** The supervisors are Staff Accounts with their own role; only their names
+   *  are read here (the public login list never carries a PIN). */
+  const fetchSupervisors = useCallback(async () => {
+    try {
+      const r = await fetch("/api/staff?public=1");
+      if (!r.ok) return;
+      const list = (await r.json()) as Supervisor[];
+      setSupervisors(list.filter((s) => s.role === ATTENDANCE_SUPERVISOR_ROLE));
+    } catch {
+      /* the list simply stays as it was */
+    }
+  }, []);
+
+  /** Lock now: the supervisor's own button, and the only way an unlock ends. */
+  const lockNow = useCallback((message?: Flash) => {
+    setSupervisorName(null);
+    setSupervisorId("");
+    setSupervisorPin("");
+    setPin("");
+    if (message) setFlash(message);
+    fetch("/api/attendance/supervisor", { method: "DELETE" }).catch(() => {
+      /* offline: the tablet is locked here, and the cookie goes on the next lock */
+    });
+  }, []);
+
   useEffect(() => {
     fetchToday();
     fetchMembers();
+    fetchSupervisors();
+    // A refresh of the page keeps the unlock, so the supervisor is not asked
+    // for his PIN again because somebody reloaded the tablet.
+    fetch("/api/attendance/supervisor")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.active) setSupervisorName(d.name ?? "the supervisor");
+      })
+      .catch(() => {
+        /* no answer: stay locked, the keypad simply asks for the login */
+      });
     // Real time: the server pushes when a scan is clocked in/out, so the
     // board updates instantly and there is no polling. If the stream cannot
     // be opened (e.g. an older server), fall back to the old 8 s refresh.
@@ -113,7 +191,7 @@ export default function AttendanceKiosk() {
       if (es) es.close();
       if (poll) clearInterval(poll);
     };
-  }, [fetchToday, fetchMembers]);
+  }, [fetchToday, fetchMembers, fetchSupervisors]);
 
   // A message on the door must not stay there forever.
   useEffect(() => {
@@ -122,7 +200,47 @@ export default function AttendanceKiosk() {
     return () => clearTimeout(t);
   }, [flash]);
 
-  /** The backup way in: name from the list + PIN. */
+  /** The supervisor opens the keypad - it stays open until he locks it again. */
+  const unlockKeypad = useCallback(async () => {
+    const chosen = supervisors.find((s) => String(s.id) === supervisorId);
+    if (!chosen) {
+      setFlash({ kind: "bad", title: "Select the supervisor first" });
+      return;
+    }
+    if (!supervisorPin) {
+      setFlash({ kind: "bad", title: "Type your PIN" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await fetch("/api/attendance/supervisor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: chosen.name, pin: supervisorPin }),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d?.success) {
+        setFlash({ kind: "bad", title: d?.error || "Incorrect name or PIN" });
+        setSupervisorPin("");
+        return;
+      }
+      setSupervisorName(d.name || chosen.name);
+      setSupervisorPin("");
+      setMemberId("");
+      setPin("");
+      setFlash({
+        kind: "ok",
+        title: `${d.name || chosen.name} opened the keypad`,
+        detail: "It stays open until someone presses Lock now.",
+      });
+    } catch {
+      setFlash({ kind: "bad", title: "Network error. Try again." });
+    } finally {
+      setBusy(false);
+    }
+  }, [supervisors, supervisorId, supervisorPin]);
+
+  /** The backup way in: name from the list + PIN (supervisor unlocked only). */
   const submitPin = async () => {
     if (!memberId) {
       setFlash({ kind: "bad", title: "Select your name first" });
@@ -141,6 +259,17 @@ export default function AttendanceKiosk() {
       });
       const d = await r.json();
       if (!r.ok) {
+        // Somebody locked the keypad (or the tablet lost a session it did not
+        // know about): back to the supervisor login, not a bare "Incorrect PIN".
+        if (r.status === 403 || d.needsSupervisor) {
+          setPin("");
+          lockNow({
+            kind: "bad",
+            title: "Supervisor login needed",
+            detail: d.error || "The keypad is locked. Ask the supervisor to open it again.",
+          });
+          return;
+        }
         setFlash({ kind: "bad", title: d.error || "Incorrect PIN" });
         setPin("");
         return;
@@ -163,6 +292,20 @@ export default function AttendanceKiosk() {
 
   const press = (key: string) => {
     setFlash(null);
+    // One keypad, two jobs: while the tablet is locked it types the
+    // SUPERVISOR's PIN, once it is open it types the person's backup PIN.
+    if (locked) {
+      if (key === "clear") {
+        setSupervisorPin((p) => p.slice(0, -1));
+        return;
+      }
+      if (key === "ok") {
+        unlockKeypad();
+        return;
+      }
+      setSupervisorPin((p) => (p.length >= 8 ? p : p + key));
+      return;
+    }
     if (key === "clear") {
       setPin((p) => p.slice(0, -1));
       return;
@@ -175,11 +318,38 @@ export default function AttendanceKiosk() {
   };
 
   /** "It is overtime": pressed right after the scan of the same person. */
-  const markOvertime = async () => {
+  /** Which line the overtime belongs to: the scan that just happened, or the
+   *  name that is selected on the keypad. */
+  const overtimeTarget = () => {
     const target = today?.lastScan?.memberId ?? (memberId ? Number(memberId) : null);
-    const logId = today?.lastScan?.logId;
+    return { target, logId: today?.lastScan?.logId as number | undefined };
+  };
+
+  const openOvertime = () => {
+    const { target, logId } = overtimeTarget();
     if (!target && !logId) {
       setFlash({ kind: "bad", title: "Scan first, or select your name, then press Overtime" });
+      return;
+    }
+    setFlash(null);
+    setOtOpen((prev) => !prev);
+  };
+
+  /**
+   * Save the overtime. The hours box may stay empty: then the server uses the
+   * hours this person actually worked today (owner's default), and the row is
+   * written for the day the scan was made, not for whatever the tablet thinks
+   * the date is.
+   */
+  const saveOvertime = async () => {
+    const { target, logId } = overtimeTarget();
+    if (!target && !logId) {
+      setFlash({ kind: "bad", title: "Scan first, or select your name, then press Overtime" });
+      return;
+    }
+    const hours = Number(otHours);
+    if (otHours !== "" && (!Number.isFinite(hours) || hours <= 0)) {
+      setFlash({ kind: "bad", title: "Type the hours, like 2 or 1.5" });
       return;
     }
     setBusy(true);
@@ -187,13 +357,23 @@ export default function AttendanceKiosk() {
       const r = await fetch("/api/attendance/overtime", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ logId: logId ?? undefined, memberId: target ?? undefined }),
+        body: JSON.stringify({
+          logId: logId ?? undefined,
+          memberId: target ?? undefined,
+          type: otType,
+          hours: otHours === "" ? undefined : hours,
+          // Whoever's name is on the open keypad typed this, so the row says
+          // so. It is still the person's own overtime claim, source "self".
+          enteredBy: supervisorName ?? undefined,
+        }),
       });
-      const d = await r.json();
-      if (!r.ok) {
-        setFlash({ kind: "bad", title: d.error || "Could not save the overtime" });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d?.success) {
+        setFlash({ kind: "bad", title: d?.error || "Could not save the overtime" });
         return;
       }
+      setOtOpen(false);
+      setOtHours("");
       setFlash({ kind: "ok", title: d.message });
       fetchToday();
     } catch {
@@ -204,6 +384,7 @@ export default function AttendanceKiosk() {
   };
 
   const lastScan = today?.lastScan ?? null;
+  const typedPin = locked ? supervisorPin : pin;
 
   return (
     <div className="min-h-screen bg-[#0F0A08] text-white flex flex-col">
@@ -213,7 +394,7 @@ export default function AttendanceKiosk() {
           <div className="w-9 h-9 rounded-xl bg-[#C9A227] flex items-center justify-center">
             <Fingerprint className="w-5 h-5 text-[#2C1B17]" />
           </div>
-          <h1 className="font-serif font-black text-lg text-amber-100">FANA CAFÉ - Attendance</h1>
+          <h1 className="font-serif font-black text-lg text-amber-100">Fana Cafe and restaurant plc - Attendance</h1>
         </div>
         <a href="/admin" className="text-xs bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-xl">
           Admin
@@ -221,32 +402,98 @@ export default function AttendanceKiosk() {
       </div>
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-4 p-4 max-w-7xl mx-auto w-full">
-        {/* LEFT: name + PIN + overtime */}
+        {/* LEFT: supervisor lock + name + PIN + overtime */}
         <div className="lg:col-span-1 space-y-4">
           <div className="bg-[#1C120F] rounded-3xl border border-[#C9A227]/30 p-4 space-y-4">
-            <div>
-              <label className="block text-[11px] font-bold text-amber-200 mb-1 uppercase">Name</label>
-              <select
-                value={memberId}
-                onChange={(e) => {
-                  setMemberId(e.target.value);
-                  setFlash(null);
-                }}
-                className="w-full bg-black/40 border border-stone-700 rounded-2xl p-4 text-base text-white"
-              >
-                <option value="">Select your name</option>
-                {members.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name} - {m.role}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {locked ? (
+              <>
+                <div className="flex items-start gap-3 bg-amber-950/40 border border-amber-700 rounded-2xl p-3">
+                  <Lock className="w-5 h-5 text-amber-300 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-xs font-black uppercase text-amber-200">Supervisor login required</p>
+                    <p className="text-[11px] text-stone-300 mt-1">
+                      The fingerprint scanner keeps working. Only the backup PIN keypad is locked, so nobody can type
+                      a day in for somebody else: the supervisor picks his own name and types his PIN, and the keypad
+                      stays open until he locks it again.
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-amber-200 mb-1 uppercase">Supervisor</label>
+                  <select
+                    value={supervisorId}
+                    onChange={(e) => {
+                      setSupervisorId(e.target.value);
+                      setFlash(null);
+                    }}
+                    className="w-full bg-black/40 border border-stone-700 rounded-2xl p-4 text-base text-white"
+                  >
+                    <option value="">Select the supervisor</option>
+                    {supervisors.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                  {supervisors.length === 0 && (
+                    <p className="text-[11px] text-rose-300 mt-2 font-bold">
+                      No attendance supervisor yet. Admin → Staff Accounts → add the person with the role
+                      &quot;Attendance Supervisor (/attendance)&quot;, then reload this page.
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-3 bg-emerald-950/50 border border-emerald-700 rounded-2xl p-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <ShieldCheck className="w-5 h-5 text-emerald-300 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-black uppercase text-emerald-200 truncate">
+                        Opened by {supervisorName}
+                      </p>
+                      <p className="text-[10px] text-stone-400">open until someone locks it</p>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <button
+                      onClick={() => lockNow({ kind: "info", title: "Keypad locked" })}
+                      className="text-[10px] font-bold text-stone-300 hover:text-white underline"
+                    >
+                      Lock now
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-amber-200 mb-1 uppercase">Name</label>
+                  <select
+                    value={memberId}
+                    onChange={(e) => {
+                      setMemberId(e.target.value);
+                      setFlash(null);
+                    }}
+                    className="w-full bg-black/40 border border-stone-700 rounded-2xl p-4 text-base text-white"
+                  >
+                    <option value="">Select your name</option>
+                    {members.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} - {m.role}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
+            )}
 
             <div className="bg-black/40 border border-stone-700 rounded-2xl px-4 py-3 text-center">
               <span className="text-2xl tracking-[0.4em] font-mono text-amber-100">
-                {pin ? "•".repeat(pin.length) : "\u00A0"}
+                {typedPin ? "•".repeat(typedPin.length) : "\u00A0"}
               </span>
+              <p className="text-[10px] text-stone-500 mt-1 font-bold uppercase">
+                {locked ? "Supervisor PIN" : "Staff backup PIN"}
+              </p>
             </div>
 
             <div className="grid grid-cols-3 gap-2">
@@ -280,21 +527,82 @@ export default function AttendanceKiosk() {
             </div>
 
             <button
-              onClick={submitPin}
+              onClick={locked ? unlockKeypad : submitPin}
               disabled={busy}
               className="w-full bg-[#C9A227] hover:bg-amber-400 disabled:opacity-60 text-[#2C1B17] font-black text-sm uppercase rounded-2xl py-4"
             >
-              Submit
+              {locked ? "Unlock the keypad" : "Submit"}
             </button>
 
             <button
-              onClick={markOvertime}
+              onClick={openOvertime}
               disabled={busy}
               className="w-full bg-violet-900/60 hover:bg-violet-800 disabled:opacity-60 border border-violet-600 text-violet-100 font-black text-sm uppercase rounded-2xl py-4 flex items-center justify-center gap-2"
             >
               <Timer className="w-4 h-4" /> Overtime
               {lastScan ? <span className="text-[11px] font-bold normal-case">• {lastScan.memberName}</span> : null}
             </button>
+
+            {otOpen && (
+              <div className="bg-violet-950/40 border border-violet-700 rounded-2xl p-3 space-y-3">
+                <p className="text-[11px] font-black uppercase text-violet-200">Which kind of overtime?</p>
+                <div className="grid grid-cols-1 gap-2">
+                  {(Object.keys(OVERTIME_TYPE_LABELS) as OvertimeType[]).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setOtType(t)}
+                      className={`text-left px-3 py-2.5 rounded-xl border transition ${
+                        otType === t
+                          ? "bg-[#C9A227] text-[#2C1B17] border-[#C9A227]"
+                          : "bg-black/30 text-violet-100 border-violet-800 hover:bg-white/10"
+                      }`}
+                    >
+                      <span className="block text-xs font-black uppercase">{OVERTIME_TYPE_LABELS[t]}</span>
+                      <span
+                        className={`block text-[10px] mt-0.5 ${otType === t ? "text-[#2C1B17]/80" : "text-violet-300/70"}`}
+                      >
+                        {OVERTIME_TYPE_HINTS[t]}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-violet-200 mb-1 uppercase">
+                    Hours (empty uses the hours worked today)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.25"
+                    inputMode="decimal"
+                    value={otHours}
+                    onChange={(e) => setOtHours(e.target.value)}
+                    placeholder="auto"
+                    className="w-full bg-black/40 border border-stone-700 rounded-2xl p-4 text-base text-white"
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={saveOvertime}
+                    disabled={busy}
+                    className="flex-1 bg-violet-600 hover:bg-violet-500 disabled:opacity-60 text-white font-black text-xs uppercase rounded-2xl py-3"
+                  >
+                    Save overtime
+                  </button>
+                  <button
+                    onClick={() => {
+                      setOtOpen(false);
+                      setOtHours("");
+                    }}
+                    className="px-4 bg-white/10 hover:bg-white/20 text-stone-200 font-bold text-xs uppercase rounded-2xl py-3"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
 
             <p className="text-[11px] text-stone-500 text-center">
               Fingerprint on the scanner is the main way. The PIN is for a wet or dirty finger.

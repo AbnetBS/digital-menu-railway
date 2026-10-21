@@ -1,0 +1,76 @@
+import { db } from "@/db";
+import { attendanceEnrollJobs, siteSettings } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { REST_WAKE_KEY, restSliceSeconds } from "@/lib/attendance";
+
+/**
+ * "START WORKING NOW" for a scanner that is allowed to sleep (owner, Oct 2026).
+ *
+ * The owner's words: "i want the system to start working if he changes the time
+ * for that particular person to register". A board in its rest hours cannot
+ * hear a push, a socket or a knock, so this module leaves one small sign that a
+ * resting board reads it the next time its timer wakes: a stamp saying the role
+ * hours just changed. The server then caps each *subsequent* rest slice at 45
+ * seconds during the grace period instead of ten minutes. An awake board can
+ * refresh immediately over the device event channel, but a board already in
+ * deep sleep cannot be interrupted remotely and may first take its existing
+ * timer wake (up to ten minutes).
+ *
+ * Nothing here can fail a request: the stamp is a hint, not a record. If it
+ * cannot be written, the board still fetches the schedule at its next timer
+ * wake, but uses its normal sleep slice after that.
+ */
+
+export type RestWakeHint = {
+  /** When an admin last requested a scanner refresh, if at all. */
+  wakeRequestedAt: string | null;
+  /** Whether somebody is expected at the sensor to register a finger. */
+  jobWaiting: boolean;
+  /** What the device is told to sleep for, in seconds, already clamped. */
+  sliceSeconds: number;
+};
+
+/** Leave the sign for the device's next server read. Called by scanner override
+ * writes, Role & Time mutations and "Add Fingerprint" jobs. */
+export async function markRestWakeRequested(): Promise<void> {
+  const value = new Date().toISOString();
+  try {
+    await db
+      .insert(siteSettings)
+      .values({ key: REST_WAKE_KEY, value, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: siteSettings.key, set: { value, updatedAt: new Date() } });
+  } catch {
+    // A stamp is a hint about eagerness, never a reason to fail a save.
+  }
+}
+
+/** Read the sign, plus whether a finger job is waiting, for a device answer. */
+export async function readRestWakeHint(now: Date = new Date()): Promise<RestWakeHint> {
+  let wakeRequestedAt: string | null = null;
+  let jobWaiting = false;
+  try {
+    const stamped = await db
+      .select({ value: siteSettings.value })
+      .from(siteSettings)
+      .where(eq(siteSettings.key, REST_WAKE_KEY))
+      .limit(1);
+    wakeRequestedAt = stamped[0]?.value ?? null;
+  } catch {
+    // No settings row, no table: the device sleeps its normal length.
+  }
+  try {
+    const waiting = await db
+      .select({ id: attendanceEnrollJobs.id })
+      .from(attendanceEnrollJobs)
+      .where(eq(attendanceEnrollJobs.status, "pending"))
+      .limit(1);
+    jobWaiting = waiting.length > 0;
+  } catch {
+    // The job table is not there yet: nothing is waiting as far as we know.
+  }
+  return {
+    wakeRequestedAt,
+    jobWaiting,
+    sliceSeconds: restSliceSeconds({ wakeRequestedAt: jobWaiting ? null : wakeRequestedAt, jobWaiting, now }),
+  };
+}

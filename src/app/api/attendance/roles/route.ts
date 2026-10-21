@@ -3,6 +3,8 @@ import { db } from "@/db";
 import { attendanceRoles, attendanceRoleShifts } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
+import { markRestWakeRequested } from "@/lib/attendance-rest";
+import { publish, CHANNELS } from "@/lib/realtime";
 import { asc, eq } from "drizzle-orm";
 import { parseHHMM, type RoleShift } from "@/lib/attendance";
 
@@ -12,7 +14,7 @@ import { parseHHMM, type RoleShift } from "@/lib/attendance";
  * "Different roles have a different time of entrance and a different time of
  * getting out": Cleaner 06:00 -> 14:00, Chef 07:00 -> 16:00, Waiter morning
  * 08:00 -> 14:00 AND afternoon 14:00 -> 22:00. The role owns the times, so the
- * sheet needs no Shifts tab any more: late is simply "15 minutes after the
+ * sheet needs no Shifts tab any more: late is simply "30 minutes after the
  * entrance time of the role this person belongs to".
  *
  * A role is written as one row in attendance_roles plus one row per period in
@@ -38,6 +40,13 @@ function cleanShifts(raw: unknown): RoleShift[] | null {
     out.push({ label: label.slice(0, 40), startTime, endTime, lateGraceMinutes, earlyLeaveGraceMinutes });
   }
   return out;
+}
+
+/** Publish a refresh for awake scanners and mark the next schedule fetch for
+ * a board in deep sleep; Activity derives its hours from these role shifts. */
+async function notifyScannerScheduleChanged(): Promise<void> {
+  await markRestWakeRequested();
+  publish(CHANNELS.device);
 }
 
 export async function GET() {
@@ -112,6 +121,7 @@ export async function POST(request: Request) {
         sortOrder: i,
       }))
     );
+    await notifyScannerScheduleChanged();
 
     return NextResponse.json({ ...role[0], shifts, message: `Role ${role[0].name} added` });
   } catch (error) {
@@ -167,6 +177,7 @@ export async function PUT(request: Request) {
       );
     }
 
+    await notifyScannerScheduleChanged();
     return NextResponse.json({ id, message: "Role saved" });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
@@ -185,6 +196,7 @@ export async function DELETE(request: Request) {
 
     await db.delete(attendanceRoleShifts).where(eq(attendanceRoleShifts.roleId, id));
     await db.delete(attendanceRoles).where(eq(attendanceRoles.id, id));
+    await notifyScannerScheduleChanged();
     return NextResponse.json({ success: true, message: "Role deleted" });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

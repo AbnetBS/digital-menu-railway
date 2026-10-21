@@ -12,7 +12,9 @@ import {
   inStatusOf,
   outStatusOf,
   sheetDates,
+  sheetPages,
   SHEET_MAX_DAYS,
+  SHEET_RANGE_MAX_DAYS,
 } from "@/lib/attendance";
 
 /**
@@ -20,8 +22,13 @@ import {
  *
  * One row per person of the attendance listing, one pair of boxes per day:
  * IN (time & signature) and OUT (time & signature), exactly like the paper he
- * used to keep. The range is cut to a week at most, because seven days is what
- * still fits a printed page.
+ * used to keep.
+ *
+ * The range reaches up to SHEET_RANGE_MAX_DAYS (30) days now - "make it up to
+ * 30 days because like that it will be very useful" - and it is still SEVEN
+ * days wide per printed page: the answer carries `pages`, the tab shows one
+ * page at a time with the page numbers below it, and printing emits every page
+ * in order (the first 7 days, then the next 7, ...).
  *
  * Every box carries its own status so the admin tab can colour it:
  *   IN   absent (red, from registration through today) | late (yellow) | on_time (green)
@@ -83,14 +90,22 @@ export async function GET(request: Request) {
       }
     }
 
+    const pages = sheetPages(dates);
+
     return NextResponse.json({
       from: dates[0] ?? from,
       to: dates[dates.length - 1] ?? to,
       dates,
+      // The printed pages: 7 day-columns each, so a 30-day ask comes back as
+      // five pages and the print is divided exactly the same way.
+      pages,
+      pageDays: SHEET_MAX_DAYS,
+      pageCount: pages.length,
       today,
-      // True when the owner asked for more than a week and it was cut back.
-      capped: from && to ? Math.abs(daysBetween(from, to)) + 1 > SHEET_MAX_DAYS : false,
-      maxDays: SHEET_MAX_DAYS,
+      // True when the owner asked for more than a month and it was cut back.
+      capped: from && to ? Math.abs(daysBetween(from, to)) + 1 > SHEET_RANGE_MAX_DAYS : false,
+      requestedDays: from && to ? Math.abs(daysBetween(from, to)) + 1 : dates.length,
+      maxDays: SHEET_RANGE_MAX_DAYS,
       // `staffList` keeps its old name: the print area reads it for the rows.
       staffList: rows,
       matrix,

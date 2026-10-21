@@ -70,3 +70,22 @@ export function ethiopianMonthBounds(year:number,month:number):{from:string;to:s
   if(!first||!last)throw new Error("Could not map that Ethiopian month");
   return{from:first.toISOString().slice(0,10),to:last.toISOString().slice(0,10)};
 }
+
+/** Convert an Ethiopian YYYY-MM-DD date entered by the owner to the stored Gregorian day key. */
+export function ethiopianDateToGregorian(value:string):string {
+  const match=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value||"").trim());
+  if(!match)throw new Error("Use Ethiopian date YYYY-MM-DD");
+  const year=Number(match[1]),month=Number(match[2]),day=Number(match[3]);
+  const bounds=ethiopianMonthBounds(year,month);
+  const length=Math.round((Date.parse(bounds.to)-Date.parse(bounds.from))/86400000)+1;
+  if(day<1||day>length)throw new Error(`That Ethiopian month has ${length} days`);
+  return new Date(Date.parse(bounds.from)+(day-1)*86400000).toISOString().slice(0,10);
+}
+
+/** Display a stored Gregorian attendance day as Ethiopian YYYY-MM-DD. */
+export function gregorianDateToEthiopian(value:string):string {
+  const date=new Date(`${value}T12:00:00Z`);
+  if(Number.isNaN(date.getTime()))return value;
+  const parts=Object.fromEntries(new Intl.DateTimeFormat("en-u-ca-ethiopic",{year:"numeric",month:"2-digit",day:"2-digit",timeZone:"Africa/Addis_Ababa"}).formatToParts(date).map(p=>[p.type,p.value]));
+  return `${parts.year}-${String(parts.month).padStart(2,"0")}-${String(parts.day).padStart(2,"0")}`;
+}

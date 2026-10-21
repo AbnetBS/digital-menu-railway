@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { evaluatePayrollFormula, ethiopianMonthBounds, requiredPayrollSettingsMissing, DEFAULT_PAYROLL_SETTINGS, DEFAULT_INCOME_TAX_FORMULA } from "../src/lib/payroll";
+import { evaluatePayrollFormula, ethiopianMonthBounds, ethiopianDateToGregorian, gregorianDateToEthiopian, requiredPayrollSettingsMissing, DEFAULT_PAYROLL_SETTINGS, DEFAULT_INCOME_TAX_FORMULA } from "../src/lib/payroll";
 import { earlyOutMinutesFor, lateMinutesFor } from "../src/lib/attendance";
 
 const context = { BasicSalary: 12936.5, HolidayOtHours: 13 };
@@ -20,4 +20,6 @@ assert.match(meskerem.from, /^2026-09-/);
 assert.match(meskerem.to, /^2026-10-/);
 const pagumen = ethiopianMonthBounds(2018, 13);
 assert.ok(Date.parse(pagumen.to) >= Date.parse(pagumen.from));
+assert.equal(gregorianDateToEthiopian(ethiopianDateToGregorian("2019-02-15")), "2019-02-15");
+assert.throws(() => ethiopianDateToGregorian("2018-13-06"), /has 5 days/);
 console.log("payroll formulas, safety, approval gate and Ethiopian period mapping: OK");

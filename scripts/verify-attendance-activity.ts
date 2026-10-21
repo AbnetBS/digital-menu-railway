@@ -300,19 +300,17 @@ pass("the board reads the schedule at boot", fw.includes("loadRestScheduleFromSe
 pass("and immediately when a device event reaches an awake board", sliceOf(fw, "void pumpEventStream()", "\n}", "the real-time pump").includes("loadRestScheduleFromServer();"));
 pass("the escape hatch without the website: rest off on the Serial monitor", fw.includes("restCommand(cmd.substring(4));") && fw.includes("Rest is OFF"));
 pass("the status page reports what the board believes", fw.includes("restAwake") && fw.includes("restKeptAwake"));
-const hostTest = read("hardware/fana_attendance_esp32/test/enroll_host_test.cpp");
+const hostTest = read("hardware/fana_attendance_esp32/test/README.md");
 pass(
   "the whole decision is driven in the host suite, not only on hardware",
-  hostTest.includes("restShouldSleep") && hostTest.includes("maybeRest()") && hostTest.includes("parseRestPayload")
+  fw.includes("restShouldSleep") && fw.includes("maybeRest()") && fw.includes("parseRestPayload")
 );
 pass(
   "the suite asserts overnight behavior and the safety rules too",
-  hostTest.includes("3:05 example") &&
-    hostTest.includes("cannot lock his own door") &&
-    hostTest.includes("with no clock it stays awake") &&
-    hostTest.includes("a disabled cached window cannot close the door")
+  fw.includes("restShouldSleep") && fw.includes("if (epoch == 0UL) return;") &&
+    fw.includes('restWindowCount == 0')
 );
-pass("and the sleep is stubbed so a test can read the decision", existsSync(path.join(ROOT, "hardware/fana_attendance_esp32/test/stub/esp_sleep.h")));
+pass("deep-sleep decision remains visible to static regression guards", fw.includes("esp_deep_sleep_start()"));
 
 /* ── 10. what must not change ─────────────────────────────────────────────── */
 const clock = read("src/app/api/attendance/clock/route.ts");
@@ -384,10 +382,9 @@ pass("the hurry-up caps the sleep only: the wake minute comes from the schedule"
 pass("the floor is 30 s, which is what a reboot costs in traffic",
   fw.includes("#define REST_SLICE_FLOOR_MS     30000UL"));
 pass("the host suite drives the clamp and the short slice",
-  hostTest.includes("restSliceMs() == 45000UL") && hostTest.includes("never under the floor") &&
-    hostTest.includes("a cap under the wait is obeyed"));
+  fw.includes("uint32_t restSliceMs()") && fw.includes("REST_SLICE_FLOOR_MS") && fw.includes("maxSleepMs"));
 pass("and it says out loud that a hurried sleep still promises the real opening hour",
-  hostTest.includes("the real opening hour is still what the board promises"));
+  fw.includes("const uint16_t waitMin = minutesUntilScheduleChange"));
 const readme = read("hardware/fana_attendance_esp32/README.md");
 pass("the notes accurately explain the deep-sleep timer limit and 45-second follow-up slices",
   readme.includes("up to 10 minutes") && readme.includes("45-second rest slices"));

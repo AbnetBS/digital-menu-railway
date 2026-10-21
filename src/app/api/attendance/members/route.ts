@@ -57,6 +57,8 @@ export async function GET(request: Request) {
         roleId: m.roleId,
         roleName: m.roleId ? roleName.get(m.roleId) || "No role" : "No role",
         active: m.active !== false,
+        employmentStartedAt: m.employmentStartedAt,
+        terminatedAt: m.terminatedAt,
         pinSet: Boolean(m.pin),
         fingers: bios
           .filter((b) => b.memberId === m.id)
@@ -124,7 +126,7 @@ export async function PUT(request: Request) {
     const id = Number(body.id);
     if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
-    const patch: { name?: string; roleId?: number | null; pin?: string | null; active?: boolean } = {};
+    const patch: { name?: string; roleId?: number | null; pin?: string | null; active?: boolean; terminatedAt?: Date | null } = {};
 
     if (body.name !== undefined) {
       const name = String(body.name ?? "").trim();
@@ -132,7 +134,10 @@ export async function PUT(request: Request) {
       patch.name = name.slice(0, 100);
     }
     if (body.roleId !== undefined) patch.roleId = body.roleId ? Number(body.roleId) : null;
-    if (body.active !== undefined) patch.active = Boolean(body.active);
+    if (body.active !== undefined) {
+      patch.active = Boolean(body.active);
+      patch.terminatedAt = patch.active ? null : new Date();
+    }
     // An empty PIN field keeps the old PIN; typing a new one replaces it.
     if (body.pin !== undefined && String(body.pin ?? "").trim() !== "") {
       patch.pin = await hashSecret(String(body.pin).trim());

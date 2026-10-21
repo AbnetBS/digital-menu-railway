@@ -434,6 +434,8 @@ export const attendanceRoleShifts = pgTable("attendance_role_shifts", {
   label: varchar("label", { length: 40 }).notNull().default("Morning"),
   startTime: varchar("start_time", { length: 5 }).notNull(), // time of entrance, HH:MM
   endTime: varchar("end_time", { length: 5 }).notNull(), // time out, HH:MM
+  lateGraceMinutes: integer("late_grace_minutes").default(15),
+  earlyLeaveGraceMinutes: integer("early_leave_grace_minutes").default(0),
   sortOrder: integer("sort_order").default(0),
 });
 
@@ -442,7 +444,9 @@ export const attendanceMembers = pgTable("attendance_members", {
   name: varchar("name", { length: 100 }).notNull(),
   roleId: integer("role_id"), // FK to attendance_roles.id
   pin: varchar("pin", { length: 100 }), // bcrypt hash: the backup when the finger is wet
-  active: boolean("active").default(true), // a leaver keeps his history but leaves the sheet
+  active: boolean("active").default(true), // onsite; offsite keeps history but stops future deductions
+  employmentStartedAt: timestamp("employment_started_at"), // first successful fingerprint attendance
+  terminatedAt: timestamp("terminated_at"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -481,6 +485,18 @@ export const attendanceEnrollJobs = pgTable("attendance_enroll_jobs", {
   completedAt: timestamp("completed_at"),
 });
 
+export const attendanceFreeSchedules = pgTable("attendance_free_schedules", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull(),
+  scheduleType: varchar("schedule_type", { length: 20 }).notNull(), // weekly | dated
+  weekday: integer("weekday"), // 0 Sunday ... 6 Saturday
+  freeDate: varchar("free_date", { length: 10 }),
+  startTime: varchar("start_time", { length: 5 }).notNull().default("00:00"),
+  endTime: varchar("end_time", { length: 5 }).notNull().default("23:59"),
+  note: text("note"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 export const attendanceLogs = pgTable("attendance_logs", {
   id: serial("id").primaryKey(),
   staffId: integer("staff_id"), // legacy rows only: FK to staff_users.id
@@ -497,6 +513,7 @@ export const attendanceLogs = pgTable("attendance_logs", {
   status: varchar("status", { length: 20 }).default("on_time"), // on_time | late | early_out | absent | completed
   isOvertime: boolean("is_overtime").default(false), // the person pressed Overtime on the kiosk
   earlyOut: boolean("early_out").default(false), // left before his role's time out
+  earlyOutMinutes: integer("early_out_minutes").default(0),
   shiftId: integer("shift_id"), // legacy: FK to attendance_shifts
   deviceId: varchar("device_id", { length: 50 }).default("entrance"), // which device
   notes: text("notes"),

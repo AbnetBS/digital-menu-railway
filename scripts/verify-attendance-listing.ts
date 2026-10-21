@@ -397,12 +397,11 @@ pass(
     biometricsApi.includes("publish(CHANNELS.device)")
 );
 pass(
-  "firmware follows the module's own protocol: three steps, each its own placement",
-  firmware.includes("#define ENROLL_STEPS            3") &&
+  "firmware follows the R307 protocol: two fresh captures and two confirmations",
+  firmware.includes("#define ENROLL_STEPS            2") &&
     firmware.includes("finger.enroll((uint16_t)id, step, ENROLL_ADD_TIMEOUT_MS)") &&
-    firmware.includes("Three steps: place the same finger flat and still") &&
     firmware.includes('showEnrollScreen(who, id, ENROLL_STEPS + found, "PLACE FINGER",') &&
-    firmware.includes("#define ENROLL_VERIFY_PLACEMENTS 3") &&
+    firmware.includes("#define ENROLL_VERIFY_PLACEMENTS 2") &&
     firmware.includes("#define ENROLL_SCANS            (ENROLL_STEPS + ENROLL_VERIFY_PLACEMENTS)")
 );
 pass(

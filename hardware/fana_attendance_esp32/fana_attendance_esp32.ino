@@ -1,17 +1,16 @@
 /*
  * FANA CAFE & RESTAURANT - Attendance System
  * GitHub: hardware/fana_attendance_esp32/fana_attendance_esp32.ino (keep updated here for copy-paste upload)
- * Hardware: ESP32 WROOM + FPC1020A fingerprint sensor + 20x4 I2C LCD
+ * Hardware: ESP32 WROOM + R307 optical fingerprint sensor + 20x4 I2C LCD
  *           + transistor-driven buzzer + 2 LEDs
  *
  * FINGERPRINT SENSOR: 4 WIRES ARE ENOUGH
  *   Sensor label   ->  ESP32
- *   VCC  (pin 4)   ->  3.3V   (use 5V only if your module is marked 5V - see README)
- *   GND  (pin 1)   ->  GND
- *   TX   (pin 3)   ->  GPIO16 (ESP32 RX2)
- *   RX   (pin 2)   ->  GPIO17 (ESP32 TX2)
- *   Leave sensor pins 5 and 6 (the extra pins) unconnected. This sketch does
- *   not use them: the sensor itself reports when a finger is on it.
+ *   R307 VCC -> regulated supply specified by the seller (normally 5V)
+ *   R307 GND -> GND (all grounds common)
+ *   R307 TX  -> GPIO16 (ESP32 RX2)
+ *   R307 RX  -> GPIO17 (ESP32 TX2; ESP32 is already 3.3V UART logic)
+ *   VERIFY the connector pinout; R307 wire colours are not standardized.
  *
  * 20x4 LCD (2004 module with a soldered I2C backpack) - THROUGH THE LEVEL SHIFTER
  *   ESP32 3V3        ->  level shifter LV
@@ -43,10 +42,10 @@
  *   Red LED   -> GPIO19 -> 220 ohm -> GND
  *
  * Libraries (Arduino Library Manager + one custom copy):
- *   - Biovo1020A PATCHED copy - install hardware/fana_attendance_esp32/libraries/Biovo1020A
+ *   - Adafruit Fingerprint Sensor Library by Adafruit
  *   - hd44780 by Bill Perry  - the 20x4 I2C LCD (REPLACES Adafruit SSD1306/GFX)
  *   - WiFiManager by tzapu, ArduinoJson (v6)
- * Sensor UART: 19200 baud, 8N1.
+ * Sensor UART: 57600 baud, 8N1 (common R307 factory default).
  *
  * WHAT HAPPENS
  *   Scan:   the finger is matched and "VERIFIED" shows at once; the website
@@ -54,14 +53,10 @@
  *           registered). The device then returns to "Place finger". One
  *           placement = one scan, however long the finger stays on the sensor.
  *   Add:    the admin presses Add Fingerprint on the website. The LCD guides
- *           the module's own three enrollment steps: PLACE FINGER, then LIFT
- *           YOUR FINGER + PLACE FINGER, twice more - the same finger each
- *           time, because a model built from one unmoving press can never be
- *           found again. Between the three ADD steps the sketch sends the
- *           sensor NOTHING else (any other command mid-enrollment makes the
- *           module refuse the next step). The device then CONFIRMS: one fresh
- *           placement must match this ID before the finger is reported as
- *           added. Every wait has a timeout, so the device never hangs. A
+ *           R307's two enrollment captures: PLACE FINGER, LIFT, then place
+ *           the same finger again at a slightly different angle. The R307
+ *           combines both views into one rotation-tolerant template. The
+ *           device then confirms the stored ID on fresh placements. Every wait has a timeout, so the device never hangs. A
  *           failed job is reported back to the website with its reason and is
  *           not retried in a loop.
  *   Manual: Serial "enroll <id>" stores a finger; map it in admin afterwards.
@@ -82,7 +77,8 @@
 #include <WiFiManager.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <Biovo1020A.h>
+#include <Adafruit_Fingerprint.h>
+#include "R307Compat.h"
 #include <map>
 #include <LittleFS.h>
 #include <WebServer.h>
@@ -139,7 +135,7 @@ struct EnrollmentGuard {
 };
 
 HardwareSerial mySerial(2);
-Biovo1020A finger(mySerial);
+R307Compat finger(mySerial);
 WebServer server(80);
 
 /* ── Timing (milliseconds) ────────────────────────────────────────────────── */
@@ -148,18 +144,14 @@ WebServer server(80);
 #define SERVER_TIMEOUT_MS       4000  // never wait longer than this for the website
 #define RESULT_SHOW_MS          1500  // a normal result stays on the LCD this long
 #define WARNING_SHOW_MS         2500  // a problem stays on the LCD this long
-/* Enrollment timing. The module's own protocol has THREE enrollment commands
- * (ADD_1, ADD_2, ADD_3) and the vendor example asks for a fresh placement in
- * front of each of them, so a session is three steps - and the LCD bar carries
- * one extra cell for the CONFIRM scan that has to pass before a finger is
- * ever called "added" (see the block comment above runCaptureSession). */
-#define ENROLL_STEPS            3     // the module's enrollment commands per session
-/* The bar keeps the shape the owner liked - the person works his way to 6/6
- * and only then is he done - but the cells are honest: three captures of the
- * module's own steps, then THREE fresh placements the module has to recognise.
- * A finger that is not found on all three is a failed job, never a "added". */
-#define ENROLL_VERIFY_PLACEMENTS 3    // confirm placements that must match
-#define ENROLL_SCANS            (ENROLL_STEPS + ENROLL_VERIFY_PLACEMENTS) // 6 cells
+/* R307 enrollment uses two fresh placements. Two more fresh placements verify
+ * that the stored template really matches before the website is told it was
+ * added. The LCD therefore shows four honest progress cells. */
+#define ENROLL_STEPS            2     // R307 enrollment captures per session
+/* A template must be found consistently after storage; one lucky match is not
+ * enough for an attendance device that employees depend on every day. */
+#define ENROLL_VERIFY_PLACEMENTS 2    // fresh confirmation placements that must match
+#define ENROLL_SCANS            (ENROLL_STEPS + ENROLL_VERIFY_PLACEMENTS) // four cells: two captures + two confirmations
 #define ENROLL_NO_FINGER_MS     30000 // give up on a step after this long without a finger
 #define ENROLL_PLACE_SETTLE_MS  2500  // fresh placement: settle time before the ADD command
 #define ENROLL_LIFT_PAUSE_MS    2500  // pause for the lift between two steps (no sensor command)
@@ -227,7 +219,7 @@ const char *NTP_SERVER_A = "pool.ntp.org";
 const char *NTP_SERVER_B = "time.nist.gov";
 #define ET_UTC_OFFSET_SEC 10800   // Addis Ababa: UTC+3, no daylight saving
 
-// FPC1020A status codes. The patched library defines these too; the #ifndef
+// Reader-neutral status codes used by the LCD and diagnostics. The patched library defines these too; the #ifndef
 // guards keep the sketch compiling with the original library.
 #ifndef BIOVO_ACK_NOUSER
 #define BIOVO_ACK_NOUSER     0x05 // search: finger seen, not enrolled
@@ -401,7 +393,7 @@ const char *fingerStatusText(uint8_t s);
 /* ── Setup and loop ───────────────────────────────────────────────────────── */
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n\nFANA CAFE Attendance - FPC1020A + ESP32 WROOM");
+  Serial.println("\n\nFANA CAFE Attendance - R307 + ESP32 WROOM");
 
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(GREEN_LED, OUTPUT);
@@ -421,22 +413,22 @@ void setup() {
     Serial.println("LittleFS mount failed");
   }
 
-  // Sensor: 19200 8N1 is the FPC1020A default. It can be slow to boot.
-  mySerial.begin(19200, SERIAL_8N1, SENSOR_RX_PIN, SENSOR_TX_PIN);
+  // R307: 57600 8N1 is the common factory default.
+  mySerial.begin(57600, SERIAL_8N1, SENSOR_RX_PIN, SENSOR_TX_PIN);
   delay(500);
   finger.begin();
   delay(300);
 
   sensorReady = detectSensor(5);
   if (sensorReady) {
-    Serial.print("Found FPC1020A fingerprint sensor, templates: ");
+    Serial.print("Found R307 fingerprint sensor, templates: ");
     Serial.println(templateCount);
-    showLines("FPC1020A Found!", "Templates: " + String(templateCount), "", "");
+    showLines("R307 Found!", "Templates: " + String(templateCount), "", "");
     beepSuccess();
     delay(1000);
   } else {
-    Serial.println("Did not find fingerprint sensor. Check wiring: TX->16 RX->17, GND, VCC, baud 19200.");
-    showLines("FPC1020A NOT found", "Check wiring:", "TX->16  RX->17", "GND + VCC");
+    Serial.println("Did not find fingerprint sensor. Check wiring: TX->16 RX->17, GND, VCC, baud 57600.");
+    showLines("R307 NOT found", "Check wiring:", "TX->16  RX->17", "GND + VCC");
     beepError();
     delay(3000);
     // checkSensorHealth() keeps looking every 5 s, so a late sensor still works.
@@ -923,7 +915,7 @@ void showBig(const String &top, const String &big, const String &bottom) {
   lcdWriteRow(3, bottom);
 }
 
-// Enrollment screen: who, ID, the three steps plus the confirm scan as a text
+// Enrollment screen: who, ID, the two captures plus the confirm scan as a text
 // progress bar, the instruction in the middle and the finer hint at the
 // bottom. The old 128x64 progress rectangle is a text bar now: one '#' per
 // accepted capture (the last cell is the confirm scan).
@@ -1132,15 +1124,15 @@ void dropSensorLink(const String &why) {
   if (sensorLastStatus < 0x10) Serial.print("0");
   Serial.print(sensorLastStatus, HEX);
   Serial.print(" (");
-  Serial.print(Biovo1020A::statusText(sensorLastStatus));
+  Serial.print(R307Compat::statusText(sensorLastStatus));
   Serial.println(")");
-  Serial.println("  check: VCC at the sensor must be 3.0 to 3.3 V, NEVER 5 V;");
+  Serial.println("  check the R307 seller pinout and rated VCC (normally regulated 5 V);");
   Serial.println("  GND common with the ESP32; TX->16, RX->17; try `sensor` for");
   Serial.println("  the link test, which counts answers instead of guessing.");
   // Whatever half a frame is still sitting on the line has to go, or the first
   // reply after the module comes back is read as an answer to an old command.
   finger.drain(60);
-  showLines("SENSOR NOT", "answering. Check", "power 3.3V and", "wiring TX/RX");
+  showLines("SENSOR NOT", "answering. Check", "power + common GND", "wiring TX/RX");
   delay(2500);
   showIdleScreen();
 }
@@ -1414,8 +1406,8 @@ bool checkPendingEnroll() {
   reportJobStarted(jobId, fingerprintId);
 
   EnrollResult result;
-  if (fingerprintId < 1 || fingerprintId > 1000) {
-    enrollDetail = "the website sent fingerprint ID " + String(fingerprintId) + " (must be 1-1000)";
+  if (fingerprintId < 1 || fingerprintId > (int)finger.capacity()) {
+    enrollDetail = "the website sent fingerprint ID " + String(fingerprintId) + " (outside this R307 capacity)";
     result = ENROLL_FAILED;
   } else if (fingerprintToStaff.count(fingerprintId)) {
     // Never overwrite a finger that already belongs to someone.
@@ -1569,7 +1561,7 @@ void retryPendingMapping() {
   }
 }
 
-/* ── Enrollment: the module's three steps, then a confirm scan ──────────────
+/* ── Enrollment: the module's two captures, then a confirm scan ──────────────
  *
  * WHY THIS FILE USED TO SAY "ADDED" AND THE SCANNER THEN SAID "NOT REGISTERED"
  *
@@ -1579,41 +1571,28 @@ void retryPendingMapping() {
  * NOT REGISTERED / Finger not enrolled.
  *
  * "NOT REGISTERED" is not a website message. It is what THIS device prints
- * when the FPC1020A itself answers a scan with status 5 (NOUSER): the module
+ * when the fingerprint reader itself answers a scan with status 5 (NOUSER): the module
  * saw a finger and found no template for it. So the finger was never really
  * stored, even though every command of the enrollment had answered "OK".
  *
- * The reason is the recipe. This module's own protocol has exactly THREE
- * enrollment commands - 0x01, 0x02, 0x03 - and the vendor's EnrollUser example
- * treats them as THREE SEPARATE captures of the same finger:
+ * The R307 enrollment protocol uses two character buffers. Capture 1 records
+ * one view; capture 2 records a slightly shifted view, then the module creates
+ * and stores one rotation-tolerant model. The compatibility wrapper performs
+ * that sequence and exposes only the small interface used by this sketch.
  *
- *     enroll(id, 1) -> "Step 1 complete. Remove finger."            delay(1500)
- *     enroll(id, 2) -> "Place the SAME finger again" ...  "Remove finger." delay(1500)
- *     enroll(id, 3) -> "Place the SAME finger one final time"  => stored
- *
- * The sketch instead sent six commands (1, 2, 2, 2, 2, 3) with the finger held
- * on the glass the whole time. The module answered each of them, generated a
- * model out of pictures of ONE unmoving press, and stored a template that can
- * never be matched against a finger placed normally again. All commands "OK",
- * finger useless: exactly the report above.
- *
- * So a session is now the three documented steps, each from its own placement,
+ * So a session is now the two documented captures, each from its own placement,
  * and the two rules this module really does enforce still hold (they are what
  * PR #50 broke and what the module's answers confirm):
  *
- *  1. Between the three ADD commands the device sends the sensor NOTHING.
- *     Any other command inside the session (SEARCH, COUNT, DELETE) makes the
- *     module answer the next ADD with status 1 ("Command failed"). The lift
- *     between two steps is therefore TIMED, never polled - exactly like the
- *     vendor's delay(1500).
- *  2. An ADD command must reach the module while the finger rests flat and
- *     still, so each step waits ENROLL_PLACE_SETTLE_MS after the placement and
- *     the module itself then gets up to 30 s.
+ *  1. The employee lifts between the two captures so buffer 2 receives a
+ *     genuinely fresh view, not the same unmoving image.
+ *  2. Each capture waits for a flat, still finger; unclear images are rejected
+ *     and explained instead of being silently accepted.
  *
  * AND THE RULE THAT WAS MISSING, which is the real fix:
  *
  *  3. "OK" from an ADD command is not proof that the finger is enrolled. After
- *     the third step the device runs a CONFIRM SCAN (a SEARCH - legal again,
+ *     the second capture the device runs a CONFIRM SCAN (a SEARCH - legal again,
  *     the session is over) against a fresh placement, and the module has to
  *     answer with THIS id. Only then is the mapping posted to the website.
  *     A finger the module cannot find again fails the job with that reason on
@@ -1722,7 +1701,7 @@ bool waitGlassEmpty(const String &who, int id, uint32_t budgetMs) {
   }
 }
 
-/* ── One session: the three ADD commands, and nothing else to the sensor ─── */
+/* ── One session: the two R307 captures, and nothing else to the sensor ─── */
 EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
   uint32_t noFingerSinceMs = 0; // 0 = a finger was answered recently
 
@@ -1976,7 +1955,7 @@ EnrollResult enrollFingerprint(int id, const String &who) {
 
   Serial.print("Enrolling ID ");
   Serial.println(id);
-  Serial.println("Three steps: place the same finger flat and still for each one, and lift it in between.");
+  Serial.println("Two captures: place the same finger flat and still for each one, and lift it in between.");
 
   enrollDetail = "";
 
@@ -2035,7 +2014,7 @@ EnrollResult enrollFingerprint(int id, const String &who) {
     if (outcome == ENROLL_OK) {
       const int16_t newCount = finger.getCount(3000);
       if (newCount >= 0) templateCount = newCount;
-      // "OK" from the three steps only means the module took the pictures.
+      // "OK" from the two captures only means the module took the pictures.
       // The finger counts as enrolled when the module finds it again.
       outcome = confirmEnrolledFinger(id, who, deadlineMs);
       if (outcome == ENROLL_OK) {
@@ -2069,8 +2048,8 @@ EnrollResult enrollFingerprint(int id, const String &who) {
 
 // Serial "enroll <id>": store a finger on the sensor, map it in admin afterwards.
 void manualEnroll(int id) {
-  if (id < 1 || id > 1000) {
-    Serial.println("Invalid ID. Use a number from 1 to 1000.");
+  if (id < 1 || id > (int)finger.capacity()) {
+    Serial.println("Invalid ID. Use a number inside the R307 capacity shown by `list`.");
     return;
   }
   if (!sensorReady) {
@@ -2473,7 +2452,7 @@ void testSensorLink(uint16_t rounds, uint32_t gapMs, const char *label) {
       Serial.print("  round ");
       Serial.print(i);
       Serial.print(": ");
-      Serial.println(Biovo1020A::statusText(st));
+      Serial.println(R307Compat::statusText(st));
     }
     if (gapMs > 0) delay(gapMs);
   }
@@ -2503,9 +2482,8 @@ void testSensorLink(uint16_t rounds, uint32_t gapMs, const char *label) {
   }
   if (silent + garbled > 0) {
     Serial.println("  a module that answers some of the time is a POWER story:");
-    Serial.println("  measure VCC at the sensor pins themselves (3.0-3.3 V, never");
-    Serial.println("  5 V), and check it is not sharing the ESP32 board's 3V3 pin");
-    Serial.println("  with the LCD backlight, which pulls hard while it is lit.");
+    Serial.println("  measure VCC at the R307 pins and compare it with its seller pinout");
+    Serial.println("  (normally regulated 5 V); verify common GND and crossed TX/RX.");
   } else if (ok == rounds) {
     Serial.println("  the link is clean: wiring, baud and module all answer every");
     Serial.println("  time. If a finger is still ignored, look at the open hours");
@@ -2555,8 +2533,8 @@ void handleRoot() {
             " answered, " + String((unsigned)sensorTestSilent) + " silent, " +
             String((unsigned)sensorTestGarbled) + " garbled. Type `sensor` on the Serial monitor to run it again.</p>";
   }
-  html += "<p><b>Hot module?</b> VCC at the sensor must read 3.0 to 3.3 V. 5 V on a"
-          " 3.3 V module makes it hot, and it answers badly before it stops answering.</p>";
+  html += "<p><b>Sensor power:</b> verify the exact R307 connector pinout and rated VCC"
+          " (normally regulated 5 V), common GND, and crossed UART TX/RX.</p>";
   html += "<p>Templates: " + String(templateCount) + "</p>";
   html += "<p><a href='/status'>Status JSON</a></p>";
   server.send(200, "text/html", html);

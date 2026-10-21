@@ -30,6 +30,7 @@ import {
   type OvertimeType,
 } from "@/lib/attendance";
 import { useStaffT } from "@/lib/staff-i18n";
+import FreeScheduleDialog from "@/components/rms/FreeScheduleDialog";
 
 /**
  * ADMIN -> ATTENDANCE (owner, Oct 2026).
@@ -64,6 +65,8 @@ interface RoleShift {
   label: string;
   startTime: string;
   endTime: string;
+  lateGraceMinutes?: number;
+  earlyLeaveGraceMinutes?: number;
 }
 
 interface Role {
@@ -86,6 +89,8 @@ interface Member {
   roleName: string;
   pinSet: boolean;
   active: boolean;
+  employmentStartedAt?: string | null;
+  terminatedAt?: string | null;
   fingers: Finger[];
 }
 
@@ -289,8 +294,8 @@ export default function AttendanceTab() {
   const [editingRoleId, setEditingRoleId] = useState<number | null>(null);
   const [roleName, setRoleName] = useState("");
   const [roleShifts, setRoleShifts] = useState<RoleShift[]>([
-    { label: "Morning", startTime: "08:00", endTime: "14:00" },
-    { label: "Afternoon", startTime: "14:00", endTime: "22:00" },
+    { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
+    { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
   ]);
 
   // Member form
@@ -299,6 +304,7 @@ export default function AttendanceTab() {
   const [memberName, setMemberName] = useState("");
   const [memberRoleId, setMemberRoleId] = useState<number | "">("");
   const [memberPin, setMemberPin] = useState("");
+  const [freeMember, setFreeMember] = useState<Member | null>(null);
 
   // Enroll jobs, one per member being enrolled right now
   const [jobs, setJobs] = useState<Record<number, EnrollJob>>({});
@@ -697,10 +703,10 @@ export default function AttendanceTab() {
     setRoleName(role?.name ?? "");
     setRoleShifts(
       role && role.shifts.length > 0
-        ? role.shifts.map((s) => ({ label: s.label, startTime: s.startTime, endTime: s.endTime }))
+        ? role.shifts.map((s) => ({ label: s.label, startTime: s.startTime, endTime: s.endTime, lateGraceMinutes: s.lateGraceMinutes ?? 15, earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0 }))
         : [
-            { label: "Morning", startTime: "08:00", endTime: "14:00" },
-            { label: "Afternoon", startTime: "14:00", endTime: "22:00" },
+            { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
+            { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
           ]
     );
     setRoleFormOpen(true);
@@ -806,6 +812,27 @@ export default function AttendanceTab() {
       setMemberName("");
       setMemberRoleId("");
       setMemberPin("");
+    }
+  };
+
+  const toggleMemberActive = async (member: Member) => {
+    const next = !member.active;
+    if (!confirm(`Mark ${member.name} ${next ? "onsite" : "offsite"}?`)) return;
+    try {
+      const response = await fetch("/api/attendance/members", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: member.id, active: next }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        say(data.error || "Could not change onsite status", true);
+        return;
+      }
+      say(`${member.name} is now ${next ? "onsite" : "offsite"}`);
+      await loadMembers();
+    } catch {
+      say("Network error. Onsite status was not changed.", true);
     }
   };
 
@@ -999,6 +1026,7 @@ export default function AttendanceTab() {
 
   return (
     <div className="space-y-6">
+      {freeMember && <FreeScheduleDialog member={freeMember} onClose={()=>setFreeMember(null)} />}
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-serif font-bold text-amber-100 flex items-center gap-2">
@@ -1273,6 +1301,8 @@ export default function AttendanceTab() {
                         className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm text-white"
                       />
                     </div>
+                    <div><label className="block text-[11px] font-bold text-amber-200 mb-1">Maximum Late Time (min)</label><input type="number" min="0" max="240" value={s.lateGraceMinutes ?? 15} onChange={(e)=>setRoleShifts(roleShifts.map((x,j)=>j===i?{...x,lateGraceMinutes:Number(e.target.value)}:x))} className="w-32 bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm"/></div>
+                    <div><label className="block text-[11px] font-bold text-amber-200 mb-1">Leaving Grace (min)</label><input type="number" min="0" max="240" value={s.earlyLeaveGraceMinutes ?? 0} onChange={(e)=>setRoleShifts(roleShifts.map((x,j)=>j===i?{...x,earlyLeaveGraceMinutes:Number(e.target.value)}:x))} className="w-32 bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm"/></div>
                     {roleShifts.length > 1 && (
                       <button
                         onClick={() => setRoleShifts(roleShifts.filter((_, j) => j !== i))}
@@ -1285,7 +1315,7 @@ export default function AttendanceTab() {
                   </div>
                 ))}
                 <button
-                  onClick={() => setRoleShifts([...roleShifts, { label: "", startTime: "08:00", endTime: "17:00" }])}
+                  onClick={() => setRoleShifts([...roleShifts, { label: "", startTime: "08:00", endTime: "17:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 }])}
                   className="text-xs font-bold text-amber-200 hover:text-white flex items-center gap-2"
                 >
                   <Plus className="w-4 h-4" /> Add another shift
@@ -1474,10 +1504,12 @@ export default function AttendanceTab() {
                     <div>
                       <p className="font-bold text-white text-sm">{m.name}</p>
                       <p className="text-[10px] text-stone-400 uppercase">
-                        {m.roleName} • {m.fingers.length}/5 fingers • PIN {m.pinSet ? "set" : "none"}
+                        {m.roleName} • {m.fingers.length}/5 fingers • PIN {m.pinSet ? "set" : "none"} • {m.active ? "onsite" : "offsite"}
                       </p>
                     </div>
                     <div className="flex gap-2">
+                      <button onClick={() => setFreeMember(m)} className="px-2 py-1 bg-sky-700/40 text-sky-200 rounded-lg text-[10px] font-black">FREE</button>
+                      <button onClick={() => toggleMemberActive(m)} className={`px-2 py-1 rounded-lg text-[10px] font-black ${m.active?'bg-emerald-700/40 text-emerald-200':'bg-rose-700/40 text-rose-200'}`}>{m.active?'ONSITE':'OFFSITE'}</button>
                       <button
                         onClick={() => openMemberForm(m)}
                         className="p-2 bg-white/10 text-amber-200 hover:bg-white/20 rounded-lg"

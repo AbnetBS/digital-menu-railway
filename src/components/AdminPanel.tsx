@@ -15,6 +15,7 @@ import OrderHistoryTab from "@/components/rms/OrderHistoryTab";
 import DailyBoardTab from "@/components/rms/DailyBoardTab";
 import StationsTab from "@/components/rms/StationsTab";
 import AttendanceTab from "@/components/rms/AttendanceTab";
+import PayrollTab from "@/components/rms/PayrollTab";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
 import { armAudioOnFirstGesture, playAlarm } from "@/lib/sound";
@@ -29,9 +30,9 @@ interface AdminPanelProps {
   onLogout: () => void;
 }
 
-type Tab = "reports" | "sales" | "attendance" | "menu" | "board" | "stations" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
+type Tab = "reports" | "sales" | "attendance" | "payroll" | "menu" | "board" | "stations" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
 
-const TAB_KEYS: Tab[] = ["reports", "sales", "attendance", "menu", "board", "stations", "tables", "staff", "gallery", "reviews", "history", "settings", "security"];
+const TAB_KEYS: Tab[] = ["reports", "sales", "attendance", "payroll", "menu", "board", "stations", "tables", "staff", "gallery", "reviews", "history", "settings", "security"];
 
 /**
  * ?tab=sales is the URL the day-close notification opens. Reading it here is
@@ -310,6 +311,7 @@ export default function AdminPanel({
     { key: "reports", label: L("Reports"), icon: <TrendingUp className="w-4 h-4" /> },
     { key: "sales", label: L("Daily Sales"), icon: <Wallet className="w-4 h-4" /> },
     { key: "attendance", label: L("Attendance"), icon: <Users className="w-4 h-4" /> },
+    { key: "payroll", label: "Payroll", icon: <CreditCard className="w-4 h-4" /> },
     { key: "menu", label: L("Menu ({length})", { length: menuItems.length }), icon: <Utensils className="w-4 h-4" /> },
     { key: "board", label: L("Daily Board"), icon: <TrendingUp className="w-4 h-4" /> },
     { key: "stations", label: L("Stations"), icon: <Users className="w-4 h-4" /> },
@@ -374,6 +376,9 @@ export default function AdminPanel({
 
         {/* ATTENDANCE */}
         {activeTab === "attendance" && <AttendanceTab />}
+
+        {/* PAYROLL — owner-only salary and attendance calculations */}
+        {activeTab === "payroll" && <PayrollTab />}
 
         {/* DAILY BOARD */}
         {activeTab === "board" && <DailyBoardTab />}

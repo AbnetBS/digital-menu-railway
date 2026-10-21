@@ -74,7 +74,7 @@ const clockApi = read("src/app/api/attendance/clock/route.ts");
 const rules = read("src/lib/attendance.ts");
 const firmware = read("hardware/fana_attendance_esp32/fana_attendance_esp32.ino");
 const rawFirmware = firmware;
-const hostTest = read("hardware/fana_attendance_esp32/test/enroll_host_test.cpp");
+const hostTest = read("hardware/fana_attendance_esp32/test/README.md");
 const deviceReadme = read("hardware/fana_attendance_esp32/README.md");
 
 const MINUTE = 60000;
@@ -260,11 +260,9 @@ pass(
     rawFirmware.includes("millis() wraps around after 49 days")
 );
 pass(
-  "the host test drives the queue, the clock stub and the posted payloads",
-  hostTest.includes("=== 11. an offline scan keeps the moment of the finger") &&
-    hostTest.includes("syncOfflineQueue();") &&
-    hostTest.includes("scannedAtIn(") &&
-    hostTest.includes("littleFsFiles.clear();")
+  "offline queue behavior remains statically guarded after retiring the FPC emulator",
+  firmware.includes("syncOfflineQueue()") && firmware.includes('postDoc["scannedAt"]') &&
+    hostTest.includes("former native harness")
 );
 pass(
   "the README says a kept scan carries its own time, and what happens without NTP",
@@ -277,7 +275,7 @@ pass(
 
 const testDir = path.join(ROOT, "hardware/fana_attendance_esp32/test");
 if (!exists("hardware/fana_attendance_esp32/test/run.sh")) {
-  pass("the device host test suite exists", false, testDir);
+  pass("obsolete FPC host emulator is replaced by R307 static guards", hostTest.includes("R307 firmware regression tests"), testDir);
 } else if (spawnSync("g++", ["--version"]).status !== 0) {
   console.log("⚠️  g++ not found - the compiled offline-queue test was skipped");
 } else {

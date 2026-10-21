@@ -40,6 +40,8 @@ export type RoleShift = {
   label: string;
   startTime: string;
   endTime: string;
+  lateGraceMinutes?: number;
+  earlyLeaveGraceMinutes?: number;
 };
 
 /** "08:45" -> 525 minutes after midnight. Null when it is not a time. */
@@ -102,7 +104,8 @@ export function pickShift(shifts: RoleShift[] | null | undefined, minutes: numbe
 export function lateMinutesFor(shift: RoleShift | null | undefined, clockInMinutes: number): number {
   const start = parseHHMM(shift?.startTime ?? null);
   if (start === null) return 0;
-  return Math.max(0, clockInMinutes - (start + LATE_GRACE_MINUTES));
+  const grace = Math.max(0, Number(shift?.lateGraceMinutes ?? LATE_GRACE_MINUTES));
+  return Math.max(0, clockInMinutes - (start + grace));
 }
 
 /**
@@ -113,14 +116,18 @@ export function lateMinutesFor(shift: RoleShift | null | undefined, clockInMinut
  * that, every night-shift person who left after midnight looked punctual and
  * everybody who left before it looked late to go home.
  */
-export function isEarlyOut(shift: RoleShift | null | undefined, clockOutMinutes: number): boolean {
+export function earlyOutMinutesFor(shift: RoleShift | null | undefined, clockOutMinutes: number): number {
   const start = parseHHMM(shift?.startTime ?? null);
   const end = parseHHMM(shift?.endTime ?? null);
-  if (end === null) return false;
+  if (end === null) return 0;
   const crossesMidnight = start !== null && end <= start;
-  const endMinutes = crossesMidnight ? end + 24 * 60 : end;
+  const endMinutes = (crossesMidnight ? end + 24 * 60 : end) - Math.max(0, Number(shift?.earlyLeaveGraceMinutes ?? 0));
   const outMinutes = crossesMidnight && clockOutMinutes < (start ?? 0) ? clockOutMinutes + 24 * 60 : clockOutMinutes;
-  return outMinutes < endMinutes;
+  return Math.max(0, endMinutes - outMinutes);
+}
+
+export function isEarlyOut(shift: RoleShift | null | undefined, clockOutMinutes: number): boolean {
+  return earlyOutMinutesFor(shift, clockOutMinutes) > 0;
 }
 
 /**

@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-10-1";
+const SCHEMA_VERSION = "2026-10-21-payroll-3";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -387,6 +387,8 @@ const RMS_CREATES: Array<[string, string]> = [
       label varchar(40) NOT NULL DEFAULT 'Morning',
       start_time varchar(5) NOT NULL,
       end_time varchar(5) NOT NULL,
+      late_grace_minutes integer DEFAULT 15,
+      early_leave_grace_minutes integer DEFAULT 0,
       sort_order integer DEFAULT 0
     )`,
   ],
@@ -400,6 +402,8 @@ const RMS_CREATES: Array<[string, string]> = [
       role_id integer,
       pin varchar(100),
       active boolean DEFAULT true,
+      employment_started_at timestamp,
+      terminated_at timestamp,
       created_at timestamp DEFAULT now(),
       updated_at timestamp DEFAULT now()
     )`,
@@ -429,6 +433,113 @@ const RMS_CREATES: Array<[string, string]> = [
       started_at timestamp,
       created_at timestamp DEFAULT now(),
       completed_at timestamp
+    )`,
+  ],
+  [
+    "payroll_settings",
+    `CREATE TABLE IF NOT EXISTS payroll_settings (
+      id integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      settings jsonb NOT NULL DEFAULT '{}'::jsonb,
+      approved boolean NOT NULL DEFAULT false,
+      approved_at timestamp,
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    "payroll_compensation",
+    `CREATE TABLE IF NOT EXISTS payroll_compensation (
+      member_id integer PRIMARY KEY,
+      basic_salary numeric(14,2) NOT NULL DEFAULT 0,
+      transport_allowance numeric(14,2) NOT NULL DEFAULT 0,
+      breakage_shortage numeric(14,2) NOT NULL DEFAULT 0,
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    "payroll_monthly_inputs",
+    `CREATE TABLE IF NOT EXISTS payroll_monthly_inputs (
+      period_key varchar(10) NOT NULL,
+      member_id integer NOT NULL,
+      breakage_shortage numeric(14,2) NOT NULL DEFAULT 0,
+      PRIMARY KEY(period_key, member_id)
+    )`,
+  ],
+  [
+    "payroll_exceptions",
+    `CREATE TABLE IF NOT EXISTS payroll_exceptions (
+      id serial PRIMARY KEY,
+      period_key varchar(10) NOT NULL,
+      member_id integer NOT NULL,
+      attendance_date varchar(10) NOT NULL,
+      exception_type varchar(20) NOT NULL,
+      authorized_by varchar(100) NOT NULL,
+      reason text NOT NULL,
+      created_at timestamp DEFAULT now(),
+      UNIQUE(period_key, member_id, attendance_date, exception_type)
+    )`,
+  ],
+  [
+    "payroll_overtime_entries",
+    `CREATE TABLE IF NOT EXISTS payroll_overtime_entries (
+      id serial PRIMARY KEY,
+      member_id integer NOT NULL,
+      period_key varchar(10) NOT NULL,
+      overtime_type varchar(20) NOT NULL,
+      hours numeric(10,2) NOT NULL DEFAULT 0,
+      note text,
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    "payroll_periods",
+    `CREATE TABLE IF NOT EXISTS payroll_periods (
+      period_key varchar(10) PRIMARY KEY,
+      calendar varchar(20) NOT NULL DEFAULT 'ethiopian',
+      status varchar(20) NOT NULL DEFAULT 'draft',
+      approved_at timestamp,
+      paid_at timestamp,
+      payment_method varchar(50),
+      prepared_by varchar(100),
+      checked_by varchar(100),
+      approved_by varchar(100),
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    "payroll_rows",
+    `CREATE TABLE IF NOT EXISTS payroll_rows (
+      id serial PRIMARY KEY,
+      period_key varchar(10) NOT NULL,
+      member_id integer NOT NULL,
+      snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
+      updated_at timestamp DEFAULT now(),
+      UNIQUE(period_key, member_id)
+    )`,
+  ],
+  [
+    "payroll_audit",
+    `CREATE TABLE IF NOT EXISTS payroll_audit (
+      id serial PRIMARY KEY,
+      period_key varchar(10),
+      member_id integer,
+      action varchar(60) NOT NULL,
+      detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+      actor varchar(50) NOT NULL DEFAULT 'admin',
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    "attendance_free_schedules",
+    `CREATE TABLE IF NOT EXISTS attendance_free_schedules (
+      id serial PRIMARY KEY,
+      member_id integer NOT NULL,
+      schedule_type varchar(20) NOT NULL,
+      weekday integer,
+      free_date varchar(10),
+      start_time varchar(5) NOT NULL DEFAULT '00:00',
+      end_time varchar(5) NOT NULL DEFAULT '23:59',
+      note text,
+      created_at timestamp DEFAULT now()
     )`,
   ],
   [
@@ -586,6 +697,7 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     status: { type: "text", def: "'on_time'" },
     is_overtime: { type: "boolean", def: "false" },
     early_out: { type: "boolean", def: "false" },
+    early_out_minutes: { type: "integer", def: "0", castText: true },
     shift_id: { type: "integer", castText: true },
     device_id: { type: "text", def: "'entrance'" },
     notes: { type: "text" },
@@ -601,6 +713,8 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     label: { type: "text", def: "'Morning'" },
     start_time: { type: "text", def: "'08:00'" },
     end_time: { type: "text", def: "'17:00'" },
+    late_grace_minutes: { type: "integer", def: "15", castText: true },
+    early_leave_grace_minutes: { type: "integer", def: "0", castText: true },
     sort_order: { type: "integer", def: "0", castText: true },
   },
   attendance_members: {
@@ -608,6 +722,8 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     role_id: { type: "integer", castText: true },
     pin: { type: "text" },
     active: { type: "boolean", def: "true" },
+    employment_started_at: { type: "timestamp", dropNotNull: true },
+    terminated_at: { type: "timestamp", dropNotNull: true },
     created_at: { type: "timestamp", def: "now()", dropNotNull: true },
     updated_at: { type: "timestamp", def: "now()", dropNotNull: true },
   },
@@ -757,6 +873,11 @@ async function runFullMigrate(force: boolean) {
     const err = await run(ddl);
     if (err) errors.push(`create ${name}: ${err}`);
   }
+
+  // Payroll period sign-off columns added after the first payroll release.
+  await run(`ALTER TABLE payroll_periods ADD COLUMN IF NOT EXISTS prepared_by varchar(100)`);
+  await run(`ALTER TABLE payroll_periods ADD COLUMN IF NOT EXISTS checked_by varchar(100)`);
+  await run(`ALTER TABLE payroll_periods ADD COLUMN IF NOT EXISTS approved_by varchar(100)`);
 
   // Step 1b — translation cache: one row per (lang, source string) so repeat
   // translations are served from the DB and never hit Google again.

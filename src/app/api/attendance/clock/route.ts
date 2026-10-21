@@ -16,6 +16,7 @@ import {
   clockLabel,
   etMinutes,
   hoursLabel,
+  earlyOutMinutesFor,
   isEarlyOut,
   lateMinutesFor,
   pickShift,
@@ -50,7 +51,7 @@ async function roleShiftsOf(roleId: number | null): Promise<RoleShift[]> {
   try {
     const rows = await db.select().from(attendanceRoleShifts).where(eq(attendanceRoleShifts.roleId, roleId));
     return rows
-      .map((r) => ({ label: r.label, startTime: r.startTime, endTime: r.endTime }))
+      .map((r) => ({ label: r.label, startTime: r.startTime, endTime: r.endTime, lateGraceMinutes: r.lateGraceMinutes ?? 15, earlyLeaveGraceMinutes: r.earlyLeaveGraceMinutes ?? 0 }))
       .sort((a, b) => a.startTime.localeCompare(b.startTime));
   } catch {
     return [];
@@ -129,6 +130,9 @@ export async function POST(request: Request) {
 
     /* ── the times of his role ─────────────────────────────────────────── */
     const member = await db.select().from(attendanceMembers).where(eq(attendanceMembers.id, memberId)).limit(1);
+    if (member[0]?.active === false) {
+      return NextResponse.json({ error: `${memberName} is marked offsite`, led: "red", buzzer: "error" }, { status: 403 });
+    }
     const roleId = member[0]?.roleId ?? null;
     const shifts = await roleShiftsOf(roleId);
 
@@ -156,6 +160,10 @@ export async function POST(request: Request) {
     /* ── no line yet today: this scan is the IN ────────────────────────── */
     if (existingLogs.length === 0 || !existingLogs[0].clockIn) {
       const lateMinutes = lateMinutesFor(clockInShift, nowMinutes);
+      // First real attendance is the employment start date used by payroll.
+      if (!member[0]?.employmentStartedAt) {
+        await db.update(attendanceMembers).set({ employmentStartedAt: now, updatedAt: now }).where(eq(attendanceMembers.id, memberId));
+      }
       const status = lateMinutes > 0 ? "late" : "on_time";
       const inTime = clockLabel(now) || "";
       const values = {
@@ -233,6 +241,7 @@ export async function POST(request: Request) {
       const totalMinutes = Math.round((now.getTime() - new Date(existing.clockIn!).getTime()) / 60000);
       const inShift =
         pickShift(shifts, etMinutes(existing.clockIn!)) || clockInShift;
+      const earlyOutMinutes = earlyOutMinutesFor(inShift, nowMinutes);
       const early = isEarlyOut(inShift, nowMinutes);
       const status = early ? "early_out" : "completed";
 
@@ -245,6 +254,7 @@ export async function POST(request: Request) {
             totalMinutes,
             status,
             earlyOut: early,
+            earlyOutMinutes,
             updatedAt: now,
           })
           .where(eq(attendanceLogs.id, existing.id))
@@ -267,6 +277,7 @@ export async function POST(request: Request) {
         totalMinutes,
         totalHours: hours,
         earlyOut: early,
+        earlyOutMinutes,
         isOvertime: Boolean(row.isOvertime),
         status,
         message: `${memberName} OUT ${outTime} • ${hours}${early ? " • Early out" : ""}`,

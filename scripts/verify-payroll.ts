@@ -1,0 +1,23 @@
+import assert from "node:assert/strict";
+import { evaluatePayrollFormula, ethiopianMonthBounds, requiredPayrollSettingsMissing, DEFAULT_PAYROLL_SETTINGS, DEFAULT_INCOME_TAX_FORMULA } from "../src/lib/payroll";
+import { earlyOutMinutesFor, lateMinutesFor } from "../src/lib/attendance";
+
+const context = { BasicSalary: 12936.5, HolidayOtHours: 13 };
+assert.equal(evaluatePayrollFormula("BasicSalary / 30 / 8 * HolidayOtHours * 1.5", context), 1051.09);
+assert.equal(evaluatePayrollFormula("(BasicSalary + 100) / 2", context), 6518.25);
+assert.throws(() => evaluatePayrollFormula("process.exit()", context), /Invalid formula|Unknown/);
+assert.throws(() => evaluatePayrollFormula("BasicSalary / 0", context), /Division by zero/);
+assert.equal(evaluatePayrollFormula(DEFAULT_INCOME_TAX_FORMULA, { TaxableSalary: 1800 }), 0);
+assert.equal(evaluatePayrollFormula(DEFAULT_INCOME_TAX_FORMULA, { TaxableSalary: 5000 }), 500);
+assert.equal(evaluatePayrollFormula(DEFAULT_INCOME_TAX_FORMULA, { TaxableSalary: 15000 }), 3200);
+assert.throws(() => evaluatePayrollFormula("IF(TaxableSalary<10,0)", { TaxableSalary: 5 }), /value when false/);
+assert.ok(requiredPayrollSettingsMissing(DEFAULT_PAYROLL_SETTINGS).length > 0);
+assert.equal(lateMinutesFor({ label: "Cleaner", startTime: "08:00", endTime: "17:00", lateGraceMinutes: 30 }, 8 * 60 + 30), 0);
+assert.equal(lateMinutesFor({ label: "Cleaner", startTime: "08:00", endTime: "17:00", lateGraceMinutes: 30 }, 8 * 60 + 40), 10);
+assert.equal(earlyOutMinutesFor({ label: "Cleaner", startTime: "08:00", endTime: "17:00", earlyLeaveGraceMinutes: 0 }, 16 * 60 + 30), 30);
+const meskerem = ethiopianMonthBounds(2019, 1);
+assert.match(meskerem.from, /^2026-09-/);
+assert.match(meskerem.to, /^2026-10-/);
+const pagumen = ethiopianMonthBounds(2018, 13);
+assert.ok(Date.parse(pagumen.to) >= Date.parse(pagumen.from));
+console.log("payroll formulas, safety, approval gate and Ethiopian period mapping: OK");

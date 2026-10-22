@@ -1,4 +1,4 @@
-import { pgTable, serial, varchar, text, integer, boolean, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, serial, varchar, text, integer, boolean, timestamp, jsonb } from "drizzle-orm/pg-core";
 
 export const siteSettings = pgTable("site_settings", {
   key: varchar("key", { length: 100 }).primaryKey(),
@@ -449,6 +449,10 @@ export const payrollPayments = pgTable("payroll_payments", {
   paidAt: timestamp("paid_at").defaultNow(),
   method: varchar("method", { length: 40 }).default("Cash"),
   note: text("note"),
+  // What the row was at the moment the tick was pressed. A paid month must
+  // keep showing what was actually handed over, even if a scan or a holiday
+  // is corrected later.
+  snapshot: jsonb("snapshot"),
 });
 
 export const attendanceRoles = pgTable("attendance_roles", {

@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-22-2";
+const SCHEMA_VERSION = "2026-10-22-3";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -545,7 +545,8 @@ const RMS_CREATES: Array<[string, string]> = [
       member_id integer NOT NULL,
       paid_at timestamp DEFAULT now(),
       method varchar(40) DEFAULT 'Cash',
-      note text
+      note text,
+      snapshot jsonb
     )`,
   ],
   [
@@ -927,6 +928,7 @@ async function runFullMigrate(force: boolean) {
   // never register Meskel twice or pay somebody twice.
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_holidays_date_key ON payroll_holidays (holiday_date)`);
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_payments_period_member_key ON payroll_payments (period_key, member_id)`);
+  await run(`ALTER TABLE payroll_payments ADD COLUMN IF NOT EXISTS snapshot jsonb`);
 
   // Payroll period sign-off columns added after the first payroll release.
   await run(`ALTER TABLE payroll_periods ADD COLUMN IF NOT EXISTS prepared_by varchar(100)`);

@@ -125,8 +125,9 @@ pass("one paid row per person per month", payrollApi.includes("INSERT INTO payro
 pass("the holiday API stores an Ethiopian date and its name", holidayApi.includes("ethiopianDateToGregorian") && holidayApi.includes("payroll_holidays"));
 pass("a holiday is one row per day", migrate.includes("CREATE UNIQUE INDEX IF NOT EXISTS payroll_holidays_date_key"));
 pass("paid rows are one per person per month in the migration too", migrate.includes("CREATE UNIQUE INDEX IF NOT EXISTS payroll_payments_period_member_key"));
+pass("a paid row freezes what was actually handed over", payrollApi.includes("snapshot") && migrate.includes("ALTER TABLE payroll_payments ADD COLUMN IF NOT EXISTS snapshot jsonb"));
 pass("the tables are declared in the drizzle schema", schema.includes('pgTable("payroll_holidays"') && schema.includes('pgTable("payroll_payments"'));
-pass("the schema version moved so an existing database self-heals", (/SCHEMA_VERSION = "(2026-10-22-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-22-2");
+pass("the schema version moved so an existing database self-heals", (/SCHEMA_VERSION = "(2026-10-22-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-22-3");
 
 /* ── 4. the screen ───────────────────────────────────────────────────────── */
 

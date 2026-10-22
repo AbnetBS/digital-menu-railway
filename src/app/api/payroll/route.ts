@@ -105,7 +105,7 @@ async function buildRows(periodKey: string) {
         "SELECT id,member_id,date,type,minutes,shift_label,source,entered_by,note FROM attendance_overtime WHERE date BETWEEN $1 AND $2 ORDER BY date,id",
         [bounds.from, bounds.to]
       ),
-      pool.query("SELECT member_id,paid_at,method FROM payroll_payments WHERE period_key=$1", [periodKey]),
+      pool.query("SELECT member_id,paid_at,method,snapshot FROM payroll_payments WHERE period_key=$1", [periodKey]),
     ]);
 
   const settings = await loadSettings();
@@ -336,7 +336,7 @@ async function buildRows(periodKey: string) {
       automatic: true,
     }));
 
-    return {
+    const computed = {
       // The No. column is 1, 2, 3... of THIS list, never the database id: the
       // owner saw 39 and 40 after deleting the people before them.
       memberId,
@@ -381,6 +381,25 @@ async function buildRows(periodKey: string) {
       paidAt: payment?.paid_at || null,
       paymentMethod: payment?.method || null,
       savedSnapshot: saved.get(memberId) || null,
+    };
+    // WHAT WAS PAID STAYS WHAT WAS PAID. A ticked row shows the numbers frozen
+    // at the moment the tick was pressed (the overtime list included), so a
+    // scan corrected or a holiday added later cannot rewrite a month that is
+    // already in the employees' hands. Taking the tick back returns it to the
+    // live calculation.
+    const frozen = payment?.snapshot;
+    if (!frozen || typeof frozen !== "object") return computed;
+    return {
+      ...computed,
+      ...frozen,
+      memberId,
+      employeeNumber: index + 1,
+      employeeName: member.name,
+      employeeActive: member.active !== false,
+      roleId: member.role_id,
+      paid: true,
+      paidAt: payment.paid_at || null,
+      paymentMethod: payment.method || null,
     };
   });
 
@@ -555,10 +574,13 @@ export async function POST(request: Request) {
         const data = await buildRows(period);
         const row = data.rows.find((r) => r.memberId === id);
         if (!row) throw new Error("Employee not found in this payroll");
+        // Freeze the row with the tick: the amount and the overtime that were
+        // on the screen when the owner said this person is paid.
+        const { savedSnapshot: _saved, paid: _paid, paidAt: _paidAt, paymentMethod: _method, ...frozen } = row as any;
         await pool.query(
-          `INSERT INTO payroll_payments(period_key,member_id,paid_at,method,note) VALUES($1,$2,now(),$3,$4)
-           ON CONFLICT(period_key,member_id) DO UPDATE SET paid_at=now(),method=$3,note=$4`,
-          [period, id, String(body.method || "Cash"), String(body.note || "") || null]
+          `INSERT INTO payroll_payments(period_key,member_id,paid_at,method,note,snapshot) VALUES($1,$2,now(),$3,$4,$5::jsonb)
+           ON CONFLICT(period_key,member_id) DO UPDATE SET paid_at=now(),method=$3,note=$4,snapshot=$5::jsonb`,
+          [period, id, String(body.method || "Cash"), String(body.note || "") || null, JSON.stringify(frozen)]
         );
         await pool.query("INSERT INTO payroll_audit(period_key,member_id,action,detail) VALUES($1,$2,'person_paid',$3::jsonb)", [
           period,

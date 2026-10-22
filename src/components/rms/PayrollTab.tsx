@@ -900,6 +900,12 @@ function OvertimeDialog({
               {period} E.C. The system measured the three kinds from the scans. Type a row only when a supervisor decides
               something the scans cannot see.
             </p>
+            {row.paid && (
+              <p className="text-[11px] text-emerald-200 mt-1">
+                This month is paid. The numbers below are exactly what was paid; take the green tick back in the payroll
+                row to change them.
+              </p>
+            )}
           </div>
           <button onClick={onClose} className="p-1 rounded-lg hover:bg-white/10" aria-label="Close overtime">
             <X className="w-5 h-5" />
@@ -990,7 +996,8 @@ function OvertimeDialog({
           </label>
           <button
             onClick={add}
-            disabled={saving}
+            disabled={saving || row.paid}
+            title={row.paid ? "Take the paid tick back first" : "Save this overtime row"}
             className="sm:col-span-2 bg-[#C9A227] text-[#21130f] rounded-xl py-3 text-xs font-black disabled:opacity-50"
           >
             {saving ? <Loader2 className="w-4 h-4 inline animate-spin" /> : <Plus className="w-4 h-4 inline" />} Save overtime
@@ -1026,7 +1033,8 @@ function OvertimeDialog({
               ) : (
                 <button
                   onClick={() => remove(entry.id)}
-                  disabled={saving}
+                  disabled={saving || row.paid}
+                  title={row.paid ? "Take the paid tick back first" : "Remove this overtime row"}
                   className="text-rose-300 p-2 rounded-lg hover:bg-rose-950/40 disabled:opacity-40"
                   aria-label="Remove this overtime row"
                 >

@@ -35,7 +35,7 @@ function cleanShifts(raw: unknown): RoleShift[] | null {
     // the admin must fix, otherwise the role would get a nonsense time.
     if (!label && !startTime && !endTime) continue;
     if (!label || parseHHMM(startTime) === null || parseHHMM(endTime) === null) return null;
-    const lateGraceMinutes = Math.max(0, Math.min(240, Number(item.lateGraceMinutes ?? 15) || 0));
+    const lateGraceMinutes = Math.max(0, Math.min(240, Number(item.lateGraceMinutes ?? 30) || 0));
     const earlyLeaveGraceMinutes = Math.max(0, Math.min(240, Number(item.earlyLeaveGraceMinutes ?? 0) || 0));
     out.push({ label: label.slice(0, 40), startTime, endTime, lateGraceMinutes, earlyLeaveGraceMinutes });
   }
@@ -73,7 +73,7 @@ export async function GET() {
             label: s.label,
             startTime: s.startTime,
             endTime: s.endTime,
-            lateGraceMinutes: s.lateGraceMinutes ?? 15,
+            lateGraceMinutes: s.lateGraceMinutes ?? 30,
             earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0,
           })),
       }))
@@ -116,7 +116,7 @@ export async function POST(request: Request) {
         label: s.label,
         startTime: s.startTime,
         endTime: s.endTime,
-        lateGraceMinutes: s.lateGraceMinutes ?? 15,
+        lateGraceMinutes: s.lateGraceMinutes ?? 30,
         earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0,
         sortOrder: i,
       }))
@@ -170,7 +170,7 @@ export async function PUT(request: Request) {
           label: s.label,
           startTime: s.startTime,
           endTime: s.endTime,
-          lateGraceMinutes: s.lateGraceMinutes ?? 15,
+          lateGraceMinutes: s.lateGraceMinutes ?? 30,
           earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0,
           sortOrder: i,
         }))

@@ -526,9 +526,10 @@ export function restOverrideAllowsSleep(override: RestOverride, now: Date = new 
  *   • a person taps Overtime on the door tablet and picks the kind himself
  *     ("self"), or the supervisor does it for him ("supervisor");
  *   • nobody has to remember for Shift OT: whoever is still in the building
- *     more than an hour and a half after his shift ends has worked overtime,
- *     and the overtime is exactly the time past the end of the shift. That row
- *     is written by the clock-out scan itself (source "auto").
+ *     more than ONE HOUR after his shift ends has worked overtime, and the
+ *     overtime is exactly the time past the end of the shift (out at 10:00 for
+ *     a shift ending 8:00 is two hours). That row is written by the clock-out
+ *     scan itself (source "auto").
  *
  * There is no approval step - the owner wants the row to "list immediately".
  * A row IS the decision, and the day's box on the paper sheet turns violet
@@ -548,8 +549,8 @@ export const OVERTIME_TYPE_LABELS: Record<OvertimeType, string> = {
 /** What each kind means, for the small print under the buttons. */
 export const OVERTIME_TYPE_HINTS: Record<OvertimeType, string> = {
   holiday: "A public holiday or a rest day that was worked.",
-  free_week: "The person's own free week that was given up.",
-  shift: "Hours past the end of the shift, on a normal working day.",
+  free_week: "The person's own free week that was given up. A full shift is paid.",
+  shift: "Past the shift end by more than one hour, on a normal working day.",
 };
 
 export const OVERTIME_SOURCES = ["admin", "supervisor", "self", "auto"] as const;
@@ -564,9 +565,15 @@ export const OVERTIME_SOURCE_LABELS: Record<OvertimeSource, string> = {
   auto: "clock-out",
 };
 
-/** How far past the end of a shift a person must still be present before the
- *  time starts counting as Shift OT (owner, Oct 2026: an hour and a half). */
-export const SHIFT_OT_GRACE_MINUTES = 90;
+/**
+ * How far past the end of a shift a person must still be present before the
+ * time starts counting as Shift OT. The owner lowered it from an hour and a
+ * half to ONE HOUR on 2026-10-22: "i want that 1:00 hour buffer until that it
+ * wont be overtime, then if that person stay until 10:00 he will get the 2
+ * hour overtime". The whole time past the end is then paid, not only the part
+ * above the buffer, which is exactly his example.
+ */
+export const SHIFT_OT_GRACE_MINUTES = 60;
 
 export function isOvertimeType(value: unknown): value is OvertimeType {
   return typeof value === "string" && (OVERTIME_TYPES as readonly string[]).includes(value);

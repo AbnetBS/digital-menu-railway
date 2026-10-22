@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Calendar,
+  CalendarDays,
   Clock,
   Fingerprint,
   LogOut,
@@ -31,6 +32,8 @@ import {
 } from "@/lib/attendance";
 import { useStaffT } from "@/lib/staff-i18n";
 import FreeScheduleDialog from "@/components/rms/FreeScheduleDialog";
+import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
+import { currentEthiopianPeriod } from "@/lib/payroll";
 
 /**
  * ADMIN -> ATTENDANCE (owner, Oct 2026).
@@ -294,8 +297,8 @@ export default function AttendanceTab() {
   const [editingRoleId, setEditingRoleId] = useState<number | null>(null);
   const [roleName, setRoleName] = useState("");
   const [roleShifts, setRoleShifts] = useState<RoleShift[]>([
-    { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
-    { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
+    { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 },
+    { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 },
   ]);
 
   // Member form
@@ -305,6 +308,9 @@ export default function AttendanceTab() {
   const [memberRoleId, setMemberRoleId] = useState<number | "">("");
   const [memberPin, setMemberPin] = useState("");
   const [freeMember, setFreeMember] = useState<Member | null>(null);
+  // The Holiday OT label opens the list of holiday dates (owner, Oct 2026),
+  // because those dates are what turns a worked day into Holiday OT.
+  const [holidayOpen, setHolidayOpen] = useState(false);
 
   // Enroll jobs, one per member being enrolled right now
   const [jobs, setJobs] = useState<Record<number, EnrollJob>>({});
@@ -703,10 +709,10 @@ export default function AttendanceTab() {
     setRoleName(role?.name ?? "");
     setRoleShifts(
       role && role.shifts.length > 0
-        ? role.shifts.map((s) => ({ label: s.label, startTime: s.startTime, endTime: s.endTime, lateGraceMinutes: s.lateGraceMinutes ?? 15, earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0 }))
+        ? role.shifts.map((s) => ({ label: s.label, startTime: s.startTime, endTime: s.endTime, lateGraceMinutes: s.lateGraceMinutes ?? 30, earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0 }))
         : [
-            { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
-            { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
+            { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 },
+            { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 },
           ]
     );
     setRoleFormOpen(true);
@@ -1027,6 +1033,7 @@ export default function AttendanceTab() {
   return (
     <div className="space-y-6">
       {freeMember && <FreeScheduleDialog member={freeMember} onClose={()=>setFreeMember(null)} />}
+      {holidayOpen && <HolidayManagerDialog period={currentEthiopianPeriod()} onClose={()=>setHolidayOpen(false)} />}
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-serif font-bold text-amber-100 flex items-center gap-2">
@@ -1301,7 +1308,7 @@ export default function AttendanceTab() {
                         className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm text-white"
                       />
                     </div>
-                    <div><label className="block text-[11px] font-bold text-amber-200 mb-1">Maximum Late Time (min)</label><input type="number" min="0" max="240" value={s.lateGraceMinutes ?? 15} onChange={(e)=>setRoleShifts(roleShifts.map((x,j)=>j===i?{...x,lateGraceMinutes:Number(e.target.value)}:x))} className="w-32 bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm"/></div>
+                    <div><label className="block text-[11px] font-bold text-amber-200 mb-1">Maximum Late Time (min)</label><input type="number" min="0" max="240" value={s.lateGraceMinutes ?? 30} onChange={(e)=>setRoleShifts(roleShifts.map((x,j)=>j===i?{...x,lateGraceMinutes:Number(e.target.value)}:x))} className="w-32 bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm"/></div>
                     <div><label className="block text-[11px] font-bold text-amber-200 mb-1">Leaving Grace (min)</label><input type="number" min="0" max="240" value={s.earlyLeaveGraceMinutes ?? 0} onChange={(e)=>setRoleShifts(roleShifts.map((x,j)=>j===i?{...x,earlyLeaveGraceMinutes:Number(e.target.value)}:x))} className="w-32 bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm"/></div>
                     {roleShifts.length > 1 && (
                       <button
@@ -1315,7 +1322,7 @@ export default function AttendanceTab() {
                   </div>
                 ))}
                 <button
-                  onClick={() => setRoleShifts([...roleShifts, { label: "", startTime: "08:00", endTime: "17:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 }])}
+                  onClick={() => setRoleShifts([...roleShifts, { label: "", startTime: "08:00", endTime: "17:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 }])}
                   className="text-xs font-bold text-amber-200 hover:text-white flex items-center gap-2"
                 >
                   <Plus className="w-4 h-4" /> Add another shift
@@ -2043,21 +2050,60 @@ export default function AttendanceTab() {
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {(Object.keys(OVERTIME_TYPE_LABELS) as OvertimeType[]).map((t) => (
-                <button
+                // A div, not a button: the Holiday OT hint has its own small
+                // button inside it (the owner's "make the label clickable"),
+                // and a button inside a button is not allowed.
+                <div
                   key={t}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setOtType(t)}
-                  className={`text-left px-4 py-3 rounded-2xl border transition ${
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setOtType(t);
+                  }}
+                  className={`text-left px-4 py-3 rounded-2xl border transition cursor-pointer ${
                     otType === t
                       ? "bg-[#C9A227] text-[#2C1B17] border-[#C9A227]"
                       : "bg-[#3D2314] text-stone-200 border-stone-700 hover:bg-white/10"
                   }`}
                 >
                   <span className="block text-xs font-black uppercase">{L(OVERTIME_TYPE_LABELS[t])}</span>
-                  <span className={`block text-[10px] mt-1 ${otType === t ? "text-[#2C1B17]/80" : "text-stone-400"}`}>
-                    {L(OVERTIME_TYPE_HINTS[t])}
-                  </span>
-                </button>
+                  {t === "holiday" ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOtType("holiday");
+                        setHolidayOpen(true);
+                      }}
+                      title="Add the holiday dates the system must know"
+                      className={`block text-[10px] mt-1 text-left underline decoration-dotted underline-offset-2 ${
+                        otType === t ? "text-[#2C1B17]/80" : "text-amber-200"
+                      }`}
+                    >
+                      {L(OVERTIME_TYPE_HINTS[t])} <CalendarDays className="w-3 h-3 inline" /> Holiday dates
+                    </button>
+                  ) : (
+                    <span className={`block text-[10px] mt-1 ${otType === t ? "text-[#2C1B17]/80" : "text-stone-400"}`}>
+                      {L(OVERTIME_TYPE_HINTS[t])}
+                    </span>
+                  )}
+                </div>
               ))}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-[10px] text-stone-400">
+              <button
+                type="button"
+                onClick={() => setHolidayOpen(true)}
+                className="inline-flex items-center gap-1.5 bg-violet-900/50 border border-violet-700 text-violet-100 rounded-xl px-3 py-2 font-bold hover:bg-violet-800/60"
+              >
+                <CalendarDays className="w-3.5 h-3.5" /> Add holiday dates
+              </button>
+              <span>
+                The payroll counts a registered holiday by itself. Leaving within one hour after the shift end is not
+                overtime; after that, the whole time past the end is paid.
+              </span>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 items-end">

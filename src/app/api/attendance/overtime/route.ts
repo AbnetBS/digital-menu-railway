@@ -6,6 +6,7 @@ import { requireAdmin } from "@/lib/session";
 import { deviceAllowed } from "@/lib/attendance-device";
 import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
+import { ethiopianDateToGregorian } from "@/lib/payroll";
 import { saveOvertimeRow } from "@/lib/attendance-overtime";
 import {
   OVERTIME_TYPE_LABELS,
@@ -174,7 +175,17 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json().catch(() => ({}));
-    const date = String(body.date ?? "") || todayKey();
+    // The payroll page lets the owner pick the Ethiopian day he reads on the
+    // sheet; it sends dateEc, and the conversion happens here, once.
+    const dateEc = String(body.dateEc ?? "").trim();
+    let date = String(body.date ?? "") || todayKey();
+    if (dateEc) {
+      try {
+        date = ethiopianDateToGregorian(dateEc);
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : "Use an Ethiopian date YYYY-MM-DD" }, { status: 400 });
+      }
+    }
     if (!DAY_RE.test(date)) {
       return NextResponse.json({ error: "A date like 2026-10-16 is needed" }, { status: 400 });
     }

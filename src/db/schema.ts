@@ -1,4 +1,4 @@
-import { pgTable, serial, varchar, text, integer, boolean, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, serial, varchar, text, integer, boolean, timestamp, jsonb } from "drizzle-orm/pg-core";
 
 export const siteSettings = pgTable("site_settings", {
   key: varchar("key", { length: 100 }).primaryKey(),
@@ -419,6 +419,40 @@ export const attendanceOvertime = pgTable("attendance_overtime", {
   enteredBy: varchar("entered_by", { length: 100 }), // whose tap or typing wrote it
   note: text("note"),
   createdAt: timestamp("created_at").defaultNow(),
+});
+
+/**
+ * HOLIDAY DATES (owner, Oct 2026): "i want the label that say HOLIDAY OT ...
+ * clickable button so that i can add specific holiday dates ... then i will
+ * select the date and name of the holiday there so the system knows when the
+ * holiday is". One row per holiday, the day stored as the same Gregorian key
+ * the attendance sheet uses, with the name the owner typed. Payroll reads it
+ * to count a worked holiday automatically and to show why that day paid 2.5x.
+ */
+export const payrollHolidays = pgTable("payroll_holidays", {
+  id: serial("id").primaryKey(),
+  holidayDate: varchar("holiday_date", { length: 10 }).notNull(), // YYYY-MM-DD, Africa/Addis_Ababa
+  name: varchar("name", { length: 120 }).notNull(), // "Meskel", "Eid", "Fana anniversary"
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+/**
+ * WHO HAS BEEN PAID (owner, Oct 2026: the Actions column becomes one button,
+ * "when the person is paid the button will be right icon with green"). One row
+ * per person per payroll month; deleting it is the honest way to take the
+ * tick back after a mistaken tap.
+ */
+export const payrollPayments = pgTable("payroll_payments", {
+  id: serial("id").primaryKey(),
+  periodKey: varchar("period_key", { length: 10 }).notNull(), // YYYY-MM (E.C.)
+  memberId: integer("member_id").notNull(),
+  paidAt: timestamp("paid_at").defaultNow(),
+  method: varchar("method", { length: 40 }).default("Cash"),
+  note: text("note"),
+  // What the row was at the moment the tick was pressed. A paid month must
+  // keep showing what was actually handed over, even if a scan or a holiday
+  // is corrected later.
+  snapshot: jsonb("snapshot"),
 });
 
 export const attendanceRoles = pgTable("attendance_roles", {

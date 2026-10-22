@@ -15,10 +15,12 @@ import { publish, CHANNELS } from "@/lib/realtime";
 import { and, eq } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
 import {
+  LATE_GRACE_MINUTES,
   REPEAT_SCAN_LOCK_MINUTES,
   clockLabel,
   etMinutes,
   hoursLabel,
+  earlyOutMinutesFor,
   isEarlyOut,
   lateMinutesFor,
   shiftOtMinutesFor,
@@ -78,8 +80,20 @@ async function roleShiftsOf(roleId: number | null): Promise<RoleShift[]> {
   if (!roleId) return [];
   try {
     const rows = await db.select().from(attendanceRoleShifts).where(eq(attendanceRoleShifts.roleId, roleId));
+    // The shift's OWN grace minutes travel with it (owner, Oct 2026: "the
+    // deduction starts if they come after their maximum late time, and the
+    // leaving hour, until that nothing happens"). Dropping them here made the
+    // door read every role's Maximum Late Time as the global 30 and every
+    // Leaving Grace as 0, so a role that allowed 30 minutes of leaving still
+    // had those minutes deducted.
     return rows
-      .map((r) => ({ label: r.label, startTime: r.startTime, endTime: r.endTime }))
+      .map((r) => ({
+        label: r.label,
+        startTime: r.startTime,
+        endTime: r.endTime,
+        lateGraceMinutes: Number(r.lateGraceMinutes ?? LATE_GRACE_MINUTES),
+        earlyLeaveGraceMinutes: Number(r.earlyLeaveGraceMinutes ?? 0),
+      }))
       .sort((a, b) => a.startTime.localeCompare(b.startTime));
   } catch {
     return [];
@@ -307,12 +321,18 @@ export async function POST(request: Request) {
       const inShift =
         pickShift(shifts, etMinutes(existing.clockIn!)) || clockInShift;
       const early = isEarlyOut(inShift, nowMinutes);
+      // THE MINUTES, not only the flag. Payroll deducts an early departure per
+      // minute, and until 2026-10-22 the column was never written, so the early
+      // departure deduction could never fire. Inside the role's leaving grace
+      // this is 0: leaving a few minutes before the end costs nothing.
+      const earlyMinutes = earlyOutMinutesFor(inShift, nowMinutes);
       const status = early ? "early_out" : "completed";
 
       // THE AUTOMATIC SHIFT OT (owner, Oct 2026: "if someone stay after his
-      // shift 1.30 it is overtime"). The tap that closes the day also measures
-      // how far past the end of the shift it closed, so nobody has to remember
-      // a button. 0 means "he went home inside the hour and a half".
+      // shift 1.30 it is overtime", then lowered to one hour on 2026-10-22).
+      // The tap that closes the day also measures how far past the end of the
+      // shift it closed, so nobody has to remember a button. 0 means "he went
+      // home inside the hour".
       const shiftOtMinutes = shiftOtMinutesFor(inShift, now);
 
       const row = (
@@ -324,6 +344,7 @@ export async function POST(request: Request) {
             totalMinutes,
             status,
             earlyOut: early,
+            earlyOutMinutes: earlyMinutes,
             // Staying past the shift is overtime whether or not anybody pressed
             // the button, and the sheet's violet box follows the row.
             isOvertime: Boolean(existing.isOvertime) || shiftOtMinutes > 0,
@@ -368,11 +389,12 @@ export async function POST(request: Request) {
         totalMinutes,
         totalHours: hours,
         earlyOut: early,
+        earlyOutMinutes: earlyMinutes,
         isOvertime: Boolean(row.isOvertime),
         overtimeMinutes,
         overtimeLabel: otLabel || null,
         status,
-        message: `${memberName} OUT ${outTime} • ${hours}${otLabel ? ` • OT ${otLabel}` : ""}${early ? " • Early out" : ""}`,
+        message: `${memberName} OUT ${outTime} • ${hours}${otLabel ? ` • OT ${otLabel}` : ""}${early ? ` • Early out ${earlyMinutes}m` : ""}`,
         oled: {
           line1: memberName.substring(0, 20),
           line2: `OUT ${outTime}`,

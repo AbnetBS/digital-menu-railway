@@ -14,7 +14,7 @@ import { shiftOtMinutesFor, type OvertimeSource, type OvertimeType, type RoleShi
  * number without hunting for the old one.
  *
  * An "auto" row — the Shift OT the device stamps when a person is still in the
- * building more than an hour and a half after his shift ends — never overwrites
+ * building more than an hour after his shift ends — never overwrites
  * a number a person typed for that day: a supervisor standing at the tablet
  * knows something the stopwatch does not. The other way round an auto row
  * freely replaces its own previous value, because a re-scan of the same OUT is
@@ -116,9 +116,9 @@ export async function saveOvertimeRow(
 
 /**
  * THE AUTOMATIC SHIFT OT (owner, Oct 2026: "if someone stay after his shift
- * 1.30 it is overtime"). Called with the OUT the clock route just wrote: the
- * overtime is the minutes past the end of the shift, and nothing is written
- * when the person was away within the hour and a half.
+ * 1.30 it is overtime", lowered to ONE HOUR on 2026-10-22). Called with the
+ * OUT the clock route just wrote: the overtime is the minutes past the end of
+ * the shift, and nothing is written when the person left inside the hour.
  *
  * Returns the minutes it recorded, so the device's answer can say
  * "Overtime 2h 10m" on the same tap.

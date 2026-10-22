@@ -2073,6 +2073,7 @@ export default function AttendanceTab() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
+                        setOtType("holiday");
                         setHolidayOpen(true);
                       }}
                       title="Add the holiday dates the system must know"

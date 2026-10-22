@@ -19,8 +19,9 @@
  *        supervisor the door tablet while the supervisor's keypad is open
  *        auto       the clock-out scan of a person who stayed past his shift
  *   3. The automatic rule (owner: "if someone stay after his shift 1.30 it is
- *      overtime"): still present more than 90 minutes after the end of the
- *      shift, and the overtime is exactly the minutes past that end.
+ *      overtime", lowered to ONE HOUR on 2026-10-22): still present more than
+ *      60 minutes after the end of the shift, and the overtime is exactly the
+ *      minutes past that end.
  *   4. No approval step. The row IS the record, it lists immediately, it turns
  *      that day's box on the paper sheet violet, and the Leaderboard counts the
  *      day as an overtime day.
@@ -91,11 +92,11 @@ const at = (day: string, hhmm: string) => new Date(`${day}T${hhmm}:00+03:00`);
 const d15 = "2026-10-15";
 const d16 = "2026-10-16";
 
-pass("the grace is an hour and a half (owner: after his shift 1.30)", SHIFT_OT_GRACE_MINUTES === 90);
+pass("the grace is one hour (owner, 2026-10-22: the 1:00 hour buffer)", SHIFT_OT_GRACE_MINUTES === 60);
 pass("leaving at the end of the shift is not overtime", shiftOtMinutesFor(morning, at(d15, "17:00")) === 0);
 pass("leaving early is not overtime", shiftOtMinutesFor(morning, at(d15, "15:20")) === 0);
-pass("90 minutes past the end is still inside the grace", shiftOtMinutesFor(morning, at(d15, "18:30")) === 0);
-pass("one minute past the grace is overtime, to the minute", shiftOtMinutesFor(morning, at(d15, "18:31")) === 91);
+pass("60 minutes past the end is still inside the buffer", shiftOtMinutesFor(morning, at(d15, "18:00")) === 0);
+pass("one minute past the buffer is overtime, to the minute", shiftOtMinutesFor(morning, at(d15, "18:01")) === 61);
 pass("a whole evening is measured, not capped at the grace", shiftOtMinutesFor(morning, at(d15, "21:00")) === 240);
 pass("a shift across midnight wraps like the early-out rule", shiftOtMinutesFor(night, at(d16, "05:00")) === 120);
 pass("and an out before that midnight end is an early leave, not 22 hours", shiftOtMinutesFor(night, at(d16, "02:00")) === 0);
@@ -258,5 +259,5 @@ if (failures > 0) {
 }
 console.log("✅ Overtime guard PASSED");
 console.log("   • three kinds, four sources, one row per person + day + kind + shift");
-console.log("   • a person still here 90 minutes past his shift gets the hours measured for him");
+console.log("   • a person still here 60 minutes past his shift gets the hours measured for him");
 console.log("   • the admin tab beside the Leaderboard, the tablet at the door, and no approval queue");

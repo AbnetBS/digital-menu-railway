@@ -310,9 +310,10 @@ export async function POST(request: Request) {
       const status = early ? "early_out" : "completed";
 
       // THE AUTOMATIC SHIFT OT (owner, Oct 2026: "if someone stay after his
-      // shift 1.30 it is overtime"). The tap that closes the day also measures
-      // how far past the end of the shift it closed, so nobody has to remember
-      // a button. 0 means "he went home inside the hour and a half".
+      // shift 1.30 it is overtime", then lowered to one hour on 2026-10-22).
+      // The tap that closes the day also measures how far past the end of the
+      // shift it closed, so nobody has to remember a button. 0 means "he went
+      // home inside the hour".
       const shiftOtMinutes = shiftOtMinutesFor(inShift, now);
 
       const row = (

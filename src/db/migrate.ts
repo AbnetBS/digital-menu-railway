@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-22-1";
+const SCHEMA_VERSION = "2026-10-22-2";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -529,6 +529,26 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    "payroll_holidays",
+    `CREATE TABLE IF NOT EXISTS payroll_holidays (
+      id serial PRIMARY KEY,
+      holiday_date varchar(10) NOT NULL,
+      name varchar(120) NOT NULL,
+      created_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    "payroll_payments",
+    `CREATE TABLE IF NOT EXISTS payroll_payments (
+      id serial PRIMARY KEY,
+      period_key varchar(10) NOT NULL,
+      member_id integer NOT NULL,
+      paid_at timestamp DEFAULT now(),
+      method varchar(40) DEFAULT 'Cash',
+      note text
+    )`,
+  ],
+  [
     "attendance_free_schedules",
     `CREATE TABLE IF NOT EXISTS attendance_free_schedules (
       id serial PRIMARY KEY,
@@ -902,6 +922,12 @@ async function runFullMigrate(force: boolean) {
     if (err) errors.push(`create ${name}: ${err}`);
   }
 
+  // HOLIDAY DATES and PAID PEOPLE (payroll improvement, 2026-10-22): one row
+  // per holiday day and one per person per payroll month, so a double tap can
+  // never register Meskel twice or pay somebody twice.
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_holidays_date_key ON payroll_holidays (holiday_date)`);
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_payments_period_member_key ON payroll_payments (period_key, member_id)`);
+
   // Payroll period sign-off columns added after the first payroll release.
   await run(`ALTER TABLE payroll_periods ADD COLUMN IF NOT EXISTS prepared_by varchar(100)`);
   await run(`ALTER TABLE payroll_periods ADD COLUMN IF NOT EXISTS checked_by varchar(100)`);
@@ -968,6 +994,8 @@ async function runFullMigrate(force: boolean) {
     "attendance_enroll_jobs",
     "attendance_overtime",
     "attendance_active_windows",
+    "payroll_holidays",
+    "payroll_payments",
   ];
   for (const t of serialTables) {
     await run(`CREATE SEQUENCE IF NOT EXISTS ${t}_id_seq`);

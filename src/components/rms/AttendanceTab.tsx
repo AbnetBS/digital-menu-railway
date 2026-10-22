@@ -297,8 +297,8 @@ export default function AttendanceTab() {
   const [editingRoleId, setEditingRoleId] = useState<number | null>(null);
   const [roleName, setRoleName] = useState("");
   const [roleShifts, setRoleShifts] = useState<RoleShift[]>([
-    { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
-    { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
+    { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 },
+    { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 },
   ]);
 
   // Member form
@@ -709,10 +709,10 @@ export default function AttendanceTab() {
     setRoleName(role?.name ?? "");
     setRoleShifts(
       role && role.shifts.length > 0
-        ? role.shifts.map((s) => ({ label: s.label, startTime: s.startTime, endTime: s.endTime, lateGraceMinutes: s.lateGraceMinutes ?? 15, earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0 }))
+        ? role.shifts.map((s) => ({ label: s.label, startTime: s.startTime, endTime: s.endTime, lateGraceMinutes: s.lateGraceMinutes ?? 30, earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0 }))
         : [
-            { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
-            { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 },
+            { label: "Morning", startTime: "08:00", endTime: "14:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 },
+            { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 },
           ]
     );
     setRoleFormOpen(true);
@@ -1308,7 +1308,7 @@ export default function AttendanceTab() {
                         className="bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm text-white"
                       />
                     </div>
-                    <div><label className="block text-[11px] font-bold text-amber-200 mb-1">Maximum Late Time (min)</label><input type="number" min="0" max="240" value={s.lateGraceMinutes ?? 15} onChange={(e)=>setRoleShifts(roleShifts.map((x,j)=>j===i?{...x,lateGraceMinutes:Number(e.target.value)}:x))} className="w-32 bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm"/></div>
+                    <div><label className="block text-[11px] font-bold text-amber-200 mb-1">Maximum Late Time (min)</label><input type="number" min="0" max="240" value={s.lateGraceMinutes ?? 30} onChange={(e)=>setRoleShifts(roleShifts.map((x,j)=>j===i?{...x,lateGraceMinutes:Number(e.target.value)}:x))} className="w-32 bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm"/></div>
                     <div><label className="block text-[11px] font-bold text-amber-200 mb-1">Leaving Grace (min)</label><input type="number" min="0" max="240" value={s.earlyLeaveGraceMinutes ?? 0} onChange={(e)=>setRoleShifts(roleShifts.map((x,j)=>j===i?{...x,earlyLeaveGraceMinutes:Number(e.target.value)}:x))} className="w-32 bg-[#3D2314] border border-stone-700 rounded-xl p-3 text-sm"/></div>
                     {roleShifts.length > 1 && (
                       <button
@@ -1322,7 +1322,7 @@ export default function AttendanceTab() {
                   </div>
                 ))}
                 <button
-                  onClick={() => setRoleShifts([...roleShifts, { label: "", startTime: "08:00", endTime: "17:00", lateGraceMinutes: 15, earlyLeaveGraceMinutes: 0 }])}
+                  onClick={() => setRoleShifts([...roleShifts, { label: "", startTime: "08:00", endTime: "17:00", lateGraceMinutes: 30, earlyLeaveGraceMinutes: 0 }])}
                   className="text-xs font-bold text-amber-200 hover:text-white flex items-center gap-2"
                 >
                   <Plus className="w-4 h-4" /> Add another shift

@@ -56,6 +56,8 @@ const pass = (name: string, cond: boolean, extra = "") => {
 };
 const ROOT = path.resolve(__dirname, "..");
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
+// Read the files once, before any pass() can ask about them.
+const clockApi = read("src/app/api/attendance/clock/route.ts");
 
 /* ── 1. the safe evaluator and the owner's rates ─────────────────────────── */
 
@@ -103,7 +105,15 @@ pass("half a day with no OUT has no measured hours", recognizedOtMinutes(dayShif
 pass("a stored total is still honoured when the two scans were never stored", recognizedOtMinutes(dayShift, { totalMinutes: 480 }) === 480);
 pass("no role times fall back to the clocked time", recognizedOtMinutes(null, log(at(d15, "08:00"), at(d15, "16:00"))) === 480);
 pass("Shift OT itself still starts after one hour past the end", shiftOtMinutesFor(dayShift, at(d15, "18:00")) === 0 && shiftOtMinutesFor(dayShift, at(d15, "18:01")) === 61);
-pass("late and early rules are unchanged", lateMinutesFor({ ...dayShift, lateGraceMinutes: 30 }, 8 * 60 + 40) === 10 && earlyOutMinutesFor(dayShift, 16 * 60 + 30) === 30);
+/* ── 2b. the deduction starts only after the grace (owner, Oct 2026) ────── */
+
+pass("coming in inside the Maximum Late Time costs nothing", lateMinutesFor({ ...dayShift, lateGraceMinutes: 30 }, 8 * 60 + 30) === 0);
+pass("coming in past it deducts only the minutes above the grace", lateMinutesFor({ ...dayShift, lateGraceMinutes: 30 }, 8 * 60 + 40) === 10);
+pass("leaving inside the Leaving Grace costs nothing", earlyOutMinutesFor({ ...dayShift, earlyLeaveGraceMinutes: 30 }, 16 * 60 + 45) === 0);
+pass("leaving past it deducts only the minutes above the grace", earlyOutMinutesFor({ ...dayShift, earlyLeaveGraceMinutes: 30 }, 16 * 60 + 30) === 0 && earlyOutMinutesFor({ ...dayShift, earlyLeaveGraceMinutes: 30 }, 16 * 60 + 20) === 10);
+pass("an early departure is measured in minutes for the pay slip", earlyOutMinutesFor({ ...dayShift, earlyLeaveGraceMinutes: 0 }, 16 * 60 + 30) === 30);
+pass("the door reads each role's own Maximum Late Time and Leaving Grace", clockApi.includes("lateGraceMinutes: Number(r.lateGraceMinutes") && clockApi.includes("earlyLeaveGraceMinutes: Number(r.earlyLeaveGraceMinutes"));
+pass("the clock-out scan now stores those minutes, not only a flag", clockApi.includes("earlyOutMinutes: earlyMinutes") && clockApi.includes("earlyOutMinutesFor(inShift, nowMinutes)"));
 
 /* ── 3. the API calculates, and numbers the rows 1..n ────────────────────── */
 
@@ -113,6 +123,10 @@ const payrollTab = read("src/components/rms/PayrollTab.tsx");
 const attendanceTab = read("src/components/rms/AttendanceTab.tsx");
 const schema = read("src/db/schema.ts");
 const migrate = read("src/db/migrate.ts");
+
+pass("payroll measures lateness and early departure from the role's own times", payrollApi.includes("lateMinutesFor(shift, etMinutes(l.clock_in))") && payrollApi.includes("earlyOutMinutesFor(shift, etMinutes(l.clock_out))"));
+pass("an older row with a flag but no minutes still deducts the right amount", payrollApi.includes("l.early_out && shift && l.clock_out"));
+pass("the screen says the deduction starts after the grace", payrollTab.includes("only after") && payrollTab.includes("Maximum Late Time"));
 
 pass("the payroll reads the overtime rows the tablet and the clock already wrote", payrollApi.includes("FROM attendance_overtime"));
 pass("it measures holiday and free week hours with the buffer rule", payrollApi.includes("recognizedOtMinutes(shift, log)"));

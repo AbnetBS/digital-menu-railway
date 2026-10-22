@@ -418,6 +418,11 @@ export default function PayrollTab() {
               <b className="text-amber-200">Breakage &amp; Shortage</b> to type the number, then press Enter. Nothing is saved
               until you confirm, and the whole row recalculates by itself. The OT cell opens the three overtime kinds and what
               was measured from the scans. The last column is the only action: Pay.
+              <span className="block mt-1.5">
+                Lateness and early departure are deducted <b className="text-amber-200">only after</b> the Maximum Late Time and
+                the Leaving Grace you set in Attendance, Role &amp; Time. Inside them nothing is deducted, and past them only
+                the minutes above the grace.
+              </span>
             </p>
           </div>
 

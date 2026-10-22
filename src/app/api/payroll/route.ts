@@ -14,7 +14,14 @@ import {
   withDefaultPayrollFormulas,
   type PayrollSettings,
 } from "@/lib/payroll";
-import { etMinutes, pickShift, shiftOtMinutesFor, type RoleShift } from "@/lib/attendance";
+import {
+  earlyOutMinutesFor,
+  etMinutes,
+  lateMinutesFor,
+  pickShift,
+  shiftOtMinutesFor,
+  type RoleShift,
+} from "@/lib/attendance";
 
 /**
  * PAYROLL (owner, Oct 2026).
@@ -86,7 +93,7 @@ async function buildRows(periodKey: string) {
         "SELECT m.id,m.name,m.role_id,m.active,m.employment_started_at,m.terminated_at,m.created_at,(SELECT min(l.date) FROM attendance_logs l WHERE l.member_id=m.id) AS first_attendance_date FROM attendance_members m ORDER BY m.name"
       ),
       pool.query(
-        "SELECT member_id,date,clock_in,clock_out,total_minutes,late_minutes,early_out_minutes,is_overtime,status FROM attendance_logs WHERE date BETWEEN $1 AND $2 AND member_id IS NOT NULL",
+        "SELECT member_id,date,clock_in,clock_out,total_minutes,late_minutes,early_out,early_out_minutes,is_overtime,status FROM attendance_logs WHERE date BETWEEN $1 AND $2 AND member_id IS NOT NULL",
         [bounds.from, bounds.to]
       ),
       pool.query("SELECT * FROM payroll_compensation"),
@@ -179,10 +186,33 @@ async function buildRows(periodKey: string) {
     const excusedAbsence = new Set(exceptions.filter((e) => e.exception_type === "absence").map((e) => e.attendance_date));
     const excusedLate = new Set(exceptions.filter((e) => e.exception_type === "lateness").map((e) => e.attendance_date));
     const excusedEarly = new Set(exceptions.filter((e) => e.exception_type === "early_out").map((e) => e.attendance_date));
-    const lateLogs = memberLogs.filter((l) => Number(l.late_minutes) > 0);
-    const deductibleLate = lateLogs.filter((l) => !excusedLate.has(l.date) && !isFree(l.date));
-    const earlyLogs = memberLogs.filter((l) => Number(l.early_out_minutes) > 0);
-    const deductibleEarly = earlyLogs.filter((l) => !excusedEarly.has(l.date) && !isFree(l.date));
+    /* ── deductions start only AFTER the grace ────────────────────────────
+     * The owner's rule (Oct 2026): "the deduction starts if they come after
+     * their maximum late time, and the leaving hour, until that nothing
+     * happens". Inside the role's Maximum Late Time and Leaving Grace minutes
+     * cost nothing; past them, only the minutes beyond are deducted.
+     *
+     * The minutes are measured from the scan and the role's own times, so an
+     * install whose older rows never stored early_out_minutes (the column was
+     * written as a flag only) still deducts the right amount instead of zero.
+     */
+    const measured = memberLogs.map((l) => {
+      const shift = shiftOfLog(l, roleShifts);
+      const storedLate = Number(l.late_minutes || 0);
+      const storedEarly = Number(l.early_out_minutes || 0);
+      const late = storedLate > 0 ? storedLate : shift && l.clock_in ? lateMinutesFor(shift, etMinutes(l.clock_in)) : 0;
+      const early =
+        storedEarly > 0
+          ? storedEarly
+          : l.early_out && shift && l.clock_out
+            ? earlyOutMinutesFor(shift, etMinutes(l.clock_out))
+            : 0;
+      return { date: String(l.date), late, early, isFree: isFree(String(l.date)) };
+    });
+    const lateLogs = measured.filter((l) => l.late > 0);
+    const deductibleLate = lateLogs.filter((l) => !excusedLate.has(l.date) && !l.isFree);
+    const earlyLogs = measured.filter((l) => l.early > 0);
+    const deductibleEarly = earlyLogs.filter((l) => !excusedEarly.has(l.date) && !l.isFree);
 
     /* ── the three overtime kinds, measured, not remembered ───────────────
      * A day is one kind only: a row somebody wrote for that day wins (the
@@ -241,9 +271,9 @@ async function buildRows(periodKey: string) {
       approvedAbsences: absenceDates.filter((d) => excusedAbsence.has(d)).length,
       unapprovedAbsences: absenceDates.filter((d) => !excusedAbsence.has(d)).length,
       lateCount: deductibleLate.length,
-      lateMinutes: deductibleLate.reduce((s, l) => s + Number(l.late_minutes || 0), 0),
+      lateMinutes: deductibleLate.reduce((s, l) => s + l.late, 0),
       earlyOutCount: deductibleEarly.length,
-      earlyOutMinutes: deductibleEarly.reduce((s, l) => s + Number(l.early_out_minutes || 0), 0),
+      earlyOutMinutes: deductibleEarly.reduce((s, l) => s + l.early, 0),
       holidayOtHours,
       freeWeekOtHours,
       shiftOtHours,
@@ -305,8 +335,8 @@ async function buildRows(periodKey: string) {
 
     const attendanceEvents = [
       ...absenceDates.map((date) => ({ date, dateEc: gregorianDateToEthiopian(date), type: "absence", minutes: 0, excused: excusedAbsence.has(date) })),
-      ...lateLogs.map((l) => ({ date: l.date, dateEc: gregorianDateToEthiopian(l.date), type: "lateness", minutes: Number(l.late_minutes), excused: excusedLate.has(l.date) })),
-      ...earlyLogs.map((l) => ({ date: l.date, dateEc: gregorianDateToEthiopian(l.date), type: "early_out", minutes: Number(l.early_out_minutes), excused: excusedEarly.has(l.date) })),
+      ...lateLogs.map((l) => ({ date: l.date, dateEc: gregorianDateToEthiopian(l.date), type: "lateness", minutes: l.late, excused: excusedLate.has(l.date) })),
+      ...earlyLogs.map((l) => ({ date: l.date, dateEc: gregorianDateToEthiopian(l.date), type: "early_out", minutes: l.early, excused: excusedEarly.has(l.date) })),
     ].sort((a, b) => b.date.localeCompare(a.date));
 
     const writtenEntries = manualOtRows.map((r) => ({

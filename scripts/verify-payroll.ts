@@ -143,6 +143,45 @@ pass("a paid row freezes what was actually handed over", payrollApi.includes("sn
 pass("the tables are declared in the drizzle schema", schema.includes('pgTable("payroll_holidays"') && schema.includes('pgTable("payroll_payments"'));
 pass("the schema version moved so an existing database self-heals", (/SCHEMA_VERSION = "(2026-10-22-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-22-3");
 
+/* ── 3b. the salary cells take cents ─────────────────────────────────────── */
+
+pass(
+  "a salary with cents reaches the database as a decimal, not a whole number",
+  payrollApi.includes("COALESCE($2::numeric,0)") && payrollApi.includes("COALESCE($3::numeric,0)")
+);
+pass(
+  "the parameter is cast because a bare COALESCE($2,0) is typed as integer by Postgres",
+  payrollApi.includes("$2::numeric") && payrollApi.includes("COALESCE($3::numeric,payroll_monthly_inputs.breakage_shortage)")
+);
+pass(
+  "a column that still rounds the cents away is caught and the save is retried",
+  payrollApi.includes("RoundedMoneyColumnError") && payrollApi.includes("RETURNING basic_salary,transport_allowance")
+);
+pass(
+  "overtime hours keep their half hour too",
+  payrollApi.includes("$4::numeric") && payrollApi.includes("RETURNING hours")
+);
+pass(
+  "the five whole-number columns from the old build are converted in place",
+  ["payroll_compensation", "payroll_monthly_inputs", "payroll_overtime_entries"].every((t) => migrate.includes(`["${t}"`)) &&
+    migrate.includes('["payroll_compensation", "basic_salary"]') &&
+    migrate.includes('["payroll_compensation", "transport_allowance"]') &&
+    migrate.includes('["payroll_overtime_entries", "hours"]') &&
+    migrate.includes("ALTER COLUMN ${column} TYPE numeric(14,2)")
+);
+pass(
+  "only a column that is still wrong is rewritten, so a healthy database is not touched",
+  migrate.includes("numeric_scale") && migrate.includes('live.data_type === "numeric"')
+);
+pass(
+  "the payroll page repairs on its own first visit, without waiting for a deploy",
+  payrollApi.includes("ensureMoneyColumns()") && payrollApi.includes("moneyColumnsChecked")
+);
+pass(
+  "the schema version moved so an existing database self-heals",
+  (/SCHEMA_VERSION = "(2026-10-2[2-9]-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-22-4"
+);
+
 /* ── 4. the screen ───────────────────────────────────────────────────────── */
 
 pass("the salary, transport and breakage cells are typed", ["basicSalary", "transportAllowance", "breakageShortage"].every((f) => payrollTab.includes(`askSave(r, "${f}"`)) && payrollTab.includes("EditableMoneyCell"));
@@ -177,3 +216,4 @@ console.log("✅ Payroll guard PASSED");
 console.log("   • owner-typed salary, transport and breakage; everything else calculated");
 console.log("   • holiday dates, free week and shift OT measured with the one hour buffer");
 console.log("   • 1, 2, 3 numbering and one green Paid button per person");
+console.log("   • salaries, transport, breakage and overtime hours stored with cents");

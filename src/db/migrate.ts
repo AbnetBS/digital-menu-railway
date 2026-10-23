@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-22-3";
+const SCHEMA_VERSION = "2026-10-22-4";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -609,6 +609,70 @@ const RMS_CREATES: Array<[string, string]> = [
   ],
 ];
 
+
+/* ─── money columns that were created as whole numbers ─────────────────────
+ * THE BUG THE OWNER HIT (2026-10-22): the payroll tabs on fanacafe.com.et were
+ * made by an earlier build that kept salary, transport, breakage and overtime
+ * hours as `integer`. `CREATE TABLE IF NOT EXISTS` never touches a table that
+ * exists, so every later deploy kept the whole-number columns, and saving a
+ * real salary answered:
+ *
+ *   invalid input syntax for type integer: "3080.13"
+ *
+ * These five columns must be `numeric(14,2)` (two decimals). The repair below
+ * reads the live types first and converts only what is wrong, so it costs
+ * nothing on a healthy database and never rewrites a table on every deploy.
+ * Values already stored are kept: 3000 becomes 3000.00.
+ */
+const PAYROLL_MONEY_COLUMNS: Array<[string, string]> = [
+  ["payroll_compensation", "basic_salary"],
+  ["payroll_compensation", "transport_allowance"],
+  ["payroll_compensation", "breakage_shortage"],
+  ["payroll_monthly_inputs", "breakage_shortage"],
+  ["payroll_overtime_entries", "hours"],
+];
+
+/** The five money columns that must accept cents, repaired in place.
+ *  Returns the columns that could not be converted, so the payroll route can
+ *  retry a save after it healed the database under itself. */
+export async function repairPayrollMoneyColumns(): Promise<string[]> {
+  const problems: string[] = [];
+  let rows: Array<{ table_name: string; column_name: string; data_type: string; numeric_scale: number | null }> = [];
+  try {
+    const probe = await db.execute(
+      sql`SELECT table_name, column_name, data_type, numeric_scale
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name IN ('payroll_compensation', 'payroll_monthly_inputs', 'payroll_overtime_entries')`
+    );
+    rows = ((probe as unknown as { rows?: typeof rows }).rows ?? []).map((r) => ({
+      table_name: String(r.table_name),
+      column_name: String(r.column_name),
+      data_type: String(r.data_type),
+      numeric_scale: r.numeric_scale === null ? null : Number(r.numeric_scale),
+    }));
+  } catch (e) {
+    return [`payroll money columns: ${String(e)}`];
+  }
+  for (const [table, column] of PAYROLL_MONEY_COLUMNS) {
+    const live = rows.find((r) => r.table_name === table && r.column_name === column);
+    // The table or column does not exist yet: CREATE TABLE above makes it right.
+    if (!live) continue;
+    if (live.data_type === "numeric" && Number(live.numeric_scale) === 2) continue;
+    const err = await run(
+      `ALTER TABLE ${table} ALTER COLUMN ${column} TYPE numeric(14,2)
+        USING (COALESCE(NULLIF(btrim(${column}::text), ''), '0'))::numeric(14,2)`
+    );
+    if (err) problems.push(`${table}.${column}: ${err}`);
+  }
+  return problems;
+}
+
+/** True when a database error is this exact old-column problem. */
+export function isIntegerColumnError(message: string): boolean {
+  return /invalid input syntax for type integer/i.test(message) || /column .* is of type integer/i.test(message);
+}
+
 const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
   staff_users: {
     name: { type: "text", def: "'Staff'" },
@@ -929,6 +993,12 @@ async function runFullMigrate(force: boolean) {
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_holidays_date_key ON payroll_holidays (holiday_date)`);
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_payments_period_member_key ON payroll_payments (period_key, member_id)`);
   await run(`ALTER TABLE payroll_payments ADD COLUMN IF NOT EXISTS snapshot jsonb`);
+
+  // MONEY COLUMNS: an earlier build created the payroll amounts as integers, and
+  // saving 3080.13 failed with "invalid input syntax for type integer". Convert
+  // them once (values kept), so every salary, transport and breakage value with
+  // cents can be saved from this deploy on.
+  for (const problem of await repairPayrollMoneyColumns()) errors.push(`money column ${problem}`);
 
   // Payroll period sign-off columns added after the first payroll release.
   await run(`ALTER TABLE payroll_periods ADD COLUMN IF NOT EXISTS prepared_by varchar(100)`);

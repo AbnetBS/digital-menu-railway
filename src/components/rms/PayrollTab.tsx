@@ -43,9 +43,9 @@ const FORMULAS: Array<[keyof PayrollSettings, string, string]> = [
   ["freeWeekOtFormula", "Free week OT (x2)", "BasicSalary / 30 / 8 * FreeWeekOtHours * 2"],
   ["shiftOtFormula", "Shift OT (x1.5)", "BasicSalary / 30 / 8 * ShiftOtHours * 1.5"],
   ["incomeTaxFormula", "Income tax", "Editable approved tax brackets from the supplied Excel sheet"],
-  ["absenceFormula", "Absence deduction", "BasicSalary / 30 * UnapprovedAbsences"],
-  ["latenessFormula", "Lateness deduction", "BasicSalary / 30 / 8 / 60 * LateMinutes"],
-  ["earlyOutFormula", "Early departure deduction", "BasicSalary / 30 / 8 / 60 * EarlyOutMinutes"],
+  ["absenceFormula", "Absence deduction", "Empty: no absence money is deducted"],
+  ["latenessFormula", "Lateness deduction", "Empty: no lateness money is deducted"],
+  ["earlyOutFormula", "Early departure deduction", "Empty: no early departure money is deducted"],
 ];
 
 const EDITABLE: Record<string, { label: string; hint: string }> = {
@@ -290,7 +290,8 @@ export default function PayrollTab() {
             <h3 className="font-bold text-amber-100">Payroll formula settings</h3>
             <p className="text-xs text-stone-400">
               Only arithmetic and the named fields below are accepted. No Excel cell references and no code can run. The
-              formulas start at the rates the owner gave: holiday 2.5, free week 2, shift 1.5.
+              overtime formulas start at the rates the owner gave: holiday 2.5, free week 2, shift 1.5. The absence,
+              lateness and early departure boxes start empty.
             </p>
           </div>
           <div className="grid md:grid-cols-2 gap-3">
@@ -328,6 +329,12 @@ export default function PayrollTab() {
                 <span className="font-normal text-stone-500">{hint}</span>
               </label>
             ))}
+          </div>
+          <div className="rounded-xl bg-black/20 p-3 text-[11px] text-stone-300">
+            <b>Absence, lateness and early departure are yours.</b> Those three boxes start empty, and while they are
+            empty nothing is deducted for them, whatever the attendance sheet records. Type your own formula and save it
+            (for example <code className="font-mono text-amber-200">BasicSalary / 30 * UnapprovedAbsences</code>), and only
+            then does that column take money off a payslip.
           </div>
           <div className="rounded-xl bg-black/20 p-3 text-[11px] text-stone-300">
             <b>Available fields:</b> {PAYROLL_VARIABLES.join(", ")}

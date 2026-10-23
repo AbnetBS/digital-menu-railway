@@ -4,6 +4,7 @@ import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import {
   DEFAULT_PAYROLL_SETTINGS,
+  DEDUCTION_FORMULA_KEYS,
   PAYROLL_FORMULA_KEYS,
   PAYROLL_VARIABLES,
   evaluatePayrollFormula,
@@ -18,6 +19,10 @@ import {
  * nobody has typed anything, so the payroll calculates from the first day.
  * An empty box falls back to the owner's default instead of turning a whole
  * column into zeros, and saving is still checked by the safe evaluator.
+ *
+ * The absence, lateness and early departure boxes are the exception: the owner
+ * never gave those rules, so they ship empty and an empty box SAVES AS EMPTY
+ * (no deduction), instead of being filled with a formula he did not ask for.
  */
 export async function GET() {
   const auth = await requireAdmin();
@@ -45,6 +50,14 @@ export async function PUT(request: Request) {
   const example: Record<string, number> = Object.fromEntries(PAYROLL_VARIABLES.map((key) => [key, 100]));
   for (const key of PAYROLL_FORMULA_KEYS) {
     const formula = String(settings[key] || "").trim();
+    // An empty deduction box is the owner saying "do not deduct this"; it is
+    // stored empty and evaluated as zero, never replaced by a made-up rule.
+    // The overtime and tax formulas are still required, so an empty one of
+    // those falls through to the evaluator below and is refused.
+    if (!formula && (DEDUCTION_FORMULA_KEYS as readonly string[]).includes(key)) {
+      settings[key] = "";
+      continue;
+    }
     try {
       evaluatePayrollFormula(formula, example);
     } catch (error) {

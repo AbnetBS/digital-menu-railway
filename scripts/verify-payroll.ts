@@ -118,11 +118,52 @@ pass("the clock-out scan now stores those minutes, not only a flag", clockApi.in
 /* ── 3. the API calculates, and numbers the rows 1..n ────────────────────── */
 
 const payrollApi = read("src/app/api/payroll/route.ts");
+const settingsApi = read("src/app/api/payroll/settings/route.ts");
 const holidayApi = read("src/app/api/payroll/holidays/route.ts");
 const payrollTab = read("src/components/rms/PayrollTab.tsx");
 const attendanceTab = read("src/components/rms/AttendanceTab.tsx");
 const schema = read("src/db/schema.ts");
 const migrate = read("src/db/migrate.ts");
+
+/* ── 1b. the three deductions are the owner's, and they start empty ──────── */
+
+pass(
+  "absence, lateness and early departure ship empty, because the owner never gave those rules",
+  DEFAULT_PAYROLL_SETTINGS.absenceFormula === "" &&
+    DEFAULT_PAYROLL_SETTINGS.latenessFormula === "" &&
+    DEFAULT_PAYROLL_SETTINGS.earlyOutFormula === ""
+);
+pass(
+  "an empty deduction box stays empty instead of being filled with a made-up formula",
+  withDefaultPayrollFormulas({ absenceFormula: "", latenessFormula: "   ", earlyOutFormula: "" }).absenceFormula === "" &&
+    withDefaultPayrollFormulas({ latenessFormula: "" }).latenessFormula === "" &&
+    withDefaultPayrollFormulas({ earlyOutFormula: "" }).earlyOutFormula === ""
+);
+pass(
+  "an empty formula deducts nothing in the payroll row",
+  payrollApi.includes("return f ? Math.max(0, money(evaluatePayrollFormula(f, ctx))) : 0")
+);
+pass(
+  "the three deductions are not required settings, so a first month is never blocked by them",
+  !requiredPayrollSettingsMissing(DEFAULT_PAYROLL_SETTINGS).some((m) => /absence|lateness|early/i.test(m))
+);
+pass(
+  "saving an empty deduction box stores it empty, it does not fall back to a default",
+  settingsApi.includes("if (!formula && (DEDUCTION_FORMULA_KEYS as readonly string[]).includes(key))") &&
+    settingsApi.includes('settings[key] = ""')
+);
+pass(
+  "the migration clears only the shipped deduction formulas an earlier build had stored",
+  migrate.includes("BasicSalary / 30 * UnapprovedAbsences") &&
+    migrate.includes("BasicSalary / 30 / 8 / 60 * LateMinutes") &&
+    migrate.includes("BasicSalary / 30 / 8 / 60 * EarlyOutMinutes") &&
+    migrate.includes("jsonb_set(settings, '{${key}}'")
+);
+pass(
+  "the settings screen says an empty box means no deduction",
+  payrollTab.includes("start empty") && payrollTab.includes("nothing is deducted") && payrollTab.includes("Empty: no lateness money is deducted")
+);
+
 
 pass("payroll measures lateness and early departure from the role's own times", payrollApi.includes("lateMinutesFor(shift, etMinutes(l.clock_in))") && payrollApi.includes("earlyOutMinutesFor(shift, etMinutes(l.clock_out))"));
 pass("an older row with a flag but no minutes still deducts the right amount", payrollApi.includes("l.early_out && shift && l.clock_out"));
@@ -141,7 +182,7 @@ pass("a holiday is one row per day", migrate.includes("CREATE UNIQUE INDEX IF NO
 pass("paid rows are one per person per month in the migration too", migrate.includes("CREATE UNIQUE INDEX IF NOT EXISTS payroll_payments_period_member_key"));
 pass("a paid row freezes what was actually handed over", payrollApi.includes("snapshot") && migrate.includes("ALTER TABLE payroll_payments ADD COLUMN IF NOT EXISTS snapshot jsonb"));
 pass("the tables are declared in the drizzle schema", schema.includes('pgTable("payroll_holidays"') && schema.includes('pgTable("payroll_payments"'));
-pass("the schema version moved so an existing database self-heals", (/SCHEMA_VERSION = "(2026-10-22-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-22-3");
+pass("the schema version moved so an existing database self-heals", (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-22-3");
 
 /* ── 3b. the salary cells take cents ─────────────────────────────────────── */
 
@@ -179,7 +220,7 @@ pass(
 );
 pass(
   "the schema version moved so an existing database self-heals",
-  (/SCHEMA_VERSION = "(2026-10-2[2-9]-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-22-4"
+  (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-23-1"
 );
 
 /* ── 4. the screen ───────────────────────────────────────────────────────── */

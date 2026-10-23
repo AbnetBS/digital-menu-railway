@@ -70,20 +70,34 @@ export type PayrollFormulaKey=(typeof PAYROLL_FORMULA_KEYS)[number];
  * laws: Formula Settings can change any of them, and a saved empty formula
  * falls back to these, so a fresh install (or an old one whose formulas were
  * never written) still calculates instead of printing zeros.
+ *
+ * THE THREE DEDUCTIONS ARE DIFFERENT. The owner never gave a lateness, absence
+ * or early departure rule, and he does not accept one being invented for him:
+ * "there isn't deduction related to this until I add formula". Their boxes
+ * therefore start EMPTY, and an empty box deducts nothing. Only when he types
+ * his own formula does that column start taking money off a payslip.
  */
 export const DEFAULT_PAYROLL_FORMULAS:Record<PayrollFormulaKey,string>={
  holidayOtFormula:"BasicSalary / 30 / 8 * HolidayOtHours * 2.5",
  freeWeekOtFormula:"BasicSalary / 30 / 8 * FreeWeekOtHours * 2",
  shiftOtFormula:"BasicSalary / 30 / 8 * ShiftOtHours * 1.5",
  incomeTaxFormula:DEFAULT_INCOME_TAX_FORMULA,
- absenceFormula:"BasicSalary / 30 * UnapprovedAbsences",
- latenessFormula:"BasicSalary / 30 / 8 / 60 * LateMinutes",
- earlyOutFormula:"BasicSalary / 30 / 8 / 60 * EarlyOutMinutes",
+ absenceFormula:"",
+ latenessFormula:"",
+ earlyOutFormula:"",
 };
 export const DEFAULT_PAYROLL_SETTINGS:PayrollSettings={employerPensionRate:11,employeePensionRate:7,...DEFAULT_PAYROLL_FORMULAS,settingsApproved:false};
-/** A saved settings row with an empty formula means "use the owner's default". */
+/** A saved empty overtime or tax formula falls back to the owner's default.
+ *  An empty deduction formula stays empty: it deducts nothing. */
 export function withDefaultPayrollFormulas(raw:Partial<PayrollSettings>|null|undefined):PayrollSettings{const out={...DEFAULT_PAYROLL_SETTINGS,...(raw||{})};for(const key of PAYROLL_FORMULA_KEYS){if(!String(out[key]||"").trim())out[key]=DEFAULT_PAYROLL_FORMULAS[key];}return out;}
-export function requiredPayrollSettingsMissing(s:PayrollSettings):string[]{const m:string[]=[];if(!s.holidayOtFormula)m.push("Holiday OT formula");if(!s.freeWeekOtFormula)m.push("Free Week OT formula");if(!s.shiftOtFormula)m.push("Shift OT formula");if(!s.incomeTaxFormula)m.push("Income tax formula");if(!s.absenceFormula)m.push("Absence deduction formula");if(!s.latenessFormula)m.push("Lateness deduction formula");if(!s.earlyOutFormula)m.push("Early departure deduction formula");return m;}
+/** The three deduction boxes: empty until the owner writes one. */
+export const DEDUCTION_FORMULA_KEYS=["absenceFormula","latenessFormula","earlyOutFormula"] as const;
+/**
+ * The formulas a payroll cannot run without: the three overtime kinds and the
+ * income tax. The deduction formulas are NOT here on purpose: they are the
+ * owner's own rules, they ship empty, and an empty one simply deducts zero.
+ */
+export function requiredPayrollSettingsMissing(s:PayrollSettings):string[]{const m:string[]=[];if(!s.holidayOtFormula)m.push("Holiday OT formula");if(!s.freeWeekOtFormula)m.push("Free Week OT formula");if(!s.shiftOtFormula)m.push("Shift OT formula");if(!s.incomeTaxFormula)m.push("Income tax formula");return m;}
 
 /* ─── honoring a worked holiday, a free week and a covered shift ─────────────
  * The owner (Oct 2026): "the system calculates, the supervisor only adds the

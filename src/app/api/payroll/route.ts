@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { pool } from "@/db";
-import { ensureTablesExist } from "@/db/migrate";
+import { ensureTablesExist, isIntegerColumnError, repairPayrollMoneyColumns } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import {
   OT_ARRIVAL_GRACE_MINUTES,
@@ -53,6 +53,39 @@ const dateRange = (from: string, to: string) => {
   for (let t = Date.parse(from); t <= Date.parse(to); t += 86400000) out.push(new Date(t).toISOString().slice(0, 10));
   return out;
 };
+
+/**
+ * A whole-number column does not always refuse a decimal: when Postgres is
+ * told to put numeric 3080.13 into an `integer` column it quietly rounds it to
+ * 3080. This error is raised when a write comes back changed, so the same
+ * repair-and-retry path runs instead of losing the cents.
+ */
+class RoundedMoneyColumnError extends Error {}
+
+/** Does a value we asked to store differ from the one the database kept? */
+function valuesDiffer(stored: unknown, wanted: number | null): boolean {
+  if (wanted === null) return false; // an empty box keeps the old value
+  if (stored === null || stored === undefined) return false;
+  return Math.abs(Number(stored) - wanted) > 0.004;
+}
+
+/**
+ * THE MONEY COLUMNS, CHECKED ONCE PER SERVER PROCESS.
+ *
+ * A database made by an earlier build keeps `integer` salary columns, and
+ * Postgres then either refuses 3080.13 ("invalid input syntax for type
+ * integer") or silently rounds it to 3080. The migration converts them on the
+ * first request after a deploy; this makes the payroll page itself do the same
+ * check on its first visit, so a site that was never redeployed still accepts
+ * cents. The result is remembered, so it costs one small query per process.
+ */
+let moneyColumnsChecked = false;
+async function ensureMoneyColumns(): Promise<void> {
+  if (moneyColumnsChecked) return;
+  const problems = await repairPayrollMoneyColumns();
+  if (problems.length === 0) moneyColumnsChecked = true;
+  else console.warn("[payroll] could not convert the money columns yet:", problems);
+}
 
 async function loadSettings(): Promise<PayrollSettings> {
   const q = await pool.query("SELECT settings,approved FROM payroll_settings WHERE id=1");
@@ -458,6 +491,7 @@ export async function GET(request: Request) {
   await ensureTablesExist();
   const period = new URL(request.url).searchParams.get("period");
   if (!validPeriod(period)) return NextResponse.json({ error: "Valid Ethiopian period YYYY-MM required" }, { status: 400 });
+  await ensureMoneyColumns();
   try {
     return NextResponse.json(await buildRows(period!));
   } catch (e) {
@@ -480,6 +514,7 @@ export async function POST(request: Request) {
   const period = String(body.period || "");
   const action = String(body.action || "");
   if (!validPeriod(period)) return NextResponse.json({ error: "Valid Ethiopian period required" }, { status: 400 });
+  await ensureMoneyColumns();
 
   const locked = await pool.query("SELECT status FROM payroll_periods WHERE period_key=$1", [period]);
   const status = locked.rows[0]?.status || "draft";
@@ -499,24 +534,67 @@ export async function POST(request: Request) {
       const basicSalary = asNumber(body.basicSalary);
       const transportAllowance = asNumber(body.transportAllowance);
       const breakageShortage = asNumber(body.breakageShortage);
-      await pool.query(
-        `INSERT INTO payroll_compensation(member_id,basic_salary,transport_allowance,updated_at) VALUES($1,COALESCE($2,0),COALESCE($3,0),now())
-         ON CONFLICT(member_id) DO UPDATE SET
-           basic_salary=COALESCE($2,payroll_compensation.basic_salary),
-           transport_allowance=COALESCE($3,payroll_compensation.transport_allowance),
-           updated_at=now()`,
-        [id, basicSalary, transportAllowance]
-      );
-      await pool.query(
-        `INSERT INTO payroll_monthly_inputs(period_key,member_id,breakage_shortage) VALUES($1,$2,COALESCE($3,0))
-         ON CONFLICT(period_key,member_id) DO UPDATE SET breakage_shortage=COALESCE($3,payroll_monthly_inputs.breakage_shortage)`,
-        [period, id, breakageShortage]
-      );
-      await pool.query("INSERT INTO payroll_audit(period_key,member_id,action,detail) VALUES($1,$2,'compensation_saved',$3::jsonb)", [
-        period,
-        id,
-        JSON.stringify({ basicSalary, transportAllowance, breakageShortage }),
-      ]);
+      const writeCompensation = async () => {
+        // $2 and $3 are cast to numeric ON PURPOSE. Inside COALESCE($2,0) the
+        // untyped parameter takes the type of the literal 0, which is integer,
+        // and Postgres then parses "3080.13" as a whole number and refuses it
+        // with "invalid input syntax for type integer" even on a numeric
+        // column. The cast is what lets a salary with cents through.
+        const saved = await pool.query<{ basic_salary: string; transport_allowance: string }>(
+          `INSERT INTO payroll_compensation(member_id,basic_salary,transport_allowance,updated_at)
+           VALUES($1,COALESCE($2::numeric,0),COALESCE($3::numeric,0),now())
+           ON CONFLICT(member_id) DO UPDATE SET
+             basic_salary=COALESCE($2::numeric,payroll_compensation.basic_salary),
+             transport_allowance=COALESCE($3::numeric,payroll_compensation.transport_allowance),
+             updated_at=now()
+           RETURNING basic_salary,transport_allowance`,
+          [id, basicSalary, transportAllowance]
+        );
+        if (valuesDiffer(saved.rows[0]?.basic_salary, basicSalary) || valuesDiffer(saved.rows[0]?.transport_allowance, transportAllowance)) {
+          throw new RoundedMoneyColumnError(
+            `This database still stores payroll money as whole numbers (${saved.rows[0]?.basic_salary} instead of ${basicSalary}).`
+          );
+        }
+        const monthly = await pool.query<{ breakage_shortage: string }>(
+          `INSERT INTO payroll_monthly_inputs(period_key,member_id,breakage_shortage)
+           VALUES($1,$2,COALESCE($3::numeric,0))
+           ON CONFLICT(period_key,member_id) DO UPDATE SET
+             breakage_shortage=COALESCE($3::numeric,payroll_monthly_inputs.breakage_shortage)
+           RETURNING breakage_shortage`,
+          [period, id, breakageShortage]
+        );
+        if (valuesDiffer(monthly.rows[0]?.breakage_shortage, breakageShortage)) {
+          throw new RoundedMoneyColumnError(
+            `This database still stores payroll money as whole numbers (${monthly.rows[0]?.breakage_shortage} instead of ${breakageShortage}).`
+          );
+        }
+        await pool.query("INSERT INTO payroll_audit(period_key,member_id,action,detail) VALUES($1,$2,'compensation_saved',$3::jsonb)", [
+          period,
+          id,
+          JSON.stringify({ basicSalary, transportAllowance, breakageShortage }),
+        ]);
+      };
+      try {
+        await writeCompensation();
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        // The live database still holds the whole-number columns an earlier
+        // build made ("invalid input syntax for type integer: 3080.13"). Heal
+        // them right here and save again, so the owner never has to wait for a
+        // deploy to type a salary with cents.
+        if (!(e instanceof RoundedMoneyColumnError) && !isIntegerColumnError(message)) throw e;
+        await repairPayrollMoneyColumns();
+        try {
+          await writeCompensation();
+        } catch (retry) {
+          throw new Error(
+            `This database still stores payroll money as whole numbers, so ${basicSalary} could not be saved. ` +
+              `Open the Payroll page once more (the repair runs on the first request after a deploy). Details: ${
+                retry instanceof Error ? retry.message : String(retry)
+              }`
+          );
+        }
+      }
     } else if (action === "add_overtime") {
       const id = Number(body.memberId);
       const type = String(body.overtimeType);
@@ -524,13 +602,24 @@ export async function POST(request: Request) {
       if (!id || !["holiday", "free_week", "shift"].includes(type) || hours <= 0)
         throw new Error("Employee, overtime type and positive hours required");
       if (await isPaid(period, id)) throw new Error("This person is already paid for this month. Take the paid tick back first.");
-      await pool.query("INSERT INTO payroll_overtime_entries(member_id,period_key,overtime_type,hours,note) VALUES($1,$2,$3,$4,$5)", [
-        id,
-        period,
-        type,
-        hours,
-        String(body.note || ""),
-      ]);
+      const writeOvertime = async () => {
+        const row = await pool.query<{ hours: string }>(
+          "INSERT INTO payroll_overtime_entries(member_id,period_key,overtime_type,hours,note) VALUES($1,$2,$3,$4::numeric,$5) RETURNING hours",
+          [id, period, type, hours, String(body.note || "")]
+        );
+        // 1.5 h must stay 1.5 h; a whole-number column would round it to 2.
+        if (valuesDiffer(row.rows[0]?.hours, hours))
+          throw new RoundedMoneyColumnError(`This database still stores overtime hours as whole numbers (${row.rows[0]?.hours} instead of ${hours}).`);
+      };
+      try {
+        await writeOvertime();
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (!(e instanceof RoundedMoneyColumnError) && !isIntegerColumnError(message)) throw e;
+        // Same whole-number column, this time on the overtime hours (1.5 h).
+        await repairPayrollMoneyColumns();
+        await writeOvertime();
+      }
       await pool.query("INSERT INTO payroll_audit(period_key,member_id,action,detail) VALUES($1,$2,'overtime_added',$3::jsonb)", [
         period,
         id,

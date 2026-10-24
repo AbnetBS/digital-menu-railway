@@ -368,6 +368,7 @@ void startTimeSync();
 void applyWifiTuning();
 void serviceWifi();
 String wifiStatusLine();
+String wifiMeter(int rssi);
 void rejoinStrongestAp();
 String wallClockText();
 unsigned long wallClockEpoch();
@@ -1033,22 +1034,53 @@ void applyWifiTuning() {
   }
 }
 
+/* THE SIGNAL, AS FOUR CELLS (owner, Oct 2026).
+ * He asked for the strength to sit BESIDE the connection word on the glass, so
+ * the row has to carry three things in twenty characters: the connection, the
+ * number, and a shape he can read from across the room without knowing what
+ * dBm means.
+ *
+ * A filled block for a bar, an underscore for a missing one:
+ *
+ *   Connected -58dB ████       next to the router, everything is fine
+ *   Connected -72dB ██__       usable, but work to do
+ *   Connected -88dB ____       this is the "only works near the router" case
+ *
+ * The thresholds follow the usual ESP32 behaviour: -55 and better is excellent,
+ * -65 good, -75 usable, -85 the edge, below that enrollment starts to fail. */
+String wifiMeter(int rssi) {
+  int bars = 4;
+  if (rssi < -55) bars = 3;
+  if (rssi < -65) bars = 2;
+  if (rssi < -75) bars = 1;
+  if (rssi < -85) bars = 0;
+  String out;
+  for (int i = 0; i < 4; i++) out += (i < bars) ? (char)0xFF : '_';
+  return out;
+}
+
 /* The link, as one line for the 20 character LCD.
- *   Wifi ok -58 dBm     connected, healthy signal
- *   Wifi weak -84 dBm   connected, but close to the edge
- *   Wifi down 34s       disconnected and retrying (a live counter, so nobody
- *                       unplugs the board to "wake it up")
- */
+ *   Connected -58dB ████    connected and healthy
+ *   Connected -84dB ____    connected but weak: this is the row that tells him
+ *                           to move the access point closer
+ *   Wifi down 34s           disconnected and retrying (a live counter, so
+ *                           nobody unplugs the board to "wake it up")
+ *   Wifi Not Connected      never joined since boot
+ *
+ * The budget, exactly 20 characters:
+ *   "Connected " 10 + "-58dB " 6 + the four cells 4 = 20. */
 String wifiStatusLine() {
   if (WiFi.status() != WL_CONNECTED) {
     if (wifiDownSince == 0) return String("Wifi Not Connected");
     return String("Wifi down ") + String((millis() - wifiDownSince) / 1000) + "s";
   }
-  const int rssi = wifiLastRssi != 0 ? wifiLastRssi : WiFi.RSSI();
-  char line[24];
-  if (rssi < WIFI_WEAK_RSSI) snprintf(line, sizeof(line), "Wifi weak %d dBm", rssi);
-  else snprintf(line, sizeof(line), "Wifi ok %d dBm", rssi);
-  return String(line);
+  int rssi = wifiLastRssi != 0 ? wifiLastRssi : WiFi.RSSI();
+  // 0 means "the radio has not reported yet", not a real reading.
+  if (rssi >= 0) return String("Connected");
+  // A row of 20 cells cannot hold four digits; -99 is already unusable, so a
+  // worse reading is shown as the worst one instead of losing the bars.
+  if (rssi < -99) rssi = -99;
+  return String("Connected ") + String(rssi) + "dB " + wifiMeter(rssi);
 }
 
 /* One stronger access point on the same name is worth moving to. The password
@@ -2788,7 +2820,7 @@ void handleRoot() {
   html += "<p>IP: " + WiFi.localIP().toString() + "</p>";
   html += "<p>WiFi: " + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Not Connected") + "</p>";
   if (WiFi.status() == WL_CONNECTED) {
-    html += "<p>Signal: " + String(WiFi.RSSI()) + " dBm" +
+    html += "<p>Signal: " + String(WiFi.RSSI()) + " dBm (" + wifiMeter(WiFi.RSSI()) + ")" +
             (WiFi.RSSI() < WIFI_WEAK_RSSI ? " (weak: move the router closer, or use a 2.4 GHz access point near the door)" : "") +
             ", channel " + String(WiFi.channel()) + ", access point " + WiFi.BSSIDstr() + "</p>";
   }

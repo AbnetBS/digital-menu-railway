@@ -54,8 +54,20 @@ pass("and never in the middle of an enrollment", fw.includes("!enrollingFromServ
 /* ── 4. the LCD tells the truth, including a live retry counter ──────────── */
 
 pass("the idle screen uses one honest line", fw.includes("lcdWriteRow(2, wifiStatusLine());"));
-pass("it shows the signal in dBm when connected", fw.includes('"Wifi ok %d dBm"'));
-pass("it calls a weak link weak", fw.includes('"Wifi weak %d dBm"') && fw.includes("#define WIFI_WEAK_RSSI"));
+pass(
+  "the strength sits beside the connection word",
+  fw.includes('return String("Connected ") + String(rssi) + "dB " + wifiMeter(rssi);')
+);
+pass("and the four bars are drawn as filled blocks and underscores", fw.includes("String wifiMeter(int rssi)") && fw.includes("(char)0xFF") && fw.includes("'_'"));
+pass("the bars fall with the signal, from four to none", ["-55", "-65", "-75", "-85"].every((t) => fw.includes(`if (rssi < ${t}) bars`)));
+pass(
+  "the line is exactly one 20 character LCD row",
+  "Connected ".length + "-58dB ".length + 4 === 20 && fw.includes(' *   "Connected " 10 + "-58dB " 6 + the four cells 4 = 20.')
+);
+pass("a short link still says Connected instead of inventing a reading", fw.includes('if (rssi >= 0) return String("Connected");'));
+pass("a very weak reading is clamped so the bars are never lost", fw.includes("if (rssi < -99) rssi = -99;"));
+pass("the status page prints the same bars", fw.includes("wifiMeter(WiFi.RSSI())"));
+pass("the weak threshold is still defined for the access point hunt", fw.includes("#define WIFI_WEAK_RSSI"));
 pass("it counts the seconds while it is down, so nobody unplugs the board", fw.includes('String("Wifi down ") + String((millis() - wifiDownSince) / 1000) + "s"'));
 
 /* ── 5. a fingerprint job is never left waiting on a silent socket ───────── */
@@ -76,6 +88,7 @@ pass("and a way to reconnect on demand", fw.includes('cmd == "wifi join"'));
 pass("the README says the radio is 2.4 GHz only", readme.includes("2.4 GHz only") && readme.includes("The ESP32 has no 5 GHz radio"));
 pass("the README recommends an access point near the door", readme.includes("A 2.4 GHz access point near the door"));
 pass("the README explains the dBm numbers", readme.includes("−50 dBm is excellent"));
+pass("the README shows the LCD row he will see", readme.includes("Connected -58dB") && readme.includes("Connected -88dB"));
 pass("the README warns about the power supply", readme.includes("A weak 5 V supply browns out the radio"));
 pass("the README covers the antenna and the metal box", readme.includes("Keep the board out of a metal box"));
 
@@ -87,5 +100,5 @@ if (failures > 0) {
 console.log("✅ WiFi recovery guard PASSED");
 console.log("   • no modem sleep, full transmit power");
 console.log("   • reconnect, then radio reset, then (only after 10 min) a restart");
-console.log("   • the LCD shows the dBm and a live retry counter");
+console.log("   • the LCD shows Connected, the dBm and four bars on one row");
 console.log("   • fingerprint jobs are polled every 15 s even when the stream looks alive");

@@ -116,9 +116,19 @@ The board heals its own link. This is what changed, and why.
 - **Reconnect escalation.** Ask the driver (`WiFi.reconnect()`) every 8 s; after
   45 s reset the radio (`WiFi.disconnect(true, false)` then `WiFi.begin()`,
   credentials kept); after 10 minutes restart the board as the last resort.
-- **The LCD tells the truth while it does this.** `Wifi ok -58 dBm`,
-  `Wifi weak -84 dBm`, or `Wifi down 34s` with a live counter. If the counter is
-  moving, the board is working on it; nobody needs to unplug it.
+- **The LCD tells the truth while it does this, and shows the strength.** Row 2
+  carries the connection word, the number and four bars in its twenty
+  characters:
+
+  - `Connected -58dB ████` next to the router, everything is fine
+  - `Connected -72dB ██__` usable, but there is room to improve
+  - `Connected -88dB ____` the "only works near the router" case
+  - `Wifi down 34s` disconnected and retrying (live counter)
+  - `Wifi Not Connected` never joined since it was powered on
+
+  The bars are filled blocks: four at −55 dBm or better, three below −55, two
+  below −65, one below −75, none below −85. If the `down` counter is moving,
+  the board is working on it; nobody needs to unplug it.
 - **A stronger access point is preferred.** When the link is up but below
   −78 dBm, every 5 minutes the board scans and rejoins if another access point
   with the same name is at least 8 dBm stronger (a mesh, or a second router).

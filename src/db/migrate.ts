@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-22-4";
+const SCHEMA_VERSION = "2026-10-24-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -557,6 +557,7 @@ const RMS_CREATES: Array<[string, string]> = [
       schedule_type varchar(20) NOT NULL,
       weekday integer,
       free_date varchar(10),
+      free_until varchar(10),
       start_time varchar(5) NOT NULL DEFAULT '00:00',
       end_time varchar(5) NOT NULL DEFAULT '23:59',
       note text,
@@ -830,6 +831,18 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     early_leave_grace_minutes: { type: "integer", def: "0", castText: true },
     sort_order: { type: "integer", def: "0", castText: true },
   },
+  // YE AMET EREFT (owner, Oct 2026): a free schedule can now be a run of days
+  // (from free_date to free_until), not only a weekday or a single date.
+  attendance_free_schedules: {
+    member_id: { type: "integer", def: "0", castText: true },
+    schedule_type: { type: "text", def: "'weekly'" },
+    weekday: { type: "integer" },
+    free_date: { type: "text" },
+    free_until: { type: "text" },
+    start_time: { type: "text", def: "'00:00'" },
+    end_time: { type: "text", def: "'23:59'" },
+    note: { type: "text" },
+  },
   attendance_members: {
     name: { type: "text", def: "'Member'" },
     role_id: { type: "integer", castText: true },
@@ -999,6 +1012,24 @@ async function runFullMigrate(force: boolean) {
   // them once (values kept), so every salary, transport and breakage value with
   // cents can be saved from this deploy on.
   for (const problem of await repairPayrollMoneyColumns()) errors.push(`money column ${problem}`);
+
+  // DEDUCTION FORMULAS: the owner never gave a lateness, absence or early
+  // departure rule, and he rejected the ones an earlier build had filled in
+  // ("there isn't deduction related to this until I add formula"). A settings
+  // row that still holds exactly those shipped defaults is cleared, so those
+  // columns deduct nothing; a formula he wrote himself is left untouched.
+  for (const [key, shipped] of [
+    ["absenceFormula", "BasicSalary / 30 * UnapprovedAbsences"],
+    ["latenessFormula", "BasicSalary / 30 / 8 / 60 * LateMinutes"],
+    ["earlyOutFormula", "BasicSalary / 30 / 8 / 60 * EarlyOutMinutes"],
+  ] as Array<[string, string]>) {
+    const err = await run(
+      `UPDATE payroll_settings
+          SET settings = jsonb_set(settings, '{${key}}', '""'::jsonb, true), updated_at = now()
+        WHERE settings->>'${key}' = '${shipped}'`
+    );
+    if (err) errors.push(`deduction formula ${key}: ${err}`);
+  }
 
   // Payroll period sign-off columns added after the first payroll release.
   await run(`ALTER TABLE payroll_periods ADD COLUMN IF NOT EXISTS prepared_by varchar(100)`);

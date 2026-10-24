@@ -1515,7 +1515,13 @@ export default function AttendanceTab() {
                       </p>
                     </div>
                     <div className="flex gap-2">
-                      <button onClick={() => setFreeMember(m)} className="px-2 py-1 bg-sky-700/40 text-sky-200 rounded-lg text-[10px] font-black">FREE</button>
+                      <button
+                        onClick={() => setFreeMember(m)}
+                        title="Free day, free date, or ye amet ereft (yearly leave)"
+                        className="px-2 py-1 bg-sky-700/40 text-sky-200 rounded-lg text-[10px] font-black"
+                      >
+                        FREE
+                      </button>
                       <button onClick={() => toggleMemberActive(m)} className={`px-2 py-1 rounded-lg text-[10px] font-black ${m.active?'bg-emerald-700/40 text-emerald-200':'bg-rose-700/40 text-rose-200'}`}>{m.active?'ONSITE':'OFFSITE'}</button>
                       <button
                         onClick={() => openMemberForm(m)}

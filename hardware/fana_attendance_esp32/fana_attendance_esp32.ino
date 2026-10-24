@@ -141,7 +141,10 @@ WebServer server(80);
 /* ── Timing (milliseconds) ────────────────────────────────────────────────── */
 #define SENSOR_POLL_MS          1500  // one fingerprint check waits at most this long
 #define SENSOR_FAIL_LIMIT       6     // silent passes in a row before the link is called dead
-#define SERVER_TIMEOUT_MS       4000  // never wait longer than this for the website
+/* A weak WiFi answers slowly. Four seconds was short enough that the website was
+ * given up on while the router was still delivering the reply, which is why an
+ * enrollment could fail far from the router. */
+#define SERVER_TIMEOUT_MS       8000  // never wait longer than this for the website
 #define RESULT_SHOW_MS          1500  // a normal result stays on the LCD this long
 #define WARNING_SHOW_MS         2500  // a problem stays on the LCD this long
 /* R307 enrollment uses two fresh placements. Two more fresh placements verify
@@ -167,7 +170,24 @@ WebServer server(80);
 #define ENROLL_TOTAL_BUDGET_MS  300000 // the whole job gives up after this long
 #define MAPPING_RETRY_MS        10000 // retry a mapping the website did not get yet
 #define PENDING_POLL_FALLBACK_MS 15000
-#define EVENT_STREAM_STALL_MS   75000
+/* The stream is one long socket. On a weak link it stalls long before it closes,
+ * and a stalled stream is a door that hears about a new fingerprint late. Two
+ * minutes was longer than the admin page is willing to wait. */
+#define EVENT_STREAM_STALL_MS   45000
+
+/* ── WiFi that comes back on its own (owner, Oct 2026) ────────────────────── *
+ * The owner's report: "sometime when wifi is disconnected and come again my
+ * system still says wifi not connected". The ESP32's own auto-reconnect gives
+ * up in some router-reboot cases, and the driver can stay stuck; the board then
+ * sits on a dead socket until somebody unplugs it, which is exactly what he was
+ * doing ("it can be always plug in and out"). So the board now heals itself in
+ * three steps, and the LCD says which one it is on. */
+#define WIFI_RECONNECT_MS       8000UL   // ask the driver to reconnect this often
+#define WIFI_RADIO_RESET_MS     45000UL  // after this long down: reset the radio
+#define WIFI_RESTART_MS         600000UL // ten minutes down: reboot the board
+#define WIFI_WEAK_RSSI          (-78)    // below this the link is called weak
+#define WIFI_AP_HUNT_MS         300000UL // look for a stronger access point this often
+#define WIFI_AP_HUNT_GAIN       8        // only move if it is this much stronger
 #define IDLE_CLOCK_REFRESH_MS   1000   // the idle screen's clock row moves once a second
 
 /* Rest windows: automatic awake hours generated from Role & Time shifts,
@@ -330,12 +350,25 @@ unsigned long eventStreamRetryMs = 5000;
 unsigned long lastPendingCheck = 0;
 String eventLine = "";
 
+/* ── WiFi health, for the LCD and the status page ─────────────────────────── */
+unsigned long wifiDownSince = 0;      // millis() when the link went down, 0 = up
+unsigned long lastWifiTry = 0;
+unsigned long lastWifiLog = 0;
+unsigned long lastApHunt = 0;
+uint16_t wifiReconnects = 0;          // times the link came back by itself
+uint16_t wifiRadioResets = 0;         // times the radio had to be reset
+int wifiLastRssi = 0;                 // last dBm reading, 0 = unknown
+
 /* ── Prototypes ───────────────────────────────────────────────────────────── */
 void showLines(const String &l1, const String &l2, const String &l3, const String &l4);
 void showBig(const String &top, const String &big, const String &bottom);
 void showEnrollScreen(const String &who, int id, uint8_t done, const String &prompt, const String &hint);
 void showIdleScreen();
 void startTimeSync();
+void applyWifiTuning();
+void serviceWifi();
+String wifiStatusLine();
+void rejoinStrongestAp();
 String wallClockText();
 unsigned long wallClockEpoch();
 void noteWallClock();
@@ -378,6 +411,8 @@ void maybeRest();
 void loadRestScheduleFromServer();
 void loadRestCache();
 void handleSerialCommand();
+void printWifiReport();
+void printWifiScan();
 void manualEnroll(int id);
 void checkSensorHealth();
 void emptyDatabase();
@@ -443,15 +478,22 @@ void setup() {
   configureWifiManager(wm);
   bool connected = wm.autoConnect("Fana-Attendance-Setup", "fana12345");
   if (!connected) {
-    Serial.println("Failed to connect WiFi");
-    showLines("WiFi Failed", "Restarting...", "", "");
-    delay(3000);
-    ESP.restart();
+    /* THE DOOR DOES NOT REBOOT BECAUSE THE ROUTER IS OUT (owner, Oct 2026).
+     * It used to restart here, and a router that boots slower than the board
+     * then put the board in a restart loop: the LCD said "WiFi Failed", the
+     * scanner never ran, and a power cycle "fixed" it for a few minutes.
+     * Now it keeps scanning (scans are queued in LittleFS and sent when the
+     * link returns) and serviceWifi() reconnects in the background. */
+    Serial.println("WiFi is not available yet. Scanning continues; the link is retried in the background.");
+    showLines("WiFi Not Connected", "Still scanning", "Reconnecting", "by itself");
+    delay(1500);
+  } else {
+    Serial.print("WiFi connected, IP: ");
+    Serial.println(WiFi.localIP());
+    applyWifiTuning();
+    showLines("WiFi Connected!", WiFi.localIP().toString(), "", "");
+    delay(1500);
   }
-  Serial.print("WiFi connected, IP: ");
-  Serial.println(WiFi.localIP());
-  showLines("WiFi Connected!", WiFi.localIP().toString(), "", "");
-  delay(1500);
 
   // The clock of the idle screen. Started here, once, and again whenever the
   // WiFi comes back (keepServerLinkAlive); the core keeps it fresh after that.
@@ -474,6 +516,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  serviceWifi();
   keepServerLinkAlive();
   checkSensorHealth();
   checkLcdHealth();
@@ -953,10 +996,155 @@ void showEnrollScreen(const String &who, int id, uint8_t done, const String &pro
 void showIdleScreen() {
   lcdWriteRow(0, "Fana Cafe Attendance");
   lcdWriteRow(1, sensorReady ? "Place finger" : String("SENSOR OFFLINE!"));
-  lcdWriteRow(2, WiFi.status() == WL_CONNECTED ? "Wifi Connected" : "Wifi Not Connected");
+  lcdWriteRow(2, wifiStatusLine());
   const String clock = wallClockText();
   lcdWriteRow(3, clock.length() > 0 ? "Time " + clock : String("Time not set yet"));
   idleVisible = true;    // the clock refresh may redraw this screen from now on
+}
+
+/* ── WiFi that comes back on its own (owner, Oct 2026) ───────────────────── *
+ * Why this exists: the board used to rely on the ESP32 core's auto-reconnect
+ * alone. After a router reboot, a channel change or a long power cut the
+ * driver can stay attached to a socket the router has already forgotten, and
+ * `WiFi.status()` never leaves WL_CONNECTED-adjacent states. The LCD then said
+ * "Wifi Not Connected" until somebody unplugged the board, which is exactly
+ * what the owner was doing.
+ *
+ * The board is on mains at the door, so it never has to save radio power. Two
+ * settings matter more than anything else for range and for a link that
+ * answers: no modem sleep, and full transmit power.
+ */
+void applyWifiTuning() {
+  if (WiFi.status() == WL_CONNECTED) {
+    // Modem sleep is the reason a quiet link answers late: the radio sleeps
+    // between beacons and the request waits for it to wake. A door scanner is
+    // plugged in, so it keeps the radio awake.
+    WiFi.setSleep(false);
+    // The strongest transmit setting the radio has. This is what decides
+    // whether the far end of the restaurant can enroll a fingerprint.
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setAutoReconnect(true);
+    wifiLastRssi = WiFi.RSSI();
+    Serial.print("WiFi tuned: sleep off, TX 19.5 dBm, signal ");
+    Serial.print(wifiLastRssi);
+    Serial.println(" dBm");
+  } else {
+    WiFi.setAutoReconnect(true);
+  }
+}
+
+/* The link, as one line for the 20 character LCD.
+ *   Wifi ok -58 dBm     connected, healthy signal
+ *   Wifi weak -84 dBm   connected, but close to the edge
+ *   Wifi down 34s       disconnected and retrying (a live counter, so nobody
+ *                       unplugs the board to "wake it up")
+ */
+String wifiStatusLine() {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (wifiDownSince == 0) return String("Wifi Not Connected");
+    return String("Wifi down ") + String((millis() - wifiDownSince) / 1000) + "s";
+  }
+  const int rssi = wifiLastRssi != 0 ? wifiLastRssi : WiFi.RSSI();
+  char line[24];
+  if (rssi < WIFI_WEAK_RSSI) snprintf(line, sizeof(line), "Wifi weak %d dBm", rssi);
+  else snprintf(line, sizeof(line), "Wifi ok %d dBm", rssi);
+  return String(line);
+}
+
+/* One stronger access point on the same name is worth moving to. The password
+ * is not needed: WiFi.begin() with the stored credentials re-scans the band and
+ * the driver joins the strongest access point that answers to that name (its
+ * default sort order is by signal). */
+void rejoinStrongestAp() {
+  const String current = WiFi.SSID();
+  if (current.length() == 0) return;
+  const int found = WiFi.scanNetworks();
+  int best = WiFi.RSSI();
+  bool better = false;
+  for (int i = 0; i < found; i++) {
+    if (WiFi.SSID(i) == current && WiFi.RSSI(i) > best + WIFI_AP_HUNT_GAIN) {
+      best = WiFi.RSSI(i);
+      better = true;
+    }
+  }
+  WiFi.scanDelete();
+  if (!better) return;
+  Serial.print("A stronger access point (");
+  Serial.print(best);
+  Serial.println(" dBm) is on the same name: rejoining");
+  stopEventStream();
+  WiFi.disconnect(false, false);
+  delay(100);
+  WiFi.begin();
+}
+
+/* Called every pass of loop(). It owns three jobs:
+ *   1. notice the link coming back and repair everything that died with it
+ *      (the real-time stream, NTP, the names, the open hours, the queue);
+ *   2. reconnect with an escalation that always ends somewhere, instead of the
+ *      driver retrying the same dead socket for ever;
+ *   3. keep the LCD honest about which of those is happening. */
+void serviceWifi() {
+  const bool up = WiFi.status() == WL_CONNECTED;
+
+  if (up) {
+    if (wifiDownSince != 0) {
+      const unsigned long downMs = millis() - wifiDownSince;
+      wifiDownSince = 0;
+      wifiReconnects++;
+      Serial.print("WiFi is back after ");
+      Serial.print(downMs / 1000);
+      Serial.println(" s. Repairing the stream, the clock and the names.");
+      applyWifiTuning();
+      // The sockets and the NTP answer did not survive the drop. The queued
+      // scans are sent by periodicSync(), which runs every 30 s, so this
+      // moment stays short and the glass keeps reading fingers.
+      startTimeSync();
+      loadMappingsFromServer();
+      loadRestScheduleFromServer();
+      if (idleVisible) showIdleScreen();
+    }
+    wifiLastRssi = WiFi.RSSI();
+    // A link that is up but weak drops again. Look for a better access point
+    // every few minutes, and never while a fingerprint is being enrolled.
+    if (!enrollingFromServer && millis() - lastApHunt > WIFI_AP_HUNT_MS) {
+      lastApHunt = millis();
+      if (wifiLastRssi != 0 && wifiLastRssi < WIFI_WEAK_RSSI) rejoinStrongestAp();
+    }
+    return;
+  }
+
+  if (wifiDownSince == 0) {
+    wifiDownSince = millis();
+    lastWifiTry = 0;
+    Serial.println("WiFi lost. Still scanning; reconnecting in the background.");
+    if (idleVisible) showIdleScreen();
+  }
+  const unsigned long downMs = millis() - wifiDownSince;
+  if (lastWifiTry != 0 && millis() - lastWifiTry < WIFI_RECONNECT_MS) return;
+  lastWifiTry = millis();
+
+  if (downMs < WIFI_RADIO_RESET_MS) {
+    Serial.print("WiFi down ");
+    Serial.print(downMs / 1000);
+    Serial.println(" s: asking the driver to reconnect");
+    WiFi.reconnect();
+  } else if (downMs < WIFI_RESTART_MS) {
+    // The driver can stay attached to a socket the router already dropped.
+    // Turn the station off and on again; the saved credentials stay.
+    Serial.println("WiFi still down: resetting the radio (credentials kept)");
+    wifiRadioResets++;
+    stopEventStream();
+    WiFi.disconnect(true, false);
+    delay(150);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin();
+    applyWifiTuning();
+  } else {
+    Serial.println("WiFi has been down for 10 minutes: restarting the board");
+    Serial.flush();
+    ESP.restart();
+  }
 }
 
 /* Ask NTP for the time (UTC+3). Called once after the WiFi is up and again
@@ -1508,7 +1696,16 @@ void reportJobStarted(int jobId, int fingerprintId) {
                   String(fingerprintId) + ")";
   String json;
   serializeJson(doc, json);
-  const int httpCode = http.POST(json);
+  int httpCode = http.POST(json);
+  if (httpCode <= 0) {
+    // A weak link drops single requests. The admin page is waiting for this
+    // one, so ask once more before letting it show "waiting for the device".
+    http.end();
+    delay(400);
+    http.begin(serverURL + "/api/attendance/mappings");
+    addDeviceHeaders(http);
+    httpCode = http.POST(json);
+  }
   http.end();
 
   Serial.print("Announced job ");
@@ -2121,7 +2318,12 @@ void keepServerLinkAlive() {
     startEventStream();
   }
 
-  if (!eventStreamActive && !enrollingFromServer && millis() - lastPendingCheck > PENDING_POLL_FALLBACK_MS) {
+  /* The pending-job poll is a SAFETY NET, not only a fallback. A weak link can
+   * leave the event stream socket open and silent, and a door that hears about
+   * a new fingerprint only when that socket recovers is the "I must stand near
+   * the router to add a finger" the owner reported. Asking a tiny question every
+   * 15 s costs nothing and keeps Add Fingerprint fast. */
+  if (!enrollingFromServer && millis() - lastPendingCheck > PENDING_POLL_FALLBACK_MS) {
     lastPendingCheck = millis();
     checkPendingEnroll();
   }
@@ -2350,6 +2552,56 @@ void addDeviceHeaders(HTTPClient &http) {
 }
 
 /* ── Serial monitor commands (115200 baud) ────────────────────────────────── */
+/* `wifi` on the Serial monitor: everything that decides whether a scan reaches
+ * the website. The status page shows the same numbers over the network. */
+void printWifiReport() {
+  Serial.println("--- WiFi ---");
+  Serial.print("Status:        ");
+  Serial.println(WiFi.status() == WL_CONNECTED ? "connected" : "not connected");
+  Serial.print("SSID:          ");
+  Serial.println(WiFi.SSID());
+  Serial.print("IP:            ");
+  Serial.println(WiFi.localIP().toString());
+  Serial.print("Signal:        ");
+  Serial.print(WiFi.RSSI());
+  Serial.println(" dBm (about -50 next to the router, -70 is usable, below -80 is weak)");
+  Serial.print("Channel:       ");
+  Serial.println(WiFi.channel());
+  Serial.print("Access point:  ");
+  Serial.println(WiFi.BSSIDstr());
+  Serial.print("Modem sleep:   off (the board is on mains)   TX power: 19.5 dBm");
+  Serial.println();
+  Serial.print("Reconnects:    ");
+  Serial.print((unsigned)wifiReconnects);
+  Serial.print(" automatic, ");
+  Serial.print((unsigned)wifiRadioResets);
+  Serial.println(" radio resets");
+  if (wifiDownSince != 0) {
+    Serial.print("Down for:      ");
+    Serial.print((millis() - wifiDownSince) / 1000);
+    Serial.println(" s (retrying by itself)");
+  }
+}
+
+/* `wifi scan` on the Serial monitor: every network the board can hear, with
+ * its strength. Use it to see whether the cafe's 2.4 GHz name is strong at the
+ * door, and which channel the neighbours are crowding. */
+void printWifiScan() {
+  Serial.println("--- WiFi scan (2.4 GHz only, this is what the board can hear) ---");
+  const int found = WiFi.scanNetworks();
+  for (int i = 0; i < found; i++) {
+    Serial.print(i + 1);
+    Serial.print(": ");
+    Serial.print(WiFi.SSID(i));
+    Serial.print("  ");
+    Serial.print(WiFi.RSSI(i));
+    Serial.print(" dBm  channel ");
+    Serial.println(WiFi.channel(i));
+  }
+  if (found == 0) Serial.println("Nothing found. Is the 2.4 GHz radio of the router on?");
+  WiFi.scanDelete();
+}
+
 void handleSerialCommand() {
   if (!Serial.available()) return;
   String cmd = Serial.readStringUntil('\n');
@@ -2370,8 +2622,18 @@ void handleSerialCommand() {
     testSensorLink(20, 200, "20 checks");
   } else if (cmd.startsWith("rest")) {
     restCommand(cmd.substring(4));
+  } else if (cmd == "wifi") {
+    printWifiReport();
+  } else if (cmd == "wifi scan") {
+    printWifiScan();
+  } else if (cmd == "wifi join") {
+    Serial.println("Forcing a reconnect now");
+    stopEventStream();
+    WiFi.disconnect(false, false);
+    delay(100);
+    WiFi.begin();
   } else if (cmd.length() > 0) {
-    Serial.println("Commands: enroll <id> | list | test | sensor | sensor hard | empty confirm | rest show");
+    Serial.println("Commands: enroll <id> | list | test | sensor | sensor hard | wifi | wifi scan | wifi join | empty confirm | rest show");
   }
 }
 
@@ -2419,7 +2681,7 @@ void listFingerprints() {
  * fingerprint module is never asked - which is the exact shape of "the LCD
  * works but the sensor does not scan". So the wait has a hard end. */
 void configureWifiManager(WiFiManager &wm) {
-  wm.setConnectTimeout(12);        // seconds per WiFi attempt
+  wm.setConnectTimeout(20);        // seconds per WiFi attempt (a weak link is slow)
   wm.setConfigPortalTimeout(180);  // seconds in the hotspot, then give up and restart
 }
 
@@ -2525,6 +2787,13 @@ void handleRoot() {
   html += "<p>Time: " + (clock.length() > 0 ? clock : String("not set yet (NTP)")) + "</p>";
   html += "<p>IP: " + WiFi.localIP().toString() + "</p>";
   html += "<p>WiFi: " + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Not Connected") + "</p>";
+  if (WiFi.status() == WL_CONNECTED) {
+    html += "<p>Signal: " + String(WiFi.RSSI()) + " dBm" +
+            (WiFi.RSSI() < WIFI_WEAK_RSSI ? " (weak: move the router closer, or use a 2.4 GHz access point near the door)" : "") +
+            ", channel " + String(WiFi.channel()) + ", access point " + WiFi.BSSIDstr() + "</p>";
+  }
+  html += "<p>Self-healing: " + String((unsigned)wifiReconnects) + " automatic reconnects, " +
+          String((unsigned)wifiRadioResets) + " radio resets. Modem sleep is off and the radio transmits at 19.5 dBm.</p>";
   html += "<p>Sensor: " + String(sensorReady ? "online" : "OFFLINE") + "</p>";
   html += "<p>Sensor last answer: " + String(fingerStatusText(sensorLastStatus)) +
           ", silent passes in a row: " + String((unsigned)sensorSilentPasses) + "</p>";
@@ -2562,6 +2831,18 @@ void handleStatus() {
   doc["ip"] = WiFi.localIP().toString();
   doc["templates"] = templateCount;
   doc["wifi"] = WiFi.status() == WL_CONNECTED;
+  // The WiFi facts the owner asked to be able to check ("how can I strengthen
+  // the strength"): how strong the signal really is, which access point and
+  // channel it is on, and how often the board had to heal the link by itself.
+  doc["wifiRssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+  doc["wifiWeak"] = WiFi.status() == WL_CONNECTED && WiFi.RSSI() < WIFI_WEAK_RSSI;
+  doc["wifiChannel"] = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 0;
+  doc["wifiBssid"] = WiFi.status() == WL_CONNECTED ? WiFi.BSSIDstr() : String("");
+  doc["wifiReconnects"] = wifiReconnects;
+  doc["wifiRadioResets"] = wifiRadioResets;
+  doc["wifiDownMs"] = wifiDownSince == 0 ? 0UL : (unsigned long)(millis() - wifiDownSince);
+  doc["wifiSleep"] = "off (mains powered)";
+  doc["wifiTxPower"] = "19.5 dBm";
   doc["time"] = wallClockText();
   doc["timeReady"] = timeReady;
   doc["mappings"] = fingerprintToStaff.size();

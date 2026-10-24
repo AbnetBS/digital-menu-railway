@@ -19,7 +19,7 @@ pass("slow count distinguishes a busy module from a dead module",fw.includes("Se
 pass("scan timeout grows but is capped",fw.includes("SENSOR_POLL_MAX_MS")&&fw.includes("sensorPollMs * 2"));
 pass("Serial link tests remain available",fw.includes('cmd == "sensor hard"')&&fw.includes('cmd.startsWith("sensor")'));
 pass("status page exposes sensor health",fw.includes('doc["sensorReady"]')&&fw.includes('doc["sensorStatus"]')&&fw.includes('doc["sensorSilentPasses"]'));
-pass("Wi-Fi setup portal cannot block scanning forever",fw.includes("setConfigPortalTimeout(180)")&&fw.includes("setConnectTimeout(12)"));
+pass("Wi-Fi setup portal cannot block scanning forever",fw.includes("setConfigPortalTimeout(180)")&&/setConnectTimeout\(\d+\)/.test(fw));
 pass("documentation identifies the R307 and tested baud",readme.includes("ESP32 + R307")&&readme.includes("57600 baud"));
 pass("documentation refuses to trust wire colours",readme.includes("Wire colours are not standardized"));
 pass("documentation requires seller pinout and common ground",readme.includes("Verify the connector pinout")&&readme.includes("All grounds must be common"));

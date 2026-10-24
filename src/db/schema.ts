@@ -522,9 +522,11 @@ export const attendanceEnrollJobs = pgTable("attendance_enroll_jobs", {
 export const attendanceFreeSchedules = pgTable("attendance_free_schedules", {
   id: serial("id").primaryKey(),
   memberId: integer("member_id").notNull(),
-  scheduleType: varchar("schedule_type", { length: 20 }).notNull(), // weekly | dated
+  scheduleType: varchar("schedule_type", { length: 20 }).notNull(), // weekly | dated | annual
   weekday: integer("weekday"), // 0 Sunday ... 6 Saturday
   freeDate: varchar("free_date", { length: 10 }),
+  // Ye amet ereft: the last day of a free run. Null for a weekday or a single date.
+  freeUntil: varchar("free_until", { length: 10 }),
   startTime: varchar("start_time", { length: 5 }).notNull().default("00:00"),
   endTime: varchar("end_time", { length: 5 }).notNull().default("23:59"),
   note: text("note"),

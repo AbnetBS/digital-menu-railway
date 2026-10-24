@@ -22,6 +22,7 @@ import {
   shiftOtMinutesFor,
   type RoleShift,
 } from "@/lib/attendance";
+import { isAnnualLeaveDate, isFreeDate, isWorkedFreeDay, type FreeScheduleRule } from "@/lib/free-schedule";
 
 /**
  * PAYROLL (owner, Oct 2026).
@@ -208,11 +209,22 @@ async function buildRows(periodKey: string) {
     const startedRaw = member.employment_started_at;
     const created = member.first_attendance_date || (startedRaw ? new Date(startedRaw).toISOString().slice(0, 10) : bounds.from);
     const terminated = member.terminated_at ? new Date(member.terminated_at).toISOString().slice(0, 10) : null;
-    const freeSchedules = freeQ.rows.filter((f) => Number(f.member_id) === memberId);
-    const isFree = (date: string) =>
-      freeSchedules.some((f) =>
-        f.schedule_type === "dated" ? f.free_date === date : Number(f.weekday) === new Date(`${date}T12:00:00Z`).getUTCDay()
-      );
+    // Three kinds of free day: a repeating weekday, one named date, and a
+    // ye amet ereft run of paid days (from free_date to free_until).
+    const freeSchedules: FreeScheduleRule[] = freeQ.rows
+      .filter((f) => Number(f.member_id) === memberId)
+      .map((f) => ({
+        scheduleType: String(f.schedule_type || ""),
+        weekday: f.weekday === null || f.weekday === undefined ? null : Number(f.weekday),
+        freeDate: f.free_date ? String(f.free_date) : null,
+        freeUntil: f.free_until ? String(f.free_until) : null,
+      }));
+    // A free day is never an absence, and a late arrival on one is not lateness.
+    const isFree = (date: string) => isFreeDate(freeSchedules, date);
+    // The day is paid already, so working it adds no free week overtime.
+    const isPaidLeave = (date: string) => isAnnualLeaveDate(freeSchedules, date);
+    // A repeating weekday or one named date: working it is Free Week overtime.
+    const isWorkedFree = (date: string) => isWorkedFreeDay(freeSchedules, date);
     const presentDates = new Set(memberLogs.filter((l) => l.date).map((l) => String(l.date)));
     const expectedDates = allDates.filter((d) => d >= created && (!terminated || d < terminated || presentDates.has(d)) && !isFree(d));
     const absenceDates = expectedDates.filter((d) => !presentDates.has(d));
@@ -271,7 +283,11 @@ async function buildRows(periodKey: string) {
         }
         continue;
       }
-      if (isFree(date)) {
+      // Ye amet ereft: the salary is already safe for this day, so it does not
+      // become Free Week overtime as well. A holiday still pays its own rate
+      // above, and a supervisor can still type overtime by hand.
+      if (isPaidLeave(date)) continue;
+      if (isWorkedFree(date)) {
         const minutes = recognizedOtMinutes(shift, log);
         if (minutes > 0) {
           autoFreeWeekMinutes += minutes;

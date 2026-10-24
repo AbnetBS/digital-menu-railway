@@ -97,6 +97,62 @@ At 115200 baud:
 - `rest off` — keep the scanner awake
 - `rest on` — allow the configured schedule to control sleep
 - `rest reload` — reload the schedule
+- `wifi` — the link as the board sees it: status, IP, signal in dBm, channel,
+  access point, how many reconnects and radio resets it has done by itself
+- `wifi scan` — every 2.4 GHz network the board can hear, with its strength
+  (the fastest way to see whether the cafe's 2.4 GHz name is strong at the door)
+- `wifi join` — forget the current socket and reconnect now
+
+## WiFi that stays connected
+
+The board heals its own link. This is what changed, and why.
+
+- **Modem sleep is off.** `WiFi.setSleep(false)`. A sleeping radio answers late
+  and can miss the moment a fingerprint job is waiting. The board is on mains,
+  so the extra power costs nothing.
+- **Full transmit power.** `WiFi.setTxPower(WIFI_POWER_19_5dBm)`.
+- **It no longer restarts when the router is out.** It keeps scanning, keeps the
+  scans in LittleFS, and reconnects in the background.
+- **Reconnect escalation.** Ask the driver (`WiFi.reconnect()`) every 8 s; after
+  45 s reset the radio (`WiFi.disconnect(true, false)` then `WiFi.begin()`,
+  credentials kept); after 10 minutes restart the board as the last resort.
+- **The LCD tells the truth while it does this.** `Wifi ok -58 dBm`,
+  `Wifi weak -84 dBm`, or `Wifi down 34s` with a live counter. If the counter is
+  moving, the board is working on it; nobody needs to unplug it.
+- **A stronger access point is preferred.** When the link is up but below
+  −78 dBm, every 5 minutes the board scans and rejoins if another access point
+  with the same name is at least 8 dBm stronger (a mesh, or a second router).
+- **A new fingerprint job is polled every 15 s** even when the real-time stream
+  looks connected, because a weak link can leave that socket open and silent.
+  This is what made "Add Fingerprint" work only near the router.
+- **Requests wait 8 s instead of 4 s**, and the "device is ready" message is
+  sent twice if the first one is lost.
+
+### Making the signal stronger at the door (hardware)
+
+The board's radio is the weak part, not the website. In order of effect:
+
+1. **2.4 GHz only.** The ESP32 has no 5 GHz radio. If the router publishes one
+   name for both bands, the phone picks 5 GHz and works; the board is left with
+   a distant 2.4 GHz signal. Give the 2.4 GHz band its own name (for example
+   `Fana-2.4G`), connect the board to that, and keep channel width at 20 MHz on
+   channel 1, 6 or 11.
+2. **A 2.4 GHz access point near the door.** A cheap access point or repeater
+   wired to the router, 5–10 m from the scanner with one wall at most, is worth
+   more than any firmware setting. Put it high and away from metal.
+3. **Antenna.** Keep the board out of a metal box and off the wall; the PCB
+   antenna needs air. If the board has a u.FL/IPEX connector, use an external
+   2–3 dBi antenna instead of the PCB one.
+4. **Power.** A weak 5 V supply browns out the radio exactly when it transmits:
+   the device then disconnects during requests, which looks like weak WiFi. Use
+   a 5 V 2 A supply and a short, thick cable.
+5. **WPA2-PSK.** The ESP32 does not join a WPA3-only network, and mixed WPA2/WPA3
+   can make it fail after a router firmware update.
+6. **A DHCP reservation** for the board, so its address never changes.
+
+Run `wifi scan` at the door with the board powered from the same spot it will
+live in. −50 dBm is excellent, −60 good, −70 usable, −80 marginal, below −85 the
+enrollment and the real-time stream will be unreliable.
 
 ## Capacity
 

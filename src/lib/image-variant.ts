@@ -26,7 +26,7 @@ const DEFAULT_MAX_CACHED_VARIANTS = 150;
 /**
  * Tiny LRU keyed by `imageVariantKey(id, w, h, q)`. A hit skips BOTH the
  * Postgres round-trip and the re-encode, so the second customer on the same
- * Railway instance is served from memory.
+ * app instance is served from memory.
  */
 export function createVariantCache(maxEntries = DEFAULT_MAX_CACHED_VARIANTS) {
   const store = new Map<string, ImageVariant>();

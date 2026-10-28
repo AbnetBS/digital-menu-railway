@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { attendanceBiometrics, attendanceEnrollJobs, attendanceMembers } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
+import { deviceAllowed } from "@/lib/attendance-device";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { markRestWakeRequested } from "@/lib/attendance-rest";
 import { and, desc, eq } from "drizzle-orm";
@@ -24,8 +25,8 @@ import { ENROLL_JOB_TTL_MINUTES, MAX_FINGERS_PER_MEMBER } from "@/lib/attendance
  *   5. The admin page polls `GET /api/attendance/biometrics?job=<id>` and reads
  *      the job as done, so it can print "Fingerprint Added ✓".
  *
- * The `?pending` read is the only open one: it is the hardware asking "is
- * anybody waiting for me?", and it carries names and IDs, never a PIN.
+ * The `?pending` read is for the device, authorized by the optional device token.
+ * It carries names and IDs, never a PIN.
  */
 
 /** The next free fingerprint ID inside the FPC1020A (1-1000). */
@@ -41,9 +42,9 @@ export async function GET(request: Request) {
   const jobId = searchParams.get("job");
   const memberId = searchParams.get("memberId");
 
-  // The device poll and the admin poll both go through here; only the device
-  // poll (?pending) may run without a session, and it only lists names + IDs.
-  if (pending !== "1") {
+  // The device may poll pending jobs with its configured token. Admin reads
+  // remain available with an admin session; an unset token keeps legacy access.
+  if (pending !== "1" || !deviceAllowed(request)) {
     const auth = await requireAdmin();
     if (!auth.ok) return auth.response;
   }

@@ -19,7 +19,7 @@ const workerGlobal = globalThis as WorkerGlobal;
 /**
  * Durable due-order worker. The queue is in Postgres, so a process restart does
  * not lose a waiter submission; on startup this worker immediately catches up.
- * SKIP LOCKED lets more than one Railway instance share the queue safely.
+ * SKIP LOCKED lets more than one app instance share the queue safely.
  */
 export function startDeferredTicketWorker() {
   if (workerGlobal.__fanaDeferredTicketWorkerStarted) return;

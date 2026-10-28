@@ -21,9 +21,13 @@
 import { etHour, etMinute } from "@/lib/timezone";
 
 /**
- * A person is late from 30 minutes after the shift of his role starts. It was
- * 15 until the owner moved it (2026-10-16); one constant, so the door screen,
- * the admin page and the printed sheet can never disagree about who is late.
+ * FALLBACK only (2026-10-27): the grace that really applies is the Maximum
+ * Late Time saved on each role's shift in Attendance, Role & Time, and the
+ * Leaving Grace saved beside it. The door, the payroll and the printed sheet
+ * all read those role values, so there is no fixed 30 minute grace in a fine.
+ * This 30 is used only when a shift row has no grace value stored (an old
+ * install), so an unconfigured role is not charged from its first minute.
+ * It was 15 until the owner moved it on 2026-10-16.
  */
 export const LATE_GRACE_MINUTES = 30;
 
@@ -116,9 +120,10 @@ export function pickShift(shifts: RoleShift[] | null | undefined, minutes: numbe
 }
 
 /**
- * Minutes late for a clock-in: 0 up to LATE_GRACE_MINUTES (30) after the
- * shift start, then every minute past that. Morning shift 12:30 -> 13:00 is
- * still on time, 13:01 is 1 minute late.
+ * CHARGEABLE minutes late for a clock-in: 0 inside the role's Maximum Late
+ * Time, then every minute past it. The 30 minute constant is only a fallback
+ * for a shift with no grace stored. Example with a 20 minute role grace on an
+ * 08:00 shift: 08:20 is still on time, 08:25 is 5 chargeable minutes.
  */
 export function lateMinutesFor(shift: RoleShift | null | undefined, clockInMinutes: number): number {
   const start = parseHHMM(shift?.startTime ?? null);
@@ -128,7 +133,9 @@ export function lateMinutesFor(shift: RoleShift | null | undefined, clockInMinut
 }
 
 /**
- * True when the person left before the time out of the shift he clocked in for.
+ * CHARGEABLE minutes for leaving early: 0 inside the role's Leaving Grace,
+ * then every minute before that. With a 20 minute Leaving Grace on a 17:00
+ * shift, leaving at 16:40 costs nothing and 16:35 costs 5 minutes.
  *
  * A night period (22:00 -> 02:00) ends on the next calendar day, so its time out
  * is read as "02:00 tomorrow" and an OUT at 23:00 is still an early out. Without
@@ -567,13 +574,18 @@ export const OVERTIME_SOURCE_LABELS: Record<OvertimeSource, string> = {
 
 /**
  * How far past the end of a shift a person must still be present before the
- * time starts counting as Shift OT. The owner lowered it from an hour and a
- * half to ONE HOUR on 2026-10-22: "i want that 1:00 hour buffer until that it
- * wont be overtime, then if that person stay until 10:00 he will get the 2
- * hour overtime". The whole time past the end is then paid, not only the part
- * above the buffer, which is exactly his example.
+ * time starts counting as Shift OT. On 2026-10-28 the owner raised it from
+ * ONE HOUR to ONE HOUR FIFTEEN: "they will stay doing transferring, change
+ * cloth and other and sometimes they stay maximum of 1:15 hour ... if that
+ * person scan his finger in 9:00 he will get undeserved 1:15 hour". The whole
+ * time past the end is then paid, not only the part above the buffer (his
+ * 2026-10-22 example: shift ends 8:00, out 10:00 -> 2 hours).
+ *
+ * The same 75 minutes apply to holiday, free-week and shift overtime; on a
+ * worked holiday or free day the shift itself is overtime from the first
+ * minute, and only the clothing/transfer tail is ignored.
  */
-export const SHIFT_OT_GRACE_MINUTES = 60;
+export const SHIFT_OT_GRACE_MINUTES = 75;
 
 export function isOvertimeType(value: unknown): value is OvertimeType {
   return typeof value === "string" && (OVERTIME_TYPES as readonly string[]).includes(value);
@@ -611,6 +623,55 @@ export function shiftOtMinutesFor(
   const outMinutes = crossesMidnight && start !== null && raw < start ? raw + 24 * 60 : raw;
   const past = outMinutes - endMinutes;
   return past > SHIFT_OT_GRACE_MINUTES ? past : 0;
+}
+
+/**
+ * "THE TIME MORE THAN 8 HOUR IS AUTOMATICALLY CONSIDERED SHIFT OT"
+ * (owner, 2026-10-28). A person who covers a second shift (the afternoon
+ * worker who came in for the sick morning worker) has one IN and one OUT on
+ * that day. The extra shift is the time worked BEYOND the length of his own
+ * shift, not the minutes past a nominal end that a late arrival already ate.
+ *
+ *     shift 12:00-8:00, IN 12:30, OUT 11:30  -> 11 h worked, 8 h shift
+ *                                            -> 3 h Shift OT
+ *
+ * The 1:15 buffer still guards the tail: a person who merely changed clothes
+ * and left 60 minutes after the end has 60 minutes beyond the shift, which is
+ * inside the buffer and pays nothing. Past the buffer the WHOLE excess is paid.
+ *
+ * Without a clock-in (an old row) this falls back to the end-of-shift
+ * measurement, which is all that row can prove.
+ */
+export function workedShiftOtMinutes(
+  shift: RoleShift | null | undefined,
+  clockInAt: Date | string | null | undefined,
+  clockOutAt: Date | string | null | undefined
+): number {
+  if (!clockInAt) return shiftOtMinutesFor(shift, clockOutAt);
+  const start = parseHHMM(shift?.startTime ?? null);
+  const endRaw = parseHHMM(shift?.endTime ?? null);
+  if (start === null || endRaw === null || !clockOutAt) return 0;
+  const inAt = clockInAt instanceof Date ? clockInAt : new Date(clockInAt);
+  const outAt = clockOutAt instanceof Date ? clockOutAt : new Date(clockOutAt);
+  if (Number.isNaN(inAt.getTime()) || Number.isNaN(outAt.getTime())) return 0;
+  const inM = etMinutes(inAt);
+  const outM = etMinutes(outAt);
+  const crossesMidnight = endRaw <= start;
+  const end = crossesMidnight ? endRaw + 24 * 60 : endRaw;
+  const inShifted = crossesMidnight && inM < start ? inM + 24 * 60 : inM;
+  const outShifted = crossesMidnight && outM < start ? outM + 24 * 60 : outM;
+  if (outShifted <= inShifted) return 0;
+  const shiftLength = Math.max(0, end - start);
+  const beyond = Math.max(0, outShifted - inShifted - shiftLength);
+  return beyond > SHIFT_OT_GRACE_MINUTES ? Math.min(24 * 60, Math.round(beyond)) : 0;
+}
+
+/** "2026-10-24" -> "Saturday". Noon UTC: no time zone can move the weekday.
+ *  The owner asked for the weekday beside every overtime date in the history. */
+export function weekdayName(date: string): string {
+  const d = new Date(`${String(date || "").slice(0, 10)}T12:00:00Z`);
+  if (Number.isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-US", { weekday: "long", timeZone: "UTC" }).format(d);
 }
 
 /**

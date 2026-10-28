@@ -12,7 +12,7 @@ const globalForDb = globalThis as typeof globalThis & {
  * tight once a room full of phones polls order status while the kitchen,
  * barista, waiter and cashier screens refresh — requests then queue behind the
  * pool (up to `connectionTimeoutMillis`) instead of hitting Postgres. 20 is
- * comfortable for one Railway instance and still far below a managed Postgres
+ * comfortable for one Coolify app instance and still far below a managed Postgres
  * `max_connections`; tune per environment with `PG_POOL_MAX`.
  */
 const poolMax = Math.max(1, Number.parseInt(process.env.PG_POOL_MAX || "20", 10) || 20);

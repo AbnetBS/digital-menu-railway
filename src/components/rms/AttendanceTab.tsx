@@ -28,6 +28,7 @@ import {
   SHEET_RANGE_MAX_DAYS,
   isAttendanceExpectedOnDate,
   overtimeHoursLabel,
+  weekdayName,
   type OvertimeType,
 } from "@/lib/attendance";
 import { useStaffT } from "@/lib/staff-i18n";
@@ -115,6 +116,16 @@ interface OvertimeRow {
   clockInLabel: string | null;
   clockOutLabel: string | null;
   workedLabel: string | null;
+}
+
+/** A "Don't give" decision: the overtime stays in history but is not paid. */
+interface OvertimeExclusion {
+  id: number;
+  memberId: number;
+  date: string;
+  type: OvertimeType;
+  authorizedBy: string | null;
+  reason: string | null;
 }
 
 /** The Activity panel's whole picture, as /api/attendance/activity answers it. */
@@ -265,6 +276,8 @@ export default function AttendanceTab() {
   });
   const [otTo, setOtTo] = useState(() => new Date().toISOString().slice(0, 10));
   const [otRows, setOtRows] = useState<OvertimeRow[]>([]);
+  const [otExclusions, setOtExclusions] = useState<OvertimeExclusion[]>([]);
+  const [otShowAll, setOtShowAll] = useState(true);
   const [otTotalMinutes, setOtTotalMinutes] = useState(0);
   const [otLoading, setOtLoading] = useState(false);
   const [otSaving, setOtSaving] = useState(false);
@@ -403,6 +416,7 @@ export default function AttendanceTab() {
         return;
       }
       setOtRows(Array.isArray(d?.rows) ? (d.rows as OvertimeRow[]) : []);
+      setOtExclusions(Array.isArray(d?.exclusions) ? (d.exclusions as OvertimeExclusion[]) : []);
       setOtTotalMinutes(Number(d?.totalMinutes) || 0);
     } catch {
       say("Network error. Try again.", true);
@@ -462,6 +476,15 @@ export default function AttendanceTab() {
       cancelled = true;
     };
   }, [otMemberId, otDate]);
+
+  /** True when an admin said "Don't give" to this person's day + kind. */
+  const isOtExcluded = (row: OvertimeRow) =>
+    otExclusions.some((e) => e.memberId === row.memberId && e.date === row.date && e.type === row.type);
+
+  /** The three kind buttons double as the history filter: click "Holiday OT"
+   *  and the category panel and list show only who got Holiday OT, with their
+   *  name, kind and date. "All kinds" puts everything back. */
+  const otVisibleRows = otShowAll ? otRows : otRows.filter((r) => r.type === otType);
 
   /** Only ever the number that belongs to the person and day now selected. */
   const otWorkedNow =
@@ -558,20 +581,46 @@ export default function AttendanceTab() {
     }
   };
 
-  const removeOvertime = async (id: number) => {
+  /** The "Don't give" decision (owner, 2026-10-28). The row is never deleted:
+   *  a mistaken overtime stays visible in the history, it is just not paid.
+   *  The same click gives it back. */
+  const toggleOvertimeDecision = async (row: OvertimeRow) => {
+    const excluded = otExclusions.some(
+      (e) => e.memberId === row.memberId && e.date === row.date && e.type === row.type
+    );
     try {
-      const r = await fetch(`/api/attendance/overtime?id=${id}`, { method: "DELETE" });
+      const r = await fetch("/api/attendance/overtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: excluded ? "give_again" : "dont_give",
+          memberId: row.memberId,
+          date: row.date,
+          type: row.type,
+          reason: excluded ? undefined : "Given by mistake - do not pay",
+        }),
+      });
       const d = await r.json().catch(() => null);
-      if (!r.ok) {
-        say(d?.error || "Could not remove that overtime", true);
+      if (!r.ok || !d?.success) {
+        say(d?.error || "Could not change that overtime", true);
         return;
       }
-      say("Overtime removed");
+      say(d.message);
       await loadOvertime();
       loadToday();
     } catch {
       say("Network error. Try again.", true);
     }
+  };
+
+  /** Clicking a person in "who got overtime" prefills the add form, so a
+   *  supervisor can give a missing overtime in seconds. */
+  const giveOvertimeTo = (memberId: number, type: OvertimeType = "shift") => {
+    setOtMemberId(memberId);
+    setOtType(type);
+    setOtShift("");
+    setOtDate(otTo || new Date().toISOString().slice(0, 10));
+    say(`Pick the day and the hours for ${members.find((m) => m.id === memberId)?.name || "this person"}.`);
   };
 
   useEffect(() => {
@@ -2063,9 +2112,15 @@ export default function AttendanceTab() {
                   key={t}
                   role="button"
                   tabIndex={0}
-                  onClick={() => setOtType(t)}
+                  onClick={() => {
+                    setOtType(t);
+                    setOtShowAll(false);
+                  }}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") setOtType(t);
+                    if (e.key === "Enter" || e.key === " ") {
+                      setOtType(t);
+                      setOtShowAll(false);
+                    }
                   }}
                   className={`text-left px-4 py-3 rounded-2xl border transition cursor-pointer ${
                     otType === t
@@ -2080,6 +2135,7 @@ export default function AttendanceTab() {
                       onClick={(e) => {
                         e.stopPropagation();
                         setOtType("holiday");
+                        setOtShowAll(false);
                         setHolidayOpen(true);
                       }}
                       title="Add the holiday dates the system must know"
@@ -2107,8 +2163,8 @@ export default function AttendanceTab() {
                 <CalendarDays className="w-3.5 h-3.5" /> Add holiday dates
               </button>
               <span>
-                The payroll counts a registered holiday by itself. Leaving within one hour after the shift end is not
-                overtime; after that, the whole time past the end is paid.
+                The payroll counts a registered holiday by itself. The first 1 hour 15 minutes after the shift end is
+                for transfer and changing clothes: no overtime there. Past it, the whole time past the end is paid.
               </span>
             </div>
 
@@ -2197,6 +2253,65 @@ export default function AttendanceTab() {
             </p>
           </div>
 
+          {/* WHO GOT WHICH OT (owner, 2026-10-28): "i want know who is given
+               which ot in overtime cathagory button ... if accedently there
+               arent givven the overtime we can see there and give them
+               manually by clicking there name, type date". Everyone is listed,
+               even the people with zero hours, so a missing person stands out. */}
+          <div className="bg-[#2C1B17] p-5 rounded-2xl border border-[#C9A227]/30 space-y-3">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-bold text-amber-200">
+                  Who got {otShowAll ? "overtime" : L(OVERTIME_TYPE_LABELS[otType])} in this range
+                </h3>
+                {!otShowAll && (
+                  <button
+                    type="button"
+                    onClick={() => setOtShowAll(true)}
+                    className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-black/30 border border-stone-600 text-stone-300 hover:text-white"
+                  >
+                    All kinds
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-stone-400 mt-1 leading-relaxed">
+                Every employee is here, including those with none. Click a category button above to see only that kind,
+                with the name, type and date below. Click a name to prefill the form above, then pick the day and the
+                hours. Measured overtime appears by itself; a row marked &quot;Don&apos;t give&quot; is not paid.
+              </p>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {members
+                .filter((m) => m.active !== false)
+                .map((m) => {
+                  const rows = otVisibleRows.filter((r) => r.memberId === m.id);
+                  const given = rows.filter((r) => !isOtExcluded(r));
+                  const minutes = given.reduce((sum, r) => sum + Number(r.minutes || 0), 0);
+                  const kinds = (["holiday", "free_week", "shift"] as OvertimeType[])
+                    .filter((t) => given.some((r) => r.type === t))
+                    .map((t) => OVERTIME_TYPE_LABELS[t].replace(" OT", ""));
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => giveOvertimeTo(m.id, rows[0]?.type || otType)}
+                      className="text-left bg-black/20 hover:bg-black/40 border border-stone-700 rounded-xl p-3 transition"
+                      title="Click to give this person overtime"
+                    >
+                      <span className="block text-xs font-black text-white">{m.name}</span>
+                      <span className={`block text-[11px] font-bold ${minutes > 0 ? "text-violet-300" : "text-stone-500"}`}>
+                        {minutes > 0 ? overtimeHoursLabel(minutes) : "No overtime yet"}
+                      </span>
+                      <span className="block text-[10px] text-stone-400">
+                        {kinds.length ? kinds.join(" • ") : "Click to give OT"}
+                        {rows.length > given.length ? ` • ${rows.length - given.length} not given` : ""}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+
           <div className="bg-[#2C1B17] p-5 rounded-2xl border border-stone-700/60 space-y-3">
             <div className="flex flex-wrap gap-3 items-end">
               <div>
@@ -2238,8 +2353,14 @@ export default function AttendanceTab() {
                 </button>
               ))}
               <p className="ml-auto text-[11px] text-stone-400">
-                Total in range:{" "}
-                <span className="font-black text-amber-300">{overtimeHoursLabel(otTotalMinutes)}</span>
+                {otShowAll ? "Total in range" : `Total ${L(OVERTIME_TYPE_LABELS[otType])}`}:{" "}
+                <span className="font-black text-amber-300">
+                  {overtimeHoursLabel(
+                    otShowAll
+                      ? otTotalMinutes
+                      : otVisibleRows.filter((r) => !isOtExcluded(r)).reduce((n, r) => n + Number(r.minutes || 0), 0)
+                  )}
+                </span>
               </p>
             </div>
 
@@ -2251,12 +2372,12 @@ export default function AttendanceTab() {
                     <th className="py-2 pr-3 font-black">Date</th>
                     <th className="py-2 pr-3 font-black">Type of overtime</th>
                     <th className="py-2 pr-3 font-black">Total Hour</th>
-                    <th className="py-2 font-black text-right">Remove</th>
+                    <th className="py-2 font-black text-right">Decision</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {otRows.map((row) => (
-                    <tr key={row.id} className="border-t border-stone-700/60 align-top">
+                  {otVisibleRows.map((row) => (
+                    <tr key={row.id} className={`border-t border-stone-700/60 align-top ${isOtExcluded(row) ? "opacity-60" : ""}`}>
                       <td className="py-2 pr-3">
                         <p className="font-bold text-white">{row.memberName}</p>
                         <p className="text-[10px] text-stone-500">
@@ -2266,7 +2387,10 @@ export default function AttendanceTab() {
                           {row.workedLabel ? ` • worked ${row.workedLabel}` : ""}
                         </p>
                       </td>
-                      <td className="py-2 pr-3 text-stone-300 whitespace-nowrap">{row.date}</td>
+                      <td className="py-2 pr-3 text-stone-300 whitespace-nowrap">
+                        {row.date}
+                        <span className="block text-[10px] text-amber-200/80">{weekdayName(row.date)}</span>
+                      </td>
                       <td className="py-2 pr-3">
                         <p className="font-bold text-amber-200 whitespace-nowrap">{L(row.typeLabel)}</p>
                         <p className="text-[10px] text-stone-500">
@@ -2281,23 +2405,31 @@ export default function AttendanceTab() {
                           {row.note ? ` • ${row.note}` : ""}
                         </p>
                       </td>
-                      <td className="py-2 pr-3 font-black text-violet-300 whitespace-nowrap">{row.hoursLabel}</td>
+                      <td className="py-2 pr-3 font-black text-violet-300 whitespace-nowrap">
+                        <span className={isOtExcluded(row) ? "line-through" : ""}>{row.hoursLabel}</span>
+                        {isOtExcluded(row) && <span className="block text-[9px] uppercase text-rose-300">Not given</span>}
+                      </td>
                       <td className="py-2 text-right">
                         <button
-                          onClick={() => removeOvertime(row.id)}
-                          className="p-2 text-rose-400 hover:text-rose-300"
-                          aria-label={L("Remove this overtime")}
+                          onClick={() => toggleOvertimeDecision(row)}
+                          className={`px-3 py-2 rounded-xl text-[10px] font-black border ${
+                            isOtExcluded(row)
+                              ? "bg-emerald-900/50 border-emerald-700 text-emerald-200"
+                              : "bg-rose-900/40 border-rose-700 text-rose-200"
+                          }`}
+                          title={isOtExcluded(row) ? "Give this overtime again" : "Keep it in history but do not pay it"}
                         >
-                          <Trash2 className="w-4 h-4" />
+                          {isOtExcluded(row) ? "Give again" : "Don't give"}
                         </button>
                       </td>
                     </tr>
                   ))}
-                  {otRows.length === 0 && (
+                  {otVisibleRows.length === 0 && (
                     <tr>
                       <td colSpan={5} className="py-4 text-[11px] text-stone-500">
-                        No overtime in this range. Pick the kind, the person and the day above and save it, or let a
-                        person stay past his shift: the clock-out scan writes that one by itself.
+                        No {otShowAll ? "overtime" : L(OVERTIME_TYPE_LABELS[otType])} in this range. Pick the kind, the
+                        person and the day above and save it, or let a person stay past his shift: the clock-out scan
+                        writes that one by itself. Click &quot;All kinds&quot; to see the other categories.
                       </td>
                     </tr>
                   )}

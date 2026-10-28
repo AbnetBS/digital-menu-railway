@@ -3,12 +3,16 @@ import { pool } from "@/db";
 import { ensureTablesExist, isIntegerColumnError, repairPayrollMoneyColumns } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import {
+  DEFAULT_PAYROLL_LETTERHEAD,
   OT_ARRIVAL_GRACE_MINUTES,
   OT_BUFFER_MINUTES,
+  chargeableDayMinutes,
+  computePayrollMoney,
   ethiopianMonthBounds,
-  evaluatePayrollFormula,
   gregorianDateToEthiopian,
+  minuteDeductionRate,
   minutesToHours,
+  payrollPeriodLabel,
   recognizedOtMinutes,
   requiredPayrollSettingsMissing,
   withDefaultPayrollFormulas,
@@ -19,7 +23,7 @@ import {
   etMinutes,
   lateMinutesFor,
   pickShift,
-  shiftOtMinutesFor,
+  workedShiftOtMinutes,
   type RoleShift,
 } from "@/lib/attendance";
 import { isAnnualLeaveDate, isFreeDate, isWorkedFreeDay, type FreeScheduleRule } from "@/lib/free-schedule";
@@ -115,13 +119,35 @@ function shiftOfLog(log: any, shifts: RoleShift[]): RoleShift | null {
   return pickShift(shifts, etMinutes(log.clock_in)) ?? shifts[0] ?? null;
 }
 
+/** Did this IN belong to a shift of another role? (owner, 2026-10-28:
+ *  "if they cover another person's shift on that day ... give Shift OT
+ *  instead of Free Week OT".) We only call a day a covered shift when the
+ *  scan fits nobody's own shift but fits somebody else's. A person with no
+ *  role times at all keeps the free-day rule, because there is nothing to
+ *  compare against. */
+const COVER_MATCH_EARLY_MINUTES = 90;
+const COVER_MATCH_LATE_MINUTES = 180;
+function clockInFitsShift(clockIn: Date | string, shift: RoleShift): boolean {
+  if (!clockIn) return false;
+  const match = /^(\d{1,2}):(\d{2})/.exec(String(shift.startTime));
+  if (!match) return false;
+  const start = Number(match[1]) * 60 + Number(match[2]);
+  const inM = etMinutes(clockIn);
+  return inM >= start - COVER_MATCH_EARLY_MINUTES && inM <= start + COVER_MATCH_LATE_MINUTES;
+}
+function coveredShiftOfLog(log: any, ownShifts: RoleShift[], otherShifts: RoleShift[]): RoleShift | null {
+  if (!log?.clock_in || ownShifts.length === 0 || otherShifts.length === 0) return null;
+  if (ownShifts.some((s) => clockInFitsShift(log.clock_in, s))) return null;
+  return otherShifts.find((s) => clockInFitsShift(log.clock_in, s)) ?? null;
+}
+
 async function buildRows(periodKey: string) {
   const [year, month] = periodKey.split("-").map(Number);
   const bounds = ethiopianMonthBounds(year, month);
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Addis_Ababa" });
   const effectiveTo = bounds.to < today ? bounds.to : today;
 
-  const [membersQ, logsQ, compQ, inputQ, otEntriesQ, periodQ, savedQ, exceptionsQ, historyQ, freeQ, rolesQ, holidaysQ, otRowsQ, paymentsQ] =
+  const [membersQ, logsQ, compQ, inputQ, otEntriesQ, periodQ, savedQ, exceptionsQ, historyQ, freeQ, rolesQ, holidaysQ, otRowsQ, paymentsQ, headerQ, excludedQ, breakageQ] =
     await Promise.all([
       pool.query(
         "SELECT m.id,m.name,m.role_id,m.active,m.employment_started_at,m.terminated_at,m.created_at,(SELECT min(l.date) FROM attendance_logs l WHERE l.member_id=m.id) AS first_attendance_date FROM attendance_members m ORDER BY m.name"
@@ -147,11 +173,22 @@ async function buildRows(periodKey: string) {
         [bounds.from, bounds.to]
       ),
       pool.query("SELECT member_id,paid_at,method,snapshot FROM payroll_payments WHERE period_key=$1", [periodKey]),
+      // The printed government sheet's company name and TIN. Editable from
+      // Payroll -> Formula Settings; a fresh install uses the Excel values.
+      pool.query("SELECT key,value FROM site_settings WHERE key IN ('payroll_company_name','payroll_tin')"),
+      // "Don't give": overtime kept in the history but not added to the salary.
+      pool.query("SELECT id,member_id,date,type,authorized_by,reason FROM attendance_ot_exclusions WHERE date BETWEEN $1 AND $2", [bounds.from, bounds.to]),
+      pool.query("SELECT member_id, COALESCE(sum(amount),0) AS amount FROM payroll_breakages WHERE period_key=$1 AND voided_at IS NULL GROUP BY member_id", [periodKey]),
     ]);
 
   const settings = await loadSettings();
+  const headerValues = new Map(headerQ.rows.map((r) => [String(r.key), String(r.value ?? "")]));
+  const letterhead = {
+    companyName: headerValues.get("payroll_company_name") || DEFAULT_PAYROLL_LETTERHEAD.companyName,
+    tin: headerValues.get("payroll_tin") || DEFAULT_PAYROLL_LETTERHEAD.tin,
+  };
   const comp = new Map(compQ.rows.map((r) => [Number(r.member_id), r]));
-  const inputs = new Map(inputQ.rows.map((r) => [Number(r.member_id), r]));
+  void inputQ; // retained for existing installations; manual breakage is now read-only
   const saved = new Map(savedQ.rows.map((r) => [Number(r.member_id), r.snapshot]));
   const payments = new Map(paymentsQ.rows.map((r) => [Number(r.member_id), r]));
   const holidays = holidaysQ.rows.map((h) => ({
@@ -191,19 +228,32 @@ async function buildRows(periodKey: string) {
     const memberLogs = logsQ.rows.filter((l) => Number(l.member_id) === memberId);
     const logByDate = new Map(memberLogs.map((l) => [String(l.date), l]));
     const c = comp.get(memberId) || {};
-    const monthly = inputs.get(memberId) || {};
     const exceptions = exceptionsQ.rows.filter((e) => Number(e.member_id) === memberId);
     const payment = payments.get(memberId);
     const roleShifts = shiftsByRole.get(Number(member.role_id)) || [];
+    const otherRoleShifts = [...shiftsByRole.entries()]
+      .filter(([roleId]) => roleId !== Number(member.role_id))
+      .flatMap(([, list]) => list);
     const otRows = otByMember.get(memberId) || [];
     // A row a person wrote (admin, supervisor, the tablet) is a decision: that
     // day is taken as it is. A row the clock-out scan wrote by itself ("auto")
     // is only a measurement, so a holiday or a free day still wins over it.
-    const manualOtRows = otRows.filter((r) => r.source !== "auto");
-    const clockShiftRows = new Map(
-      otRows.filter((r) => r.source === "auto" && r.type === "shift").map((r) => [r.date, r])
+    // "Don't give" (owner, 2026-10-28) silences a person+day+kind: its hours
+    // are not added, the day cannot fall through to another OT kind, and the
+    // row stays in the history so a mistaken gift can be seen and undone.
+    const excludedOt = new Set(
+      (excludedQ.rows as Array<{ member_id: number; date: string; type: string }>)
+        .filter((e) => Number(e.member_id) === memberId)
+        .map((e) => `${String(e.date)}|${String(e.type)}`)
     );
-    const manualDates = new Set(manualOtRows.map((r) => r.date));
+    const allowedOtRow = (r: OtRow) => !excludedOt.has(`${String(r.date)}|${String(r.type)}`);
+    const manualOtRows = otRows.filter((r) => r.source !== "auto" && allowedOtRow(r));
+    const clockShiftRows = new Map(
+      otRows.filter((r) => r.source === "auto" && r.type === "shift" && allowedOtRow(r)).map((r) => [r.date, r])
+    );
+    // Excluded typed rows still hold their day, so the automatic measurement
+    // cannot quietly put the same overtime back under another name.
+    const manualDates = new Set(otRows.filter((r) => r.source !== "auto").map((r) => r.date));
     const legacyOt = otEntriesQ.rows.filter((o) => Number(o.member_id) === memberId);
 
     const startedRaw = member.employment_started_at;
@@ -227,31 +277,38 @@ async function buildRows(periodKey: string) {
     const isWorkedFree = (date: string) => isWorkedFreeDay(freeSchedules, date);
     const presentDates = new Set(memberLogs.filter((l) => l.date).map((l) => String(l.date)));
     const expectedDates = allDates.filter((d) => d >= created && (!terminated || d < terminated || presentDates.has(d)) && !isFree(d));
-    const absenceDates = expectedDates.filter((d) => !presentDates.has(d));
+    // An absence now costs a whole day's wage. TODAY is not finished yet, so
+    // nobody may lose a day's salary just because payroll was opened before
+    // their shift ended. Yesterday and older are decided; a finished month
+    // (bounds.to < today) counts every day as before.
+    const absenceDates = expectedDates.filter((d) => d < today && !presentDates.has(d));
     const excusedAbsence = new Set(exceptions.filter((e) => e.exception_type === "absence").map((e) => e.attendance_date));
     const excusedLate = new Set(exceptions.filter((e) => e.exception_type === "lateness").map((e) => e.attendance_date));
     const excusedEarly = new Set(exceptions.filter((e) => e.exception_type === "early_out").map((e) => e.attendance_date));
-    /* ── deductions start only AFTER the grace ────────────────────────────
-     * The owner's rule (Oct 2026): "the deduction starts if they come after
-     * their maximum late time, and the leaving hour, until that nothing
-     * happens". Inside the role's Maximum Late Time and Leaving Grace minutes
-     * cost nothing; past them, only the minutes beyond are deducted.
-     *
-     * The minutes are measured from the scan and the role's own times, so an
-     * install whose older rows never stored early_out_minutes (the column was
-     * written as a flag only) still deducts the right amount instead of zero.
+    /* ── chargeable minutes: the role's OWN grace, not a fixed 20 or 30 ────
+     * The owner (2026-10-27): "i am thinking to make it based on the time of
+     * Maximum Late Time (min) and Leaving Grace (min) i enter ... if someone
+     * max early time leaving is 20 and he left before 25 he will be fined that
+     * 5 min". So the `max(0, late - grace)` of his formula happens HERE, once
+     * per day, with the grace of the person's own role:
+     *   • lateMinutesFor    -> minutes past Maximum Late Time
+     *   • earlyOutMinutesFor-> minutes past Leaving Grace
+     * The scans are re-measured on every payroll read (instead of trusting the
+     * numbers stored at scan time), so editing a role's grace in Attendance,
+     * Role & Time really changes what the month costs. Stored minutes are the
+     * fallback for old rows with no clock time or no role times.
      */
     const measured = memberLogs.map((l) => {
       const shift = shiftOfLog(l, roleShifts);
-      const storedLate = Number(l.late_minutes || 0);
-      const storedEarly = Number(l.early_out_minutes || 0);
-      const late = storedLate > 0 ? storedLate : shift && l.clock_in ? lateMinutesFor(shift, etMinutes(l.clock_in)) : 0;
-      const early =
-        storedEarly > 0
+      const storedLate = Math.max(0, Math.round(Number(l.late_minutes || 0)));
+      const storedEarly = Math.max(0, Math.round(Number(l.early_out_minutes || 0)));
+      const rawLate = shift && l.clock_in ? lateMinutesFor(shift, etMinutes(l.clock_in)) : storedLate;
+      const rawEarly = shift && l.clock_out
+        ? earlyOutMinutesFor(shift, etMinutes(l.clock_out))
+        : l.early_out
           ? storedEarly
-          : l.early_out && shift && l.clock_out
-            ? earlyOutMinutesFor(shift, etMinutes(l.clock_out))
-            : 0;
+          : 0;
+      const { late, early } = chargeableDayMinutes(rawLate, rawEarly);
       return { date: String(l.date), late, early, isFree: isFree(String(l.date)) };
     });
     const lateLogs = measured.filter((l) => l.late > 0);
@@ -269,17 +326,20 @@ async function buildRows(periodKey: string) {
     let autoHolidayMinutes = 0;
     let autoFreeWeekMinutes = 0;
     let autoShiftMinutes = 0;
-    const autoDays: Array<{ date: string; type: string; hours: number; why: string }> = [];
+    const autoDays: Array<{ date: string; type: string; hours: number; why: string; excluded: boolean }> = [];
     for (const date of allDates) {
       const log = logByDate.get(date);
       if (!log || manualDates.has(date)) continue;
       const shift = shiftOfLog(log, roleShifts);
       const holiday = holidayByDate.get(date);
       if (holiday) {
+        const excluded = excludedOt.has(`${date}|holiday`);
         const minutes = recognizedOtMinutes(shift, log);
         if (minutes > 0) {
-          autoHolidayMinutes += minutes;
-          autoDays.push({ date, type: "holiday", hours: minutesToHours(minutes), why: holiday.name });
+          // An excluded day stays in the history (marked "Not given") but its
+          // hours are not paid and the day cannot fall through to another kind.
+          if (!excluded) autoHolidayMinutes += minutes;
+          autoDays.push({ date, type: "holiday", hours: minutesToHours(minutes), why: holiday.name, excluded });
         }
         continue;
       }
@@ -288,19 +348,49 @@ async function buildRows(periodKey: string) {
       // above, and a supervisor can still type overtime by hand.
       if (isPaidLeave(date)) continue;
       if (isWorkedFree(date)) {
-        const minutes = recognizedOtMinutes(shift, log);
+        // Covering somebody else's shift on a free day is a SECOND shift, so
+        // it is Shift OT (x1.5), not Free Week OT (x2). The covered shift's
+        // own grace decides the hours. Everything else on a free day is Free
+        // Week OT. Both still need the 1 hour of work and the 1:15 tail.
+        const covered = coveredShiftOfLog(log, roleShifts, otherRoleShifts);
+        const kind = covered ? "shift" : "free_week";
+        const excluded = excludedOt.has(`${date}|${kind}`);
+        const minutes = recognizedOtMinutes(covered || shift, log);
         if (minutes > 0) {
-          autoFreeWeekMinutes += minutes;
-          autoDays.push({ date, type: "free_week", hours: minutesToHours(minutes), why: "His free day, worked anyway" });
+          if (!excluded) {
+            if (covered) autoShiftMinutes += minutes;
+            else autoFreeWeekMinutes += minutes;
+          }
+          autoDays.push({
+            date,
+            type: kind,
+            hours: minutesToHours(minutes),
+            why: covered ? `Covered the ${covered.label} shift on his free day` : "His free day, worked anyway",
+            excluded,
+          });
         }
         continue;
       }
       // The clock-out scan may already have measured this day; its own row is
       // the same number, so use it when it is there and measure otherwise.
-      const minutes = clockShiftRows.get(date)?.minutes ?? shiftOtMinutesFor(shift, log.clock_out);
+      const excluded = excludedOt.has(`${date}|shift`);
+      // The time worked beyond the normal shift length is Shift OT (owner:
+      // "the time more than 8 hour is automatically considered shift ot").
+      // An auto row written at clock-out is the same measurement; use it when
+      // it is there so the paper and the device never disagree. An excluded
+      // clock row is measured from the scans, so the history keeps the day.
+      const minutes = !excluded
+        ? (clockShiftRows.get(date)?.minutes ?? workedShiftOtMinutes(shift, log.clock_in, log.clock_out))
+        : workedShiftOtMinutes(shift, log.clock_in, log.clock_out);
       if (minutes > 0) {
-        autoShiftMinutes += minutes;
-        autoDays.push({ date, type: "shift", hours: minutesToHours(minutes), why: `${minutes} minutes past the shift end` });
+        if (!excluded) autoShiftMinutes += minutes;
+        autoDays.push({
+          date,
+          type: "shift",
+          hours: minutesToHours(minutes),
+          why: `${minutes} minutes past the shift end`,
+          excluded,
+        });
       }
     }
 
@@ -329,58 +419,39 @@ async function buildRows(periodKey: string) {
       autoHolidayHours: minutesToHours(autoHolidayMinutes),
       autoFreeWeekHours: minutesToHours(autoFreeWeekMinutes),
       autoShiftHours: minutesToHours(autoShiftMinutes),
-      holidayDays: autoDays.filter((d) => d.type === "holiday").length,
-      freeWeekDays: autoDays.filter((d) => d.type === "free_week").length,
+      holidayDays: autoDays.filter((d) => d.type === "holiday" && !d.excluded).length,
+      freeWeekDays: autoDays.filter((d) => d.type === "free_week" && !d.excluded).length,
     };
 
     const basic = positive(c.basic_salary);
     const transport = positive(c.transport_allowance);
-    const breakage = positive(monthly.breakage_shortage);
-    const ctx: Record<string, number> = {
-      BasicSalary: basic,
-      TransportAllowance: transport,
-      GrossSalary: 0,
-      TaxableSalary: 0,
-      OvertimeHours: money(holidayOtHours + freeWeekOtHours + shiftOtHours),
-      HolidayOtHours: holidayOtHours,
-      FreeWeekOtHours: freeWeekOtHours,
-      ShiftOtHours: shiftOtHours,
-      ScheduledDays: attendance.scheduledDays,
-      ScheduledHours: attendance.scheduledHours,
-      DaysPresent: attendance.daysPresent,
-      ApprovedAbsences: attendance.approvedAbsences,
-      UnapprovedAbsences: attendance.unapprovedAbsences,
-      LateCount: attendance.lateCount,
-      LateMinutes: attendance.lateMinutes,
-      EarlyOutCount: attendance.earlyOutCount,
-      EarlyOutMinutes: attendance.earlyOutMinutes,
-    };
-    const calc = (f: string) => {
-      try {
-        return f ? Math.max(0, money(evaluatePayrollFormula(f, ctx))) : 0;
-      } catch {
-        return 0;
-      }
-    };
-
-    const holidayOtPay = calc(settings.holidayOtFormula);
-    const freeWeekOtPay = calc(settings.freeWeekOtFormula);
-    const shiftOtPay = calc(settings.shiftOtFormula);
-    const overtime = money(holidayOtPay + freeWeekOtPay + shiftOtPay);
-    const gross = money(basic + transport + overtime);
-    ctx.GrossSalary = gross;
-    const taxable = money(gross - transport);
-    ctx.TaxableSalary = taxable;
-
+    const breakage = positive(breakageQ.rows.find((r) => Number(r.member_id) === memberId)?.amount);
     const employmentDays = periodDates.filter((d) => d >= created && (!terminated || d < terminated || presentDates.has(d))).length;
     const prorationFactor = periodDates.length ? Math.min(1, employmentDays / periodDates.length) : 1;
-    const employerPension = money((basic * settings.employerPensionRate) / 100);
-    const employeePension = money((basic * settings.employeePensionRate) / 100);
-    const incomeTax = calc(settings.incomeTaxFormula);
-    const absenceDeduction = calc(settings.absenceFormula);
-    const latenessDeduction = calc(settings.latenessFormula);
-    const earlyOutDeduction = calc(settings.earlyOutFormula);
-    const totalDeduction = money(incomeTax + employeePension + breakage + absenceDeduction + latenessDeduction + earlyOutDeduction);
+    // ONE money chain, with Excel's full precision behind the two displayed
+    // decimals. The server row and the live screen preview both call this, so
+    // the paper, the screen and the payment snapshot can never disagree.
+    const pay = computePayrollMoney({
+      basicSalary: basic,
+      transportAllowance: transport,
+      breakageShortage: breakage,
+      settings,
+      attendance: {
+        HolidayOtHours: holidayOtHours,
+        FreeWeekOtHours: freeWeekOtHours,
+        ShiftOtHours: shiftOtHours,
+        ScheduledDays: attendance.scheduledDays,
+        ScheduledHours: attendance.scheduledHours,
+        DaysPresent: attendance.daysPresent,
+        ApprovedAbsences: attendance.approvedAbsences,
+        UnapprovedAbsences: attendance.unapprovedAbsences,
+        LateCount: attendance.lateCount,
+        LateMinutes: attendance.lateMinutes,
+        EarlyOutCount: attendance.earlyOutCount,
+        EarlyOutMinutes: attendance.earlyOutMinutes,
+      },
+      prorationFactor,
+    }).display;
 
     const attendanceEvents = [
       ...absenceDates.map((date) => ({ date, dateEc: gregorianDateToEthiopian(date), type: "absence", minutes: 0, excused: excusedAbsence.has(date) })),
@@ -388,7 +459,10 @@ async function buildRows(periodKey: string) {
       ...earlyLogs.map((l) => ({ date: l.date, dateEc: gregorianDateToEthiopian(l.date), type: "early_out", minutes: l.early, excused: excusedEarly.has(l.date) })),
     ].sort((a, b) => b.date.localeCompare(a.date));
 
-    const writtenEntries = manualOtRows.map((r) => ({
+    // A "Don't give" typed row stays in the history with its flag; only
+    // manualOtRows (above) feeds the money. This is the audit trail: the
+    // owner sees that a mistaken overtime existed and who silenced it.
+    const writtenEntries = otRows.filter((r) => r.source !== "auto").map((r) => ({
       id: r.id,
       date: r.date,
       dateEc: gregorianDateToEthiopian(r.date),
@@ -400,6 +474,7 @@ async function buildRows(periodKey: string) {
       note: r.note,
       holidayName: holidayByDate.get(r.date)?.name || null,
       automatic: false,
+      excluded: excludedOt.has(`${String(r.date)}|${String(r.type)}`),
     }));
     const automaticEntries = autoDays.map((d) => ({
       id: null,
@@ -413,6 +488,7 @@ async function buildRows(periodKey: string) {
       note: d.why,
       holidayName: holidayByDate.get(d.date)?.name || null,
       automatic: true,
+      excluded: d.excluded,
     }));
 
     const computed = {
@@ -428,34 +504,39 @@ async function buildRows(periodKey: string) {
       exceptions,
       overtimeEntries: [...writtenEntries, ...automaticEntries].sort((a, b) => b.date.localeCompare(a.date)),
       otBreakdown: {
-        holiday: { hours: holidayOtHours, pay: holidayOtPay, days: attendance.holidayDays },
-        freeWeek: { hours: freeWeekOtHours, pay: freeWeekOtPay, days: attendance.freeWeekDays },
-        shift: { hours: shiftOtHours, pay: shiftOtPay, days: autoDays.filter((d) => d.type === "shift").length },
+        holiday: { hours: holidayOtHours, pay: pay.holidayOtPay, days: attendance.holidayDays },
+        freeWeek: { hours: freeWeekOtHours, pay: pay.freeWeekOtPay, days: attendance.freeWeekDays },
+        shift: { hours: shiftOtHours, pay: pay.shiftOtPay, days: autoDays.filter((d) => d.type === "shift" && !d.excluded).length },
         bufferMinutes: OT_BUFFER_MINUTES,
         arrivalGraceMinutes: OT_ARRIVAL_GRACE_MINUTES,
       },
       basicSalary: basic,
-      employerPension,
+      employerPension: pay.employerPension,
       transportAllowance: transport,
-      overtimePay: overtime,
-      holidayOtPay,
-      freeWeekOtPay,
-      shiftOtPay,
-      grossSalary: gross,
-      taxableSalary: taxable,
-      incomeTax,
-      employeePension,
-      totalPension: money(employerPension + employeePension),
+      overtimePay: pay.overtimePay,
+      holidayOtPay: pay.holidayOtPay,
+      freeWeekOtPay: pay.freeWeekOtPay,
+      shiftOtPay: pay.shiftOtPay,
+      grossSalary: pay.grossSalary,
+      taxableSalary: pay.taxableSalary,
+      // The numbers behind the Lateness and Early Departure columns, so the
+      // printed row can be checked with a calculator: 6,000 -> 0.4167/min.
+      netSalary: pay.netSalary,
+      minuteRate: Math.round(minuteDeductionRate(basic) * 10000) / 10000,
+      chargeableMinutes: attendance.lateMinutes + attendance.earlyOutMinutes,
+      incomeTax: pay.incomeTax,
+      employeePension: pay.employeePension,
+      totalPension: pay.totalPension,
       breakageShortage: breakage,
-      absenceDeduction,
-      latenessDeduction,
-      earlyOutDeduction,
-      totalDeduction,
-      fullMonthNetPay: money(gross - totalDeduction),
+      absenceDeduction: pay.absenceDeduction,
+      latenessDeduction: pay.latenessDeduction,
+      earlyOutDeduction: pay.earlyOutDeduction,
+      totalDeduction: pay.totalDeduction,
+      fullMonthNetPay: pay.fullMonthNetPay,
       prorationDays: employmentDays,
       periodDays: periodDates.length,
       prorationFactor,
-      netPay: money((gross - totalDeduction) * prorationFactor),
+      netPay: pay.netPay,
       paid: Boolean(payment),
       paidAt: payment?.paid_at || null,
       paymentMethod: payment?.method || null,
@@ -486,6 +567,21 @@ async function buildRows(periodKey: string) {
   return {
     periodKey,
     bounds,
+    // The printed government sheet's header: company, month and TIN. His
+    // Excel writes "For The Month of JuLY 2018 E.C": the Gregorian month in
+    // which the Ethiopian month starts, with the Ethiopian year. The exact
+    // Ethiopian month and the Gregorian date range go on the small line.
+    letterhead: {
+      ...letterhead,
+      monthLabel: `${new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" }).format(new Date(`${bounds.from}T12:00:00Z`))} ${periodKey.split("-")[0]} E.C`,
+      periodLabel: payrollPeriodLabel(periodKey),
+      gregorianRange: `${bounds.from} to ${bounds.to}`,
+      // Formal sheets carry a date. It comes from the selected payroll month,
+      // never from the day somebody happens to click Print, so a re-print of
+      // an old month keeps its own date.
+      dateEc: gregorianDateToEthiopian(bounds.to),
+      dateLabel: new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${bounds.to}T12:00:00Z`)),
+    },
     status: period.status || "draft",
     paidAt: period.paid_at || null,
     preparedBy: period.prepared_by || "",
@@ -495,6 +591,9 @@ async function buildRows(periodKey: string) {
     missingSettings: requiredPayrollSettingsMissing(settings),
     holidays,
     exceptions: exceptionsQ.rows,
+    // "Don't give" decisions of this month, so the Overtime dialog can show
+    // them beside the row and put the hours back with one click.
+    otExclusions: excludedQ.rows,
     history: historyQ.rows,
     paidCount: rows.filter((r) => r.paid).length,
     rows,
@@ -549,7 +648,7 @@ export async function POST(request: Request) {
       // or a partial request must never wipe a salary to zero.
       const basicSalary = asNumber(body.basicSalary);
       const transportAllowance = asNumber(body.transportAllowance);
-      const breakageShortage = asNumber(body.breakageShortage);
+      if (body.breakageShortage !== undefined) throw new Error("Breakage is recorded in Store, not entered manually in Payroll.");
       const writeCompensation = async () => {
         // $2 and $3 are cast to numeric ON PURPOSE. Inside COALESCE($2,0) the
         // untyped parameter takes the type of the literal 0, which is integer,
@@ -571,23 +670,10 @@ export async function POST(request: Request) {
             `This database still stores payroll money as whole numbers (${saved.rows[0]?.basic_salary} instead of ${basicSalary}).`
           );
         }
-        const monthly = await pool.query<{ breakage_shortage: string }>(
-          `INSERT INTO payroll_monthly_inputs(period_key,member_id,breakage_shortage)
-           VALUES($1,$2,COALESCE($3::numeric,0))
-           ON CONFLICT(period_key,member_id) DO UPDATE SET
-             breakage_shortage=COALESCE($3::numeric,payroll_monthly_inputs.breakage_shortage)
-           RETURNING breakage_shortage`,
-          [period, id, breakageShortage]
-        );
-        if (valuesDiffer(monthly.rows[0]?.breakage_shortage, breakageShortage)) {
-          throw new RoundedMoneyColumnError(
-            `This database still stores payroll money as whole numbers (${monthly.rows[0]?.breakage_shortage} instead of ${breakageShortage}).`
-          );
-        }
         await pool.query("INSERT INTO payroll_audit(period_key,member_id,action,detail) VALUES($1,$2,'compensation_saved',$3::jsonb)", [
           period,
           id,
-          JSON.stringify({ basicSalary, transportAllowance, breakageShortage }),
+          JSON.stringify({ basicSalary, transportAllowance }),
         ]);
       };
       try {
@@ -712,11 +798,20 @@ export async function POST(request: Request) {
         // Freeze the row with the tick: the amount and the overtime that were
         // on the screen when the owner said this person is paid.
         const { savedSnapshot: _saved, paid: _paid, paidAt: _paidAt, paymentMethod: _method, ...frozen } = row as any;
-        await pool.query(
-          `INSERT INTO payroll_payments(period_key,member_id,paid_at,method,note,snapshot) VALUES($1,$2,now(),$3,$4,$5::jsonb)
-           ON CONFLICT(period_key,member_id) DO UPDATE SET paid_at=now(),method=$3,note=$4,snapshot=$5::jsonb`,
-          [period, id, String(body.method || "Cash"), String(body.note || "") || null, JSON.stringify(frozen)]
-        );
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("INSERT INTO payroll_periods(period_key,status,updated_at) VALUES($1,'draft',now()) ON CONFLICT(period_key) DO NOTHING", [period]);
+          await client.query("SELECT status FROM payroll_periods WHERE period_key=$1 FOR UPDATE", [period]);
+          const current = await client.query("SELECT COALESCE(sum(amount),0) AS amount FROM payroll_breakages WHERE period_key=$1 AND member_id=$2 AND voided_at IS NULL", [period,id]);
+          if (Math.abs(Number(current.rows[0].amount) - Number(row.breakageShortage)) > 0.001) throw new Error("Breakage changed while paying. Refresh payroll and confirm again.");
+          await client.query(
+            `INSERT INTO payroll_payments(period_key,member_id,paid_at,method,note,snapshot) VALUES($1,$2,now(),$3,$4,$5::jsonb)
+             ON CONFLICT(period_key,member_id) DO UPDATE SET paid_at=now(),method=$3,note=$4,snapshot=$5::jsonb`,
+            [period, id, String(body.method || "Cash"), String(body.note || "") || null, JSON.stringify(frozen)]
+          );
+          await client.query("COMMIT");
+        } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
         await pool.query("INSERT INTO payroll_audit(period_key,member_id,action,detail) VALUES($1,$2,'person_paid',$3::jsonb)", [
           period,
           id,

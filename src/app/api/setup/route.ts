@@ -5,7 +5,7 @@ import { requireAdmin } from "@/lib/session";
 
 /**
  * One-click database initializer/repair/verification.
- * Visit https://your-site.vercel.app/api/setup once after deploying.
+ * Visit https://your-domain.example/api/setup once after deploying.
  * It creates missing tables, repairs old broken columns, seeds default data,
  * then PROVES inserts work with a live insert+delete smoke test.
  */
@@ -55,7 +55,7 @@ export async function GET() {
       insert_smoke_test: insertTest,
       next_step: allOk
         ? "Open /admin and log in with your admin password (the ADMIN_PASSWORD environment variable)."
-        : "Fix your DATABASE_URL (set in your host's environment variables, e.g. Railway → Variables or Supabase connection string) to a working PostgreSQL connection string, then visit this URL again.",
+        : "Fix your DATABASE_URL (set in your host's environment variables, e.g. Coolify → Environment Variables) to a working PostgreSQL connection string, then visit this URL again.",
     },
     { status: allOk ? 200 : 500 }
   );

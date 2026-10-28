@@ -184,6 +184,7 @@ WebServer server(80);
  * three steps, and the LCD says which one it is on. */
 #define WIFI_RECONNECT_MS       8000UL   // ask the driver to reconnect this often
 #define WIFI_RADIO_RESET_MS     45000UL  // after this long down: reset the radio
+#define WIFI_RADIO_RETRY_MS     30000UL  // allow a slow router time to associate
 #define WIFI_RESTART_MS         600000UL // ten minutes down: reboot the board
 #define WIFI_WEAK_RSSI          (-78)    // below this the link is called weak
 #define WIFI_AP_HUNT_MS         300000UL // look for a stronger access point this often
@@ -356,6 +357,7 @@ unsigned long lastWifiTry = 0;
 unsigned long lastWifiLog = 0;
 unsigned long lastApHunt = 0;
 uint16_t wifiReconnects = 0;          // times the link came back by itself
+unsigned long lastWifiRadioReset = 0; // do not reset faster than association can finish
 uint16_t wifiRadioResets = 0;         // times the radio had to be reset
 int wifiLastRssi = 0;                 // last dBm reading, 0 = unknown
 
@@ -405,7 +407,7 @@ void stopEventStream();
 void startEventStream();
 void pumpEventStream();
 void loadMappingsFromServer();
-void saveToQueue(int fingerprintId, const String &staffName);
+bool saveToQueue(int fingerprintId, const String &staffName);
 void syncOfflineQueue();
 void periodicSync();
 void maybeRest();
@@ -445,8 +447,9 @@ void setup() {
   startLcd();
   showLines("FANA CAFE", "Attendance", "Starting...", "");
 
-  if (!LittleFS.begin(true)) {
-    Serial.println("LittleFS mount failed");
+  // Never format automatically on a mount failure: it could erase queued scans.
+  if (!LittleFS.begin(false)) {
+    Serial.println("LittleFS mount failed; offline scans cannot be saved. Ask admin to inspect storage.");
   }
 
   // R307: 57600 8N1 is the common factory default.
@@ -1149,6 +1152,7 @@ void serviceWifi() {
   if (wifiDownSince == 0) {
     wifiDownSince = millis();
     lastWifiTry = 0;
+    lastWifiRadioReset = 0;
     Serial.println("WiFi lost. Still scanning; reconnecting in the background.");
     if (idleVisible) showIdleScreen();
   }
@@ -1164,6 +1168,8 @@ void serviceWifi() {
   } else if (downMs < WIFI_RESTART_MS) {
     // The driver can stay attached to a socket the router already dropped.
     // Turn the station off and on again; the saved credentials stay.
+    if (lastWifiRadioReset != 0 && millis() - lastWifiRadioReset < WIFI_RADIO_RETRY_MS) return;
+    lastWifiRadioReset = millis();
     Serial.println("WiFi still down: resetting the radio (credentials kept)");
     wifiRadioResets++;
     stopEventStream();
@@ -1471,20 +1477,35 @@ void handleVerifiedFinger(int fingerprintId) {
   beepSuccess();
   digitalWrite(GREEN_LED, HIGH);
 
+  // Do not let a newer live scan overtake an older queued IN or OUT.
+  if (LittleFS.exists("/queue.json")) {
+    digitalWrite(GREEN_LED, LOW);
+    if (saveToQueue(fingerprintId, name)) {
+      showLines(name, "Saved offline", "Waiting for earlier", "scans to sync");
+      delay(RESULT_SHOW_MS);
+      showIdleScreen();
+    } else {
+      showSensorWarning(name, "SCAN NOT SAVED", "Tell the admin");
+    }
+    return;
+  }
   String body;
   const int httpCode = postClock(fingerprintId, body);
   digitalWrite(GREEN_LED, LOW);
 
   if (httpCode == 200) {
     showClockAnswer(name, body);
-  } else if (httpCode >= 400 && httpCode < 500) {
+  } else if (httpCode >= 400 && httpCode < 500 && httpCode != 401 && httpCode != 403 && httpCode != 408 && httpCode != 429) {
     showRefused(name, body);
   } else {
-    // No internet, or the website is down: keep the scan and send it later.
-    saveToQueue(fingerprintId, name);
-    showLines(name, "Saved offline", "Will sync when", "internet is back");
-    delay(RESULT_SHOW_MS);
-    showIdleScreen();
+    // Network, server, authorization and throttling failures are retryable.
+    if (saveToQueue(fingerprintId, name)) {
+      showLines(name, "Saved offline", "Will sync when", "internet is back");
+      delay(RESULT_SHOW_MS);
+      showIdleScreen();
+    } else {
+      showSensorWarning(name, "SCAN NOT SAVED", "Tell the admin");
+    }
   }
 }
 
@@ -2424,13 +2445,15 @@ void pumpEventStream() {
 
 /* ── Names: fingerprintId -> staff, cached in LittleFS for offline use ────── */
 void loadMappingsFromServer() {
-  if (WiFi.status() != WL_CONNECTED) return;
-
   HTTPClient http;
-  http.setTimeout(SERVER_TIMEOUT_MS);
-  http.begin(serverURL + "/api/attendance/mappings");
-  if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
-  const int httpCode = http.GET();
+  const bool online = WiFi.status() == WL_CONNECTED;
+  int httpCode = -1;
+  if (online) {
+    http.setTimeout(SERVER_TIMEOUT_MS);
+    http.begin(serverURL + "/api/attendance/mappings");
+    if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
+    httpCode = http.GET();
+  }
 
   if (httpCode == 200) {
     String payload = http.getString();
@@ -2467,11 +2490,11 @@ void loadMappingsFromServer() {
       }
     }
   }
-  http.end();
+  if (online) http.end();
 }
 
 /* ── Offline queue: scans made while there was no internet ────────────────── */
-void saveToQueue(int fingerprintId, const String &staffName) {
+bool saveToQueue(int fingerprintId, const String &staffName) {
   File f = LittleFS.open("/queue.json", "a");
   if (f) {
     DynamicJsonDocument doc(256);
@@ -2489,41 +2512,45 @@ void saveToQueue(int fingerprintId, const String &staffName) {
     doc["deviceId"] = deviceId;
     String json;
     serializeJson(doc, json);
-    f.println(json);
+    const size_t written = f.println(json);
     f.close();
-    Serial.println("Saved to offline queue");
+    if (written == json.length() + 2) {
+      Serial.println("Saved to offline queue");
+      return true;
+    }
+    Serial.println("Offline queue write was incomplete");
+    return false;
   }
+  Serial.println("Offline queue could not be opened");
+  return false;
 }
 
-// Sends queued scans. A scan the website accepts (200) or refuses (4xx) is
-// removed. Only scans that could not reach the website stay in the queue.
+// Keep every non-200 response for review/retry; never let later scans overtake it.
+// A temp file protects the original queue if writing the remaining lines fails.
 void syncOfflineQueue() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  if (!LittleFS.exists("/queue.json")) return;
-
+  if (WiFi.status() != WL_CONNECTED || !LittleFS.exists("/queue.json")) return;
   File f = LittleFS.open("/queue.json", "r");
   if (!f) return;
-
   String remaining = "";
-  bool allSynced = true;
+  bool blocked = false;
   while (f.available()) {
     String line = f.readStringUntil('\n');
     line.trim();
     if (line.length() == 0) continue;
-
+    if (blocked) { remaining += line + "\n"; continue; }
     DynamicJsonDocument doc(256);
-    if (deserializeJson(doc, line)) continue;
+    if (deserializeJson(doc, line)) {
+      Serial.println("Invalid offline queue entry retained; ask admin to inspect it");
+      blocked = true;
+      remaining += line + "\n";
+      continue;
+    }
     const int fid = doc["fingerprintId"] | 0;
-    // The moment of the finger, when this device knew the time when it queued
-    // the scan. A line queued by older firmware has no such field and sends
-    // none, so the website falls back to the arrival time for those.
     const unsigned long scannedAt = doc["scannedAt"] | (unsigned long)0;
-
     HTTPClient http;
     http.setTimeout(SERVER_TIMEOUT_MS);
     http.begin(serverURL + "/api/attendance/clock");
     addDeviceHeaders(http);
-
     DynamicJsonDocument postDoc(256);
     postDoc["fingerprintId"] = fid;
     postDoc["deviceId"] = deviceId + "_offline";
@@ -2531,34 +2558,30 @@ void syncOfflineQueue() {
     if (scannedAt > 0) postDoc["scannedAt"] = scannedAt;
     String json;
     serializeJson(postDoc, json);
-
     const int httpCode = http.POST(json);
     http.end();
-
     if (httpCode == 200) {
       Serial.print("Synced offline ID ");
       Serial.println(fid);
-    } else if (httpCode >= 400 && httpCode < 500) {
-      Serial.print("Offline scan for ID ");
-      Serial.print(fid);
-      Serial.print(" refused by the website (HTTP ");
-      Serial.print(httpCode);
-      Serial.println("), dropped");
     } else {
+      Serial.print("Offline queue paused, HTTP ");
+      Serial.println(httpCode);
+      blocked = true;
       remaining += line + "\n";
-      allSynced = false;
     }
   }
   f.close();
-
-  if (allSynced) {
+  if (remaining.length() == 0) {
     LittleFS.remove("/queue.json");
     Serial.println("Offline queue synced");
   } else {
-    File out = LittleFS.open("/queue.json", "w");
-    if (out) {
-      out.print(remaining);
-      out.close();
+    File out = LittleFS.open("/queue.tmp", "w");
+    if (!out) { Serial.println("Could not create queue temp; original kept"); return; }
+    const size_t written = out.print(remaining);
+    out.close();
+    if (written != remaining.length() || !LittleFS.rename("/queue.tmp", "/queue.json")) {
+      Serial.println("Could not replace queue; original kept");
+      LittleFS.remove("/queue.tmp");
     }
   }
 }

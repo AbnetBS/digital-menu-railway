@@ -9,7 +9,8 @@
  * And: "the action column isn't needed, at the end of the day it will be a
  * paid button, when the person is paid the button will be a green tick".
  * And the three formulas: holiday BasicSalary/30/8*time*2.5, free week *2,
- * shift *1.5, with a one hour buffer after the shift end.
+ * shift *1.5, with the owner's 1:15 (75 minute) buffer after the shift end
+ * (2026-10-28) and a one hour minimum work barrier for a holiday/free day.
  *
  * What that means in code, checked here:
  *
@@ -17,9 +18,10 @@
  *      arithmetic, and the owner's three rates are the DEFAULTS, so a fresh or
  *      old install calculates instead of printing zeros.
  *   2. The overtime measurement (recognizedOtMinutes) follows his examples:
- *      a 30 minute arrival grace keeps the full shift, leaving within one hour
- *      of the shift end is not overtime, and staying two hours past the end
- *      pays two hours.
+ *      the role's Maximum Late Time / Leaving Grace keep the shift whole, the
+ *      1:15 tail is not overtime, and staying two hours past the end pays the
+ *      whole two hours. A holiday/free-week visit under one hour is ignored.
+ *      A mistaken overtime can be marked "Don't give" without deleting it.
  *   3. The payroll API measures the three kinds from attendance, holidays and
  *      the free schedules; it never numbers the rows by database id.
  *   4. A holiday can be registered (date + name) and read back by payroll.
@@ -33,11 +35,14 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import {
+  DEFAULT_EARLY_OUT_FORMULA,
   DEFAULT_INCOME_TAX_FORMULA,
+  DEFAULT_LATENESS_FORMULA,
   DEFAULT_PAYROLL_FORMULAS,
   DEFAULT_PAYROLL_SETTINGS,
   OT_ARRIVAL_GRACE_MINUTES,
   OT_BUFFER_MINUTES,
+  OT_MIN_WORK_MINUTES,
   evaluatePayrollFormula,
   ethiopianDateToGregorian,
   ethiopianMonthBounds,
@@ -47,7 +52,7 @@ import {
   requiredPayrollSettingsMissing,
   withDefaultPayrollFormulas,
 } from "../src/lib/payroll";
-import { earlyOutMinutesFor, lateMinutesFor, shiftOtMinutesFor } from "../src/lib/attendance";
+import { earlyOutMinutesFor, lateMinutesFor, shiftOtMinutesFor, weekdayName, workedShiftOtMinutes } from "../src/lib/attendance";
 
 let failures = 0;
 const pass = (name: string, cond: boolean, extra = "") => {
@@ -79,7 +84,7 @@ pass("a saved empty formula falls back to the default instead of zeroing a colum
 pass("and a typed formula is kept as it is", withDefaultPayrollFormulas({ holidayOtFormula: "BasicSalary / 30 / 8 * HolidayOtHours * 3" }).holidayOtFormula.endsWith("* 3"));
 pass("the settings page no longer needs a manager approval to calculate", requiredPayrollSettingsMissing({ ...DEFAULT_PAYROLL_SETTINGS, settingsApproved: false }).length === 0);
 
-/* ── 2. the one hour buffer and the 30 minute grace ──────────────────────── */
+/* ── 2. the 1:15 buffer, the 1 hour barrier and the role's own grace ────── */
 
 const at = (day: string, hhmm: string) => new Date(`${day}T${hhmm}:00+03:00`);
 const d15 = "2026-10-15";
@@ -88,12 +93,17 @@ const freeWeekShift = { label: "12 to 8", startTime: "06:00", endTime: "14:00" }
 const night = { label: "Night", startTime: "18:00", endTime: "03:00" };
 const log = (inAt: Date, outAt: Date) => ({ clockIn: inAt, clockOut: outAt });
 
-pass("the owner's buffer is one hour", OT_BUFFER_MINUTES === 60);
-pass("the arrival grace is 30 minutes", OT_ARRIVAL_GRACE_MINUTES === 30);
+pass("the owner's buffer is 1 hour 15 minutes", OT_BUFFER_MINUTES === 75);
+pass("a holiday/free-week visit must be longer than one hour", OT_MIN_WORK_MINUTES === 60);
+pass("the 30 minute arrival grace is only a fallback now", OT_ARRIVAL_GRACE_MINUTES === 30);
 pass("arriving 10 minutes late still earns the whole 9 hour shift", recognizedOtMinutes(dayShift, log(at(d15, "08:10"), at(d15, "17:00"))) === 540);
 pass("arriving 45 minutes late loses only the 15 minutes past the grace", recognizedOtMinutes(dayShift, log(at(d15, "08:45"), at(d15, "17:00"))) === 525);
-pass("leaving exactly one hour after the end is still not overtime", recognizedOtMinutes(dayShift, log(at(d15, "08:05"), at(d15, "18:00"))) === 540);
-pass("one minute past the hour pays every minute past the shift end", recognizedOtMinutes(dayShift, log(at(d15, "08:05"), at(d15, "18:01"))) === 601);
+pass("the owner's 20 min grace example: 30 min late earns 7:50, not 7:30", recognizedOtMinutes({ ...freeWeekShift, lateGraceMinutes: 20 }, log(at(d15, "06:30"), at(d15, "14:00"))) === 470);
+pass("leaving one hour after the end is still not overtime", recognizedOtMinutes(dayShift, log(at(d15, "08:05"), at(d15, "18:00"))) === 540);
+pass("leaving at 9:00 after an 8:00 end is inside the 1:15 buffer: no undeserved OT", recognizedOtMinutes(freeWeekShift, log(at(d15, "06:00"), at(d15, "15:00"))) === 480);
+pass("exactly 1:15 past the end still earns no extra", recognizedOtMinutes(dayShift, log(at(d15, "08:05"), at(d15, "18:15"))) === 540);
+pass("one minute past 1:15 pays every minute past the shift end", recognizedOtMinutes(dayShift, log(at(d15, "08:05"), at(d15, "18:16"))) === 616);
+pass("a holiday visit of 45 minutes is not overtime at all", recognizedOtMinutes(dayShift, log(at(d15, "09:00"), at(d15, "09:45"))) === 0);
 pass("the owner's example: shift ends 17:00, out at 19:00, two hours past the end", recognizedOtMinutes(dayShift, log(at(d15, "08:00"), at(d15, "19:00"))) === 660);
 pass(
   "his free week example: 12:30 to 9:00 is still the full 8 hours",
@@ -104,7 +114,10 @@ pass("a shift across midnight measures the same way", recognizedOtMinutes(night,
 pass("half a day with no OUT has no measured hours", recognizedOtMinutes(dayShift, { clockIn: at(d15, "08:00"), clockOut: null }) === 0);
 pass("a stored total is still honoured when the two scans were never stored", recognizedOtMinutes(dayShift, { totalMinutes: 480 }) === 480);
 pass("no role times fall back to the clocked time", recognizedOtMinutes(null, log(at(d15, "08:00"), at(d15, "16:00"))) === 480);
-pass("Shift OT itself still starts after one hour past the end", shiftOtMinutesFor(dayShift, at(d15, "18:00")) === 0 && shiftOtMinutesFor(dayShift, at(d15, "18:01")) === 61);
+pass("Shift OT itself still starts after 1:15 past the end", shiftOtMinutesFor(dayShift, at(d15, "18:15")) === 0 && shiftOtMinutesFor(dayShift, at(d15, "18:16")) === 76);
+pass("a second shift is measured by the time worked beyond the shift's own length", workedShiftOtMinutes({ label: "12 to 8", startTime: "12:00", endTime: "20:00" }, at(d15, "12:30"), at(d15, "23:30")) === 180);
+pass("and a person who only stayed 60 minutes past the end gets no Shift OT", workedShiftOtMinutes({ label: "12 to 8", startTime: "12:00", endTime: "20:00" }, at(d15, "12:00"), at(d15, "21:00")) === 0);
+pass("overtime dates carry their weekday name", weekdayName("2026-10-28") === "Wednesday" && weekdayName("2026-10-24") === "Saturday" && weekdayName("") === "");
 /* ── 2b. the deduction starts only after the grace (owner, Oct 2026) ────── */
 
 pass("coming in inside the Maximum Late Time costs nothing", lateMinutesFor({ ...dayShift, lateGraceMinutes: 30 }, 8 * 60 + 30) === 0);
@@ -124,14 +137,24 @@ const payrollTab = read("src/components/rms/PayrollTab.tsx");
 const attendanceTab = read("src/components/rms/AttendanceTab.tsx");
 const schema = read("src/db/schema.ts");
 const migrate = read("src/db/migrate.ts");
+const payrollLib = read("src/lib/payroll.ts");
 
-/* ── 1b. the three deductions are the owner's, and they start empty ──────── */
+/* ── 1b. the three deductions: two minute rules and the one-day absence rule */
 
 pass(
-  "absence, lateness and early departure ship empty, because the owner never gave those rules",
-  DEFAULT_PAYROLL_SETTINGS.absenceFormula === "" &&
-    DEFAULT_PAYROLL_SETTINGS.latenessFormula === "" &&
-    DEFAULT_PAYROLL_SETTINGS.earlyOutFormula === ""
+  "lateness and early departure ship with the owner's per-minute rule",
+  DEFAULT_PAYROLL_SETTINGS.latenessFormula === DEFAULT_LATENESS_FORMULA &&
+    DEFAULT_PAYROLL_SETTINGS.earlyOutFormula === DEFAULT_EARLY_OUT_FORMULA
+);
+pass(
+  "absence ships with the owner's one-day rule: BasicSalary / 30 per absent day",
+  DEFAULT_PAYROLL_SETTINGS.absenceFormula === "BasicSalary / 30 * UnapprovedAbsences"
+);
+pass(
+  "a database whose formula keys were never written gets the shipped minute rules",
+  withDefaultPayrollFormulas({}).latenessFormula === DEFAULT_LATENESS_FORMULA &&
+    withDefaultPayrollFormulas({}).earlyOutFormula === DEFAULT_EARLY_OUT_FORMULA &&
+    withDefaultPayrollFormulas(null).absenceFormula === "BasicSalary / 30 * UnapprovedAbsences"
 );
 pass(
   "an empty deduction box stays empty instead of being filled with a made-up formula",
@@ -141,7 +164,7 @@ pass(
 );
 pass(
   "an empty formula deducts nothing in the payroll row",
-  payrollApi.includes("return f ? Math.max(0, money(evaluatePayrollFormula(f, ctx))) : 0")
+  payrollApi.includes("computePayrollMoney({") && payrollLib.includes("f?Math.max(0,evaluatePayrollFormulaExact(f,context)):0")
 );
 pass(
   "the three deductions are not required settings, so a first month is never blocked by them",
@@ -160,21 +183,50 @@ pass(
     migrate.includes("jsonb_set(settings, '{${key}}'")
 );
 pass(
-  "the settings screen says an empty box means no deduction",
-  payrollTab.includes("start empty") && payrollTab.includes("nothing is deducted") && payrollTab.includes("Empty: no lateness money is deducted")
+  "the migration seeds the two shipped minute rules once into old databases",
+  migrate.includes("payroll_minute_rule_2026_10_27") &&
+    migrate.includes('const latenessRule = "BasicSalary / 30 / 8 / 60 * MAX(0, LateMinutes)"') &&
+    migrate.includes('const earlyOutRule = "BasicSalary / 30 / 8 / 60 * MAX(0, EarlyOutMinutes)"') &&
+    migrate.includes("minute rule base upgrade") &&
+    migrate.includes("jsonb_strip_nulls") &&
+    (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-27-2"
+);
+pass(
+  "the migration seeds the absence rule once, without clearing his decision",
+  migrate.includes("payroll_absence_rule_2026_10_27") &&
+    migrate.includes('const absenceRule = "BasicSalary / 30 * UnapprovedAbsences"') &&
+    !migrate.includes('["absenceFormula", "BasicSalary / 30 * UnapprovedAbsences"]')
+);
+pass(
+  "the settings screen explains the rule and still says an empty box means no deduction",
+  payrollTab.includes("BasicSalary / 30 / 8 / 60") &&
+    payrollTab.includes("Emptying any of the three boxes switches that deduction off") &&
+    payrollTab.includes("BasicSalary / 30 * UnapprovedAbsences")
 );
 
 
 pass("payroll measures lateness and early departure from the role's own times", payrollApi.includes("lateMinutesFor(shift, etMinutes(l.clock_in))") && payrollApi.includes("earlyOutMinutesFor(shift, etMinutes(l.clock_out))"));
-pass("an older row with a flag but no minutes still deducts the right amount", payrollApi.includes("l.early_out && shift && l.clock_out"));
+pass("the scans are re-measured so a changed role grace really changes the month", payrollApi.includes("chargeableDayMinutes(rawLate, rawEarly)"));
+pass("an older row with a flag but no clock time keeps its stored minutes", payrollApi.includes("l.early_out"));
 pass("the screen says the deduction starts after the grace", payrollTab.includes("only after") && payrollTab.includes("Maximum Late Time"));
+pass(
+  "the API row and the live preview use the same Excel-precision money chain",
+  payrollApi.includes("computePayrollMoney({") && payrollTab.includes("computePayrollMoney({") &&
+    payrollLib.includes("evaluatePayrollFormulaExact") && payrollLib.includes("const money2=roundMoney")
+);
 
 pass("the payroll reads the overtime rows the tablet and the clock already wrote", payrollApi.includes("FROM attendance_overtime"));
 pass("it measures holiday and free week hours with the buffer rule", payrollApi.includes("recognizedOtMinutes(shift, log)"));
-pass("it measures a normal shift past its end too", payrollApi.includes("shiftOtMinutesFor(shift, log.clock_out)"));
-pass("a day is one overtime kind: a person's row wins, and the clock's own row never beats a holiday or a free day", payrollApi.includes("manualDates.has(date)") && payrollApi.includes("holidayByDate.get(date)") && payrollApi.includes("isFree(date)"));
+pass("it measures an extra shift from IN + OUT beyond the shift's own length too", payrollApi.includes("workedShiftOtMinutes(shift, log.clock_in, log.clock_out)"));
+pass("covering another person's shift on a free day becomes Shift OT, not Free Week OT", payrollApi.includes("const covered = coveredShiftOfLog(log, roleShifts, otherRoleShifts)") && payrollApi.includes('const kind = covered ? "shift" : "free_week"') && payrollApi.includes("Covered the ${covered.label} shift on his free day"));
+pass("and the covered shift's own grace decides the hours", payrollApi.includes("recognizedOtMinutes(covered || shift, log)"));
+pass("a day that fits the person's own shift stays Free Week OT", payrollApi.includes("if (ownShifts.some((s) => clockInFitsShift(log.clock_in, s))) return null"));
+pass("a 'Don't give' decision is read for the month and filters every kind", payrollApi.includes("FROM attendance_ot_exclusions") && payrollApi.includes("excludedOt.has(`${date}|holiday`)") && payrollApi.includes("excludedOt.has(`${date}|${kind}`)") && payrollApi.includes("excludedOt.has(`${date}|shift`)"));
+pass("excluded rows stay in the overtime history, marked as not given", payrollApi.includes("excluded: excludedOt.has(") && payrollApi.includes("otExclusions: excludedQ.rows") && payrollApi.includes("const writtenEntries = otRows.filter((r) => r.source !== \"auto\")") && payrollApi.includes("excluded: d.excluded"));
+pass("and their hours are never added to pay, nor counted as paid OT days", payrollApi.includes("if (!excluded) autoHolidayMinutes += minutes") && payrollApi.includes('autoDays.filter((d) => d.type === "holiday" && !d.excluded)'));
+pass("a day is one overtime kind: a person's row wins, and the clock's own row never beats a holiday or a free day", payrollApi.includes("manualDates.has(date)") && payrollApi.includes("holidayByDate.get(date)") && payrollApi.includes("!isFree(d)"));
 pass("the No. column is the position in this list, never the database id", payrollApi.includes("employeeNumber: index + 1") && !payrollApi.includes("employeeNumber: memberId"));
-pass("the three typed numbers are the only compensation input", payrollApi.includes("basicSalary") && payrollApi.includes("transportAllowance") && payrollApi.includes("breakageShortage"));
+pass("breakage comes from Store records while salary and transport are typed", payrollApi.includes("payroll_breakages") && payrollApi.includes("Breakage is recorded in Store"));
 pass("a paid person is locked against edits", payrollApi.includes("already paid for this month"));
 pass("one paid row per person per month", payrollApi.includes("INSERT INTO payroll_payments") && payrollApi.includes("DELETE FROM payroll_payments"));
 pass("the holiday API stores an Ethiopian date and its name", holidayApi.includes("ethiopianDateToGregorian") && holidayApi.includes("payroll_holidays"));
@@ -192,7 +244,7 @@ pass(
 );
 pass(
   "the parameter is cast because a bare COALESCE($2,0) is typed as integer by Postgres",
-  payrollApi.includes("$2::numeric") && payrollApi.includes("COALESCE($3::numeric,payroll_monthly_inputs.breakage_shortage)")
+  payrollApi.includes("$2::numeric") && payrollApi.includes("COALESCE($3::numeric,payroll_compensation.transport_allowance)")
 );
 pass(
   "a column that still rounds the cents away is caught and the save is retried",
@@ -225,7 +277,7 @@ pass(
 
 /* ── 4. the screen ───────────────────────────────────────────────────────── */
 
-pass("the salary, transport and breakage cells are typed", ["basicSalary", "transportAllowance", "breakageShortage"].every((f) => payrollTab.includes(`askSave(r, "${f}"`)) && payrollTab.includes("EditableMoneyCell"));
+pass("salary and transport are typed; breakage comes only from Store", ["basicSalary", "transportAllowance"].every((f) => payrollTab.includes(`askSave(r, "${f}"`)) && !payrollTab.includes('askSave(r, "breakageShortage"') && payrollTab.includes("Recorded in Store"));
 pass("Enter asks before anything is saved", payrollTab.includes("if (e.key === \"Enter\") submit();") && payrollTab.includes("Save and recalculate") && payrollTab.includes("Don't save"));
 pass("the confirm shows the net pay before and after", payrollTab.includes("previewNet(") && payrollTab.includes("Net pay:"));
 pass("the rows recalculate after a save", payrollTab.includes("recalculated") && payrollApi.includes("incomeTax"));
@@ -234,7 +286,13 @@ pass("the paid button becomes a green tick", payrollTab.includes("bg-emerald-600
 pass("the holiday dates open from the payroll page", payrollTab.includes("HolidayManagerDialog") && payrollTab.includes("Holiday dates ("));
 pass("the Holiday OT label itself opens the holiday dates on the Attendance page", attendanceTab.includes("HolidayManagerDialog") && attendanceTab.includes("Holiday dates"));
 pass("the row's OT number opens the three kinds and the measured rows", payrollTab.includes("OvertimeDialog") && payrollTab.includes("otBreakdown"));
-pass("the buffer is explained on both screens", payrollTab.includes("within one hour of his shift end") && attendanceTab.includes("within one hour after the shift end"));
+pass("the 1:15 buffer is explained on both screens", payrollTab.includes("1 hour 15 minute buffer") && attendanceTab.includes("The first 1 hour 15 minutes after the shift end"));
+pass("the printed sheet's date and month come from the selected payroll month", payrollApi.includes("dateEc: gregorianDateToEthiopian(bounds.to)") && payrollTab.includes("data?.letterhead?.monthLabel") && payrollTab.includes("data?.letterhead?.dateEc"));
+pass("'Don't give' keeps the row in the history and can be given again", payrollTab.includes('action: entry.excluded ? "give_again" : "dont_give"') && attendanceTab.includes('action: excluded ? "give_again" : "dont_give"') && payrollTab.includes("Give again") && attendanceTab.includes("Don't give"));
+pass("a category button shows who got that overtime, with name, type and date", attendanceTab.includes("otVisibleRows") && attendanceTab.includes("Who got ") && attendanceTab.includes("weekdayName(row.date)"));
+const overtimeApi = read("src/app/api/attendance/overtime/route.ts");
+pass("the overtime API refuses a non-admin 'Don't give' decision", overtimeApi.includes('decision === "dont_give" || decision === "give_again"') && overtimeApi.includes('if (!isAdmin) return NextResponse.json({ error: "Only an admin can decide not to give overtime" }, { status: 403 })'));
+pass("the decision is one row per person + day + kind, in its own table", schema.includes('pgTable("attendance_ot_exclusions"') && migrate.includes("CREATE TABLE IF NOT EXISTS attendance_ot_exclusions") && overtimeApi.includes("onConflictDoNothing()"));
 pass("the overtime tab still has no approval language", !/approve|pending approval|reject/i.test(payrollTab.slice(payrollTab.indexOf("function OvertimeDialog"), payrollTab.indexOf("function ExceptionPanel"))));
 pass("no user-visible payroll string carries an em dash", !/[—‒–]/.test(payrollTab + holidayApi + payrollApi));
 
@@ -254,7 +312,8 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log("✅ Payroll guard PASSED");
-console.log("   • owner-typed salary, transport and breakage; everything else calculated");
-console.log("   • holiday dates, free week and shift OT measured with the one hour buffer");
+console.log("   • owner-typed salary and transport; Store breakage and other deductions calculated");
+console.log("   • holiday dates, free week and extra-shift OT measured with the 1:15 buffer");
+console.log("   • a mistaken OT stays in history: 'Don't give' excludes it from pay, 'Give again' restores it");
 console.log("   • 1, 2, 3 numbering and one green Paid button per person");
 console.log("   • salaries, transport, breakage and overtime hours stored with cents");

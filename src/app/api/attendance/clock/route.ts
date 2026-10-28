@@ -23,7 +23,7 @@ import {
   earlyOutMinutesFor,
   isEarlyOut,
   lateMinutesFor,
-  shiftOtMinutesFor,
+  workedShiftOtMinutes,
   offlineScanNote,
   pickShift,
   rescanAction,
@@ -149,6 +149,10 @@ export async function POST(request: Request) {
       memberId = rows[0].id;
       memberName = rows[0].name;
     } else {
+      // Once configured, the door token protects the scan itself, not just its timestamp.
+      if (!deviceAllowed(request)) {
+        return NextResponse.json({ error: "Attendance device authorization required" }, { status: 401 });
+      }
       if (fingerprintId === undefined || fingerprintId === null) {
         return NextResponse.json({ error: "fingerprintId required", led: "red", buzzer: "error" }, { status: 400 });
       }
@@ -328,12 +332,13 @@ export async function POST(request: Request) {
       const earlyMinutes = earlyOutMinutesFor(inShift, nowMinutes);
       const status = early ? "early_out" : "completed";
 
-      // THE AUTOMATIC SHIFT OT (owner, Oct 2026: "if someone stay after his
-      // shift 1.30 it is overtime", then lowered to one hour on 2026-10-22).
-      // The tap that closes the day also measures how far past the end of the
-      // shift it closed, so nobody has to remember a button. 0 means "he went
-      // home inside the hour".
-      const shiftOtMinutes = shiftOtMinutesFor(inShift, now);
+      // THE AUTOMATIC SHIFT OT (owner, 2026-10-28: "the time more than 8 hour
+      // is automatically considered shift ot"). The closing tap measures the
+      // worked time BEYOND the person's own shift length, so covering a second
+      // shift is paid even when the first IN was inside its late grace. The
+      // first 1:15 past the shift is transfer / changing clothes, not work.
+      // 0 means "he went home inside the 1:15 buffer".
+      const shiftOtMinutes = workedShiftOtMinutes(inShift, existing.clockIn, now);
 
       const row = (
         await db
@@ -369,6 +374,7 @@ export async function POST(request: Request) {
           date: row.date,
           logId: row.id,
           shift: inShift,
+          clockInAt: existing.clockIn,
           clockOutAt: now,
         });
       } catch (e) {

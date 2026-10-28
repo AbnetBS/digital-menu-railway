@@ -18,17 +18,21 @@
  *        self       the person's own tap at the door tablet
  *        supervisor the door tablet while the supervisor's keypad is open
  *        auto       the clock-out scan of a person who stayed past his shift
- *   3. The automatic rule (owner: "if someone stay after his shift 1.30 it is
- *      overtime", lowered to ONE HOUR on 2026-10-22): still present more than
- *      60 minutes after the end of the shift, and the overtime is exactly the
- *      minutes past that end.
+ *   3. The automatic rule (owner, 2026-10-28: "all overtime must have 1:15
+ *      buffer for transfer and changing clothes"): still present more than 75
+ *      minutes after the end of the shift, and the overtime is the WHOLE time
+ *      past that end. A second shift measures the worked time beyond the
+ *      person's own shift length, from IN to OUT.
  *   4. No approval step. The row IS the record, it lists immediately, it turns
  *      that day's box on the paper sheet violet, and the Leaderboard counts the
  *      day as an overtime day.
  *   5. A double tap cannot count the same hours twice: the row of the same
  *      person + day + kind + shift is updated instead of added, and an auto row
  *      never overwrites a number a person typed.
- *   6. The admin table has the four columns he named, in his order.
+ *   6. The admin table has the four columns he named, in his order, plus the
+ *      weekday beside the date, the category filter ("who got which OT") and
+ *      the "Don't give" / "Give again" decision that keeps the row in history.
+ *   7. A mistaken overtime is excluded from pay, never deleted.
  *
  * The rules are imported from the real modules, so a change to the numbers
  * fails here and not in the cafe. No network, no database.
@@ -49,6 +53,8 @@ import {
   overtimeHoursLabel,
   overtimeMinutesFromLog,
   shiftOtMinutesFor,
+  weekdayName,
+  workedShiftOtMinutes,
 } from "../src/lib/attendance";
 
 let failures = 0;
@@ -83,7 +89,7 @@ pass("a kind nobody asked for is refused", !isOvertimeType("sick_day") && !isOve
 pass("the four sources of a row are named", OVERTIME_SOURCES.join(",") === "admin,supervisor,self,auto");
 pass("and an unknown source is refused too", !isOvertimeSource("manager") && isOvertimeSource("auto"));
 
-/* ── 2. the automatic Shift OT rule ─────────────────────────────────────── */
+/* ── 2. the automatic Shift OT rule (1:15 buffer) ───────────────────────── */
 
 const morning = { label: "Morning", startTime: "08:00", endTime: "17:00" };
 const night = { label: "Night", startTime: "18:00", endTime: "03:00" };
@@ -92,17 +98,25 @@ const at = (day: string, hhmm: string) => new Date(`${day}T${hhmm}:00+03:00`);
 const d15 = "2026-10-15";
 const d16 = "2026-10-16";
 
-pass("the grace is one hour (owner, 2026-10-22: the 1:00 hour buffer)", SHIFT_OT_GRACE_MINUTES === 60);
+pass("the grace is 1 hour 15 minutes (owner, 2026-10-28)", SHIFT_OT_GRACE_MINUTES === 75);
 pass("leaving at the end of the shift is not overtime", shiftOtMinutesFor(morning, at(d15, "17:00")) === 0);
 pass("leaving early is not overtime", shiftOtMinutesFor(morning, at(d15, "15:20")) === 0);
-pass("60 minutes past the end is still inside the buffer", shiftOtMinutesFor(morning, at(d15, "18:00")) === 0);
-pass("one minute past the buffer is overtime, to the minute", shiftOtMinutesFor(morning, at(d15, "18:01")) === 61);
+pass("the owner's example: shift ends 8:00, OUT 9:00, no undeserved overtime", shiftOtMinutesFor({ label: "12 to 8", startTime: "12:00", endTime: "20:00" }, at(d15, "21:00")) === 0);
+pass("75 minutes past the end is still inside the buffer", shiftOtMinutesFor(morning, at(d15, "18:15")) === 0);
+pass("one minute past 1:15 pays the WHOLE time past the end", shiftOtMinutesFor(morning, at(d15, "18:16")) === 76);
 pass("a whole evening is measured, not capped at the grace", shiftOtMinutesFor(morning, at(d15, "21:00")) === 240);
 pass("a shift across midnight wraps like the early-out rule", shiftOtMinutesFor(night, at(d16, "05:00")) === 120);
 pass("and an out before that midnight end is an early leave, not 22 hours", shiftOtMinutesFor(night, at(d16, "02:00")) === 0);
 pass("no shift set for the person means nothing can be measured", shiftOtMinutesFor(null, at(d15, "23:00")) === 0);
 pass("no clock-out is no overtime", shiftOtMinutesFor(morning, null) === 0);
 pass("a broken time is ignored instead of throwing", shiftOtMinutesFor(morning, "not a date" as unknown as Date) === 0);
+
+const double = { label: "12 to 8", startTime: "12:00", endTime: "20:00" };
+pass("covering a second shift measures worked time beyond the shift's own length", workedShiftOtMinutes(double, at(d15, "12:30"), at(d15, "23:30")) === 180);
+pass("a late IN inside the role grace does not steal the extra shift", workedShiftOtMinutes(double, at(d15, "12:30"), at(d15, "22:00")) === 90);
+pass("one hour of changing clothes is not a second shift", workedShiftOtMinutes(double, at(d15, "12:00"), at(d15, "21:00")) === 0);
+pass("without an IN it falls back to the old end-of-shift measurement", workedShiftOtMinutes(morning, null, at(d15, "21:00")) === 240);
+pass("overtime dates carry their weekday name (Monday, Tuesday...)", weekdayName("2026-10-26") === "Monday" && weekdayName("2026-10-27") === "Tuesday");
 
 /* ── 3. the hours a day already implies ─────────────────────────────────── */
 
@@ -142,7 +156,7 @@ pass(
 );
 pass("and a list by range is indexed", migrate.includes("CREATE INDEX IF NOT EXISTS attendance_overtime_date_idx ON attendance_overtime (date)"));
 pass("an already-migrated database gets the table too: the version gate moved",
-  (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-17-1");
+  (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-28-1");
 
 /* ── 5. the writer every door and page shares ───────────────────────────── */
 
@@ -185,6 +199,11 @@ pass("a day with no overtime left loses its violet mark too",
 
 pass("the OUT of a shift measures the overtime on the same tap",
   clockApi.includes("recordShiftOvertimeAtClockOut({"));
+pass("the OUT measures IN to OUT beyond the shift length, not only the tail",
+  clockApi.includes("workedShiftOtMinutes(inShift, existing.clockIn, now)") &&
+    clockApi.includes("clockInAt: existing.clockIn,"));
+pass("the shared writer uses the same worked-time rule",
+  store.includes("workedShiftOtMinutes(args.shift, args.clockInAt, args.clockOutAt)"));
 pass("and the day is marked overtime by the same rule, not only by a button",
   /isOvertime: Boolean\(existing\.isOvertime\) \|\| shiftOtMinutes > 0/.test(clockApi));
 pass("the device is told the hours so its screen can show them",
@@ -226,8 +245,19 @@ pass("a row is saved with a named type, and the list is reloaded after",
     adminTab.includes("await loadOvertime();"));
 pass("there is no approval language in the overtime tab",
   !/approve|pending approval|reject/i.test(otView));
-pass("and a row can be taken back from the same table",
-  otView.includes("removeOvertime(row.id)"));
+pass("a mistaken row is NOT deleted: 'Don't give' keeps it in the history",
+  otView.includes("toggleOvertimeDecision(row)") && otView.includes("Don't give") && !otView.includes("removeOvertime(row.id)"));
+pass("and 'Give again' puts the hours back on pay",
+  /action: excluded \? "give_again" : "dont_give"/.test(adminTab) && otView.includes("Give again"));
+pass("the category buttons filter the history: who got which OT, with name, type, date",
+  otView.includes("otVisibleRows") && otView.includes("Who got ") && otView.includes("weekdayName(row.date)"));
+pass("clicking a person prefills the manual form so a missing OT can be given",
+  adminTab.includes("const giveOvertimeTo =") && otView.includes("giveOvertimeTo(m.id"));
+pass("the API keeps the exclusion in its own table and never erases the overtime row",
+  overtimeApi.includes('decision === "dont_give" || decision === "give_again"') &&
+    overtimeApi.includes("Only an admin can decide not to give overtime") &&
+    schema.includes('pgTable("attendance_ot_exclusions"') &&
+    migrate.includes("CREATE TABLE IF NOT EXISTS attendance_ot_exclusions"));
 
 /* ── 9. the door tablet: the person's own tap ───────────────────────────── */
 
@@ -259,5 +289,6 @@ if (failures > 0) {
 }
 console.log("✅ Overtime guard PASSED");
 console.log("   • three kinds, four sources, one row per person + day + kind + shift");
-console.log("   • a person still here 60 minutes past his shift gets the hours measured for him");
+console.log("   • a person still here 1:15 past his shift gets the whole time measured for him");
+console.log("   • 'Don't give' keeps the record but excludes it from pay; 'Give again' restores it");
 console.log("   • the admin tab beside the Leaderboard, the tablet at the door, and no approval queue");

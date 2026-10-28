@@ -1,5 +1,5 @@
 /**
- * THE DOOR DEVICE (ESP32 + FPC1020A) AND THE SERVER.
+ * THE DOOR DEVICE (ESP32 + R307) AND THE SERVER.
  *
  * The scanner has no browser and no login: it posts scans to
  * /api/attendance/clock, asks /api/attendance/biometrics?pending who is waiting

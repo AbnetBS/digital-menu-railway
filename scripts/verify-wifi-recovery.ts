@@ -38,6 +38,7 @@ pass("the tuning is applied after the first connection", /applyWifiTuning\(\);\s
 pass("a dedicated watchdog runs every pass of loop()", fw.includes("void serviceWifi()") && fw.includes("  serviceWifi();\n  keepServerLinkAlive();"));
 pass("it is tried often while the link is down", fw.includes("#define WIFI_RECONNECT_MS") && fw.includes("WiFi.reconnect();"));
 pass("after a while the radio itself is reset, not the whole board", fw.includes("WiFi.disconnect(true, false)") && fw.includes("WiFi.mode(WIFI_STA)") && fw.includes("wifiRadioResets++;"));
+pass("slow routers have 30 seconds to associate between radio resets", fw.includes("#define WIFI_RADIO_RETRY_MS     30000UL") && fw.includes("millis() - lastWifiRadioReset < WIFI_RADIO_RETRY_MS"));
 pass("the credentials are kept through that reset", fw.includes("resetting the radio (credentials kept)"));
 pass("a restart is only the last resort, after ten minutes", fw.includes("#define WIFI_RESTART_MS         600000UL") && fw.includes("WiFi has been down for 10 minutes: restarting the board"));
 pass("the escalation is ordered: reconnect, then radio reset, then restart", fw.indexOf("WiFi.reconnect();") < fw.indexOf("WiFi.disconnect(true, false)") && fw.indexOf("WiFi.disconnect(true, false)") < fw.indexOf("restarting the board"));

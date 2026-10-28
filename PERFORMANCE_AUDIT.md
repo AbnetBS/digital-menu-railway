@@ -1,4 +1,4 @@
-# Performance Audit — Fana Cafe & Restaurant (digital-menu-railway)
+# Performance Audit — Fana Cafe & Restaurant (VPSDime / Coolify / PostgreSQL)
 
 **Date:** 2026-08-10
 **Scope:** Full-stack review of the Next.js 16 + Postgres/Drizzle app (public website, customer QR menu, waiter/cashier/station RMS, admin panel).

@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { attendanceOvertime } from "@/db/schema";
 import { and, desc, eq } from "drizzle-orm";
-import { shiftOtMinutesFor, type OvertimeSource, type OvertimeType, type RoleShift } from "@/lib/attendance";
+import { shiftOtMinutesFor, workedShiftOtMinutes, type OvertimeSource, type OvertimeType, type RoleShift } from "@/lib/attendance";
 
 /**
  * THE OVERTIME ROWS (owner, Oct 2026) — the one place that writes
@@ -115,10 +115,13 @@ export async function saveOvertimeRow(
 }
 
 /**
- * THE AUTOMATIC SHIFT OT (owner, Oct 2026: "if someone stay after his shift
- * 1.30 it is overtime", lowered to ONE HOUR on 2026-10-22). Called with the
- * OUT the clock route just wrote: the overtime is the minutes past the end of
- * the shift, and nothing is written when the person left inside the hour.
+ * THE AUTOMATIC SHIFT OT (owner, 2026-10-28: "the time more than 8 hour is
+ * automatically considered shift ot"). Called with the IN and OUT the clock
+ * route just wrote: the overtime is the worked time beyond the length of the
+ * person's shift, credited only when it passes the 1:15 changing-clothes
+ * buffer. A person covering a second shift therefore gets that extra time
+ * even if he arrived a little late for the first one. Rows with no IN still
+ * fall back to the old end-of-shift measurement.
  *
  * Returns the minutes it recorded, so the device's answer can say
  * "Overtime 2h 10m" on the same tap.
@@ -128,9 +131,12 @@ export async function recordShiftOvertimeAtClockOut(args: {
   date: string;
   logId: number;
   shift: RoleShift | null | undefined;
+  clockInAt?: Date | null;
   clockOutAt: Date;
 }): Promise<number> {
-  const minutes = shiftOtMinutesFor(args.shift, args.clockOutAt);
+  const minutes = args.clockInAt
+    ? workedShiftOtMinutes(args.shift, args.clockInAt, args.clockOutAt)
+    : shiftOtMinutesFor(args.shift, args.clockOutAt);
   if (!args.memberId || minutes <= 0) return 0;
 
   const shiftLabel = args.shift?.label ?? null;

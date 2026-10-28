@@ -21,16 +21,20 @@ import {
 } from "lucide-react";
 import {
   DEFAULT_PAYROLL_FORMULAS,
+  DEFAULT_PAYROLL_LETTERHEAD,
   DEFAULT_PAYROLL_SETTINGS,
   PAYROLL_VARIABLES,
+  computePayrollMoney,
   currentEthiopianPeriod,
-  evaluatePayrollFormula,
   gregorianDateToEthiopian,
   type PayrollSettings,
 } from "@/lib/payroll";
+import { weekdayName } from "@/lib/attendance";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
 
 const birr = (n: number) => new Intl.NumberFormat("en-ET", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
+/** The Excel leaves optional money cells blank when they are zero. */
+const paper = (n: number, blankZero = false) => (blankZero && !n ? "" : birr(n));
 const hrs = (n: number) => `${new Intl.NumberFormat("en-ET", { maximumFractionDigits: 2 }).format(n || 0)} h`;
 
 function todayEc() {
@@ -43,53 +47,43 @@ const FORMULAS: Array<[keyof PayrollSettings, string, string]> = [
   ["freeWeekOtFormula", "Free week OT (x2)", "BasicSalary / 30 / 8 * FreeWeekOtHours * 2"],
   ["shiftOtFormula", "Shift OT (x1.5)", "BasicSalary / 30 / 8 * ShiftOtHours * 1.5"],
   ["incomeTaxFormula", "Income tax", "Editable approved tax brackets from the supplied Excel sheet"],
-  ["absenceFormula", "Absence deduction", "Empty: no absence money is deducted"],
-  ["latenessFormula", "Lateness deduction", "Empty: no lateness money is deducted"],
-  ["earlyOutFormula", "Early departure deduction", "Empty: no early departure money is deducted"],
+  ["absenceFormula", "Absence deduction", "BasicSalary / 30 * UnapprovedAbsences"],
+  ["latenessFormula", "Lateness deduction", "BasicSalary / 30 / 8 / 60 * MAX(0, LateMinutes)"],
+  ["earlyOutFormula", "Early departure deduction", "BasicSalary / 30 / 8 / 60 * MAX(0, EarlyOutMinutes)"],
 ];
 
 const EDITABLE: Record<string, { label: string; hint: string }> = {
   basicSalary: { label: "Basic salary", hint: "The monthly salary before transport or overtime." },
   transportAllowance: { label: "Transport allowance", hint: "Added to the gross pay, and not taxed." },
-  breakageShortage: { label: "Breakage and shortage", hint: "What this person broke or lost this month. Deducted." },
 };
 
-/** What the row would pay if one of the three typed cells changed. */
+/** What the row would pay if one of the two editable cells changed.
+ *  This is the SAME computePayrollMoney the server uses, so the confirmation
+ *  number, the saved row and the printed sheet all agree to the last cent. */
 function previewNet(row: any, values: { basicSalary: number; transportAllowance: number; breakageShortage: number }, settings: PayrollSettings) {
-  const ctx: Record<string, number> = {
-    BasicSalary: values.basicSalary,
-    TransportAllowance: values.transportAllowance,
-    GrossSalary: 0,
-    TaxableSalary: 0,
-    OvertimeHours: (row.attendance?.holidayOtHours || 0) + (row.attendance?.freeWeekOtHours || 0) + (row.attendance?.shiftOtHours || 0),
-    HolidayOtHours: row.attendance?.holidayOtHours || 0,
-    FreeWeekOtHours: row.attendance?.freeWeekOtHours || 0,
-    ShiftOtHours: row.attendance?.shiftOtHours || 0,
-    ScheduledDays: row.attendance?.scheduledDays || 0,
-    ScheduledHours: row.attendance?.scheduledHours || 0,
-    DaysPresent: row.attendance?.daysPresent || 0,
-    ApprovedAbsences: row.attendance?.approvedAbsences || 0,
-    UnapprovedAbsences: row.attendance?.unapprovedAbsences || 0,
-    LateCount: row.attendance?.lateCount || 0,
-    LateMinutes: row.attendance?.lateMinutes || 0,
-    EarlyOutCount: row.attendance?.earlyOutCount || 0,
-    EarlyOutMinutes: row.attendance?.earlyOutMinutes || 0,
-  };
-  const calc = (f: string) => {
-    try {
-      return f ? Math.max(0, evaluatePayrollFormula(f, ctx)) : 0;
-    } catch {
-      return 0;
-    }
-  };
-  const overtime = calc(settings.holidayOtFormula) + calc(settings.freeWeekOtFormula) + calc(settings.shiftOtFormula);
-  const gross = values.basicSalary + values.transportAllowance + overtime;
-  ctx.GrossSalary = gross;
-  ctx.TaxableSalary = gross - values.transportAllowance;
-  const tax = calc(settings.incomeTaxFormula);
-  const pension = (values.basicSalary * settings.employeePensionRate) / 100;
-  const total = tax + pension + values.breakageShortage + calc(settings.absenceFormula) + calc(settings.latenessFormula) + calc(settings.earlyOutFormula);
-  return Math.round(((gross - total) * (row.prorationFactor || 1) + Number.EPSILON) * 100) / 100;
+  const a = row.attendance || {};
+  const pay = computePayrollMoney({
+    basicSalary: values.basicSalary,
+    transportAllowance: values.transportAllowance,
+    breakageShortage: values.breakageShortage,
+    settings,
+    attendance: {
+      HolidayOtHours: a.holidayOtHours || 0,
+      FreeWeekOtHours: a.freeWeekOtHours || 0,
+      ShiftOtHours: a.shiftOtHours || 0,
+      ScheduledDays: a.scheduledDays || 0,
+      ScheduledHours: a.scheduledHours || 0,
+      DaysPresent: a.daysPresent || 0,
+      ApprovedAbsences: a.approvedAbsences || 0,
+      UnapprovedAbsences: a.unapprovedAbsences || 0,
+      LateCount: a.lateCount || 0,
+      LateMinutes: a.lateMinutes || 0,
+      EarlyOutCount: a.earlyOutCount || 0,
+      EarlyOutMinutes: a.earlyOutMinutes || 0,
+    },
+    prorationFactor: row.prorationFactor || 1,
+  });
+  return pay.display.netPay;
 }
 
 export default function PayrollTab() {
@@ -105,6 +99,9 @@ export default function PayrollTab() {
   const [payTarget, setPayTarget] = useState<any>(null);
   const [otMemberId, setOtMemberId] = useState<number | null>(null);
   const [holidayOpen, setHolidayOpen] = useState(false);
+  // The company name and TIN printed on the government sheet. Stored in
+  // site_settings, edited here, read by the payroll API for the letterhead.
+  const [headerDraft, setHeaderDraft] = useState({ ...DEFAULT_PAYROLL_LETTERHEAD });
 
   const load = useCallback(
     async (quiet = false) => {
@@ -120,6 +117,10 @@ export default function PayrollTab() {
         if (!s.ok) throw new Error(sd.error);
         setData(pd);
         setSettings(sd);
+        setHeaderDraft({
+          companyName: pd.letterhead?.companyName || DEFAULT_PAYROLL_LETTERHEAD.companyName,
+          tin: pd.letterhead?.tin || DEFAULT_PAYROLL_LETTERHEAD.tin,
+        });
         setError("");
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not load payroll");
@@ -178,6 +179,29 @@ export default function PayrollTab() {
     }
   };
 
+  const saveHeader = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const r = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payroll_company_name: headerDraft.companyName,
+          payroll_tin: headerDraft.tin,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      await load(true);
+      setMessage("Printed sheet header saved. Print the payroll to see it.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the printed header");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const askSave = (row: any, field: string, value: number) => {
     setError("");
     setPending({ row, field, value, previous: Number(row[field] || 0) });
@@ -203,7 +227,6 @@ export default function PayrollTab() {
         memberId: row.memberId,
         basicSalary: values.basicSalary,
         transportAllowance: values.transportAllowance,
-        breakageShortage: values.breakageShortage,
       },
       `${label} saved. Gross, tax, pension, deductions and net pay were recalculated.`
     );
@@ -228,11 +251,61 @@ export default function PayrollTab() {
   const pendingPreview = pending && data ? previewNet(pending.row, {
     basicSalary: pending.field === "basicSalary" ? pending.value : pending.row.basicSalary,
     transportAllowance: pending.field === "transportAllowance" ? pending.value : pending.row.transportAllowance,
-    breakageShortage: pending.field === "breakageShortage" ? pending.value : pending.row.breakageShortage,
+    breakageShortage: pending.row.breakageShortage,
   }, settings) : 0;
 
   return (
-    <div className="space-y-5 text-white">
+    <div id="fana-payroll" className="space-y-5 text-white">
+      {/*
+        GOVERNMENT PRINT SHEET (owner, 2026-10-27): "the current 1 have so
+        many unnecessary thing like my dashboard ... since it send to
+        government it must be formal like title, date, tin number". Everything
+        except .print-sheet is hidden on paper: no dashboard, tabs, buttons,
+        coloured cells, dialogs or status chips. The paper follows his Excel:
+        company name, Payroll Sheet, month, TIN, the same columns, a Signature
+        column and Prepared / Checked / Approved lines.
+      */}
+      <style>{`
+        #fana-payroll .print-sheet { display: none; }
+        @media print {
+          @page { size: A3 landscape; margin: 10mm; }
+          html, body { background: #fff !important; }
+          #fana-admin { background: #fff !important; padding: 0 !important; margin: 0 !important; }
+          #fana-admin > *:not(.max-w-7xl) { display: none !important; }
+          #fana-admin > .max-w-7xl { max-width: none !important; margin: 0 !important; }
+          .no-print { display: none !important; }
+          #fana-payroll > *:not(.print-sheet) { display: none !important; }
+          #fana-payroll .print-sheet {
+            display: block !important; background: #fff !important; color: #000 !important;
+            font-family: "Times New Roman", Times, serif;
+          }
+          .payroll-letterhead { text-align: center; margin-bottom: 8px; }
+          .payroll-letterhead .company { font-size: 16pt; font-weight: 900; letter-spacing: .3px; }
+          .payroll-letterhead .sheet-name { font-size: 13pt; font-weight: 800; margin-top: 2px; }
+          .payroll-letterhead .month-row {
+            display: flex; justify-content: space-between; align-items: baseline;
+            font-size: 11pt; font-weight: 700; margin-top: 8px; text-align: left;
+          }
+          .payroll-letterhead .gregorian-range { text-align: left; font-size: 8pt; margin-top: 2px; }
+          .payroll-paper { width: 100% !important; border-collapse: collapse !important; font-size: 8pt; }
+          .payroll-paper thead { display: table-header-group; }
+          .payroll-paper tfoot { display: table-footer-group; }
+          .payroll-paper tr { break-inside: avoid; page-break-inside: avoid; }
+          .payroll-paper th, .payroll-paper td {
+            border: 1px solid #000 !important; padding: 3px 4px !important;
+            vertical-align: middle !important; color: #000 !important; background: transparent !important;
+          }
+          .payroll-paper thead th { background: #eef1f7 !important; font-weight: 800; text-align: center; }
+          .payroll-paper tfoot td { font-weight: 800; background: #f7f7f7 !important; }
+          .payroll-paper .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+          .payroll-paper .center { text-align: center; }
+          .payroll-paper .signature-cell { min-width: 80px; height: 28px; }
+          .payroll-note { font-size: 7.5pt; margin-top: 6px; }
+          .payroll-signoff { display: flex !important; justify-content: space-between; gap: 24px; margin-top: 16px; font-size: 9pt; }
+          .payroll-signoff > div { flex: 1; }
+          .payroll-signoff .rule { border-bottom: 1px solid #000; height: 20px; margin-top: 4px; }
+        }
+      `}</style>
       <div className="flex flex-wrap items-center gap-3 no-print">
         <div>
           <h2 className="text-2xl font-serif font-black text-amber-100 flex gap-2 items-center">
@@ -289,9 +362,9 @@ export default function PayrollTab() {
           <div>
             <h3 className="font-bold text-amber-100">Payroll formula settings</h3>
             <p className="text-xs text-stone-400">
-              Only arithmetic and the named fields below are accepted. No Excel cell references and no code can run. The
-              overtime formulas start at the rates the owner gave: holiday 2.5, free week 2, shift 1.5. The absence,
-              lateness and early departure boxes start empty.
+              Only arithmetic, IF(), MAX(), MIN() and the named fields below are accepted. No Excel cell references and no
+              code can run. The overtime formulas start at the rates the owner gave: holiday 2.5, free week 2, shift 1.5.
+              Lateness and early departure start with his per-minute rule; absence costs one day of Basic Salary / 30.
             </p>
           </div>
           <div className="grid md:grid-cols-2 gap-3">
@@ -330,14 +403,72 @@ export default function PayrollTab() {
               </label>
             ))}
           </div>
-          <div className="rounded-xl bg-black/20 p-3 text-[11px] text-stone-300">
-            <b>Absence, lateness and early departure are yours.</b> Those three boxes start empty, and while they are
-            empty nothing is deducted for them, whatever the attendance sheet records. Type your own formula and save it
-            (for example <code className="font-mono text-amber-200">BasicSalary / 30 * UnapprovedAbsences</code>), and only
-            then does that column take money off a payslip.
+          <div className="rounded-xl bg-black/20 p-3 text-[11px] text-stone-300 space-y-2">
+            <p>
+              <b>The per-minute rule.</b> One chargeable minute costs{" "}
+              <code className="font-mono text-amber-200">BasicSalary / 30 / 8 / 60</code>. Type 6,000 ETB in the Basic
+              Salary box and the rate is 0.4167 ETB a minute, so 5 chargeable minutes cost 2.08 ETB. This is the same
+              hourly rate the three overtime formulas pay, so a missed hour and an extra hour cost the same. There is no
+              second salary to enter: the system still calculates tax, pension and Net Pay by itself. If you would rather
+              divide by take-home pay, change <code className="font-mono text-amber-200">BasicSalary</code> to{" "}
+              <code className="font-mono text-amber-200">NetSalary</code> in the box (gross minus tax and the employee
+              pension, before these deductions). Net Pay itself would be circular.
+            </p>
+            <p>
+              <b>The grace is not a fixed 20 or 30.</b> It is the <b className="text-amber-200">Maximum Late Time (min)</b>{" "}
+              and <b className="text-amber-200">Leaving Grace (min)</b> of each person&apos;s own role in Attendance, Role &amp;
+              Time. A role with 20 minutes of Leaving Grace whose member left 25 minutes early is charged for 5 minutes.
+              Only the minutes past the grace reach the formula, and one day can never cost more than one day&apos;s wage. Free
+              days and approved exceptions are never charged.
+            </p>
+            <p>
+              <b>Absence costs one full day.</b> One unapproved absent day loses <code className="font-mono text-amber-200">BasicSalary / 30</code>,
+              which is the whole 8 hour day: 6,000 ETB a month costs 200 ETB for that day. Approved leave, free days and
+              unfinished days (today) are never counted. A day with no scan cannot also be late, so the three rules never
+              charge the same day twice.
+            </p>
+            <p>
+              <b>Every box is still yours.</b> Emptying any of the three boxes switches that deduction off (nothing is
+              deducted), and typing your own formula replaces the rule. The money chain keeps Excel&apos;s precision behind the
+              two displayed decimals, so the paper matches the spreadsheet you used before.
+            </p>
           </div>
           <div className="rounded-xl bg-black/20 p-3 text-[11px] text-stone-300">
             <b>Available fields:</b> {PAYROLL_VARIABLES.join(", ")}
+          </div>
+          <div className="rounded-xl bg-black/20 p-3 text-[11px] text-stone-300 space-y-3">
+            <div>
+              <b className="text-amber-100">Printed sheet header (government form)</b>
+              <p className="mt-1">
+                These two lines print only on paper, above the payroll sheet. The month and the Gregorian date range are
+                added automatically from the payroll month you selected.
+              </p>
+            </div>
+            <div className="grid md:grid-cols-2 gap-3">
+              <label className="text-xs">
+                Company name
+                <input
+                  value={headerDraft.companyName}
+                  onChange={(e) => setHeaderDraft({ ...headerDraft, companyName: e.target.value })}
+                  className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-3 text-white"
+                />
+              </label>
+              <label className="text-xs">
+                TIN number
+                <input
+                  value={headerDraft.tin}
+                  onChange={(e) => setHeaderDraft({ ...headerDraft, tin: e.target.value })}
+                  className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-3 text-white"
+                />
+              </label>
+            </div>
+            <button
+              disabled={busy}
+              onClick={saveHeader}
+              className="bg-white/10 px-5 py-2.5 rounded-xl text-xs font-bold disabled:opacity-50"
+            >
+              <Save className="w-4 h-4 inline" /> Save printed header
+            </button>
           </div>
           <div className="flex flex-wrap gap-3 items-center">
             <label className="flex gap-2 text-sm">
@@ -365,6 +496,120 @@ export default function PayrollTab() {
         </div>
       ) : (
         <>
+          {/*
+            THE PAPER. Hidden on screen, the only thing left when the owner
+            presses Print. Mirrors his Excel: 18 columns, zeros left blank in
+            the optional money cells, and an empty Signature box per person.
+          */}
+          <div className="print-sheet">
+            <div className="payroll-letterhead">
+              <div className="company">{data?.letterhead?.companyName || headerDraft.companyName}</div>
+              <div className="sheet-name">Payroll Sheet</div>
+              <div className="month-row">
+                <div>For The Month of <b>{data?.letterhead?.monthLabel || period}</b></div>
+                <div>TIN NO&nbsp; <b>{data?.letterhead?.tin || headerDraft.tin}</b></div>
+              </div>
+              <div className="gregorian-range">
+                <div>Date: <b>{data?.letterhead?.dateEc || ""} E.C.</b> ({data?.letterhead?.dateLabel || ""} G.C.)</div>
+                <div>Ethiopian month: {data?.letterhead?.periodLabel || ""} | Gregorian period: {data?.letterhead?.gregorianRange || ""}</div>
+              </div>
+            </div>
+            <table className="payroll-paper">
+              <thead>
+                <tr>
+                  <th>No.</th>
+                  <th>Employee Name</th>
+                  <th>Basic<br />Salary</th>
+                  <th>11%</th>
+                  <th>Transport<br />Allowance</th>
+                  <th>OT</th>
+                  <th>Gross<br />Salary</th>
+                  <th>Taxable<br />salary</th>
+                  <th>Income<br />tax</th>
+                  <th>P.C 7 %</th>
+                  <th>P.C 18%</th>
+                  <th>Breakage<br />&amp;<br />shortage</th>
+                  <th>Absence</th>
+                  <th>Late</th>
+                  <th>Early<br />out</th>
+                  <th>Total<br />Deduction</th>
+                  <th>Net pay</th>
+                  <th>Signature</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data?.rows?.map((r: any) => (
+                  <tr key={r.memberId}>
+                    <td className="center">{r.employeeNumber}</td>
+                    <td>{r.employeeName}</td>
+                    <td className="num">{paper(r.basicSalary)}</td>
+                    <td className="num">{paper(r.employerPension)}</td>
+                    <td className="num">{paper(r.transportAllowance)}</td>
+                    <td className="num">{paper(r.overtimePay, true)}</td>
+                    <td className="num">{paper(r.grossSalary)}</td>
+                    <td className="num">{paper(r.taxableSalary)}</td>
+                    <td className="num">{paper(r.incomeTax)}</td>
+                    <td className="num">{paper(r.employeePension)}</td>
+                    <td className="num">{paper(r.totalPension)}</td>
+                    <td className="num">{paper(r.breakageShortage, true)}</td>
+                    <td className="num">{paper(r.absenceDeduction, true)}</td>
+                    <td className="num">{paper(r.latenessDeduction, true)}</td>
+                    <td className="num">{paper(r.earlyOutDeduction, true)}</td>
+                    <td className="num">{paper(r.totalDeduction)}</td>
+                    <td className="num">{paper(r.netPay)}</td>
+                    <td className="signature-cell" />
+                  </tr>
+                ))}
+                {data && data.rows?.length === 0 && (
+                  <tr>
+                    <td colSpan={18} className="center">No staff in the attendance list yet.</td>
+                  </tr>
+                )}
+              </tbody>
+              {data?.rows?.length > 0 && (
+                <tfoot>
+                  <tr>
+                    <td colSpan={2}>Total ({data.rows.length} people)</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.basicSalary, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.employerPension, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.transportAllowance, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.overtimePay, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.grossSalary, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.taxableSalary, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.incomeTax, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.employeePension, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.totalPension, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.breakageShortage, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.absenceDeduction, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.latenessDeduction, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.earlyOutDeduction, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.totalDeduction, 0))}</td>
+                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.netPay, 0))}</td>
+                    <td />
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+            <p className="payroll-note">
+              Absence: one day of Basic Salary / 30 per unapproved absent day. Late and Early out: BasicSalary / 30 / 8 / 60 per
+              chargeable minute after the role grace. Free days and approved exceptions are not deducted.
+            </p>
+            <div className="payroll-signoff">
+              {[
+                ["Prepared by", data?.preparedBy],
+                ["Checked by", data?.checkedBy],
+                ["Approved by", data?.approvedBy],
+              ].map(([label, name]) => (
+                <div key={label}>
+                  <b>{label}</b>
+                  <div>{name || ""}</div>
+                  <div className="rule" />
+                  <div>Name / Signature / Date</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 p-4 flex flex-wrap gap-3 items-end no-print">
             <label className="text-xs text-amber-100">
               Payroll month (E.C.)
@@ -421,14 +666,16 @@ export default function PayrollTab() {
           <div className="rounded-xl bg-[#241512] border border-[#C9A227]/25 p-3 text-[11px] text-stone-300 flex gap-2 items-start no-print">
             <Info className="w-4 h-4 text-[#C9A227] shrink-0 mt-0.5" />
             <p>
-              Tap <b className="text-amber-200">Basic Salary</b>, <b className="text-amber-200">Transport</b> or{" "}
-              <b className="text-amber-200">Breakage &amp; Shortage</b> to type the number, then press Enter. Nothing is saved
+              Tap <b className="text-amber-200">Basic Salary</b> or <b className="text-amber-200">Transport</b> to type the number, then press Enter. Breakage and shortage come from Store records. Nothing is saved
               until you confirm, and the whole row recalculates by itself. The OT cell opens the three overtime kinds and what
               was measured from the scans. The last column is the only action: Pay.
               <span className="block mt-1.5">
                 Lateness and early departure are deducted <b className="text-amber-200">only after</b> the Maximum Late Time and
                 the Leaving Grace you set in Attendance, Role &amp; Time. Inside them nothing is deducted, and past them only
-                the minutes above the grace.
+                the minutes above the grace, at BasicSalary / 30 / 8 / 60 per minute (6,000 ETB a month gives 0.42 ETB a
+                minute). One day never costs more than one day&apos;s wage. An unapproved absence costs one full day of
+                Basic Salary / 30 (the 8 hours of that day). Click Print for the formal government sheet with the
+                month, TIN number, Signature column and Prepared / Checked / Approved lines.
               </span>
             </p>
           </div>
@@ -459,7 +706,7 @@ export default function PayrollTab() {
                   ].map((h) => (
                     <th key={h} className="border p-2">
                       {h}
-                      {["Basic Salary", "Transport", "Breakage & Shortage"].includes(h) && <Pencil className="w-3 h-3 inline ml-1 text-stone-600" />}
+                      {["Basic Salary", "Transport"].includes(h) && <Pencil className="w-3 h-3 inline ml-1 text-stone-600" />}
                     </th>
                   ))}
                 </tr>
@@ -506,15 +753,16 @@ export default function PayrollTab() {
                     <td className="border p-2 text-right">{birr(r.incomeTax)}</td>
                     <td className="border p-2 text-right">{birr(r.employeePension)}</td>
                     <td className="border p-2 text-right">{birr(r.totalPension)}</td>
-                    <EditableMoneyCell
-                      value={r.breakageShortage}
-                      label="Breakage and shortage"
-                      disabled={busy || locked || r.paid}
-                      onAsk={(value) => askSave(r, "breakageShortage", value)}
-                    />
+                    <td className="border p-2 text-right" title="Recorded in Store">{birr(r.breakageShortage)}</td>
                     <td className="border p-2 text-right">{birr(r.absenceDeduction)}</td>
-                    <td className="border p-2 text-right">{birr(r.latenessDeduction)}</td>
-                    <td className="border p-2 text-right">{birr(r.earlyOutDeduction)}</td>
+                    <td className="border p-2 text-right" title="Chargeable minutes past the role's Maximum Late Time, at BasicSalary / 30 / 8 / 60 per minute">
+                      {birr(r.latenessDeduction)}
+                      <div className="text-[9px] font-normal text-stone-500">{r.attendance.lateMinutes} min</div>
+                    </td>
+                    <td className="border p-2 text-right" title="Chargeable minutes past the role's Leaving Grace, at BasicSalary / 30 / 8 / 60 per minute">
+                      {birr(r.earlyOutDeduction)}
+                      <div className="text-[9px] font-normal text-stone-500">{r.attendance.earlyOutMinutes} min</div>
+                    </td>
                     <td className="border p-2 text-right">{birr(r.totalDeduction)}</td>
                     <td className="border p-2 text-right font-black">{birr(r.netPay)}</td>
                     <td className="border p-2 text-center no-print">
@@ -885,18 +1133,31 @@ function OvertimeDialog({
     }
   };
 
-  const remove = async (id: number) => {
+  /** "Don't give" (owner, 2026-10-28): the row stays in the history so the
+   *  record is not lost, but the hours are no longer paid. Clicking again
+   *  gives the overtime back. It works for measured rows too. */
+  const decide = async (entry: any) => {
     setErr("");
     setMsg("");
     setSaving(true);
     try {
-      const r = await fetch(`/api/attendance/overtime?id=${id}`, { method: "DELETE" });
+      const r = await fetch("/api/attendance/overtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: entry.excluded ? "give_again" : "dont_give",
+          memberId: row.memberId,
+          date: entry.date,
+          type: entry.type,
+          reason: entry.excluded ? undefined : "Given by mistake - do not pay",
+        }),
+      });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(d.error || "Could not remove the overtime");
-      setMsg("Overtime row removed.");
+      if (!r.ok || !d.success) throw new Error(d.error || "Could not change the overtime");
+      setMsg(d.message);
       onChanged();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Could not remove the overtime");
+      setErr(e instanceof Error ? e.message : "Could not change the overtime");
     } finally {
       setSaving(false);
     }
@@ -945,8 +1206,9 @@ function OvertimeDialog({
         <div className="rounded-xl bg-black/20 p-3 text-[10px] text-stone-300 flex gap-2">
           <Clock className="w-4 h-4 text-[#C9A227] shrink-0" />
           <span>
-            A person who leaves within one hour of his shift end is not overtime. Staying past that hour pays the whole
-            time past the end. Arriving up to 30 minutes late still earns the full shift.
+            A 1 hour 15 minute buffer after the shift is for transport and changing clothes: leaving inside it earns no
+            overtime. Past it, the whole time past the shift end is paid. A holiday or free-day visit must be longer than
+            one hour to count; the hours use the late and leaving grace of the person&apos;s own role.
           </span>
         </div>
 
@@ -1027,32 +1289,48 @@ function OvertimeDialog({
             </p>
           )}
           {row.overtimeEntries.map((entry: any) => (
-            <div key={`${entry.id ?? "auto"}-${entry.date}-${entry.type}`} className="flex items-center gap-3 bg-black/20 rounded-xl p-3">
+            <div
+              key={`${entry.id ?? "auto"}-${entry.date}-${entry.type}`}
+              className={`flex items-center gap-3 rounded-xl p-3 ${entry.excluded ? "bg-rose-950/30 border border-rose-900/60" : "bg-black/20"}`}
+            >
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-bold text-amber-100">
-                  {entry.typeLabel} <span className="text-stone-500">•</span> {hrs(entry.hours)}
+                  {entry.typeLabel} <span className="text-stone-500">•</span>{" "}
+                  <span className={entry.excluded ? "line-through" : ""}>{hrs(entry.hours)}</span>
+                  {entry.excluded && (
+                    <span className="ml-2 text-[9px] font-black uppercase text-rose-300 not-italic">Not given</span>
+                  )}
                 </p>
                 <p className="text-[11px] text-stone-400">
+                  <span className="text-amber-200/80">{entry.date ? weekdayName(entry.date) : ""}</span>{" "}
                   {entry.dateEc} E.C. {entry.holidayName ? ` • ${entry.holidayName}` : ""}
                   {entry.automatic ? " • measured from the scan" : ` • written by ${entry.enteredBy || entry.source}`}
                   {entry.note ? ` • ${entry.note}` : ""}
                 </p>
               </div>
-              {entry.automatic ? (
-                <span className="text-[9px] font-black uppercase text-violet-300 bg-violet-950/60 border border-violet-700 rounded-full px-2 py-1">
+              {entry.automatic && !entry.excluded && (
+                <span className="text-[9px] font-black uppercase text-violet-300 bg-violet-950/60 border border-violet-700 rounded-full px-2 py-1 shrink-0">
                   Measured
                 </span>
-              ) : (
-                <button
-                  onClick={() => remove(entry.id)}
-                  disabled={saving || row.paid}
-                  title={row.paid ? "Take the paid tick back first" : "Remove this overtime row"}
-                  className="text-rose-300 p-2 rounded-lg hover:bg-rose-950/40 disabled:opacity-40"
-                  aria-label="Remove this overtime row"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
               )}
+              <button
+                onClick={() => decide(entry)}
+                disabled={saving || row.paid}
+                title={
+                  row.paid
+                    ? "Take the paid tick back first"
+                    : entry.excluded
+                      ? "Give this overtime again"
+                      : "Keep it in the history but do not pay it"
+                }
+                className={`px-3 py-2 rounded-xl text-[10px] font-black border disabled:opacity-40 shrink-0 ${
+                  entry.excluded
+                    ? "bg-emerald-900/50 border-emerald-700 text-emerald-200"
+                    : "bg-rose-900/40 border-rose-700 text-rose-200"
+                }`}
+              >
+                {entry.excluded ? "Give again" : "Don't give"}
+              </button>
             </div>
           ))}
         </div>
@@ -1077,10 +1355,11 @@ function ExceptionPanel({ data, act }: { data: any; act: (body: any, success: st
   return (
     <div className="space-y-4">
       <div className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-5">
-        <h3 className="font-bold text-amber-100">Absence and lateness deduction exceptions</h3>
+        <h3 className="font-bold text-amber-100">Absence, lateness and early departure exceptions</h3>
         <p className="text-xs text-stone-400 mb-3">
-          Select an employee. Only real absence and late events in this payroll period appear. Approving one keeps the
-          deduction off his pay, and the authorizer and reason stay in the record.
+          Select an employee. The minutes shown are CHARGEABLE minutes, already past the Maximum Late Time or Leaving
+          Grace of that role, at BasicSalary / 30 / 8 / 60 each. Approving one keeps the deduction off his pay, and the
+          authorizer and reason stay in the record.
         </p>
         <select
           value={memberId}
@@ -1113,9 +1392,9 @@ function ExceptionPanel({ data, act }: { data: any; act: (body: any, success: st
                   <td className="capitalize">{e.type}</td>
                   <td>
                     {e.type === "lateness"
-                      ? `${e.minutes} minutes late`
+                      ? `${e.minutes} chargeable minutes late`
                       : e.type === "early_out"
-                        ? `${e.minutes} minutes early departure`
+                        ? `${e.minutes} chargeable minutes early departure`
                         : "No attendance recorded"}
                   </td>
                   <td>

@@ -1,6 +1,6 @@
 /**
  * In-memory fixed-window rate limiter for a SINGLE-INSTANCE deployment
- * (Railway runs one Node process). No Redis / external service required.
+ * (one Node process). No Redis / external service required.
  *
  * Each key (e.g. "admin-login:<ip>") is allowed `limit` attempts per
  * `windowMs` window. The window slides on a fixed cadence (resetAt), and the
@@ -46,7 +46,7 @@ export function checkRateLimit(key: string, limit: number, windowMs: number): Ra
 }
 
 /**
- * Best-effort client IP. Railway terminates TLS at its proxy and sets
+ * Best-effort client IP. A trusted Coolify reverse proxy can terminate TLS and set
  * X-Forwarded-For; fall back to X-Real-IP, then a fixed bucket so the limiter
  * still protects when no proxy header is present.
  */

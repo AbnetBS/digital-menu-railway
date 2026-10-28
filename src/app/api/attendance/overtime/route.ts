@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { attendanceLogs, attendanceMembers, attendanceOvertime } from "@/db/schema";
+import { attendanceLogs, attendanceMembers, attendanceOtExclusions, attendanceOvertime } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { deviceAllowed } from "@/lib/attendance-device";
@@ -141,11 +141,27 @@ export async function GET(request: Request) {
       };
     });
 
+    // "Don't give" decisions of this range. The UI shows them on the very
+    // rows they silence, so a supervisor can see who lost which overtime and
+    // give it back with one click. The payroll reads the same table.
+    const excludedRows = await db
+      .select()
+      .from(attendanceOtExclusions)
+      .where(and(gte(attendanceOtExclusions.date, from), lte(attendanceOtExclusions.date, to)));
+
     const totalMinutes = rows.reduce((sum, r) => sum + (Number(r.minutes) || 0), 0);
     return NextResponse.json({
       from,
       to,
       rows: out,
+      exclusions: excludedRows.map((r) => ({
+        id: r.id,
+        memberId: r.memberId,
+        date: r.date,
+        type: r.type,
+        authorizedBy: r.authorizedBy ?? null,
+        reason: r.reason ?? null,
+      })),
       totalMinutes,
       totalHoursLabel: overtimeHoursLabel(totalMinutes),
     });
@@ -192,6 +208,41 @@ export async function POST(request: Request) {
 
     const memberId = Number(body.memberId ?? 0);
     const logId = Number(body.logId ?? 0);
+
+    /* ── "DON'T GIVE": silence an overtime without erasing its history ────
+     * Owner (2026-10-28): "if that person is accedently given that ot wrongly
+     * they can make it not to deduct". Admin only: a tap at the door must
+     * never be able to take somebody's pay away. One row per person+day+kind;
+     * give_again removes it. Measured overtime has no typed row to remove,
+     * which is why this is its own table and not a flag on attendance_overtime.
+     */
+    const decision = String(body.action ?? "");
+    if (decision === "dont_give" || decision === "give_again") {
+      if (!isAdmin) return NextResponse.json({ error: "Only an admin can decide not to give overtime" }, { status: 403 });
+      const kind = String(body.type ?? "");
+      if (!isOvertimeType(kind)) return NextResponse.json({ error: "Which overtime kind?" }, { status: 400 });
+      if (!memberId) return NextResponse.json({ error: "Pick the person first" }, { status: 400 });
+      if (decision === "give_again") {
+        await db.delete(attendanceOtExclusions).where(and(
+          eq(attendanceOtExclusions.memberId, memberId),
+          eq(attendanceOtExclusions.date, date),
+          eq(attendanceOtExclusions.type, kind)
+        ));
+      } else {
+        await db.insert(attendanceOtExclusions).values({
+          memberId,
+          date,
+          type: kind,
+          authorizedBy: String(body.authorizedBy ?? "").trim().slice(0, 100) || "admin",
+          reason: String(body.reason ?? "").trim().slice(0, 300) || "Given by mistake - do not pay",
+        }).onConflictDoNothing();
+      }
+      return NextResponse.json({
+        success: true,
+        excluded: decision === "dont_give",
+        message: decision === "dont_give" ? "Overtime kept in history but not given." : "Overtime given again.",
+      });
+    }
 
     // The day's line: the person's own, today unless a date came with it.
     let log: (typeof attendanceLogs.$inferSelect) | null = null;

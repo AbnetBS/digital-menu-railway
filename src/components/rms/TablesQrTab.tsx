@@ -152,7 +152,7 @@ export default function TablesQrTab() {
         {errMsg && <p className="text-xs text-rose-300 font-bold">{errMsg}</p>}
         {baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1") ? (
           <div className="bg-rose-950/60 border border-rose-600 text-rose-200 text-xs p-3 rounded-xl font-bold">
-            {L("⚠️ You're on localhost: customer phones CAN'T reach these QRs. Deploy to your host (e.g. Railway) first, open the live site, then print.")}
+            {L("⚠️ You're on localhost: customer phones CAN'T reach these QRs. Deploy to your host (VPSDime / Coolify) first, open the live site, then print.")}
           </div>
         ) : (
           <div className="bg-emerald-950/60 border border-emerald-700 text-emerald-200 text-xs p-3 rounded-xl font-bold">

@@ -17,12 +17,17 @@ import {
  * The owner's rates are the starting point, not a locked spreadsheet: the
  * holiday, free week and shift formulas already hold 2.5, 2 and 1.5 when
  * nobody has typed anything, so the payroll calculates from the first day.
- * An empty box falls back to the owner's default instead of turning a whole
- * column into zeros, and saving is still checked by the safe evaluator.
+ * An empty overtime or tax box falls back to the owner's default instead of
+ * turning a whole column into zeros, and saving is still checked by the safe
+ * evaluator (MAX(), MIN() and IF() included).
  *
- * The absence, lateness and early departure boxes are the exception: the owner
- * never gave those rules, so they ship empty and an empty box SAVES AS EMPTY
- * (no deduction), instead of being filled with a formula he did not ask for.
+ * Since 2026-10-27 the lateness and early departure boxes DO ship with the
+ * owner's per-minute rule (BasicSalary / 30 / 8 / 60 per chargeable minute,
+ * the salary he types per employee), because he finally gave one. NetSalary
+ * is an approved alternative base. Absence ships with his one-day rule:
+ * BasicSalary / 30 * UnapprovedAbsences (a whole 8 hour day per absence).
+ * Any of the three can still be emptied, and an empty box SAVES AS EMPTY (no
+ * deduction), instead of being filled with a formula he did not ask for.
  */
 export async function GET() {
   const auth = await requireAdmin();
@@ -52,8 +57,8 @@ export async function PUT(request: Request) {
     const formula = String(settings[key] || "").trim();
     // An empty deduction box is the owner saying "do not deduct this"; it is
     // stored empty and evaluated as zero, never replaced by a made-up rule.
-    // The overtime and tax formulas are still required, so an empty one of
-    // those falls through to the evaluator below and is refused.
+    // Overtime and tax boxes are filled from the owner's defaults when they
+    // are empty, so those four are always checked by the evaluator below.
     if (!formula && (DEDUCTION_FORMULA_KEYS as readonly string[]).includes(key)) {
       settings[key] = "";
       continue;

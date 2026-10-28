@@ -1139,6 +1139,7 @@ export default function StationApp({ station }: { station: Station }) {
             <BellRing className="w-3.5 h-3.5" />
             {alertsOn ? L("ON") : L("🔔 ENABLE")}
           </button>
+          <a href="/station-stock" className="text-[10px] font-black px-3 py-1.5 rounded-full bg-amber-500 text-stone-950">{L("New import items")}</a>
           <StaffLangToggle compact />
           <button onClick={load} className="p-2 rounded-xl bg-white/10 text-amber-200" title={L("Refresh")}>
             <RefreshCw className="w-4 h-4" />

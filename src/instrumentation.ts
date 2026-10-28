@@ -2,7 +2,7 @@
  * Next.js server-startup hook.
  *
  * The waiter send-hold queue is durable in Postgres and processed here by a
- * small worker. If Railway replaces the process, the next process picks up any
+ * small worker. If Coolify replaces the process, the next process picks up any
  * due rows from the database instead of losing the in-memory countdown.
  *
  * The DAY-CLOSE worker runs here for the same reason (owner, 29 Sept 2026):

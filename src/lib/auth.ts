@@ -2,7 +2,7 @@ import bcrypt from "bcryptjs";
 
 /**
  * Password / PIN hashing helpers (bcryptjs — pure JS, no native build, safe on
- * Railway's single-instance Node deployment).
+ * a single-instance Node deployment).
  *
  * MIGRATION STRATEGY (no lock-out):
  * Existing accounts were created with plaintext passwords/PINs. We do NOT force

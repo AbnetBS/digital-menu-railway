@@ -115,12 +115,13 @@ The board heals its own link. This is what changed, and why.
   scans in LittleFS, and reconnects in the background.
 - **Reconnect escalation.** Ask the driver (`WiFi.reconnect()`) every 8 s; after
   45 s reset the radio (`WiFi.disconnect(true, false)` then `WiFi.begin()`,
-  credentials kept); after 10 minutes restart the board as the last resort.
+  credentials kept); allow at least 30 s between radio resets for slow routers;
+  after 10 minutes restart the board as the last resort.
 - **The LCD tells the truth while it does this, and shows the strength.** Row 2
   carries the connection word, the number and four bars in its twenty
   characters:
 
-  - `Connected -58dB ████` next to the router, everything is fine
+  - `Connected -58dB ████` strong Wi-Fi link (not proof of internet)
   - `Connected -72dB ██__` usable, but there is room to improve
   - `Connected -88dB ____` the "only works near the router" case
   - `Wifi down 34s` disconnected and retrying (live counter)
@@ -181,3 +182,12 @@ remain available.
 For battery operation, use watt-hours for planning: a nominal 10,000 mAh,
 3.7 V bank is about 37 Wh, not 10,000 mAh at 5 V. A 6000 mAh label must likewise
 be converted using its cell voltage. Avoid banks with Auto-shutoff at low load.
+
+## Recovery and deployment checks
+
+- The LCD connection line and dBm/bars describe the **local Wi-Fi radio link**, not proof that the internet or website is reachable. The device retries the website even if Wi-Fi stays connected during an internet outage. The router must use a compatible 2.4 GHz network.
+- Flashing the website does not flash the ESP32. Compile and upload this sketch, then test by switching the access point off/on and separately interrupting/restoring internet while Wi-Fi stays up. Check that a scan during each outage appears in attendance, in order, and with the expected time. Check the LCD and Serial logs.
+- LittleFS is no longer automatically formatted if mounting fails, to avoid erasing queued scans. The LCD says **SCAN NOT SAVED** when a queue write fails. A new/unformatted device may need one deliberate filesystem initialization; back up/recover any existing data before formatting.
+- Kept scans are retried in order; a non-200 response or corrupt entry pauses the queue instead of deleting it. Check Serial for `Offline queue paused` and fix the server/token/mapping or inspect the device. Storage is finite and the current queue has no exactly-once delivery guarantee if a response or power is lost after the server commits. Reconcile attendance after an outage.
+- A scan has an accurate saved time only if the device has synchronized its clock since its most recent boot. A long Wi-Fi outage can trigger a restart; after that, scans cannot carry a known time until NTP returns. The server accepts an offline timestamp up to three days old; older/unknown timestamps fall back to arrival time. Check the attendance report after outages, especially those spanning a restart or more than three days.
+- Set `serverURL` to the real HTTPS site. To use `ATTENDANCE_DEVICE_TOKEN`, place the same secret in `deviceToken` and in Coolify, coordinating rollout so old firmware is not locked out. Never commit the secret. The default empty token leaves device endpoints open. Review TLS certificate verification for the installed ESP32 Arduino core before sending a token or relying on this over an untrusted network.

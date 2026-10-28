@@ -7,7 +7,7 @@
  * is immediately told to refresh. Nothing happens → zero traffic.
  *
  * ⚠️ SINGLE-INSTANCE ONLY: subscriptions live in the Node process memory, so
- * this works when the whole app runs in ONE process (a single Railway service).
+ * this works when the whole app runs in ONE process (one Coolify app instance).
  * If the app is ever scaled to multiple replicas, events on one instance will
  * not reach clients connected to another. For one restaurant this is the
  * correct, zero-cost setup (no Supabase Realtime, no external broker).

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { cleanupOldReceipts } from "@/lib/receipt-cleanup";
+import { bearerToken } from "@/lib/bearer-token";
 
 /**
  * POST: permanently deletes old RECEIPTS (bill photos) for finished bills
@@ -10,15 +11,15 @@ import { cleanupOldReceipts } from "@/lib/receipt-cleanup";
  * completed, closed, paid or cancelled — open tickets are never touched.
  * The order record itself (items, amounts, method) is always kept.
  *
- * This same cleanup also runs automatically every 24h via src/instrumentation.ts,
- * so this endpoint is a manual override only.
+ * This endpoint is also used by the separately configured Coolify scheduled task;
+ * no in-process automatic receipt cleanup is installed.
  */
 export async function POST(request: Request) {
   // Coolify's scheduled task cannot hold an admin browser cookie. It may use
   // a separate deployment secret instead; requests without either credential
   // remain rejected. Keep the normal admin path for the dashboard button.
   const cronSecret = process.env.RECEIPT_CLEANUP_SECRET?.trim();
-  const bearer = request.headers.get("authorization")?.replace(/^Bearer\\s+/i, "").trim();
+  const bearer = bearerToken(request.headers.get("authorization"));
   const cronAuthorized = Boolean(cronSecret && bearer && bearer === cronSecret);
 
   if (!cronAuthorized) {

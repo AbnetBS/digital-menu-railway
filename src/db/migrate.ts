@@ -16,11 +16,11 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-24-1";
+const SCHEMA_VERSION = "2026-10-28-2";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
- * (Neon, local, Supabase, Railway, old broken local DBs, fresh empty DBs).
+ * (Coolify PostgreSQL, local, old broken local DBs, fresh empty DBs).
  *
  * Strategy:
  *  1. CREATE TABLE IF NOT EXISTS  → handles fresh databases
@@ -462,6 +462,22 @@ const RMS_CREATES: Array<[string, string]> = [
       member_id integer NOT NULL,
       breakage_shortage numeric(14,2) NOT NULL DEFAULT 0,
       PRIMARY KEY(period_key, member_id)
+    )`,
+  ],
+  [
+    "payroll_breakages",
+    `CREATE TABLE IF NOT EXISTS payroll_breakages (
+      id serial PRIMARY KEY,
+      period_key varchar(10) NOT NULL,
+      member_id integer NOT NULL,
+      item_type text NOT NULL,
+      amount numeric(14,2) NOT NULL CHECK (amount > 0),
+      recorded_by text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      voided_at timestamptz,
+      voided_by text,
+      legacy_key text UNIQUE,
+      request_key text UNIQUE
     )`,
   ],
   [
@@ -1013,13 +1029,15 @@ async function runFullMigrate(force: boolean) {
   // cents can be saved from this deploy on.
   for (const problem of await repairPayrollMoneyColumns()) errors.push(`money column ${problem}`);
 
-  // DEDUCTION FORMULAS: the owner never gave a lateness, absence or early
-  // departure rule, and he rejected the ones an earlier build had filled in
+  // DEDUCTION FORMULAS: an earlier build had shipped made-up minute rules
   // ("there isn't deduction related to this until I add formula"). A settings
-  // row that still holds exactly those shipped defaults is cleared, so those
-  // columns deduct nothing; a formula he wrote himself is left untouched.
+  // row that still holds exactly those two shipped strings is cleared first,
+  // so the owner's NEW per-minute rule below is the one that starts working;
+  // a formula he wrote himself is left untouched. The old ABSENCE string is
+  // deliberately NOT cleared any more: on 2026-10-27 he chose exactly that
+  // rule (one 8 hour day = BasicSalary / 30 per unapproved absence), so
+  // clearing it would erase his decision on every deploy.
   for (const [key, shipped] of [
-    ["absenceFormula", "BasicSalary / 30 * UnapprovedAbsences"],
     ["latenessFormula", "BasicSalary / 30 / 8 / 60 * LateMinutes"],
     ["earlyOutFormula", "BasicSalary / 30 / 8 / 60 * EarlyOutMinutes"],
   ] as Array<[string, string]>) {
@@ -1030,6 +1048,69 @@ async function runFullMigrate(force: boolean) {
     );
     if (err) errors.push(`deduction formula ${key}: ${err}`);
   }
+
+  // THE OWNER'S PER-MINUTE RULE (2026-10-27): BasicSalary / 30 / 8 / 60 per
+  // chargeable minute, for lateness AND early departure, after the grace of
+  // the person's own role. BasicSalary is the one salary the owner types per
+  // employee, and it is the same base the three overtime rates use.
+  const minuteRuleMarker = "payroll_minute_rule_2026_10_27";
+  const latenessRule = "BasicSalary / 30 / 8 / 60 * MAX(0, LateMinutes)";
+  const earlyOutRule = "BasicSalary / 30 / 8 / 60 * MAX(0, EarlyOutMinutes)";
+
+  // An interim build on the same day seeded the NetSalary version of exactly
+  // these two shipped strings. Upgrade them to the final rules; a formula the
+  // owner edited himself is left untouched.
+  for (const [key, oldRule, newRule] of [
+    ["latenessFormula", "NetSalary / 30 / 8 / 60 * MAX(0, LateMinutes)", latenessRule],
+    ["earlyOutFormula", "NetSalary / 30 / 8 / 60 * MAX(0, EarlyOutMinutes)", earlyOutRule],
+  ] as Array<[string, string, string]>) {
+    const err = await run(
+      `UPDATE payroll_settings
+          SET settings = jsonb_set(settings, '{${key}}', to_jsonb('${newRule}'::text), true), updated_at = now()
+        WHERE settings->>'${key}' = '${oldRule}'`
+    );
+    if (err) errors.push(`minute rule base upgrade ${key}: ${err}`);
+  }
+
+  // Older databases still carry empty boxes from the clearing above, so seed
+  // the two shipped formulas ONCE. A formula the owner already wrote is
+  // preserved, and a box he empties after this deploy stays empty because the
+  // marker is never written twice.
+  const seedErr = await run(
+    `UPDATE payroll_settings
+        SET settings = coalesce(settings, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object(
+              'latenessFormula', CASE WHEN coalesce(settings->>'latenessFormula','') = '' THEN '${latenessRule}'::text ELSE NULL::text END,
+              'earlyOutFormula', CASE WHEN coalesce(settings->>'earlyOutFormula','') = '' THEN '${earlyOutRule}'::text ELSE NULL::text END
+            )),
+            updated_at = now()
+      WHERE NOT EXISTS (SELECT 1 FROM site_settings WHERE key = '${minuteRuleMarker}')`
+  );
+  if (seedErr) errors.push(`minute rule seed: ${seedErr}`);
+  else
+    await run(
+      `INSERT INTO site_settings(key,value,updated_at) VALUES('${minuteRuleMarker}','1',now()) ON CONFLICT (key) DO NOTHING`
+    );
+
+  // ABSENCE (owner, 2026-10-27): "if someone is absent the system will deduct
+  // the 8 hour from his salary ... 6000/30 days and that daily value is their
+  // 8 hour value". One absent day therefore loses BasicSalary / 30. A build
+  // from earlier the same day cleared this box, so seed the shipped rule once
+  // with its own marker. A box the owner empties later stays empty.
+  const absenceRule = "BasicSalary / 30 * UnapprovedAbsences";
+  const absenceMarker = "payroll_absence_rule_2026_10_27";
+  const absenceSeedErr = await run(
+    `UPDATE payroll_settings
+        SET settings = coalesce(settings, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object(
+              'absenceFormula', CASE WHEN coalesce(settings->>'absenceFormula','') = '' THEN '${absenceRule}'::text ELSE NULL::text END
+            )),
+            updated_at = now()
+      WHERE NOT EXISTS (SELECT 1 FROM site_settings WHERE key = '${absenceMarker}')`
+  );
+  if (absenceSeedErr) errors.push(`absence rule seed: ${absenceSeedErr}`);
+  else
+    await run(
+      `INSERT INTO site_settings(key,value,updated_at) VALUES('${absenceMarker}','1',now()) ON CONFLICT (key) DO NOTHING`
+    );
 
   // Payroll period sign-off columns added after the first payroll release.
   await run(`ALTER TABLE payroll_periods ADD COLUMN IF NOT EXISTS prepared_by varchar(100)`);
@@ -1280,6 +1361,32 @@ async function runFullMigrate(force: boolean) {
   );
   await run(`CREATE INDEX IF NOT EXISTS attendance_overtime_date_idx ON attendance_overtime (date)`);
 
+  // Preserve earlier manually-entered payroll amounts as visible historical
+  // records. The unique key makes this safe to repeat; new entries are only
+  // created from the Store and the legacy input column is no longer written.
+  await run(`INSERT INTO payroll_breakages(period_key,member_id,item_type,amount,recorded_by,legacy_key)
+    SELECT period_key,member_id,'Previous manual payroll entry',breakage_shortage,'Previous payroll',period_key || '|' || member_id::text
+    FROM payroll_monthly_inputs WHERE breakage_shortage > 0
+    ON CONFLICT (legacy_key) DO NOTHING`);
+  await run(`CREATE INDEX IF NOT EXISTS payroll_breakages_period_member_idx ON payroll_breakages(period_key,member_id)`);
+
+  // "DON'T GIVE" (owner, 2026-10-28): an overtime that was given by mistake
+  // must stay visible in the history but must NOT be added to the salary. One
+  // row per (person, day, kind), so a double click cannot multiply it. The
+  // payroll reads this table and skips those hours; the overtime row itself
+  // is never deleted, which is exactly the audit trail the owner asked for.
+  await run(`CREATE TABLE IF NOT EXISTS attendance_ot_exclusions (
+      id serial PRIMARY KEY,
+      member_id integer NOT NULL,
+      date varchar(10) NOT NULL,
+      type varchar(20) NOT NULL,
+      authorized_by varchar(100),
+      reason varchar(300),
+      created_at timestamp DEFAULT now()
+    )`);
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS attendance_ot_exclusions_member_day_type_key ON attendance_ot_exclusions (member_id, date, type)`);
+  await run(`CREATE INDEX IF NOT EXISTS attendance_ot_exclusions_date_idx ON attendance_ot_exclusions (date)`);
+
   //  • payment_status backfill: existing paid/completed bills get a concrete
   //    status derived from their stored method so reports/history stay correct
   //    ("online" historically meant Telebirr/wallet in this cafe). Note: SET
@@ -1432,7 +1539,7 @@ async function runFullMigrate(force: boolean) {
   // Best effort, never fatal: the read path rejects (and deletes) bad rows
   // anyway, so a failure here must not block the schema-version stamp (that
   // would re-run the whole migration on every cold start). The Ethiopic
-  // ranges need a UTF8 database (Railway's default); anything else skips.
+  // ranges need a UTF8 database (check the PostgreSQL database encoding); anything else skips.
   const encodingRows = await db.execute(sql`SELECT current_setting('server_encoding') AS enc`).catch(() => null);
   const serverEncoding = ((encodingRows as unknown as { rows?: Array<{ enc: string }> } | null)?.rows?.[0]?.enc || "").toUpperCase();
   if (txPurgedList.length === 0 && serverEncoding !== "UTF8") {

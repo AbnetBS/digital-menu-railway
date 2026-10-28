@@ -61,6 +61,7 @@ export default function OrderHistoryTab() {
     );
     if (open.length > 0) return { cls: "bg-rose-500/15 text-rose-300 border-rose-500/40", text: L("⚠ crew never clicked Done") };
     const byPrint = rows.filter((r) => r.stationStatus === "done" && !crewDone.includes(r));
+    if (byPrint.some((r) => r.stationDoneBy === "cashier delivery")) return { cls: "bg-amber-500/15 text-amber-300 border-amber-500/40", text: L("Cleared by cashier delivery") };
     if (byPrint.length > 0) return { cls: "bg-amber-500/15 text-amber-300 border-amber-500/40", text: L("🖨 cleared by cashier print • crew did not click Done") };
     const names = [...new Set(crewDone.map((r) => String(r.stationDoneBy || "").trim()).filter(Boolean))];
     return {

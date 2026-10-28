@@ -339,6 +339,9 @@ export default function AdminPanel({
         </div>
         <div className="flex items-center gap-3">
           <StaffLangToggle compact />
+          <a href="/store" className="p-2 bg-amber-700 hover:bg-amber-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5">
+            {L("Store")}
+          </a>
           <a href="/waiter" className="p-2 bg-emerald-800 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5">
             <Users className="w-4 h-4" /> {L("Waiter App")}
           </a>

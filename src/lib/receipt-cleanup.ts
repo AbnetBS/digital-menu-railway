@@ -22,7 +22,7 @@ const CLEANABLE_STATUSES = ["completed", "closed", "paid", "cancelled"] as const
  * receipt photo is deleted, and the column is set back to NULL like a bill
  * that never had a photo.
  *
- * Returns the number of receipts cleared, or 0 on failure (never throws).
+ * Returns the number of receipts cleared; failures are propagated to the caller.
  */
 export async function cleanupOldReceipts(days = 30): Promise<number> {
   try {
@@ -52,7 +52,7 @@ export async function cleanupOldReceipts(days = 30): Promise<number> {
     if (urls.length > 0) await deleteOrphanedCdnImages(urls);
     return cleared.length;
   } catch (error) {
-    console.warn("[receipt-cleanup] skipped:", error);
-    return 0;
+    console.error("[receipt-cleanup] failed:", error);
+    throw error;
   }
 }

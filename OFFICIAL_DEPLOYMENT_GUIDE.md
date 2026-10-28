@@ -1,127 +1,24 @@
-# 🚀 OFFICIAL DEPLOYMENT GUIDE — Make Fana Cafe a Real Live Website
-# (No more localhost problems — deploy once, works forever)
+# Deployment: VPSDime, Coolify and PostgreSQL
 
-This guide turns the code into an official website like **https://fanacafe.com.et**
-with a real cloud database, admin dashboard, and 24/7 online orders.
+The app runs on your VPSDime VPS, managed by Coolify, with PostgreSQL. Repository and branch names do not determine the hosting provider. This guide does not change your existing VPS or deploy the code.
 
-Recommended stack (current plan):
-✅ GitHub — the repository
-✅ Railway — the app host (https://railway.app)
-✅ Supabase — the PostgreSQL database (https://supabase.com)
-   (Any Postgres host works — Neon, Railway Postgres, Supabase. You only need
-    the DATABASE_URL connection string.)
+## Before updating an existing site
 
-════════════════════════════════════════
-STEP 1 — PUSH THE CODE TO GITHUB (5 minutes)
-════════════════════════════════════════
-1. Create a repository on GitHub (e.g. "fana-cafe").
-2. In this project folder, open a terminal and run:
+1. Take a PostgreSQL backup and verify that you can restore it to a **separate** database. Preserve existing volumes, secrets and settings. Do not point a test site at your production database.
+2. Review all pending changes, including payroll and Store, and test against a restored copy using the same PostgreSQL version, permissions and Coolify settings. Several schema changes run automatically; a code rollback alone does not undo a database migration.
+3. In Coolify, check the application environment variables and retain the existing production `DATABASE_URL`, `ADMIN_PASSWORD` and `SESSION_SECRET`. Do not rotate these accidentally: changing `SESSION_SECRET` invalidates sessions. Set `NEXT_PUBLIC_SITE_URL` to your actual `https://` domain for **both build and runtime** (public Next.js variables may be embedded at build). See `.env.example` for names; never commit real secrets.
+4. Confirm DNS points at your VPS and Coolify's reverse proxy has valid HTTPS. Expose the Next.js app through Coolify's proxy (normally container port 3000); do not expose PostgreSQL publicly. Database connections must work from the application container, not just from the VPS host. Grant the application DB user the permissions needed for the app's migrations, including creating tables, indexes, functions and triggers.
+5. Keep **one app replica/process** unless the in-memory real-time event hub and rate limits are redesigned for multiple instances. Verify the proxy keeps Server-Sent Events streams open. Check disk capacity, logs, database and host backups, and alerting.
+6. Test on staging before production: login, POS/order flows, stations and Done, print and delivery, Store issues/direct imports, payroll, attendance scanner and notifications. Open `/store` before relying on ingredient tracking; opening it installs the stock trigger. Set recipes and opening balances and conduct physical counts. Existing completed sales are not backfilled.
 
-   git init
-   git add .
-   git commit -m "Fana Cafe official website"
-   git branch -M main
-   git remote add origin https://github.com/YOUR_USERNAME/fana-cafe.git
-   git push -u origin main
+## Attendance device
 
-IF THIS STEP ALREADY FAILED BEFORE: delete the old "node_modules" and ".next"
-folders from the repo on GitHub (they should never be uploaded; .gitignore handles it).
+The firmware is in `hardware/fana_attendance_esp32`. Upload the updated sketch separately: merging or deploying the website does **not** update the ESP32. Set `serverURL` to the actual HTTPS site. If enabling `ATTENDANCE_DEVICE_TOKEN` in Coolify, first provision the same value securely into the device firmware and flash it, then set the server variable. Avoid committing the token. Coordinate the change: an old device without the token will be rejected when it is enabled. Test scans, enrollment, offline recovery and LCD on the physical unit. See the device README for limitations.
 
-════════════════════════════════════════
-STEP 2 — CREATE THE CLOUD DATABASE (Supabase) (5 minutes)
-════════════════════════════════════════
-1. Go to https://supabase.com → create a new project → name it "fana-cafe".
-2. In Project Settings → Database, copy the "Connection string" (URI). It looks like:
-   postgresql://postgres.YOUR_PROJECT:YOUR_PASSWORD@aws-0-region.pooler.supabase.com:6543/postgres
-   THIS IS YOUR OFFICIAL DATABASE_URL — keep it safe.
+## Optional scheduled receipt cleanup
 
-   (If you prefer Railway's own Postgres, create a "PostgreSQL" plugin in your
-    Railway project and copy its DATABASE_URL instead.)
+Automatic receipt cleanup is not an in-process worker. If you want it, configure a Coolify scheduled task to POST to `/api/tickets/cleanup` with `Authorization: Bearer <RECEIPT_CLEANUP_SECRET>` and set the same long random secret in the app environment. Ensure the scheduler receives the secret securely and that its logs do not expose it. Test with a suitably isolated database and review retention first. The admin manual cleanup is separate. Check the task response and application logs; cleanup failures return an error rather than a misleading zero count.
 
-════════════════════════════════════════
-STEP 3 — DEPLOY TO RAILWAY (5 minutes)
-════════════════════════════════════════
-1. Go to https://railway.app → New Project → Deploy from GitHub → import "fana-cafe".
-2. Before (or right after) deploying, open the service's "Variables" and add ALL THREE:
+## After deploying
 
-   DATABASE_URL  =  <paste your Supabase/Postgres connection string from Step 2>
-   ADMIN_PASSWORD = <choose a STRONG secret password, e.g. Fana#Owner2026>
-   SESSION_SECRET = <a long random string, e.g. run:  openssl rand -base64 32>
-
-   ⚠️ ALL THREE ARE REQUIRED IN PRODUCTION.
-      - DATABASE_URL  → where your data lives.
-      - ADMIN_PASSWORD → your admin login (used the FIRST time you sign in).
-      - SESSION_SECRET → signs the admin/staff login cookies. If this is missing,
-        the admin and staff logins are refused (on purpose, for security).
-
-3. Deploy. Wait ~2 minutes.
-
-4. ⭐ IMPORTANT — One-time database setup (do it IN THIS ORDER):
-   a. Open  https://<your-railway-app>.up.railway.app/admin
-   b. Log in with the ADMIN_PASSWORD you set above.
-   c. THEN open this URL once (while logged in):
-        https://<your-railway-app>.up.railway.app/api/setup
-      It replies with JSON saying "Database is fully initialized".
-      This seeds the default menu, categories, staff accounts, and tables.
-
-   (The setup/seed endpoints are admin-only, so you must log in first — this is
-    intentional, so strangers on the internet cannot initialize or reset your data.)
-
-🎉 Your OFFICIAL website is now live at:
-   https://<your-railway-app>.up.railway.app
-
-✅ No localhost needed ever again.
-✅ Tables auto-create & auto-repair on every request (self-healing schema).
-✅ Orders & reviews save into the cloud database.
-✅ Admin dashboard: /admin (log in with ADMIN_PASSWORD; changeable in Settings tab).
-✅ Customers never see raw errors — just a friendly "call us" message.
-
-════════════════════════════════════════
-STEP 4 — CONNECT YOUR OWN DOMAIN (fanacafe.com.et)
-════════════════════════════════════════
-1. Buy "fanacafe.com.et" from Namecheap, GoDaddy, or any registrar.
-2. In Railway → your service → Settings → Networking → "Custom Domain" → add "fanacafe.com.et".
-3. Railway shows the DNS records (CNAME + verification). Copy them into your
-   registrar's DNS page.
-4. Wait 5–30 minutes → https://fanacafe.com.et is LIVE with free HTTPS.
-
-   Then also set  NEXT_PUBLIC_SITE_URL = https://fanacafe.com.et  so the sitemap
-   and robots.txt use your real domain.
-
-════════════════════════════════════════
-HOW THE CAFE RUNS IT DAILY (owner manual)
-════════════════════════════════════════
-• Site manager opens  https://fanacafe.com.et/admin  on any phone/computer.
-  Password = the ADMIN_PASSWORD from Railway env (changeable in Settings tab).
-• Edit menu / prices / photos (upload from phone!) → Menu & Food Photos tab.
-• Edit hero background → Website Copy & Hero Photo tab.
-• Edit gallery photos → Gallery Manager tab.
-• New orders & table reservations ring a DESKTOP POPUP alert in the admin tab.
-• Google Maps info already filled: 2Q7Q+W2, 0911 065 022, 22 Square Town Square Bldg.
-• Old receipt photos are cleared automatically every 24h (30+ days old) to save
-  database space — no action needed.
-
-════════════════════════════════════════
-ENGLISH ⇄ አማርኛ LANGUAGE SYSTEM (how it works now)
-════════════════════════════════════════
-The 🌐 floating button switches the ENTIRE site instantly:
-• All buttons, labels and messages → built-in dictionaries (instant, offline).
-• Menu items, categories, announcements and texts YOU add later → translated
-  automatically by Google Translate, but safely:
-   - Google's engine runs on YOUR SERVER (/api/translate), never in the guest's
-     browser. That means: NO Google banner popping over the menu, and the
-     ordering system can never crash because of translation.
-   - Every translated string is cached in the database (table "translations"),
-     so each item is translated once — repeat loads are instant.
-   - Orders, receipts and kitchen tickets always keep the original English
-     item names, so staff never see mixed/broken text.
-• Optional env var (only if your server blocks Google): TRANSLATE_API_BASE
-  (default https://translate.googleapis.com) — point it at a proxy if needed.
-
-════════════════════════════════════════
-WHY IT BROKE ON YOUR LAPTOP (and never will again)
-════════════════════════════════════════
-- Localhost needed a local PostgreSQL; cloud uses Supabase/Railway Postgres instead (always online).
-- Old downloaded files mixed with new code; Railway always builds fresh from GitHub.
-- Cookie showed the admin dashboard at "/"; now "/" is ALWAYS the public site.
-- Raw SQL errors shown to customers; now replaced with friendly phone-number messages.
+Check Coolify build and application logs, HTTPS, database connectivity, app health and the workflows above. `/api/setup` is an authenticated, **mutating** initialization/seed and smoke-test route, not a harmless health check; use it only when its effects are appropriate and after a backup. Keep the backup and a tested rollback plan. Changes to the website and device firmware have independent deployment steps.

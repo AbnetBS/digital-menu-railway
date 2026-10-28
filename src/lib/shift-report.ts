@@ -227,7 +227,7 @@ const clean = (s: string | null | undefined) => String(s || "").trim();
  * trail, where the admin order history already badges it.
  */
 export const PRINT_MARKER = "cashier print";
-export const isPrintMarker = (name: string | null | undefined) => /^cashier print$/i.test(clean(name));
+export const isPrintMarker = (name: string | null | undefined) => /^cashier (print|delivery)$/i.test(clean(name));
 
 export function shiftOf(at: Stamp, splitHour = DEFAULT_SHIFT_SPLIT_HOUR): ShiftName {
   const d = at instanceof Date ? at : new Date(String(at));

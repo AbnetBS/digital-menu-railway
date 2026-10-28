@@ -437,6 +437,24 @@ export const payrollHolidays = pgTable("payroll_holidays", {
 });
 
 /**
+ * "DON'T GIVE" OVERTIME (owner, 2026-10-28): "the last remove button make it
+ * dont give so if that person is accedently given that ot wrongly they can
+ * make it not to deduct". The overtime row itself stays in the history (the
+ * owner wants to see who was given what); this one small row says that this
+ * person's overtime of this kind on this day must NOT be added to the salary.
+ * It works for measured overtime too, where there is no typed row to delete.
+ */
+export const attendanceOtExclusions = pgTable("attendance_ot_exclusions", {
+  id: serial("id").primaryKey(),
+  memberId: integer("member_id").notNull(),
+  date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD in Africa/Addis_Ababa
+  type: varchar("type", { length: 20 }).notNull(), // holiday | free_week | shift
+  authorizedBy: varchar("authorized_by", { length: 100 }),
+  reason: varchar("reason", { length: 300 }),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+/**
  * WHO HAS BEEN PAID (owner, Oct 2026: the Actions column becomes one button,
  * "when the person is paid the button will be right icon with green"). One row
  * per person per payroll month; deleting it is the honest way to take the

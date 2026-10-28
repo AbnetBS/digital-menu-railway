@@ -1,7 +1,7 @@
 /**
  * THE ETHIOPIAN WALL CLOCK (owner, Sept 2026).
  *
- * The server runs on Railway (UTC), but the cafe runs on Ethiopian time
+ * The server may run in UTC, but the cafe runs on Ethiopian time
  * (EAT, UTC+3 — no daylight saving, ever). Every "today", "yesterday" and
  * "which hour sold most" in the reports must follow the clock on the office
  * PC, not the server's: at 1am in Addis the server still thinks it is

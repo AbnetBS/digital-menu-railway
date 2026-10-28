@@ -1274,6 +1274,13 @@ export async function PUT(request: Request) {
       // (printedBy) and in the audit trail (the ticket_printed event below).
       // A held guest addition is skipped on purpose: the crews never received
       // it, so the receipt can not have served it. Re-prints repeat safely.
+      // Buna has no Done button. Delivery is an alternative completion event;
+      // already-done or held lines are never touched or deducted twice.
+      if (rows[0] && body.status === "closed") {
+        const deliveredAt = new Date();
+        await tx.update(ticketItems).set({ stationStatus: "done", stationStatusBy: "cashier delivery", stationStatusAt: deliveredAt, stationDoneBy: "cashier delivery", stationDoneAt: deliveredAt })
+          .where(and(eq(ticketItems.ticketId, rows[0].id), eq(ticketItems.removed, false), eq(ticketItems.stationName, "buna"), sql`COALESCE(${ticketItems.released}, true) = true`, sql`COALESCE(${ticketItems.stationStatus}, '') <> 'done'`));
+      }
       if (rows[0] && body.status === "printed") {
         const finishedAt = new Date();
         await tx

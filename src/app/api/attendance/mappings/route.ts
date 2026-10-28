@@ -23,7 +23,11 @@ import { MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
  * too, and ATTENDANCE_DEVICE_TOKEN locks the door when the owner sets it.
  */
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!deviceAllowed(request)) {
+    const auth = await requireAdmin();
+    if (!auth.ok) return auth.response;
+  }
   await ensureTablesExist();
 
   try {

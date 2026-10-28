@@ -40,11 +40,11 @@
  *      the one-hour repeat rule are ALL counted on that moment, while
  *      `updated_at` keeps the arrival - and the note says both times, so a
  *      back-dated scan is never a secret.
- *   6. Kept scans are delivered oldest first, a refused one is dropped, and one
- *      that still cannot reach the website stays in the queue.
+ *   6. Kept scans are delivered oldest first. A non-200 response pauses the
+ *      queue and retains the scan for retry or investigation.
  *
  * The rules are imported from the real module (src/lib/attendance.ts) and the
- * device behaviour is proven by the compiled host test.
+ * device behavior is checked by static guards; physical firmware testing is required.
  *
  * Run with: npx tsx scripts/verify-offline-scan-time.ts
  */
@@ -264,6 +264,9 @@ pass(
   firmware.includes("syncOfflineQueue()") && firmware.includes('postDoc["scannedAt"]') &&
     hostTest.includes("former native harness")
 );
+pass("offline failures retain ordering and preserve the original queue", firmware.includes('if (blocked) { remaining += line + "\\n"; continue; }') && firmware.includes('LittleFS.rename("/queue.tmp", "/queue.json")') && firmware.includes('if (LittleFS.exists("/queue.json"))'));
+pass("failed filesystem writes are not presented as saved scans", firmware.includes('LittleFS.begin(false)') && firmware.includes('SCAN NOT SAVED') && firmware.includes('const size_t written = f.println(json)'));
+pass("auth and rate-limit failures are retried rather than discarded", firmware.includes('httpCode != 401 && httpCode != 403 && httpCode != 408 && httpCode != 429'));
 pass(
   "the README says a kept scan carries its own time, and what happens without NTP",
   deviceReadme.includes("**A kept scan carries its own time.**") &&

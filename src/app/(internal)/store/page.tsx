@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { BASE_UNIT, UNITS, toBase, type Dimension } from '@/lib/store/units';
 import { compressImage } from '@/lib/image-utils';
+import StoreExamples from '@/components/rms/StoreExamples';
 
 type Item = {
   id: number;
@@ -177,6 +178,16 @@ export default function StorePage() {
   const [tab, setTab] = useState('stock'),
     [search, setSearch] = useState(''),
     [busy, setBusy] = useState(false);
+  const [examplesHidden, setExamplesHidden] = useState(false);
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem('fana-store-hide-examples') === '1') {
+        void Promise.resolve().then(() => setExamplesHidden(true));
+      }
+    } catch {
+      /* Examples can still be dismissed for this visit. */
+    }
+  }, []);
   const [newOpen, setNewOpen] = useState(false),
     [name, setName] = useState(''),
     [dimension, setDimension] = useState<Dimension>('volume'),
@@ -691,6 +702,21 @@ export default function StorePage() {
                 </button>
               )}
             </div>
+            {data.who.manager && data.items.length === 0 && !examplesHidden && (
+              <StoreExamples
+                onDismiss={() => {
+                  setExamplesHidden(true);
+                  try {
+                    window.localStorage.setItem(
+                      'fana-store-hide-examples',
+                      '1',
+                    );
+                  } catch {
+                    /* Keep hidden for this visit. */
+                  }
+                }}
+              />
+            )}
             {newOpen && data.who.manager && (
               <form
                 className="mb-5 grid gap-4 rounded-2xl border border-stone-200 bg-white p-5 md:grid-cols-3"

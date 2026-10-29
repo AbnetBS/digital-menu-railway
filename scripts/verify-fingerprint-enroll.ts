@@ -58,7 +58,9 @@ check("the last attempt takes both captures from one steady press",firmware.incl
 check("stuck retries are capped so they cannot block later jobs",firmware.includes("#define MAPPING_MAX_TRIES")&&firmware.includes("#define FAILURE_REPORT_MAX_TRIES"));
 check("a confirmed mapping is written into the offline name cache",firmware.includes("bool saveMappingCache()")&&firmware.includes("saveMappingCache();"));
 check("the saved name list is enough to enroll when the link is weak",firmware.includes("if (!mappingListKnown) {")&&firmware.includes("if (loadMappingsFromServer(budget)) return true;"));
-check("the first answer on screen says where the scan is, not please wait",firmware.includes('case ScanFeedback::SENDING: showLines(name, "SAVED ON DEVICE", when, "Sending to website");'));
+check("the first answer on screen says where the scan is, not please wait",firmware.includes('case ScanFeedback::SENDING: showLines(name, "SENDING TO WEBSITE", when, "")')&&firmware.includes('case ScanFeedback::SAVED: showLines(name, "SAVED OFFLINE", when, "Queued - will send")'));
+check("a warning about a placement never stops the scanner",firmware.includes('scanFeedback.notice(title.c_str(), line2.c_str(), line3.c_str(), millis(), WARNING_SHOW_MS)')&&!/void showSensorWarning[\s\S]{0,400}delay\(WARNING_SHOW_MS\)/.test(firmware)&&firmware.includes('"Door keeps scanning"'));
+check("the reader light is re-asserted every second while the door is idle",firmware.includes("#define READER_LAMP_IDLE_MS     1000UL"));
 check("the door says the scan is kept while it is offline",firmware.includes('"No wifi - scans safe"')&&firmware.includes('s - saved"'));
 check("a dark reader is asked for its light two different ways",adapter.includes("FINGERPRINT_AURALEDCONFIG")&&adapter.includes("FINGERPRINT_LED_BLUE")&&adapter.includes("bool requestLightOn(uint32_t timeoutMs = 1200)"));
 check("a reader that sees nothing is re-synchronized inside the placement window",firmware.includes("#define ENROLL_RESYNC_MS")&&firmware.includes("finger.handshake(1200)")&&adapter.includes("bool handshake(uint32_t timeoutMs = 2000)"));

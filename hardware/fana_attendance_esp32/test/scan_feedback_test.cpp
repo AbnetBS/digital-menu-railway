@@ -57,6 +57,31 @@ int main() {
   feedback.delivered(already, 12000);
   assert(feedback.phase() == ScanFeedback::ALREADY); // not a new IN or OUT
 
+  /* A warning about a placement is a STATE, not a pause: it expires on its own
+   * so the door keeps scanning and a finger placed at any moment is read. */
+  feedback.notice("NOT REGISTERED", "Finger not enrolled", "Ask admin to add it", 20000U, 2500U);
+  assert(feedback.phase() == ScanFeedback::NOTICE);
+  assert(std::strcmp(feedback.noticeTitle(), "NOT REGISTERED") == 0);
+  assert(std::strcmp(feedback.noticeLine2(), "Finger not enrolled") == 0);
+  assert(std::strcmp(feedback.noticeLine3(), "Ask admin to add it") == 0);
+  assert(!feedback.tick(22499));
+  assert(feedback.tick(22500) && feedback.phase() == ScanFeedback::IDLE);
+  // An older scan's receipt never cuts a warning short.
+  feedback.notice("NOT REGISTERED", "Finger not enrolled", "Ask admin to add it", 50000U, 2500U);
+  assert(!feedback.mayShow(abebe, 52000U));
+  assert(feedback.tick(52000U) == false);
+  assert(feedback.phase() == ScanFeedback::NOTICE);
+  assert(feedback.tick(52500U) && feedback.phase() == ScanFeedback::IDLE);
+  // A real scan takes the screen over from a warning at once.
+  feedback.notice("IMAGE UNCLEAR", "Press flat and still", "Clean the sensor", 30000U, 2500U);
+  feedback.saved(abebe, true, 30100U);
+  assert(feedback.phase() == ScanFeedback::SENDING);
+  // Over-long warning text is cut, never overruns the 20-character LCD line.
+  feedback.notice("A VERY LONG WARNING TITLE INDEED", "x", "y", 40000U, 2500U);
+  assert(std::strlen(feedback.noticeTitle()) == 20);
+  assert(!feedback.tick(41000U));
+  assert(feedback.tick(42500U) && feedback.phase() == ScanFeedback::IDLE);
+
   // millis wrap must not leave the message stuck or lose the next status.
   feedback.saved(abebe, true, UINT32_MAX - 1000U);
   assert(feedback.tick(800U) && feedback.phase() == ScanFeedback::SAVED);
@@ -71,5 +96,5 @@ int main() {
   assert(!receiptMatches(id, 1790000000U, 55, 7, id, 1790000000U, 55, 7, "clock_in", false));
   assert(!receiptMatches(id, 1790000000U, 55, 7, id, 1790000000U, 55, 7, "unexpected", true));
   assert(!receiptMatches(id, 1790000000U, 55, 0, id, 1790000000U, 55, 0, "clock_in", true));
-  std::cout << "Scan feedback tests passed: online, offline, delayed receipts, review, wrap and false-200 rejection\n";
+  std::cout << "Scan feedback tests passed: online, offline, delayed receipts, review, non-blocking warnings, wrap and false-200 rejection\n";
 }

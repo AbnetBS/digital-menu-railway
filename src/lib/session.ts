@@ -181,3 +181,15 @@ export async function requireStaffOrAdmin(): Promise<
   if (admin) return { ok: true, session: { kind: "admin" } };
   return { ok: false, response: unauthorized() };
 }
+
+/** Refresh long-lived store/station cookies without changing iat (PIN resets still revoke them). */
+export function refreshStoreSession(response: NextResponse, session: StaffSession | AdminSession | null): NextResponse {
+  const secret = getSessionSecret();
+  if (!session || !secret) return response;
+  if (session.kind === 'staff' && !['store_manager', 'stock_accepter', 'kitchen', 'barista', 'juice'].includes(session.role)) return response;
+  response.cookies.set(session.kind === 'admin' ? ADMIN_COOKIE : STAFF_COOKIE, signToken(session, secret), {
+    httpOnly: true, path: '/', maxAge: 60 * 60 * 24 * 400,
+    sameSite: 'lax', secure: process.env.NODE_ENV === 'production',
+  });
+  return response;
+}

@@ -428,15 +428,29 @@ export default function StationApp({ station }: { station: Station }) {
   }, [lingeringCount]);
 
   useEffect(() => {
-    const saved = sessionStorage.getItem(`fana_${station}`);
+    const saved = sessionStorage.getItem(`fana_${station}`) || localStorage.getItem(`fana_${station}`);
     // A restored crew session means someone is on shift: alerts default to ON.
     const on = localStorage.getItem(`fana_alerts_${station}`) === "1" || !!saved;
     setAlertsOn(on);
     alertsOnRef.current = on;
     if (on) localStorage.setItem(`fana_alerts_${station}`, "1");
     if (saved) {
-      const s = JSON.parse(saved);
-      setStaffName(s.name);
+      try {
+        const s = JSON.parse(saved);
+        setStaffName(s.name);
+        localStorage.setItem(`fana_${station}`, saved);
+      } catch { /* A malformed local cache is not authentication. */ }
+    } else {
+      // A new tab has no sessionStorage. Restore the signed, database-checked
+      // station session instead of asking the same person to log in again.
+      fetch("/api/staff/session", { cache: "no-store" })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          if (d?.staff?.role === station) {
+            localStorage.setItem(`fana_${station}`, JSON.stringify(d.staff));
+            setStaffName(d.staff.name);
+          }
+        }).catch(() => {});
     }
     fetch("/api/staff?public=1")
       .then((r) => r.json())
@@ -466,6 +480,7 @@ export default function StationApp({ station }: { station: Station }) {
     if (r.ok && d?.success) {
       setStaffName(d.staff.name);
       sessionStorage.setItem(`fana_${station}`, JSON.stringify(d.staff));
+      localStorage.setItem(`fana_${station}`, JSON.stringify(d.staff));
       // The login tap is the gesture browsers need to unlock the loud alarm.
       unlockAudio();
       localStorage.setItem(`fana_alerts_${station}`, "1");
@@ -478,6 +493,7 @@ export default function StationApp({ station }: { station: Station }) {
 
   const logout = () => {
     sessionStorage.removeItem(`fana_${station}`);
+    localStorage.removeItem(`fana_${station}`);
     fetch("/api/staff/login", { method: "DELETE" }).catch(() => {});
     setStaffName("");
     setPin("");
@@ -492,6 +508,7 @@ export default function StationApp({ station }: { station: Station }) {
   const expireSession = () => {
     try {
       sessionStorage.removeItem(`fana_${station}`);
+      localStorage.removeItem(`fana_${station}`);
     } catch {}
     setPin("");
     setLoginError(tNow("Your session ended. Log in again to keep receiving orders."));

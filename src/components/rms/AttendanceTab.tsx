@@ -35,6 +35,7 @@ import { useStaffT } from "@/lib/staff-i18n";
 import FreeScheduleDialog from "@/components/rms/FreeScheduleDialog";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
 import { currentEthiopianPeriod } from "@/lib/payroll";
+import { etDayKeyDaysAgo } from "@/lib/timezone";
 
 /**
  * ADMIN -> ATTENDANCE (owner, Oct 2026).
@@ -241,18 +242,18 @@ export default function AttendanceTab() {
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [todayLogs, setTodayLogs] = useState<any>(null);
   const [sheetData, setSheetData] = useState<any>(null);
+  const [sheetRefreshError, setSheetRefreshError] = useState("");
+  const sheetRefreshRef = useRef<((resetPage: boolean) => void) | null>(null);
   // Which printed page of the sheet is on screen (0-based). One page is 7 days
   // wide; the page numbers below the sheet appear only when there is more than
   // one, and printing emits every page whether it is on screen or not.
   const [sheetPage, setSheetPage] = useState(0);
 
   // Sheet range: up to a month, at most SHEET_RANGE_MAX_DAYS (30) days.
-  const [fromDate, setFromDate] = useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 6);
-    return d.toISOString().slice(0, 10);
-  });
-  const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
+  // The cafe's day is Addis Ababa time, including the 00:00-03:00 hours
+  // when UTC still has yesterday's date.
+  const [fromDate, setFromDate] = useState(() => etDayKeyDaysAgo(6) || "");
+  const [toDate, setToDate] = useState(() => etDayKeyDaysAgo(0) || "");
 
   // Leaderboard: its own range (a month by default) and its own role filter.
   const [leaderboard, setLeaderboard] = useState<Leaderboard | null>(null);
@@ -372,22 +373,11 @@ export default function AttendanceTab() {
     }
   }, []);
 
-  const loadSheet = useCallback(async () => {
-    try {
-      const r = await fetch(`/api/attendance/logs?from=${fromDate}&to=${toDate}`);
-      if (r.ok) {
-        setSheetData(await r.json());
-        // A fresh range starts on its first page: the page that was open may
-        // not even exist any more (30 days -> 5 pages, 3 days -> 1 page).
-        setSheetPage(0);
-      } else {
-        const d = await r.json().catch(() => ({}));
-        say(d.error || "Could not load the sheet", true);
-      }
-    } catch {
-      say("Network error. Try again.", true);
-    }
-  }, [fromDate, toDate]);
+  // The live effect below owns the request and coalesces events; a manual
+  // reload uses the same path so two responses cannot overwrite each other.
+  const loadSheet = useCallback(() => {
+    sheetRefreshRef.current?.(true);
+  }, []);
 
   const loadLeaderboard = useCallback(async () => {
     setLeaderLoading(true);
@@ -656,9 +646,68 @@ export default function AttendanceTab() {
     };
   }, [activeView, loadToday]);
 
+  // The paper sheet used to load only when opened or when Load Sheet was
+  // pressed. A scan could reach the database while the visible sheet stayed
+  // unchanged. Refresh on attendance events AND periodically: SSE is in-process
+  // and an event may reach another server instance or be missed during reconnect.
   useEffect(() => {
-    if (activeView === "sheet") loadSheet();
-  }, [activeView, loadSheet]);
+    if (activeView !== "sheet") return;
+    let alive = true;
+    let running = false;
+    let pending = false;
+    let resetPending = false;
+    let controller: AbortController | null = null;
+
+    const refresh = (resetPage = false) => {
+      if (!alive) return;
+      pending = true;
+      resetPending ||= resetPage;
+      if (running) return;
+      pending = false;
+      const reset = resetPending;
+      resetPending = false;
+      running = true;
+      controller = new AbortController();
+      const signal = controller.signal;
+      void (async () => {
+        try {
+          const r = await fetch(`/api/attendance/logs?from=${fromDate}&to=${toDate}`, { cache: "no-store", signal });
+          if (!r.ok) throw new Error("Could not refresh the attendance sheet");
+          const data = await r.json();
+          if (!alive) return;
+          setSheetData(data);
+          setSheetRefreshError("");
+          if (reset) setSheetPage(0);
+        } catch {
+          if (alive && !signal.aborted) setSheetRefreshError("Could not refresh the sheet. Retrying automatically.");
+        } finally {
+          running = false;
+          if (alive && pending) refresh();
+        }
+      })();
+    };
+
+    sheetRefreshRef.current = refresh;
+    refresh(true);
+    const es = typeof EventSource !== "undefined" ? new EventSource("/api/realtime?channel=attendance") : null;
+    if (es) {
+      es.onmessage = () => refresh();
+      es.onopen = () => refresh(); // catch anything missed while reconnecting
+    }
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "hidden") refresh();
+    }, 8000);
+    const onVisible = () => { if (document.visibilityState !== "hidden") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      controller?.abort();
+      es?.close();
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      if (sheetRefreshRef.current === refresh) sheetRefreshRef.current = null;
+    };
+  }, [activeView, fromDate, toDate]);
 
   useEffect(() => {
     if (activeView === "leaderboard") loadLeaderboard();
@@ -1720,11 +1769,8 @@ export default function AttendanceTab() {
                 <button
                   key={preset.days}
                   onClick={() => {
-                    const to = new Date();
-                    const from = new Date();
-                    from.setDate(from.getDate() - (preset.days - 1));
-                    setFromDate(from.toISOString().slice(0, 10));
-                    setToDate(to.toISOString().slice(0, 10));
+                    setFromDate(etDayKeyDaysAgo(preset.days - 1) || "");
+                    setToDate(etDayKeyDaysAgo(0) || "");
                   }}
                   className="bg-[#3D2314] hover:bg-white/10 border border-stone-700 text-stone-300 font-bold text-[11px] px-3 py-2.5 rounded-xl"
                 >
@@ -1732,6 +1778,10 @@ export default function AttendanceTab() {
                 </button>
               ))}
             </div>
+            <p className="w-full text-[11px] text-emerald-300">
+              The sheet refreshes automatically when scans reach the website.
+            </p>
+            {sheetRefreshError && <p role="status" className="w-full text-[11px] text-amber-300">{sheetRefreshError}</p>}
             <p className="text-[11px] text-stone-400">
               One box per person per day, up to {SHEET_RANGE_MAX_DAYS} days: {SHEET_MAX_DAYS} days per page. The page
               numbers below the sheet appear only when the range is wider than one page, and Print Hard Copy prints

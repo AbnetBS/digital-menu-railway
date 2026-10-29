@@ -108,9 +108,12 @@ export async function PUT(request: Request) {
       .where(eq(menuItems.id, body.id))
       .returning();
 
-    // If the item's photo was replaced/removed, drop the old cdn_images row
-    // (only if nothing else still references it).
-    await deleteOrphanedCdnImages([cur.imageUrl]);
+    // Only a changed photo can become orphaned. Avoid five reference-table
+    // queries on ordinary price/name/availability edits (including a potentially
+    // large tickets scan) while preserving cleanup when a photo really changes.
+    if (cur.imageUrl !== updated[0]?.imageUrl) {
+      await deleteOrphanedCdnImages([cur.imageUrl]);
+    }
 
     return NextResponse.json(updated[0]);
   } catch (error) {

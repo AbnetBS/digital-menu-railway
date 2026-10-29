@@ -25,6 +25,10 @@ import { shiftOtMinutesFor, workedShiftOtMinutes, type OvertimeSource, type Over
  */
 
 export type OvertimeRow = typeof attendanceOvertime.$inferSelect;
+// A Drizzle transaction has the same query methods needed by this module.
+// The clock route supplies one so attendance, overtime and its receipt commit
+// (or roll back) as a single unit.
+type OvertimeDb = Pick<typeof db, "select" | "update" | "insert">;
 
 export type SaveOvertimeInput = {
   memberId: number;
@@ -47,8 +51,8 @@ async function rowsOfSameKind(key: {
   memberId: number;
   date: string;
   type: OvertimeType;
-}): Promise<OvertimeRow[]> {
-  return db
+}, client: OvertimeDb = db): Promise<OvertimeRow[]> {
+  return client
     .select()
     .from(attendanceOvertime)
     .where(
@@ -133,14 +137,14 @@ export async function recordShiftOvertimeAtClockOut(args: {
   shift: RoleShift | null | undefined;
   clockInAt?: Date | null;
   clockOutAt: Date;
-}): Promise<number> {
+}, client: OvertimeDb = db): Promise<number> {
   const minutes = args.clockInAt
     ? workedShiftOtMinutes(args.shift, args.clockInAt, args.clockOutAt)
     : shiftOtMinutesFor(args.shift, args.clockOutAt);
   if (!args.memberId || minutes <= 0) return 0;
 
   const shiftLabel = args.shift?.label ?? null;
-  const existing = await rowsOfSameKind({ memberId: args.memberId, date: args.date, type: "shift" });
+  const existing = await rowsOfSameKind({ memberId: args.memberId, date: args.date, type: "shift" }, client);
 
   // Somebody typed this day already? His number stands: a supervisor at the
   // tablet knows more than the stopwatch does.
@@ -150,14 +154,14 @@ export async function recordShiftOvertimeAtClockOut(args: {
   // Ourselves from a moment ago (the same OUT measured again): restate it.
   const mine = existing.find((r) => r.source === "auto" && (r.shiftLabel ?? null) === shiftLabel);
   if (mine) {
-    await db
+    await client
       .update(attendanceOvertime)
       .set({ minutes, logId: args.logId, enteredBy: "clock-out scan" })
       .where(eq(attendanceOvertime.id, mine.id));
     return minutes;
   }
 
-  await db.insert(attendanceOvertime).values({
+  await client.insert(attendanceOvertime).values({
     memberId: args.memberId,
     date: args.date,
     type: "shift",

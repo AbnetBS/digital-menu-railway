@@ -551,6 +551,18 @@ export const attendanceFreeSchedules = pgTable("attendance_free_schedules", {
   createdAt: timestamp("created_at").defaultNow(),
 });
 
+// Durable receipts for device scans. The receipt and its attendance/overtime
+// changes are committed together, so retries after a lost HTTP response are safe.
+export const attendanceScanEvents = pgTable("attendance_scan_events", {
+  eventId: varchar("event_id", { length: 32 }).primaryKey(),
+  fingerprintId: integer("fingerprint_id").notNull(),
+  capturedMemberId: integer("captured_member_id"),
+  deviceId: varchar("device_id", { length: 50 }).notNull(),
+  scannedAt: timestamp("scanned_at").notNull(),
+  response: jsonb("response").$type<Record<string, unknown>>().notNull(),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+});
+
 export const attendanceLogs = pgTable("attendance_logs", {
   id: serial("id").primaryKey(),
   staffId: integer("staff_id"), // legacy rows only: FK to staff_users.id

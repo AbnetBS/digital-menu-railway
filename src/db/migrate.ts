@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-const SCHEMA_VERSION = "2026-10-28-2";
+export const SCHEMA_VERSION = "2026-10-29-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -342,6 +342,18 @@ const RMS_CREATES: Array<[string, string]> = [
       finger_name varchar(50) DEFAULT 'Right Index',
       enrolled_at timestamp DEFAULT now(),
       enrolled_by varchar(100)
+    )`,
+  ],
+  [
+    "attendance_scan_events",
+    `CREATE TABLE IF NOT EXISTS attendance_scan_events (
+      event_id varchar(32) PRIMARY KEY,
+      fingerprint_id integer NOT NULL,
+      captured_member_id integer,
+      device_id varchar(50) NOT NULL,
+      scanned_at timestamp NOT NULL,
+      response jsonb NOT NULL,
+      received_at timestamp NOT NULL DEFAULT now()
     )`,
   ],
   [
@@ -992,21 +1004,21 @@ async function runFullMigrate(force: boolean) {
   // If the DB already carries the CURRENT schema version (it does 99.99% of
   // the time), skip the entire 100+ CREATE/ALTER storm. An older DB (created
   // by a previous release) falls through and self-heals below.
-  returnOnWarm: {
-    if (!force) {
-      try {
-        const probe = await db.execute(
-          sql`SELECT value FROM site_settings WHERE key = 'schema_version' LIMIT 1`
-        );
-        const rows = (probe as unknown as { rows?: Array<{ value: string }> }).rows ?? [];
-        if (rows.length > 0 && rows[0].value === SCHEMA_VERSION) {
-          globalForMigrate.__fanaMigrateDone = true;
-          break returnOnWarm;
-        }
-        // missing row OR stale version → run the full migration below
-      } catch {
-        // site_settings missing / DB broken → fall through to full migration below
+  if (!force) {
+    try {
+      const probe = await db.execute(
+        sql`SELECT value FROM site_settings WHERE key = 'schema_version' LIMIT 1`
+      );
+      const rows = (probe as unknown as { rows?: Array<{ value: string }> }).rows ?? [];
+      if (rows.length > 0 && rows[0].value === SCHEMA_VERSION) {
+        globalForMigrate.__fanaMigrateDone = true;
+        // Leave the function, not just a labelled block: otherwise every cold
+        // start still runs all the ALTERs and holds locks on live tables.
+        return { success: true, errors: [] as string[] };
       }
+      // Missing or older version: the full migration is still necessary.
+    } catch {
+      // site_settings missing / DB broken → fall through to full migration below
     }
   }
 

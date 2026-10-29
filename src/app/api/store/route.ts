@@ -13,39 +13,22 @@ import {
 import { hashSecret } from '@/lib/auth';
 import { currentEthiopianPeriod } from '@/lib/payroll';
 import { ensureStoreSchema } from '@/lib/store/schema';
-import { isDimension, toBase, type Dimension } from '@/lib/store/units';
+import { isDimension, type Dimension } from '@/lib/store/units';
+import {
+  StoreUserError as UserError,
+  requiredId,
+  checkedAmount,
+  loadRequestItems,
+  validateRequestLines,
+  insertRequestLines,
+} from '@/lib/store/request-lines';
 import type { PoolClient } from 'pg';
 
 const STATIONS = ['kitchen', 'barista', 'buna', 'juice', 'cleaning'];
-class UserError extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-  ) {
-    super(message);
-  }
-}
-const requiredId = (v: unknown) => {
-  const n = Number(v);
-  if (!Number.isSafeInteger(n) || n <= 0) throw new UserError('Invalid ID');
-  return n;
-};
 const text = (v: unknown, max = 120) =>
   String(v ?? '')
     .trim()
     .slice(0, max);
-function checkedAmount(
-  value: unknown,
-  unit: unknown,
-  dimension: Dimension,
-  allowZero = false,
-) {
-  try {
-    return toBase(value, unit, dimension, allowZero);
-  } catch (e) {
-    throw new UserError(e instanceof Error ? e.message : 'Invalid amount');
-  }
-}
 async function identity() {
   const staff = await readStaffSession();
   if (
@@ -99,7 +82,7 @@ function managerOnly(who: Awaited<ReturnType<typeof identity>>) {
 }
 async function item(client: PoolClient, id: unknown, lock = false) {
   const r = await client.query(
-    `SELECT * FROM store_items WHERE id=$1 ${lock ? 'FOR UPDATE' : ''}`,
+    `SELECT id,name,dimension,balance,low_at FROM store_items WHERE id=$1 ${lock ? 'FOR UPDATE' : ''}`,
     [requiredId(id)],
   );
   if (!r.rows[0]) throw new UserError('Stock item not found', 404);
@@ -112,22 +95,7 @@ async function item(client: PoolClient, id: unknown, lock = false) {
   };
 }
 async function lines(client: PoolClient, raw: unknown) {
-  if (!Array.isArray(raw) || !raw.length || raw.length > 100)
-    throw new UserError('Add at least one item (maximum 100)');
-  const out: Array<{ id: number; amount: number }> = [];
-  for (const line of raw) {
-    const i = await item(client, line.itemId);
-    if (out.some((x) => x.id === i.id))
-      throw new UserError('Each item may appear only once');
-    const amount = checkedAmount(line.amount, line.unit, i.dimension);
-    if (amount > Number(i.balance))
-      throw new UserError(
-        `${i.name}: not enough in store. Available: ${i.balance} ${i.dimension === 'mass' ? 'g' : i.dimension === 'volume' ? 'ml' : 'pcs'}`,
-        409,
-      );
-    out.push({ id: i.id, amount });
-  }
-  return out;
+  return validateRequestLines(raw, await loadRequestItems(client, raw));
 }
 async function prepare() {
   const result = await ensureTablesExist();
@@ -135,6 +103,7 @@ async function prepare() {
   await ensureStoreSchema();
 }
 export async function GET() {
+  const started = performance.now();
   try {
     // Authenticate before initialising privileged schema.
     const sessionGuard = await requireStaffOrAdmin();
@@ -148,26 +117,32 @@ export async function GET() {
       throw new UserError('Store access required', 403);
     await prepare();
     const who = await identity();
-    const items = (await pool.query('SELECT * FROM store_items ORDER BY name'))
-      .rows;
-    const requests = (
-      await pool.query(
-        `SELECT r.*, COALESCE(json_agg(json_build_object('item_id',l.item_id,'name',i.name,'dimension',i.dimension,'amount',l.amount) ORDER BY i.name) FILTER (WHERE l.item_id IS NOT NULL),'[]') AS lines
+    // Store photos can be 1.5 MB each. Return a cacheable, authenticated URL
+    // instead of resending every inline photo on every refresh. Existing image
+    // data stays untouched in the database.
+    const itemsQuery = pool.query(`SELECT id,name,dimension,balance,low_at,created_at,
+      CASE WHEN image LIKE 'data:image/%' THEN '/api/store/images/' || id ELSE image END AS image
+      FROM store_items ORDER BY name`);
+    const requestsQuery = pool.query(
+      `SELECT r.*, COALESCE(json_agg(json_build_object('item_id',l.item_id,'name',i.name,'dimension',i.dimension,'amount',l.amount) ORDER BY i.name) FILTER (WHERE l.item_id IS NOT NULL),'[]') AS lines
       FROM store_requests r LEFT JOIN store_request_lines l ON l.request_id=r.id LEFT JOIN store_items i ON i.id=l.item_id
       WHERE ($1::boolean OR r.requester_id=$2) GROUP BY r.id ORDER BY r.created_at DESC`,
-        [who.manager, who.id],
-      )
-    ).rows;
-    if (!who.manager)
+      [who.manager, who.id],
+    );
+    if (!who.manager) {
+      const [items, requests] = await Promise.all([itemsQuery, requestsQuery]);
       return refreshStoreSession(
         NextResponse.json(
-          { who, items, requests },
-          { headers: { 'Cache-Control': 'no-store' } },
+          { who, items: items.rows, requests: requests.rows },
+          { headers: { 'Cache-Control': 'no-store', 'Server-Timing': `app;dur=${(performance.now() - started).toFixed(1)}` } },
         ),
         staffSession,
       );
-    const [balances, menu, recipes, accounts, members, breakages] =
+    }
+    const [items, requests, balances, menu, recipes, accounts, members, breakages] =
       await Promise.all([
+        itemsQuery,
+        requestsQuery,
         pool.query(
           'SELECT b.station,b.item_id,b.balance,i.name,i.dimension FROM store_station_balances b JOIN store_items i ON i.id=b.item_id ORDER BY b.station,i.name',
         ),
@@ -189,8 +164,8 @@ export async function GET() {
       NextResponse.json(
         {
           who,
-          items,
-          requests,
+          items: items.rows,
+          requests: requests.rows,
           balances: balances.rows,
           menu: menu.rows,
           recipes: recipes.rows,
@@ -198,7 +173,7 @@ export async function GET() {
           members: members.rows,
           breakages: breakages.rows,
         },
-        { headers: { 'Cache-Control': 'no-store' } },
+        { headers: { 'Cache-Control': 'no-store', 'Server-Timing': `app;dur=${(performance.now() - started).toFixed(1)}` } },
       ),
       who.admin ? await readAdminSession() : staffSession,
     );
@@ -207,6 +182,7 @@ export async function GET() {
   }
 }
 export async function POST(request: Request) {
+  const started = performance.now();
   try {
     const sessionGuard = await requireStaffOrAdmin();
     if (!sessionGuard.ok) return sessionGuard.response;
@@ -339,7 +315,7 @@ export async function POST(request: Request) {
                 409,
               );
             await client.query('COMMIT');
-            return NextResponse.json({ success: true });
+            return NextResponse.json({ success: true }, { headers: { 'Server-Timing': `app;dur=${(performance.now() - started).toFixed(1)}` } });
           }
         }
         await client.query(
@@ -499,19 +475,21 @@ export async function POST(request: Request) {
             group.push(line);
             grouped.set(station, group);
           }
+          const items = await loadRequestItems(client, body.lines);
           const totals = new Map<number, number>();
           const groups: Array<{
             station: string;
             list: Array<{ id: number; amount: number }>;
           }> = [];
           for (const [station, group] of grouped) {
-            const list = await lines(client, group);
+            const list = validateRequestLines(group, items);
             for (const l of list)
               totals.set(l.id, (totals.get(l.id) || 0) + l.amount);
             groups.push({ station, list });
           }
           for (const [id, amount] of totals) {
-            const i = await item(client, id);
+            // validateRequestLines already checked that this catalog entry exists.
+            const i = items.get(id)!;
             if (amount > Number(i.balance) + 0.0000001)
               throw new UserError(
                 `${i.name}: total requested across stations exceeds store stock`,
@@ -523,17 +501,15 @@ export async function POST(request: Request) {
             'INSERT INTO store_request_batches(idempotency_key,requester_id,payload_hash) VALUES($1,$2,$3)',
             [key, who.id, payloadHash],
           );
+          const entries: Array<{ requestId: number; id: number; amount: number }> = [];
           for (const group of groups) {
             const r = await client.query(
               'INSERT INTO store_requests(requester_id,requester_name,station) VALUES($1,$2,$3) RETURNING id',
               [who.id, who.name, group.station],
             );
-            for (const l of group.list)
-              await client.query(
-                'INSERT INTO store_request_lines(request_id,item_id,amount) VALUES($1,$2,$3)',
-                [r.rows[0].id, l.id, l.amount],
-              );
+            for (const l of group.list) entries.push({ requestId: r.rows[0].id, ...l });
           }
+          await insertRequestLines(client, entries);
         }
       } else if (action === 'request' || action === 'edit_request') {
         if (
@@ -594,11 +570,7 @@ export async function POST(request: Request) {
           id = r.rows[0].id;
         }
         const list = await lines(client, body.lines);
-        for (const l of list)
-          await client.query(
-            'INSERT INTO store_request_lines(request_id,item_id,amount) VALUES($1,$2,$3)',
-            [id, l.id, l.amount],
-          );
+        await insertRequestLines(client, list.map((l) => ({ requestId: id, ...l })));
       } else if (action === 'accept') {
         managerOnly(who);
         const id = requiredId(body.requestId);
@@ -745,12 +717,11 @@ export async function POST(request: Request) {
         );
       } else throw new UserError('Unknown action');
       await client.query('COMMIT');
-      if (
-        ['request', 'request_batch', 'edit_request', 'accept'].includes(action)
-      )
-        publish(CHANNELS.store);
+      // Every successful Store change can affect another open Store screen
+      // (catalog, balances, accounts, recipes or requests), not only requests.
+      publish(CHANNELS.store);
       if (newRequestCreated) void sendStoreRequestPush();
-      return NextResponse.json({ success: true });
+      return NextResponse.json({ success: true }, { headers: { 'Server-Timing': `app;dur=${(performance.now() - started).toFixed(1)}` } });
     } catch (e) {
       await client.query('ROLLBACK');
       throw e;

@@ -8,6 +8,7 @@ import {
 } from '@/lib/session';
 import { ensureStoreSchema } from '@/lib/store/schema';
 import { isDimension, toBase, type Dimension } from '@/lib/store/units';
+import { publish, CHANNELS } from '@/lib/realtime';
 
 const roles = ['kitchen', 'barista', 'juice'];
 async function session() {
@@ -64,7 +65,10 @@ export async function GET() {
     if (!who) throw new Invalid('Station session expired', 401);
     const [items, history] = await Promise.all([
       pool.query(
-        'SELECT i.id,i.name,i.dimension,i.image,COALESCE(b.balance,0) AS station_balance FROM store_items i LEFT JOIN store_station_balances b ON b.item_id=i.id AND b.station=$1 ORDER BY i.name',
+        `SELECT i.id,i.name,i.dimension,
+          CASE WHEN i.image LIKE 'data:image/%' THEN '/api/store/images/' || i.id ELSE i.image END AS image,
+          COALESCE(b.balance,0) AS station_balance
+         FROM store_items i LEFT JOIN store_station_balances b ON b.item_id=i.id AND b.station=$1 ORDER BY i.name`,
         [who.station],
       ),
       pool.query(
@@ -213,6 +217,7 @@ export async function POST(request: Request) {
         );
       } else throw new Invalid('Unknown action');
       await client.query('COMMIT');
+      publish(CHANNELS.store);
       return NextResponse.json({ success: true });
     } catch (e) {
       await client.query('ROLLBACK');

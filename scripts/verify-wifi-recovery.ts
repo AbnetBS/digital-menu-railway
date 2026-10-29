@@ -8,7 +8,7 @@
  * router". Both are the ESP32's link, not the website.
  *
  * This guard keeps the fixes in place: no modem sleep, full transmit power,
- * an escalation that always ends somewhere, an honest LCD, a safety-net poll
+ * background retry without a board reboot, an honest LCD, a safety-net poll
  * for fingerprint jobs, and the hardware advice that actually raises the
  * signal (the radio is 2.4 GHz only).
  */
@@ -31,17 +31,17 @@ const readme = read("hardware/fana_attendance_esp32/README.md");
 pass("modem sleep is off, so the radio answers at once", fw.includes("WiFi.setSleep(false)"));
 pass("the radio transmits at full power", fw.includes("WiFi.setTxPower(WIFI_POWER_19_5dBm)"));
 pass("the driver reconnects by itself", fw.includes("WiFi.setAutoReconnect(true)"));
-pass("the tuning is applied after the first connection", /applyWifiTuning\(\);\s*\n\s*showLines\("WiFi Connected!"/.test(fw));
+pass("the tuning is applied after the first connection", /if \(connected\) \{[\s\S]{0,120}applyWifiTuning\(\)/.test(fw));
 
 /* ── 2. the link heals in steps instead of waiting for a power cycle ─────── */
 
-pass("a dedicated watchdog runs every pass of loop()", fw.includes("void serviceWifi()") && fw.includes("  serviceWifi();\n  keepServerLinkAlive();"));
+pass("the separate network task services Wi-Fi while the scanner loop stays independent", fw.includes("void networkTask(void *)") && fw.includes("if (!portalActive) serviceWifi();") && fw.includes("keepServerLinkAlive();") && !/void loop\(\) \{[\s\S]*?\n\}/.exec(fw)?.[0].includes("serviceWifi()"));
 pass("it is tried often while the link is down", fw.includes("#define WIFI_RECONNECT_MS") && fw.includes("WiFi.reconnect();"));
 pass("after a while the radio itself is reset, not the whole board", fw.includes("WiFi.disconnect(true, false)") && fw.includes("WiFi.mode(WIFI_STA)") && fw.includes("wifiRadioResets++;"));
 pass("slow routers have 30 seconds to associate between radio resets", fw.includes("#define WIFI_RADIO_RETRY_MS     30000UL") && fw.includes("millis() - lastWifiRadioReset < WIFI_RADIO_RETRY_MS"));
 pass("the credentials are kept through that reset", fw.includes("resetting the radio (credentials kept)"));
-pass("a restart is only the last resort, after ten minutes", fw.includes("#define WIFI_RESTART_MS         600000UL") && fw.includes("WiFi has been down for 10 minutes: restarting the board"));
-pass("the escalation is ordered: reconnect, then radio reset, then restart", fw.indexOf("WiFi.reconnect();") < fw.indexOf("WiFi.disconnect(true, false)") && fw.indexOf("WiFi.disconnect(true, false)") < fw.indexOf("restarting the board"));
+pass("a Wi-Fi outage does not reboot the board and lose its clock", !fw.includes("WIFI_RESTART_MS") && !fw.includes("ESP.restart()"));
+pass("reconnect precedes repeating radio-only resets", fw.indexOf("WiFi.reconnect();") < fw.indexOf("WiFi.disconnect(true, false)") && fw.includes("WIFI_RADIO_RETRY_MS"));
 pass("the board no longer reboots just because the router is out at boot", !/if \(!connected\) \{\s*\n\s*Serial\.println\("Failed to connect WiFi"\);\s*\n\s*showLines\("WiFi Failed", "Restarting\.\.\.", "", ""\);\s*\n\s*delay\(3000\);\s*\n\s*ESP\.restart\(\);/.test(fw) && fw.includes("Still scanning"));
 
 /* ── 3. coming back repairs what the drop killed ─────────────────────────── */
@@ -54,7 +54,7 @@ pass("and never in the middle of an enrollment", fw.includes("!enrollingFromServ
 
 /* ── 4. the LCD tells the truth, including a live retry counter ──────────── */
 
-pass("the idle screen uses one honest line", fw.includes("lcdWriteRow(2, wifiStatusLine());"));
+pass("the idle screen shows Wi-Fi or a manual-review warning", fw.includes("wifiStatusLine());") && fw.includes("Scans need review!"));
 pass(
   "the strength sits beside the connection word",
   fw.includes('return String("Connected ") + String(rssi) + "dB " + wifiMeter(rssi);')
@@ -69,7 +69,7 @@ pass("a short link still says Connected instead of inventing a reading", fw.incl
 pass("a very weak reading is clamped so the bars are never lost", fw.includes("if (rssi < -99) rssi = -99;"));
 pass("the status page prints the same bars", fw.includes("wifiMeter(WiFi.RSSI())"));
 pass("the weak threshold is still defined for the access point hunt", fw.includes("#define WIFI_WEAK_RSSI"));
-pass("it counts the seconds while it is down, so nobody unplugs the board", fw.includes('String("Wifi down ") + String((millis() - wifiDownSince) / 1000) + "s"'));
+pass("it counts the seconds while it is down, so nobody unplugs the board", fw.includes('String("Wifi down ") + String((millis() - downSince) / 1000) + "s"'));
 
 /* ── 5. a fingerprint job is never left waiting on a silent socket ───────── */
 
@@ -100,6 +100,6 @@ if (failures > 0) {
 }
 console.log("✅ WiFi recovery guard PASSED");
 console.log("   • no modem sleep, full transmit power");
-console.log("   • reconnect, then radio reset, then (only after 10 min) a restart");
+console.log("   • reconnect and repeated radio resets without a Wi-Fi-only board restart");
 console.log("   • the LCD shows Connected, the dBm and four bars on one row");
 console.log("   • fingerprint jobs are polled every 15 s even when the stream looks alive");

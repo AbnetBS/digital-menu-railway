@@ -29,7 +29,7 @@ const clock = read('src/app/api/attendance/clock/route.ts');
 const pending = read('src/app/api/attendance/biometrics/route.ts');
 const mappings = read('src/app/api/attendance/mappings/route.ts');
 const cleanup = read('src/app/api/tickets/cleanup/route.ts');
-assert.ok(clock.includes('if (!deviceAllowed(request))'));
+assert.ok(clock.includes('method === "fingerprint" && !deviceAllowed(request)'));
 assert.ok(pending.includes('pending !== "1" || !deviceAllowed(request)'));
 assert.ok(mappings.includes('if (!deviceAllowed(request))'));
 assert.ok(cleanup.includes('bearerToken(request.headers.get("authorization"))'));

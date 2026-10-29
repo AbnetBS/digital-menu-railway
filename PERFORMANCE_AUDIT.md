@@ -1,6 +1,26 @@
 # Performance Audit — Fana Cafe & Restaurant (VPSDime / Coolify / PostgreSQL)
 
-**Date:** 2026-08-10
+## Follow-up: Store and startup (2026-10-29)
+
+The review found application-side work that can contribute to delays, but **did not measure the deployed site, its Wi-Fi, VPS or production database**. It is not possible to say from this review alone that Store was the only cause of the reported seconds-long delay.
+
+- A current general-schema version previously escaped only a labelled block, then continued through the full migration. It now returns after one version probe per fresh process. An actual cold/older schema still runs the full repair.
+- Store setup previously ran DDL and dropped/recreated the order-item trigger on each process/bundle startup. The new durable version and PostgreSQL advisory lock apply it once per schema version; an upgrade can still take locks during its first run. Back up and stage before deploying.
+- Store request lines previously did serial reads and writes for each item. A submission now reads the catalog in one query and inserts all lines in one query, preserving validation, transactions, idempotency and stock accounting. Requests do **not** reserve stock.
+- Store snapshots no longer repeatedly include large base64 photos; existing data is served separately with private browser caching. The Store screen coalesces overlapping loads and falls back to polling when SSE disconnects. Ticket completion and station inventory changes now send Store refresh events. Realtime still requires a single app instance; a visible-page safety refresh also covers missed events.
+- Admin sections render independently as each fetch completes, and ordinary menu edits no longer perform orphan-image cleanup when the photo has not changed. Historical Store requests and report data can still grow; no unrequested history was deleted or truncated.
+
+### What was tested
+
+Host firmware simulations, a production build, and application tests are described in the change summary. An isolated local PostgreSQL 18 test exercised twelve concurrent Store schema installs, failed-upgrade rollback/retry, trigger stability, and batched request lines. Local HTTP tests exercised concurrent duplicate submissions and acceptance, image authentication, and a live Store event after a station Done tap. Those tests used synthetic data and a local development server, not the production network or production database; their timing is not a production benchmark. To repeat the database integration test, use a **disposable** PostgreSQL database and run `TEST_DATABASE_URL=postgresql://... npm run test:store-postgres`. It creates and removes a uniquely named test schema.
+
+### Find where a live delay occurs
+
+After deployment, open `https://YOUR-SITE/api/health` a few times on the affected connection. `dbMs` measures the app's pool wait plus a simple database round trip; it does not measure real Store queries. In the browser's Developer Tools → Network, compare the **total** duration of `/api/store` with its `Server-Timing: app` duration. The latter covers application processing, including database work, until the response is made. If `app` is already slow, inspect Coolify logs, database load/locks, pool and VPS; if the total is much larger, investigate network/proxy/response download and browser performance too. Compare warm requests from the café Wi-Fi and a different connection: neither comparison alone proves which component is at fault. Never use the mutating `/api/setup` route as a timing probe.
+
+---
+
+**Earlier audit date:** 2026-08-10
 **Scope:** Full-stack review of the Next.js 16 + Postgres/Drizzle app (public website, customer QR menu, waiter/cashier/station RMS, admin panel).
 **Method:** Static code review of every route handler, page, and component; request-path SQL accounting; bundle/rendering analysis. Verified against the running app where possible.
 

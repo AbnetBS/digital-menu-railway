@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS store_done_events (
  ticket_item_id integer PRIMARY KEY, menu_item_id integer, item_name text NOT NULL, category text,
  station text NOT NULL, quantity integer NOT NULL, done_at timestamptz NOT NULL DEFAULT now(), missing_recipe boolean NOT NULL
 );
+CREATE INDEX IF NOT EXISTS store_done_events_date_idx ON store_done_events(done_at);
+CREATE INDEX IF NOT EXISTS store_requests_requester_date_idx ON store_requests(requester_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS store_requests_date_idx ON store_requests(created_at DESC);
 CREATE TABLE IF NOT EXISTS store_movements (
  id bigserial PRIMARY KEY, item_id integer NOT NULL REFERENCES store_items(id), station text,
  kind text NOT NULL CHECK(kind IN ('purchase','issue','usage','waste')), amount numeric(18,3) NOT NULL CHECK(amount > 0),
@@ -82,25 +85,62 @@ DROP TRIGGER IF EXISTS store_done_trigger ON ticket_items;
 CREATE TRIGGER store_done_trigger AFTER INSERT OR UPDATE OF station_status ON ticket_items
  FOR EACH ROW EXECUTE FUNCTION store_record_done();
 `;
-let setup: Promise<void> | undefined;
-export async function ensureStoreSchema(): Promise<void> {
-  if (!setup)
-    setup = (async () => {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        await client.query('SELECT pg_advisory_xact_lock($1)', [198204572]);
-        await client.query(STORE_SCHEMA_SQL);
-        await client.query('COMMIT');
-      } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
-      } finally {
-        client.release();
-      }
-    })().catch((e) => {
-      setup = undefined;
-      throw e;
-    });
-  return setup;
+// Bump this when STORE_SCHEMA_SQL changes. A durable version prevents each
+// route bundle or app restart from dropping/recreating the ticket_items trigger
+// (which takes an exclusive table lock). No inventory/history is backfilled.
+export const STORE_SCHEMA_VERSION = '2026-10-29-1';
+
+/** Apply a schema version once across processes; exported for integration tests. */
+export async function installStoreSchema(client: import('pg').PoolClient): Promise<void> {
+  try {
+    const current = await client.query('SELECT version FROM store_schema_meta WHERE id=1');
+    if (current.rows[0]?.version === STORE_SCHEMA_VERSION) return;
+  } catch (e) {
+    // A new installation has no metadata table yet. Do not mistake a network,
+    // permission or other database error for a first installation.
+    if ((e as { code?: string }).code !== '42P01') throw e;
+  }
+
+  await client.query('BEGIN');
+  try {
+    await client.query('SELECT pg_advisory_xact_lock($1)', [198204572]);
+    await client.query('CREATE TABLE IF NOT EXISTS store_schema_meta (id integer PRIMARY KEY, version text NOT NULL)');
+    // Another process may have installed it while this one waited for the lock.
+    const current = await client.query('SELECT version FROM store_schema_meta WHERE id=1');
+    if (current.rows[0]?.version !== STORE_SCHEMA_VERSION) {
+      await client.query(STORE_SCHEMA_SQL);
+      await client.query(
+        'INSERT INTO store_schema_meta(id,version) VALUES(1,$1) ON CONFLICT(id) DO UPDATE SET version=EXCLUDED.version',
+        [STORE_SCHEMA_VERSION],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  }
+}
+
+const globalForStore = globalThis as typeof globalThis & {
+  __fanaStoreSetup?: { version: string; promise: Promise<void> };
+};
+
+export function ensureStoreSchema(): Promise<void> {
+  const existing = globalForStore.__fanaStoreSetup;
+  if (existing?.version === STORE_SCHEMA_VERSION) return existing.promise;
+
+  const promise = (async () => {
+    const client = await pool.connect();
+    try {
+      await installStoreSchema(client);
+    } finally {
+      client.release();
+    }
+  })().catch((e) => {
+    // Retry on a later request, but do not clear a newer version's setup.
+    if (globalForStore.__fanaStoreSetup?.promise === promise) delete globalForStore.__fanaStoreSetup;
+    throw e;
+  });
+  globalForStore.__fanaStoreSetup = { version: STORE_SCHEMA_VERSION, promise };
+  return promise;
 }

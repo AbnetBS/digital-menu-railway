@@ -13,7 +13,9 @@ here = Path(__file__).resolve().parent
 sketch = (here.parent / "fana_attendance_esp32.ino").read_text(encoding="utf-8")
 constants = "\n".join(
     line for line in sketch.splitlines()
-    if re.match(r"#define (?:ENROLL_|BIOVO_ACK_)", line)
+    # Every constant the inserted enrollment code can read. READER_LAMP_* is in
+    # here because the placement windows now re-assert the reader's light.
+    if re.match(r"#define (?:ENROLL_|BIOVO_ACK_|READER_LAMP_|SERVER_TIMEOUT_MS)", line)
 )
 enum_match = re.search(r"enum EnrollResult\s*:\s*uint8_t\s*\{.*?\n\};", sketch, re.S)
 assert enum_match, "EnrollResult not found"

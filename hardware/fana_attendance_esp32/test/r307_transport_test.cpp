@@ -263,8 +263,56 @@ static void test_optional_led() {
   assert(reader.fingerPresent() == 0);
 }
 
+/* The door is between two employees of the same group. While the first finger
+ * is still resting on the glass, the sketch must not spend a match - it asks
+ * the short question instead, and a missing reply costs the short timeout, not
+ * two and a half seconds. */
+static void test_short_lift_poll() {
+  nowMs = 0;
+  FakeSensor s;
+  R307Compat reader(s);
+  prepare(s, reader);
+  s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(reader.fingerPresent(220) == 0);
+  // A finger (or an unclear press) on the glass reports as "something there".
+  s.ack(FINGERPRINT_GETIMAGE);
+  assert(reader.fingerPresent(220) == 1);
+  s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_IMAGEMESS});
+  assert(reader.fingerPresent(220) == 1);
+  // A silent reader cannot hold the next employee for 2.5 s any more: the short
+  // poll gives up quickly (the quiet-line recovery after a lost frame is the
+  // only extra cost).
+  nowMs = 0;
+  s.plan(FINGERPRINT_GETIMAGE, {}, 0, false, true);
+  s.plan(FINGERPRINT_GETIMAGE, {}, 0, false, true);
+  assert(reader.fingerPresent(220) == -1);
+  assert(nowMs < 1500);
+}
+
+/* An enrollment placement must be able to say WHY it saw nothing: the counters
+ * separate "nobody touched the glass" from "the image was unclear". */
+static void test_placement_answer_counters() {
+  nowMs = 0;
+  FakeSensor s;
+  R307Compat reader(s);
+  prepare(s, reader);
+  for (int i = 0; i < 20; ++i) s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(!reader.enroll(7, 1, 200));
+  assert(reader.emptyGlassInLastWait() >= 2);
+  assert(reader.imagesSeenInLastWait() == 0);
+  assert(reader.unclearInLastWait() == 0);
+  nowMs = 0;
+  s.plans.clear();   // drop the empty-glass replies the first wait did not use
+  s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_IMAGEFAIL});
+  assert(!reader.enroll(7, 1, 200));
+  assert(reader.unclearInLastWait() == 1);
+  assert(reader.emptyGlassInLastWait() == 0);
+}
+
 int main() {
   test_optional_led();
+  test_short_lift_poll();
+  test_placement_answer_counters();
   test_capacity_and_full_range();
   test_capture_time_precedes_matching_delays();
   test_quality_and_no_finger();
@@ -273,5 +321,5 @@ int main() {
   test_mismatch_and_ambiguous_store();
   test_bad_and_late_packets();
   test_late_boot();
-  std::cout << "R307 transport tests passed: timeouts, full search range, quality, lift, capture, mismatch, late/bad packets and recovery\n";
+  std::cout << "R307 transport tests passed: timeouts, full search range, quality, lift, short lift poll, wait counters, capture, mismatch, late/bad packets and recovery\n";
 }

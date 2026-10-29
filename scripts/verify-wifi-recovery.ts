@@ -69,7 +69,11 @@ pass("a short link still says Connected instead of inventing a reading", fw.incl
 pass("a very weak reading is clamped so the bars are never lost", fw.includes("if (rssi < -99) rssi = -99;"));
 pass("the status page prints the same bars", fw.includes("wifiMeter(WiFi.RSSI())"));
 pass("the weak threshold is still defined for the access point hunt", fw.includes("#define WIFI_WEAK_RSSI"));
-pass("it counts the seconds while it is down, so nobody unplugs the board", fw.includes('String("Wifi down ") + String((millis() - downSince) / 1000) + "s"'));
+pass("it counts the seconds while it is down, so nobody unplugs the board", fw.includes('String("Offline ") + String((millis() - downSince) / 1000) + "s - saved"'));
+/* Owner, Oct 2026: Wi-Fi is needed to ADD a fingerprint, not to take attendance.
+ * The idle row must say that the scan is kept, not just that the link is down. */
+pass("the offline row says the scan is kept", fw.includes('"No wifi - scans safe"') && fw.includes('s - saved"'));
+pass("the idle screen no longer spends a row on the template count", !fw.includes('showLines("Sensor back!", "Templates: '));
 
 /* ── 5. a fingerprint job is never left waiting on a silent socket ───────── */
 

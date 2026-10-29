@@ -19,6 +19,10 @@ struct SerialStub {
 static int pendingFailureJobId = 0;
 static String pendingFailureReason;
 static uint32_t pendingFailureRetryAt = 0;
+static uint16_t pendingFailureTries = 0;
+// The sketch stops retrying a report this many times; the test only needs that
+// the counter exists and is reset on a verified acknowledgement.
+static const uint16_t FAILURE_REPORT_MAX_TRIES = 24;
 static int calls = 0;
 static int responseMode = 0; // 0=connection error, 1=portal 200, 2=wrong ID, 3=valid receipt
 static int lastJob = 0;
@@ -74,5 +78,6 @@ int main() {
   assert(lastReason == String("sensor did not answer"));
   retryPendingEnrollmentFailure();
   assert(calls == 4);
+  assert(pendingFailureTries == 0); // a verified receipt clears the counter too
   std::cout << "Enrollment reporting passed: offline retry, captive portal, wrong job and verified acknowledgement\n";
 }

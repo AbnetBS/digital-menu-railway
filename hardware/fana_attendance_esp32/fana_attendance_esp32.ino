@@ -48,23 +48,34 @@
  * Sensor UART: 57600 baud, 8N1 (common R307 factory default).
  *
  * WHAT HAPPENS
- *   Scan:   the finger is matched and "VERIFIED" shows at once; the website
- *           answers in about one or two seconds (IN / OUT / late / not
- *           registered). The device then returns to "Place finger". One
- *           placement = one scan, however long the finger stays on the sensor.
+ *   Scan:   the finger is matched and the answer shows at once (SAVED ON
+ *           DEVICE, or SENT TO WEBSITE with IN / OUT / late / already
+ *           registered). One placement = one scan, however long the finger
+ *           stays on the sensor. The reader is ready for the next person the
+ *           instant the finger is lifted: while a finger rests on the glass
+ *           the sketch only polls "is anything there?" instead of running a
+ *           whole match, and the reader's light is re-asserted right after
+ *           every scan. Wi-Fi strength changes WHERE the scan is kept, never
+ *           how long the door takes.
  *   Add:    the admin presses Add Fingerprint on the website. The LCD guides
  *           R307's two enrollment captures: PLACE FINGER, LIFT, then place
  *           the same finger again at a slightly different angle. The R307
  *           combines both views into one rotation-tolerant template. The
- *           device then confirms the stored ID on fresh placements. Every wait has a timeout, so the device never hangs. A
- *           failed job is reported back to the website with its reason and is
- *           not retried in a loop.
- *   Manual: Serial "enroll <id>" stores a finger; map it in admin afterwards.
- *   Idle:   "Fana Cafe Attendance / Place finger / Wifi Connected / Time
- *           HH:MM:SS" (owner, Oct 2026). Row 2 is one plain word about whether
- *           the scan will reach the website, row 3 is the wall clock from NTP
- *           on Ethiopian time (UTC+3, no daylight saving). The IP address and
- *           the template count moved to the device's own status page.
+ *           device then confirms the stored ID on fresh placements. If that
+ *           fails twice, the last attempt takes both pictures from ONE steady
+ *           press. Every wait has a timeout, so the device never hangs. A
+ *           failed job is reported back to the website with its reason - and
+ *           with what the reader actually answered - and is not retried in a
+ *           loop.
+ *   Manual: Serial "enroll <id>" stores a finger even with no website (it uses
+ *           the names saved in flash); map it in admin afterwards.
+ *   Idle:   "Fana Cafe Attendance / Place finger / Connected -58dB #### / Time
+ *           HH:MM:SS" (owner, Oct 2026). Row 2 says whether the scan will
+ *           reach the website AND, when it will not, that the scan is still
+ *           kept ("Offline 34s - saved"). Row 3 is the wall clock from NTP on
+ *           Ethiopian time (UTC+3, no daylight saving). The IP address and the
+ *           template count live on the device's own status page and on
+ *           Serial, not on the door.
  *
  * Setup:
  *   1. Install the libraries above.
@@ -228,6 +239,20 @@ std::atomic<bool> queueNeedsReview{false};
 /* ── Timing (milliseconds) ────────────────────────────────────────────────── */
 #define SENSOR_POLL_MS          1500  // one fingerprint check waits at most this long
 #define SENSOR_FAIL_LIMIT       6     // silent passes in a row before the link is called dead
+/* The door must be ready for the next person the instant the green light goes
+ * on. While a finger is still on the glass (the "do not clock this one twice"
+ * latch), the sketch does not run full matches any more: it only asks the
+ * reader whether something is on the glass. That one cheap command comes back
+ * in tens of milliseconds, so the lift is noticed at once and the reader is
+ * free for the second employee of the group. */
+#define LIFT_POLL_MS            220UL
+/* Some R307 variants extinguish their own illumination after a capture or after
+ * answering "no finger". The re-assert below is what keeps the glass lit: right
+ * after a scan (burst) and every few seconds while the door is idle. Without it
+ * the reader sat dark for up to five seconds and the next person's scan looked
+ * "slow" - or, during Add Fingerprint, never happened at all. */
+#define READER_LAMP_BURST_MS    400UL
+#define READER_LAMP_IDLE_MS     2500UL
 /* A weak WiFi answers slowly. Four seconds was short enough that the website was
  * given up on while the router was still delivering the reply, which is why an
  * enrollment could fail far from the router. */
@@ -239,23 +264,35 @@ std::atomic<bool> queueNeedsReview{false};
 #define WARNING_SHOW_MS         2500  // a problem stays on the LCD this long
 /* Like the owner's earlier working flow: two R307 captures, then one fresh
  * confirmation. The website is told "added" only when the reader itself
- * finds the new ID. No biometric acceptance/security setting is lowered. */
+ * finds the new ID. No biometric acceptance/security setting is lowered.
+ *
+ * The waits below are deliberately short. They used to be 2.5 s each, which put
+ * more than seven seconds of dead time inside a three placement job and made the
+ * sensor look asleep exactly when it was asked for a finger. */
 #define ENROLL_STEPS            2
 #define ENROLL_VERIFY_PLACEMENTS 1
 #define ENROLL_SCANS            (ENROLL_STEPS + ENROLL_VERIFY_PLACEMENTS)
-#define ENROLL_PLACE_SETTLE_MS  2500  // fresh placement: settle time before the ADD command
-#define ENROLL_LIFT_PAUSE_MS    2500  // pause for the lift between two steps (no sensor command)
+#define ENROLL_PLACE_SETTLE_MS  700   // short beat after the prompt, then the reader polls
+#define ENROLL_LIFT_PAUSE_MS    900   // pause for the lift between two steps (no sensor command)
 #define ENROLL_ADD_TIMEOUT_MS   60000 // give each placement a full minute after its LCD prompt
 #define ENROLL_MAX_ATTEMPTS     6     // attempts allowed per step
 #define ENROLL_HOLD_STILL_AT    3     // unclear images before "lift and place again"
 #define ENROLL_MAX_UNCLEAR      6     // unclear images allowed per step
 #define ENROLL_MAX_SESSIONS     3     // whole three-step sessions before the job fails
-#define ENROLL_LIFT_BUDGET_MS   20000 // how long "LIFT YOUR FINGER" may wait
+#define ENROLL_LIFT_BUDGET_MS   12000 // how long "LIFT YOUR FINGER" may wait
 #define ENROLL_SENSE_MS         1200  // one "is the glass empty?" SEARCH waits this long
+#define ENROLL_LAMP_NUDGE_MS    4000  // nothing seen for this long: ask for the reader light again
 #define ENROLL_VERIFY_BUDGET_MS 90000 // the confirm scans may take this long in total
 #define ENROLL_VERIFY_RETRIES   3     // extra placements when one is not found
 #define ENROLL_TOTAL_BUDGET_MS  300000 // the whole job gives up after this long
 #define MAPPING_RETRY_MS        10000 // retry a mapping the website did not get yet
+/* Two retries stop being useful at some point. Without these caps a website
+ * reply that never comes back the way this sketch expects (a captive portal's
+ * 200, an older server) would keep ONE pending item alive for ever, and both
+ * of those flags block every new enrollment job - "Add Fingerprint does
+ * nothing any more", with no way out but a reboot. */
+#define MAPPING_MAX_TRIES       30    // 30 x 10 s = five minutes of a stuck mapping
+#define FAILURE_REPORT_MAX_TRIES 24   // 24 x 5 s = two minutes of a stuck report
 #define PENDING_POLL_FALLBACK_MS 5000
 /* The stream is one long socket. On a weak link it stalls long before it closes,
  * and a stalled stream is a door that hears about a new fingerprint late. Two
@@ -367,6 +404,7 @@ bool sensorReady = false;
 // Optional R307 LED-ON; some optical variants ignore this command.
 bool readerLightSupported = false;
 unsigned long lastLightRequestMs = 0;
+uint16_t lampMisses = 0;   // LED-ON requests the reader did not acknowledge
 /* A module that is asked something and says NOTHING is a different animal from
  * one that answers "no finger". The first is a dead link (power, wiring, a
  * module that reset itself mid-scan); the second is a working scanner with an
@@ -420,6 +458,21 @@ bool awaitingFingerLift = false;
 // fingerprintId -> staff name, from the website (refreshed in real time).
 std::map<int, String> fingerprintToStaff;
 std::map<int, int> fingerprintToMember;
+/* The last enrollment attempt changes the physical interaction: instead of
+ * "place, lift, place again" it takes both captures from ONE steady press.
+ * The repository's own diagnostic notes record this as the flow the shipped
+ * firmware used before October 2026, and on a reader whose optics lose the
+ * finger between two placements it is the difference between "not added" and a
+ * stored finger. It is only used after the normal flow has already failed
+ * twice, so the preferred, rotation-tolerant flow is still what runs first. */
+bool enrollKeepFingerDown = false;
+
+/* True once a COMPLETE name list has been read at least once - from the website
+ * or from the copy in flash. Add Fingerprint uses this: it has to know whether
+ * an ID already belongs to somebody before it can clear that slot, and a weak
+ * link must not be allowed to turn "Add Fingerprint" into a failure when the
+ * door already has the list saved. */
+bool mappingListKnown = false;
 
 // Add Fingerprint jobs: a job is attempted once. A job that failed is reported
 // to the website and never retried by this device, so it cannot loop.
@@ -430,6 +483,7 @@ int lastHandledJobId = 0;
 int pendingFailureJobId = 0;
 String pendingFailureReason = "";
 uint32_t pendingFailureRetryAt = 0;
+uint16_t pendingFailureTries = 0;
 
 // The exact reason for the outcome of the last enrollment, for the Serial log
 // and for the website ("step 2/3 not accepted: image unclear (status 6)",
@@ -440,6 +494,7 @@ String enrollDetail = "";
 // A finger was enrolled on the sensor but the website did not get the mapping
 // yet (no internet). The device keeps sending it until the website accepts it.
 bool mappingPending = false;
+uint16_t mapPendingTries = 0;
 int mapFingerprintId = 0;
 int mapMemberId = 0;
 int mapJobId = 0;
@@ -498,12 +553,16 @@ void checkLcdHealth();
 void beepSuccess();
 void beepError();
 bool detectSensor(uint8_t tries);
+void keepReaderLampOn(uint32_t minGapMs);
+void nudgeReaderLamp();
 void maintainReaderLight();
 bool sensorAnswers();
 int glassHasFinger();
 bool freeLeftoverTemplate(int id);
 int waitGlassEmpty(const String &who, int id, uint32_t budgetMs, uint8_t progress);
 int searchGlass(uint16_t &matchedId, uint32_t waitMs);
+bool enrollMappingsAreCurrent();
+bool saveMappingCache();
 EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs);
 EnrollResult confirmEnrolledFinger(int id, const String &who, uint32_t deadlineMs);
 EnrollResult enrollFingerprint(int id, const String &who);
@@ -524,7 +583,7 @@ void keepServerLinkAlive();
 void stopEventStream();
 void startEventStream();
 void pumpEventStream();
-bool loadMappingsFromServer();
+bool loadMappingsFromServer(uint32_t timeoutMs = SERVER_TIMEOUT_MS);
 bool saveToQueue(int fingerprintId, const String &staffName, int memberId, unsigned long scannedAt, uint64_t uptimeMs, String &eventId);
 QueueSyncResult syncOfflineQueue();
 void periodicSync();
@@ -539,6 +598,7 @@ void checkSensorHealth();
 void emptyDatabase();
 void listFingerprints();
 void testSensor();
+void watchSensor(int seconds);
 void testSensorLink(uint16_t rounds, uint32_t gapMs, const char *label);
 void configureWifiManager(WiFiManager &wm);
 void handleRoot();
@@ -580,7 +640,7 @@ void setup() {
   if (sensorReady) {
     Serial.print("Found R307 fingerprint sensor, templates: ");
     Serial.println(templateCount);
-    showLines("R307 Found!", "Templates: " + String(templateCount), "", "");
+    showLines("R307 Found!", "Ready to scan", "", "");
     beepSuccess();
     delay(1000);
   } else {
@@ -1151,11 +1211,13 @@ void showEnrollScreen(const String &who, int id, uint8_t done, const String &pro
  *                                           when the scanner itself is not
  *                                           answering, so nobody keeps
  *                                           pressing a dead glass
- *   row 2   Wifi Connected / Wifi Not Connected
+ *   row 2   Connected -58dB #### / Offline 34s - saved
  *                                           "depends on the situation, that
  *                                           will be more clear and useful":
  *                                           one plain word about whether the
- *                                           scan will reach the website
+ *                                           scan will reach the website, and
+ *                                           when it will not, that the scan is
+ *                                           kept on the device anyway
  *   row 3   Time HH:MM:SS                   the wall clock ("this will be very
  *                                           useful"), from NTP, on Ethiopian
  *                                           time - or "Time not set yet" while
@@ -1194,7 +1256,13 @@ void renderScanFeedback() {
   const String when = capturedTimeText(notice.scannedAt);
   switch (scanFeedback.phase()) {
     case ScanFeedback::IDLE: showIdleScreen(); break;
-    case ScanFeedback::SENDING: showLines(name, "SENDING TO WEBSITE", when, "Please wait"); break;
+    /* The first answer is never "please wait". The owner's rule (Oct 2026) is
+     * that the door must say, within seconds and whatever the Wi-Fi is doing,
+     * WHERE this scan is. It is on the device - always - so that is what the
+     * screen says at once; the last row is the only thing that differs between
+     * a strong link and no link, and it turns into Attendance IN/OUT the moment
+     * the website confirms this exact scan. */
+    case ScanFeedback::SENDING: showLines(name, "SAVED ON DEVICE", when, "Sending to website"); break;
     case ScanFeedback::SAVED: showLines(name, "SAVED ON DEVICE", when, "Will sync later"); break;
     case ScanFeedback::SENT_IN: showLines(name, "SENT TO WEBSITE", when, "Attendance IN"); break;
     case ScanFeedback::SENT_OUT: showLines(name, "SENT TO WEBSITE", when, "Attendance OUT"); break;
@@ -1281,17 +1349,22 @@ String wifiMeter(int rssi) {
  *   Connected -58dB ████    connected and healthy
  *   Connected -84dB ____    connected but weak: this is the row that tells him
  *                           to move the access point closer
- *   Wifi down 34s           disconnected and retrying (a live counter, so
- *                           nobody unplugs the board to "wake it up")
- *   Wifi Not Connected      never joined since boot
+ *   Offline 34s - saved     no link right now, and the scan is safe on the
+ *                           device anyway (the counter shows the board is
+ *                           still working on it, so nobody unplugs it)
+ *   No wifi - scans safe    never joined since boot; the door still works
+ *
+ * The owner's rule (Oct 2026): Wi-Fi is needed to ADD a fingerprint, not to
+ * take attendance. So the offline rows say what is true at the door - the scan
+ * is kept - instead of a bare "not connected" that reads like a fault.
  *
  * The budget, exactly 20 characters:
  *   "Connected " 10 + "-58dB " 6 + the four cells 4 = 20. */
 String wifiStatusLine() {
   if (WiFi.status() != WL_CONNECTED) {
     const unsigned long downSince = wifiDownSince.load();
-    if (downSince == 0) return String("Wifi Not Connected");
-    return String("Wifi down ") + String((millis() - downSince) / 1000) + "s";
+    if (downSince == 0) return String("No wifi - scans safe");
+    return String("Offline ") + String((millis() - downSince) / 1000) + "s - saved";
   }
   const int lastRssi = wifiLastRssi.load();
   int rssi = lastRssi != 0 ? lastRssi : WiFi.RSSI();
@@ -1528,6 +1601,7 @@ bool detectSensor(uint8_t tries) {
       // reader does not support an independently controlled blue LED.
       readerLightSupported = finger.requestLightOn();
       lastLightRequestMs = millis();
+      lampMisses = 0;
       if (!readerLightSupported) Serial.println("Reader does not confirm LED-ON; capture remains enabled");
       return true;
     }
@@ -1544,12 +1618,57 @@ bool detectSensor(uint8_t tries) {
   return false;
 }
 
-void maintainReaderLight() {
-  if (!readerLightSupported || millis() - lastLightRequestMs < 5000UL) return;
+/* Keep the glass lit (owner, Oct 2026).
+ *
+ * The owner's report: "after the scanning and verification is done there is
+ * seconds that the sensor turned off", and, for Add Fingerprint, "the sensor
+ * doesn't light up". Some R307 variants switch their illumination off by
+ * themselves after a capture or after answering "no finger"; this sketch asked
+ * them to switch it back on only once every five seconds, and never at all
+ * while an enrollment was running. The reader then sat dark exactly when the
+ * LCD was asking for a finger, answered "no finger" for a full minute, and the
+ * job failed with a message that looked like nobody had pressed the glass.
+ *
+ * So the light is now re-asserted:
+ *   - immediately after every scan (minGapMs = READER_LAMP_BURST_MS), so the
+ *     next employee of a group sees a ready reader,
+ *   - right before and during every enrollment placement,
+ *   - and every few seconds while the door is idle.
+ *
+ * The command is optional: a reader that never acknowledged it is never asked
+ * again here, and nothing about scanning depends on the answer. */
+void keepReaderLampOn(uint32_t minGapMs) {
+  if (!readerLightSupported) return;
+  // A reader that stopped acknowledging the command is asked less often, so a
+  // silent module can never spend a second of the scan loop every few seconds.
+  const uint32_t gap = lampMisses == 0 ? minGapMs : (uint32_t)READER_LAMP_IDLE_MS * 8UL;
+  if ((uint32_t)(millis() - lastLightRequestMs) < gap) return;
   lastLightRequestMs = millis();
-  // Some modules extinguish their light after a capture. Reassert only after
-  // the reader has acknowledged support, regardless of Wi-Fi state.
-  if (!finger.requestLightOn()) Serial.println("Reader LED-ON did not answer; continuing to scan");
+  // Wi-Fi is irrelevant: the light is local to the reader. The short timeout is
+  // deliberate: a normal reader answers this in milliseconds.
+  if (finger.requestLightOn(500)) {
+    lampMisses = 0;
+  } else if (lampMisses < 1000) {
+    lampMisses++;
+    if (lampMisses == 1) Serial.println("Reader LED-ON did not answer; still scanning, asking less often");
+  }
+}
+
+/* Used inside a placement window: if the reader has not seen an image for a
+ * while, ask for its light once more even when it never confirmed the command
+ * at boot. Some modules answer the LED command only after they have been left
+ * alone for a moment, and one extra frame on the UART costs nothing. */
+void nudgeReaderLamp() {
+  lastLightRequestMs = millis();
+  if (!finger.requestLightOn(400)) return;
+  readerLightSupported = true;
+  lampMisses = 0;
+}
+
+void maintainReaderLight() {
+  // The idle cadence. A burst right after a scan uses keepReaderLampOn() with a
+  // much shorter gap, so the reader is lit again in the same second.
+  keepReaderLampOn(READER_LAMP_IDLE_MS);
 }
 
 // Answers true when the sensor replies to a COUNT command at all.
@@ -1619,7 +1738,9 @@ void checkSensorHealth() {
   lastCheck = millis();
   if (detectSensor(1)) {
     Serial.println("Fingerprint sensor is back!");
-    showLines("Sensor back!", "Templates: " + String(templateCount), "", "");
+    // What the person at the door needs is that the glass works again, not the
+    // template count (that lives on Serial and on the status page).
+    showLines("Sensor back!", "Ready to scan", "", "");
     beepSuccess();
     delay(1000);
     showIdleScreen();
@@ -1648,15 +1769,58 @@ const char *fingerStatusText(uint8_t s) {
 // Identification scan. The sensor reports a finger as a match (ID), NOUSER
 // (finger seen but not enrolled) or IMAGEMESS (finger seen, image unclear).
 void scanForFinger() {
+  /* ── The latch: one placement, one scan (and a reader that is ready again at
+   *    once) ────────────────────────────────────────────────────────────────
+   * While a finger is still on the glass (or a result is being read), a full
+   * match is pointless: it cannot be credited twice, and it keeps the reader
+   * busy for most of a second while the next employee of a group is already
+   * waiting. So this path asks ONE cheap question - "is anything on the glass?"
+   * - and returns. The moment the finger is lifted the latch clears and the
+   * next placement is matched normally, with no dead time in between. The same
+   * poll keeps GETIMAGE running on the reader, which is what keeps its
+   * illumination and its finger detection alive. */
+  if (awaitingFingerLift) {
+    // Two honest "empty" replies, not one: a single glitched frame must never
+    // re-arm the door while the same finger is still lying on the glass, or the
+    // same person would be clocked twice.
+    static uint8_t emptyReplies = 0;
+    const int state = finger.fingerPresent(LIFT_POLL_MS);
+    if (state == 0) {
+      if (++emptyReplies >= 2) {
+        emptyReplies = 0;
+        awaitingFingerLift = false;
+        keepReaderLampOn(READER_LAMP_BURST_MS);
+        Serial.println("Glass is clear: ready for the next finger");
+        return;
+      }
+      delay(60);
+      return;
+    }
+    emptyReplies = 0;
+    if (state < 0) {
+      // Silence is not proof of a lift: keep the latch (a held finger must not
+      // be clocked twice) but let the dead-link detection see this pass like
+      // any other answer, so a reader that died while a finger rested on it is
+      // reported instead of quietly ending the day's scans.
+      noteSensorAnswer(finger.getLastStatus());
+      if (sensorLinkLooksDead() && !sensorLinkReported) {
+        dropSensorLink(String("no answer for ") + String((unsigned)sensorSilentPasses) + " checks in a row");
+      }
+    }
+    delay(60);   // do not hammer the reader while a finger is resting on it
+    return;
+  }
+
   uint16_t matchedId = 0;
   uint8_t permission = 0;
   const bool matched = finger.search(matchedId, permission, sensorPollMs) && matchedId > 0;
   const uint8_t st = finger.getLastStatus();
   noteSensorAnswer(st);
-  // A completed image may switch off some readers' illumination; reassert on
-  // the next scanner pass without delaying this scan's timestamp or feedback.
+  // A completed image may switch off some readers' illumination; reassert it
+  // at the next loop pass (READER_LAMP_BURST_MS later), without delaying this
+  // scan's timestamp or its feedback.
   if (matched || st == BIOVO_ACK_NOUSER || st == BIOVO_ACK_IMAGEMESS)
-    lastLightRequestMs = millis() - 5000UL;
+    lastLightRequestMs = millis() - READER_LAMP_BURST_MS;
   // SENSOR_FAIL_LIMIT passes in a row with nothing back is not "no finger at
   // the door", it is no module. Say so, once, and let the health check look for
   // it. (The enrollment paths do not need this: a silent module there already
@@ -1755,7 +1919,19 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   scanGreenOn = true;
   scanGreenSince = millis();
   wakeDeliveryTask();
+  // Light the glass again for the next person before the buzzer is even done.
+  keepReaderLampOn(READER_LAMP_BURST_MS);
   beepSuccess();
+  /* The number the owner asked for: how long this person waited between the
+   * image being taken and the green light. Under four seconds is the target;
+   * this line is how a slow reader, a big template database or a busy flash is
+   * recognised without guessing. */
+  const uint64_t doneUptimeMs = (uint64_t)esp_timer_get_time() / 1000ULL;
+  if (doneUptimeMs >= capturedUptimeMs) {
+    Serial.print("Scan saved and shown in ");
+    Serial.print((unsigned long)(doneUptimeMs - capturedUptimeMs));
+    Serial.println(" ms from the finger image");
+  }
 }
 
 // Sends one scan. Returns the HTTP code (200 accepted, 4xx refused, 5xx server
@@ -1929,6 +2105,10 @@ bool checkPendingEnroll() {
     const int code = postMappingToServer(fingerprintId, memberId, memberName);
     if (code == 200) {
       rememberMapping(fingerprintId, memberName, memberId);
+      // Keep the offline name cache in step with what the website just agreed
+      // to, so this person's scans show their name even before the next full
+      // list download.
+      saveMappingCache();
       added = true;
       showBig(memberName, "ADDED", "scans fine - ID " + String(fingerprintId));
       beepSuccess();
@@ -1942,6 +2122,7 @@ bool checkPendingEnroll() {
     } else {
       // The finger is stored on the sensor; the website will get the mapping soon.
       mappingPending = true;
+      mapPendingTries = 0;
       mapFingerprintId = fingerprintId;
       mapMemberId = memberId;
       mapJobId = jobId;
@@ -2053,6 +2234,7 @@ void reportJobStarted(int jobId, int fingerprintId) {
 void reportJobFailed(int jobId, const String &reason) {
   if (jobId <= 0) return;
   pendingFailureJobId = jobId;
+  pendingFailureTries = 0;
   pendingFailureReason = reason.substring(0, 160);
   pendingFailureRetryAt = millis();
   retryPendingEnrollmentFailure();
@@ -2087,6 +2269,14 @@ void retryPendingEnrollmentFailure() {
   if (confirmed) {
     pendingFailureJobId = 0;
     pendingFailureReason = "";
+    pendingFailureTries = 0;
+  } else if (++pendingFailureTries >= FAILURE_REPORT_MAX_TRIES) {
+    // The job will expire on the website by itself. Holding every later
+    // enrollment behind a report that this server never confirms is worse.
+    Serial.println("Giving up on the enrollment failure report; new jobs may be picked up again");
+    pendingFailureJobId = 0;
+    pendingFailureReason = "";
+    pendingFailureTries = 0;
   } else {
     Serial.println("Enrollment failure report not confirmed; will retry");
     pendingFailureRetryAt = millis() + 5000UL;
@@ -2102,12 +2292,31 @@ void retryPendingMapping() {
   const int code = postMappingToServer(mapFingerprintId, mapMemberId, mapMemberName);
   if (code == 200) {
     mappingPending = false;
+    mapPendingTries = 0;
     rememberMapping(mapFingerprintId, mapMemberName, mapMemberId);
+    saveMappingCache();
     Serial.println("Pending mapping delivered to the website");
   } else if (code >= 400 && code < 500) {
     mappingPending = false;
+    mapPendingTries = 0;
     Serial.println("Website refused the pending mapping");
     reportJobFailed(mapJobId, "website refused the mapping");
+  } else if (++mapPendingTries >= MAPPING_MAX_TRIES) {
+    /* The finger IS stored on the reader (the confirm scan proved it), only the
+     * website never confirmed which employee owns it. Say exactly that, release
+     * the reader for the next job, and let the admin finish the mapping by hand
+     * - the template and its ID are real. */
+    mappingPending = false;
+    mapPendingTries = 0;
+    Serial.println("Giving up on the website mapping; the finger stays stored on the sensor");
+    Serial.print("  the sensor holds it as ID ");
+    Serial.print(mapFingerprintId);
+    Serial.println(" - map that ID in admin > Staff Fingerprints");
+    // This runs in the network task, which never writes to the LCD: the message
+    // goes to the website (the job is closed as failed with this text) and to
+    // the Serial monitor, and the door keeps scanning.
+    reportJobFailed(mapJobId, "the finger is stored on the scanner as ID " + String(mapFingerprintId) +
+                              ", but the website did not confirm the employee: map that ID in admin > Staff Fingerprints");
   } else {
     mapNextTryMs = millis() + MAPPING_RETRY_MS;
   }
@@ -2245,6 +2454,7 @@ int waitGlassEmpty(const String &who, int id, uint32_t budgetMs, uint8_t progres
   uint8_t emptyReads = 0;
   uint8_t errors = 0;
   showEnrollScreen(who, id, progress, "LIFT YOUR FINGER", "Then place it again");
+  keepReaderLampOn(READER_LAMP_BURST_MS);   // a dark glass cannot report a lift
   while ((uint32_t)(millis() - startedAt) < budgetMs) {
     const int state = glassHasFinger();
     if (state == 0) {
@@ -2273,12 +2483,19 @@ int waitGlassEmpty(const String &who, int id, uint32_t budgetMs, uint8_t progres
 /* ── One session: two R307 captures from genuinely fresh placements ───── */
 EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
   for (uint8_t step = 1; step <= ENROLL_STEPS; step++) {
-    if (step > 1) {
+    if (step > 1 && !enrollKeepFingerDown) {
       // On an R307 GETIMAGE only tests contact; it does not change buffer 1.
       // Do not guess that the finger was lifted just because 2.5 s elapsed.
       const int lifted = waitGlassEmpty(who, id, ENROLL_LIFT_BUDGET_MS, step - 1);
       if (lifted < 0) return ENROLL_SENSOR_ERROR;
       if (lifted == 0) return ENROLL_LIFT_TIMEOUT;
+    }
+    if (step > 1 && enrollKeepFingerDown) {
+      // Fallback flow: the finger stays where it is and the reader takes the
+      // second view from the same steady press.
+      showEnrollScreen(who, id, step - 1, "KEEP IT DOWN", "Taking 2nd picture");
+      keepReaderLampOn(READER_LAMP_BURST_MS);
+      delay(ENROLL_LIFT_PAUSE_MS);
     }
 
     bool captureDone = false;
@@ -2289,7 +2506,12 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
         return ENROLL_FAILED;
       }
       showEnrollScreen(who, id, step - 1, "PLACE FINGER",
-                       "Step " + String(step) + "/" + String(ENROLL_STEPS) + " flat, still");
+                       enrollKeepFingerDown ? String("Keep it down, flat, still")
+                                            : "Step " + String(step) + "/" + String(ENROLL_STEPS) + " flat, still");
+      // The prompt is up: light the glass and start asking the reader for an
+      // image immediately. (This used to wait 2.5 s first, which made the
+      // reader look dead while it was simply not being asked.)
+      keepReaderLampOn(READER_LAMP_BURST_MS);
       delay(ENROLL_PLACE_SETTLE_MS);
       const int32_t remaining = (int32_t)(deadlineMs - millis());
       if (remaining <= 0) {
@@ -2306,12 +2528,26 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
       // The R307 adapter classifies unexpected responses after conversion or
       // STORE as image/sensor errors, so an ambiguous write is never retried.
       const uint32_t waitStarted = millis();
+      uint32_t emptyReplies = 0;
+      uint32_t unclearReplies = 0;
       bool accepted = false;
       for (;;) {
         const uint32_t elapsed = (uint32_t)(millis() - waitStarted);
         if (elapsed >= waitMs) break;
-        accepted = finger.enroll((uint16_t)id, step, waitMs - elapsed);
-        if (accepted || finger.getLastStatus() != BIOVO_ACK_TIMEOUT) break;
+        /* Ask for the placement in slices, not one long block: between slices
+         * the reader's illumination is re-asserted. A variant that switched it
+         * off (or never acknowledged the command at boot) then still gets a
+         * chance to see the finger instead of answering "no finger" for a full
+         * minute - the "sensor does not light up" report. */
+        const uint32_t left = waitMs - elapsed;
+        const uint32_t slice = left < (uint32_t)ENROLL_LAMP_NUDGE_MS ? left : (uint32_t)ENROLL_LAMP_NUDGE_MS;
+        accepted = finger.enroll((uint16_t)id, step, slice);
+        emptyReplies += finger.emptyGlassInLastWait();
+        unclearReplies += finger.unclearInLastWait();
+        if (accepted) break;
+        const uint8_t code = finger.getLastStatus();
+        if (code != BIOVO_ACK_TIMEOUT) break;   // a real answer ends the wait
+        nudgeReaderLamp();
         const uint32_t used = (uint32_t)(millis() - waitStarted);
         if (used >= waitMs) break;
         Serial.println("No image yet; still waiting for this placement");
@@ -2349,7 +2585,18 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
         return ENROLL_FAILED; // new session, with two new captures
       }
       if (st == BIOVO_ACK_TIMEOUT) {
-        enrollDetail = "no finger was placed within " + String(waitMs / 1000) + " s";
+        /* Say WHICH no-finger this was. "The reader answered 'no finger' 850
+         * times and never once saw an image" is a reader that cannot see
+         * (light, glass, power, wiring). It is not someone forgetting to press.
+         * The admin page and the Serial log now carry that difference. */
+        Serial.print("  reader answers during the wait: no-finger ");
+        Serial.print(emptyReplies);
+        Serial.print(", unclear ");
+        Serial.println(unclearReplies);
+        enrollDetail = "no finger within " + String(waitMs / 1000) +
+                       " s: the reader answered 'no finger' " + String(emptyReplies) +
+                       " times and 'unclear' " + String(unclearReplies) +
+                       " times - check its light, power and the glass";
         return ENROLL_NO_FINGER;
       }
       if (st == BIOVO_ACK_IMAGEMESS) {
@@ -2404,6 +2651,7 @@ EnrollResult confirmEnrolledFinger(int id, const String &who, uint32_t deadlineM
     // Row 2 stays the one instruction the person knows from every step.
     showEnrollScreen(who, id, ENROLL_STEPS + found, "PLACE FINGER",
                      "Confirm " + String(found + 1) + "/" + String(ENROLL_VERIFY_PLACEMENTS));
+    keepReaderLampOn(READER_LAMP_BURST_MS);
     delay(ENROLL_PLACE_SETTLE_MS);
 
     uint16_t matchedId = 0;
@@ -2418,8 +2666,13 @@ EnrollResult confirmEnrolledFinger(int id, const String &who, uint32_t deadlineM
     for (;;) {
       const uint32_t elapsed = (uint32_t)(millis() - scanStart);
       if (elapsed >= scanWait) break;
-      state = searchGlass(matchedId, scanWait - elapsed);
+      // Slices, so the reader's light is re-asserted while this placement
+      // waits - the same reason as in runCaptureSession().
+      const uint32_t left = scanWait - elapsed;
+      const uint32_t slice = left < (uint32_t)ENROLL_LAMP_NUDGE_MS ? left : (uint32_t)ENROLL_LAMP_NUDGE_MS;
+      state = searchGlass(matchedId, slice);
       if (state != 0) break;
+      nudgeReaderLamp();
       const uint32_t used = (uint32_t)(millis() - scanStart);
       if (used >= scanWait) break;
       const uint32_t pause = scanWait - used < 100U ? scanWait - used : 100U;
@@ -2499,6 +2752,38 @@ EnrollResult confirmEnrolledFinger(int id, const String &who, uint32_t deadlineM
   return ENROLL_NOT_CONFIRMED;
 }
 
+/* ── Is the name list fresh enough to clear a sensor slot? ──────────────────
+ *
+ * Before Add Fingerprint can use a slot it must be sure nobody owns it, so it
+ * reads the fingerprint names. That request used to be allowed to fail the job
+ * outright ("cannot check current fingerprint mappings; reconnect to the
+ * website and retry"), which turned one slow or dropped HTTP GET on a weak
+ * link into "the admin pressed Add Fingerprint and the scanner said no".
+ *
+ * The list in flash is a complete copy of the last successful download, and the
+ * website hands out only IDs it believes are free. So a cached list is exactly
+ * as safe for this decision as a fresh one, and the door keeps working when the
+ * link is weak - which is what the owner asked for: the connection is needed to
+ * START an enrollment, not to babysit every second of it.
+ *
+ * Only a device that has never received the list (fresh flash, never online)
+ * refuses, because then it truly cannot tell whose slot an ID is.
+ */
+bool enrollMappingsAreCurrent() {
+  // With a saved list in flash the fresh request is a bonus, not a necessity,
+  // so it gets a short budget: the person at the door must not stand in front
+  // of a PREPARING screen while a weak link times out twice.
+  const uint32_t budget = mappingListKnown ? 3500UL : (uint32_t)SERVER_TIMEOUT_MS;
+  if (loadMappingsFromServer(budget)) return true;   // sets mappingListKnown itself
+  if (!mappingListKnown) {
+    enrollDetail = "the scanner has no employee list yet: connect it to the website once, then retry";
+    Serial.println("Enrollment refused: no fingerprint name list has ever been loaded");
+    return false;
+  }
+  Serial.println("Website names are not reachable: using the list saved in flash for this enrollment");
+  return true;
+}
+
 // Stores one finger under id. who is the name shown on the LCD ("" = manual).
 // The website job and the Serial `enroll <id>` command both land here and are
 // walked through exactly the same pre-flight, so they cannot drift apart.
@@ -2507,6 +2792,8 @@ EnrollResult enrollFingerprint(int id, const String &who) {
   // Keeps checkLcdHealth() away for the whole job (every return path clears it
   // again): the captures must not be interrupted by anything.
   EnrollmentGuard enrollmentGuard;
+  // Every job starts with the preferred two-placement flow.
+  enrollKeepFingerDown = false;
 
   Serial.print("Enrolling ID ");
   Serial.println(id);
@@ -2515,12 +2802,11 @@ EnrollResult enrollFingerprint(int id, const String &who) {
   enrollDetail = "";
   showEnrollScreen(who, id, 0, "PREPARING...", "Please wait");
 
-  // A stale/offline mapping must never authorize deleting another employee's
-  // sensor slot. Re-check the live website immediately before slot cleanup.
-  if (!loadMappingsFromServer()) {
-    enrollDetail = "cannot check current fingerprint mappings; reconnect to the website and retry";
-    return ENROLL_FAILED;
-  }
+  // An offline or stale name list must never authorize deleting another
+  // employee's sensor slot, so the check below has to be honest about what it
+  // knows. It no longer insists on a live request: see
+  // enrollMappingsAreCurrent() for why the copy in flash is safe here.
+  if (!enrollMappingsAreCurrent()) return ENROLL_FAILED;
   String mappedName;
   if (mappedNameForId(id, mappedName)) {
     enrollDetail = "ID " + String(id) + " already belongs to " + mappedName;
@@ -2566,10 +2852,7 @@ EnrollResult enrollFingerprint(int id, const String &who) {
       delay(ENROLL_LIFT_PAUSE_MS);
       // A mapping may have changed while the employee was placing a finger.
       // Recheck before a retry can delete the unconfirmed slot again.
-      if (!loadMappingsFromServer()) {
-        enrollDetail = "cannot recheck fingerprint mappings; reconnect to the website and retry";
-        return ENROLL_FAILED;
-      }
+      if (!enrollMappingsAreCurrent()) return ENROLL_FAILED;
       String mappedName;
       if (mappedNameForId(id, mappedName)) {
         enrollDetail = "ID " + String(id) + " already belongs to " + mappedName;
@@ -2583,6 +2866,12 @@ EnrollResult enrollFingerprint(int id, const String &who) {
       if (retryLift == 0) return ENROLL_LIFT_TIMEOUT;
     }
 
+    /* The last attempt switches flows: both captures from one steady press.
+     * Everything before it is the preferred two-placement flow. */
+    enrollKeepFingerDown = (session == ENROLL_MAX_SESSIONS);
+    if (enrollKeepFingerDown) {
+      Serial.println("Last attempt: taking both pictures from one steady press");
+    }
     outcome = runCaptureSession(id, who, deadlineMs);
 
     if (outcome == ENROLL_OK) {
@@ -2819,8 +3108,48 @@ bool applyMappingPayload(const String &payload) {
   fingerprintToStaff.swap(next);
   fingerprintToMember.swap(nextMembers);
   if (mappingMutex) xSemaphoreGive(mappingMutex);
+  mappingListKnown = true;
   Serial.println("Fingerprint names loaded");
   return true;
+}
+
+/* Writes the names currently in RAM back to flash. Called after a mapping the
+ * website has just confirmed, so a scan taken offline a minute later already
+ * shows the employee's name on the LCD instead of "ID 7", even if the full list
+ * has not been downloaded again yet. Best effort: the next download replaces
+ * the file anyway. */
+bool saveMappingCache() {
+  DynamicJsonDocument doc(32768);
+  JsonObject simple = doc.createNestedObject("simpleMap");
+  JsonArray rows = doc.createNestedArray("mappings");
+  if (mappingMutex) xSemaphoreTake(mappingMutex, portMAX_DELAY);
+  int complete = 0;
+  for (const auto &row : fingerprintToStaff) {
+    // Only pairs the reader can act on: a name without an employee number would
+    // make the whole file unreadable at the next boot (applyMappingPayload
+    // requires a complete list), and it could not be uploaded anyway.
+    const auto member = fingerprintToMember.find(row.first);
+    if (member == fingerprintToMember.end() || member->second <= 0) continue;
+    simple[String(row.first)] = row.second;
+    JsonObject entry = rows.createNestedObject();
+    entry["fingerprintId"] = row.first;
+    entry["memberId"] = member->second;
+    entry["memberName"] = row.second;
+    complete++;
+  }
+  if (mappingMutex) xSemaphoreGive(mappingMutex);
+  doc["count"] = complete;
+  if (doc.overflowed()) return false;
+  String payload;
+  serializeJson(doc, payload);
+  File f = LittleFS.open("/mappings.tmp", "w");
+  if (!f) return false;
+  const size_t written = f.print(payload);
+  f.flush();
+  f.close();
+  const bool ok = written == payload.length() && LittleFS.rename("/mappings.tmp", "/mappings.json");
+  if (!ok) LittleFS.remove("/mappings.tmp");
+  return ok;
 }
 
 void loadCachedMappings() {
@@ -2831,10 +3160,10 @@ void loadCachedMappings() {
   if (applyMappingPayload(payload)) Serial.println("Loaded mappings from offline cache");
 }
 
-bool loadMappingsFromServer() {
+bool loadMappingsFromServer(uint32_t timeoutMs) {
   if (WiFi.status() != WL_CONNECTED) return false;
   HTTPClient http;
-  http.setTimeout(SERVER_TIMEOUT_MS);
+  http.setTimeout(timeoutMs);
   beginServerRequest(http, "/api/attendance/mappings");
   if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
   const int code = http.GET();
@@ -3251,8 +3580,20 @@ void handleSerialCommand() {
     emptyDatabase();
   } else if (cmd == "list") {
     listFingerprints();
+  } else if (cmd == "lamp") {
+    // Is the reader's glass lit? This asks the module directly, whatever the
+    // sketch believed before, and reports what came back.
+    lastLightRequestMs = 0;
+    const bool lit = finger.requestLightOn(800);
+    if (lit) readerLightSupported = true;
+    Serial.print("Reader LED-ON: ");
+    Serial.println(lit ? "acknowledged - the glass should be lit" :
+                         "not acknowledged - this variant does not take that command");
   } else if (cmd == "test") {
     testSensor();
+  } else if (cmd.startsWith("watch")) {
+    // `watch` or `watch 30`: prove whether the reader sees a finger.
+    watchSensor(cmd.length() > 5 ? cmd.substring(5).toInt() : 10);
   } else if (cmd == "sensor hard") {
     testSensorLink(150, 50, "hard, about 8 s of continuous asking");
   } else if (cmd.startsWith("sensor")) {
@@ -3433,6 +3774,54 @@ void testSensor() {
     showLines("Sensor test: FAIL", "status " + String(finger.getLastStatus()), "Check wiring", "");
   }
   delay(2500);
+  showIdleScreen();
+}
+
+/* `watch` in Serial: the fastest way to answer "can this reader see a finger at
+ * all?". It asks the glass directly, once every quarter second, and prints only
+ * when the answer changes. Place a finger and lift it; a reader that never says
+ * "finger present" cannot enroll anything, whatever the website does, and that
+ * is a light/power/optics problem at the reader - not a software bug. */
+void watchSensor(int seconds) {
+  if (!sensorReady && !detectSensor(1)) {
+    Serial.println("Sensor not answering; check TX->16, RX->17, GND and 5 V.");
+    return;
+  }
+  if (seconds < 2) seconds = 2;
+  if (seconds > 60) seconds = 60;
+  Serial.println("--- watching the glass: place a finger, hold it, lift it ---");
+  keepReaderLampOn(0);   // ask for the light before the watch starts
+  const uint32_t end = millis() + (uint32_t)seconds * 1000UL;
+  int last = -99;
+  uint16_t present = 0, empty = 0, silent = 0;
+  while ((int32_t)(end - millis()) > 0) {
+    const int state = finger.fingerPresent(400);
+    if (state == 1) present++; else if (state == 0) empty++; else silent++;
+    if (state != last) {
+      Serial.print("[");
+      Serial.print(millis());
+      Serial.print(" ms] ");
+      if (state == 1) Serial.println("FINGER / SOMETHING on the glass");
+      else if (state == 0) Serial.println("glass empty (the reader answers)");
+      else {
+        Serial.print("reader did NOT answer properly: ");
+        Serial.println(fingerStatusText(finger.getLastStatus()));
+      }
+      last = state;
+    }
+    delay(250);
+  }
+  Serial.print("--- watch finished: finger seen ");
+  Serial.print(present);
+  Serial.print(" times, empty ");
+  Serial.print(empty);
+  Serial.print(" times, no answer ");
+  Serial.print(silent);
+  Serial.println(" times ---");
+  if (present == 0) {
+    Serial.println("No finger was ever seen. Check the reader's light (`lamp`), its glass, power and GND,");
+    Serial.println("and place the pad flat on the centre of the glass.");
+  }
   showIdleScreen();
 }
 

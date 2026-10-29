@@ -49,20 +49,51 @@ The sketch opens UART2 at **57600 baud, 8N1**, matching the tested R307 shown by
 ## R307 enrollment flow
 
 1. Admin presses **Add Fingerprint** on the website.
-2. When the scanner picks up the job, its LCD shows **PREPARING...**. The website says the job was received, not that the sensor is already ready. Wait for the LCD to ask for a finger.
-3. At **PLACE FINGER** / **Place & hold**, the employee places the finger for capture 1.
+2. The board hears the job on its event stream, or picks it up on its five second poll. Its LCD shows **PREPARING...** at once. The website says the job was received, not that the reader is already ready.
+3. At **PLACE FINGER** the employee places the finger for capture 1.
 4. The employee lifts it.
 5. The same finger is placed again with a small position/angle change for capture 2.
 6. The R307 combines the two captures and stores one template.
 7. Lift again, then place the finger a **third time**. One fresh confirmation scan must find the same template ID.
 8. Only then is the ID mapped to the employee on the website.
 
-Use the same finger, place its pad flat and keep it still until the reader beeps. Each placement prompt has up to 60 seconds within the overall enrollment budget; the firmware retries early no-finger replies and transient unclear images without lowering matching security. If the job fails, the LCD holds the reason for six seconds and the website receives the detail; an interrupted failure report is retried while the device remains on. If a verified capture was stored but the website did not confirm the matching employee and ID, the mapping is retried without repeating the capture; the unconfirmed owner is not added to the scanner's offline cache. Pending mapping and failure reports are kept in RAM, not persisted across a reboot. If the sensor reports a different ID, check whether that finger is already enrolled. Enrollment needs a live website connection, including the Serial `enroll <id>` command: the device checks current mappings before preparing a slot, so an offline/stale list cannot authorize deletion. Keep one scanner active and do not manually change fingerprint mappings while an enrollment is underway; the website and reader cannot atomically lock a physical slot across the network.
+Use the same finger, place its pad flat and keep it still until the reader beeps.
+
+**What changed in October 2026, and why.** The owner's report was: *"the LCD says PLACE FINGER 0/3, then it says no fingerprint and goes back to the idle screen, and the sensor never lights up."* Four things in the firmware produced exactly that:
+
+- **The reader's light was never re-asserted during a job.** Some R307 variants switch their own illumination off after a capture or after answering "no finger"; the sketch asked for it back only every five seconds from the idle loop, which does not run while a job owns the reader. A dark glass answers "no finger" for a full minute. The light is now requested before every placement and again every four seconds inside the wait, and the wait is split into slices so those requests can actually happen between them.
+- **Two and a half seconds of silence followed every prompt** before the first image was even asked for. That is now 0.7 s, and the lift pause is 0.9 s.
+- **The mapping pre-flight could fail the whole job.** It insisted on a live name list from the website ("cannot check current fingerprint mappings; reconnect to the website and retry"). A weak link therefore turned Add Fingerprint into a failure even though the board already had the list in flash. The live list is still preferred, but the saved list is accepted when the link cannot answer, because the website only hands out IDs it believes are free. A device that has **never** received a list still refuses, because it truly cannot tell whose slot an ID is.
+- **A failure used to say only "no finger".** It now says which no-finger it was: `no finger within 60 s: the reader answered 'no finger' 850 times and 'unclear' 0 times - check its light, power and the glass`. A reader that cannot see is a hardware problem; someone who never pressed is not. The two are no longer confused.
+
+**Last attempt: one steady press.** If the normal flow fails twice, the third and last session switches to taking *both* captures from a single steady placement (the flow the earlier firmware used, recorded in `diagnostics/enroll_diagnostic`). The LCD shows **KEEP IT DOWN**. This rescues a reader whose optics lose the finger between two placements. The confirm scan still requires a fresh placement, so "added" still means "the reader finds this finger again".
+
+**The connection is needed to start a job, not to babysit it.** The job has to arrive from the website and the result has to go back, but a dropped request no longer aborts the session: the serial `enroll <id>` command also works while the board is offline (using the names saved in flash), and the ID can be mapped afterwards in **Attendance → Staff Fingerprints → Manual**.
+
+Each placement prompt has up to 60 seconds inside the overall enrollment budget; the firmware retries early no-finger replies and transient unclear images without lowering matching security. If the job fails, the LCD holds the reason for six seconds and the website receives the detail; an interrupted failure report is retried for about two minutes, then released so it cannot block later jobs. If a verified capture was stored but the website did not confirm the employee and ID, the mapping is retried for about five minutes without repeating the capture; after that the job is closed with the stored ID, because the template is real and the admin can map it by hand. The unconfirmed owner is never added to the scanner's offline cache. Pending mapping and failure reports are kept in RAM, not persisted across a reboot. Keep one scanner active and do not manually change fingerprint mappings while an enrollment is underway; the website and reader cannot atomically lock a physical slot across the network.
+
+### If Add Fingerprint still does not add
+
+Read the Serial log at 115200 baud while the job runs. Every step prints what the reader answered:
+
+| Serial line | What it means | What to do |
+|---|---|---|
+| `Capture 1/2, attempt 1` then `Capture accepted` | the reader saw and accepted the image | place the finger again at the next prompt |
+| `No image yet; still waiting for this placement` (repeating) | the reader is answering "no finger" | keep the finger flat on the glass; check that the glass is lit |
+| `reader answers during the wait: no-finger 812, unclear 0` | nothing ever touched the glass/optics | clean the glass, check the reader's red light, power and GND |
+| `unclear 14` | the reader sees something but the image is unusable | clean the glass, press flatter, dry the finger |
+| `the two captures did not match` | two different fingers (or two very different placements) | use the same finger, same area of the pad |
+| `the sensor did not find the stored finger ... (NOT REGISTERED)` | the template did not really store | run it again; the third session uses the one-press flow |
+| `cannot ...` / `sensor did not answer` | the UART link failed | type `sensor` in Serial; check TX→16, RX→17, common GND, 5 V supply |
+
+`lamp` in Serial asks the reader directly to switch its light on and reports whether it acknowledged; `watch` proves whether the reader can see a finger at all (place one and lift it while it runs); `test` runs one communication check; `enroll <id>` runs the whole flow without the website.
+
 
 ## Normal scan and offline attendance time
 
 - One placement produces one attendance event; a held finger does not clock repeatedly.
-- **Every recognized scan is saved in LittleFS first**, whether Wi-Fi is strong, weak or disconnected. With a connection it briefly says **SENDING TO WEBSITE**; when the website confirms that specific scan it says **SENT TO WEBSITE** and **Attendance IN/OUT**. Otherwise it says **SAVED ON DEVICE / Will sync later**. Each screen includes the employee name and the original captured time (or `Time not set yet` until the clock can be reconstructed). A locally saved beep/green light, or a Wi-Fi connection, is not proof of website acceptance. An `ALREADY REGISTERED / No new entry` response is shown as such, not as a new IN/OUT.
+- **Fast, and ready again at once (owner, Oct 2026).** The owner's target: a group of four people, each one scanned, verified and told where it went in *under four seconds*, Wi-Fi or no Wi-Fi, with the reader live again the moment the green light comes on. Two changes get there. First, while a finger rests on the glass the board no longer runs full matches: it asks the reader one cheap question ("is anything on the glass?", answer in tens of milliseconds) so the lift is noticed immediately and the next person is scanned without the dead second that used to sit after every scan. Second, the reader's illumination is re-asserted right after each scan instead of up to five seconds later. The Serial log prints the real number for every scan: `Scan saved and shown in 1240 ms from the finger image`.
+- **Every recognized scan is saved in LittleFS first**, whether Wi-Fi is strong, weak or disconnected. The screen says **SAVED ON DEVICE** at once in both cases - the scan is on the device in every case, and that answer must not wait for the network. With a link the last row reads **Sending to website**; when the website confirms that specific scan it becomes **SENT TO WEBSITE** and **Attendance IN/OUT**. Otherwise it says **SAVED ON DEVICE / Will sync later**. Each screen includes the employee name and the original captured time (or `Time not set yet` until the clock can be reconstructed). A locally saved beep/green light, or a Wi-Fi connection, is not proof of website acceptance. An `ALREADY REGISTERED / No new entry` response is shown as such, not as a new IN/OUT.
 - The scanner, Wi-Fi services and the wakeable queue sender run independently. A new scan wakes the sender immediately; it checks a disconnected radio about once a second and waits about three seconds between failed website attempts (each request can itself take up to eight seconds). It sends oldest first and verifies a matching event ID, original time, employee/fingerprint and result before removing a scan; an HTTP 200 from a captive portal or an old website is not confirmation. A deliberate remote enrollment temporarily owns the reader and needs connectivity. If other scans are still ahead in the queue, a newly saved scan waits for them.
 - **A kept scan carries its own time.** The device timestamps the successful image-capture reply, before matching and network delays. IN/OUT, date and lateness use that recorded time, not reconnection time. The website stores a receipt with each unique scan and commits attendance and automatic overtime together, making retries after a lost response safe. The open attendance paper sheet listens for updates and refreshes periodically while visible; a delayed scan appears under its original day, not necessarily the day selected on the sheet.
 - Sync the clock before the outage: after power-on, allow Wi-Fi and NTP (UDP 123) to work, and check that the LCD shows the time. If NTP is unavailable but the updated website is reachable, the device can estimate the clock from the website over HTTP(S). This fallback uses network round-trip time and is approximate. HTTPS certificate validation may itself require an already-set clock; test this on the installed configuration. During an outage the ESP32 estimates time using its monotonic clock; network delay, clock synchronization and oscillator drift can cause error.
@@ -85,9 +116,11 @@ The server accepts recorded scans older than three days only if `ATTENDANCE_DEVI
 
 On ESP32 Arduino core 2.x, the legacy URL-only `HTTPClient` call **does not verify the HTTPS certificate**. Before using a token on an untrusted network, set `serverRootCA` in the sketch to the site's correct PEM root CA and use an `https://` `serverURL`; test certificate validation and plan for certificate/CA rotation. Otherwise an attacker on the network could impersonate the server or obtain the token. The firmware warns on Serial if a token is configured without verified HTTPS. Do not enable a server token until the installed firmware can authenticate with it.
 
-### Reader's blue light
+### Reader's light
 
-Scanning and the LED request do not depend on Wi-Fi. The firmware requests the optional R307 LED-ON command at detection and reasserts it when supported. R307 variants differ: some do not support continuous host-controlled illumination or may turn it off after capture. No physical reader was available for verification, so continuous blue light is **not guaranteed**; check this exact unit's behavior and specifications. Unsupported LED control does not disable scanning.
+Scanning and the light request do not depend on Wi-Fi. The firmware asks for the optional R307 LED-ON command at detection, **right after every scan**, **before and during every enrollment placement**, and every 2.5 s while the door is idle. R307 variants differ: some do not support host-controlled illumination at all and light themselves during a capture; those are never asked again unless a placement has seen nothing for four seconds (then one extra request is made, which is how a variant that only accepts the command after it has settled is picked up). Unsupported LED control does not disable scanning.
+
+If the glass stays dark while the LCD asks for a finger, type `lamp` in Serial. `acknowledged` means the reader accepted the command; `not acknowledged` means this variant controls its own light, and a dark glass during a placement is then a power or optics problem, not a lost command.
 
 ## Serial commands
 
@@ -95,6 +128,8 @@ At 115200 baud:
 
 - `enroll <id>` — enroll and confirm one R307 template manually; the website must be reachable to check mappings, and an admin must then map that ID to the employee
 - `list` — report the number of stored templates
+- `lamp` — ask the reader to switch its illumination on and report whether it acknowledged (a reader that never acknowledges does its own lighting; this tells you which kind you have)
+- `watch` (`watch 30`) — watch the glass for 10 s (or up to 60 s): prints every change between "finger on the glass", "glass empty" and "no answer", then a count of each. This is the fastest proof that the reader can see a finger at all, and it works with no website, no LCD and no card.
 - `test` — one sensor communication test
 - `sensor` — repeated link test
 - `sensor hard` — longer repeated link test
@@ -134,8 +169,10 @@ The board heals its own link. This is what changed, and why.
   - `Connected -58dB ████` strong Wi-Fi link (not proof of internet)
   - `Connected -72dB ██__` usable, but there is room to improve
   - `Connected -88dB ____` the "only works near the router" case
-  - `Wifi down 34s` disconnected and retrying (live counter)
-  - `Wifi Not Connected` never joined since it was powered on
+  - `Offline 34s - saved` disconnected and retrying (live counter), and the
+    scan is safe on the device anyway
+  - `No wifi - scans safe` never joined since it was powered on; the door still
+    works, because Wi-Fi is needed to ADD a fingerprint, not to take attendance
 
   The bars are filled blocks: four at −55 dBm or better, three below −55, two
   below −65, one below −75, none below −85. If the `down` counter is moving,

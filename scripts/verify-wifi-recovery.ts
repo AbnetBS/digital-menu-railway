@@ -76,7 +76,8 @@ pass("it counts the seconds while it is down, so nobody unplugs the board", fw.i
 pass("the pending-job poll is a safety net, not only a fallback", fw.includes("if (!enrollingFromServer && millis() - lastPendingCheck > PENDING_POLL_FALLBACK_MS)") && !fw.includes("if (!eventStreamActive && !enrollingFromServer && millis() - lastPendingCheck"));
 pass("a stalled stream is noticed in 45 s, not 75", fw.includes("#define EVENT_STREAM_STALL_MS   45000"));
 pass("a weak link waits 8 s for the website instead of 4", fw.includes("#define SERVER_TIMEOUT_MS       8000"));
-pass("the device is ready message is sent twice if the first is lost", fw.includes("int httpCode = http.POST(json);") && fw.includes("httpCode = http.POST(json);"));
+pass("the receipt message is sent twice if the first is lost", fw.includes("int httpCode = http.POST(json);") && fw.includes("httpCode = http.POST(json);"));
+pass("the safety-net job poll is every five seconds", fw.includes("#define PENDING_POLL_FALLBACK_MS 5000"));
 pass("the setup attempt is patient with a slow router", fw.includes("wm.setConnectTimeout(20)"));
 
 /* ── 6. the owner can see the signal and fix the room ────────────────────── */
@@ -102,4 +103,4 @@ console.log("✅ WiFi recovery guard PASSED");
 console.log("   • no modem sleep, full transmit power");
 console.log("   • reconnect and repeated radio resets without a Wi-Fi-only board restart");
 console.log("   • the LCD shows Connected, the dBm and four bars on one row");
-console.log("   • fingerprint jobs are polled every 15 s even when the stream looks alive");
+console.log("   • fingerprint jobs are polled every 5 s even when the stream looks alive");

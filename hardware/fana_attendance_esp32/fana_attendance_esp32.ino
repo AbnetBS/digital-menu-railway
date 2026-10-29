@@ -243,10 +243,9 @@ std::atomic<bool> queueNeedsReview{false};
 #define ENROLL_STEPS            2
 #define ENROLL_VERIFY_PLACEMENTS 1
 #define ENROLL_SCANS            (ENROLL_STEPS + ENROLL_VERIFY_PLACEMENTS)
-#define ENROLL_NO_FINGER_MS     30000 // give up on a step after this long without a finger
 #define ENROLL_PLACE_SETTLE_MS  2500  // fresh placement: settle time before the ADD command
 #define ENROLL_LIFT_PAUSE_MS    2500  // pause for the lift between two steps (no sensor command)
-#define ENROLL_ADD_TIMEOUT_MS   30000 // one ADD command may wait this long for a finger
+#define ENROLL_ADD_TIMEOUT_MS   60000 // give each placement a full minute after its LCD prompt
 #define ENROLL_MAX_ATTEMPTS     6     // attempts allowed per step
 #define ENROLL_HOLD_STILL_AT    3     // unclear images before "lift and place again"
 #define ENROLL_MAX_UNCLEAR      6     // unclear images allowed per step
@@ -257,7 +256,7 @@ std::atomic<bool> queueNeedsReview{false};
 #define ENROLL_VERIFY_RETRIES   3     // extra placements when one is not found
 #define ENROLL_TOTAL_BUDGET_MS  300000 // the whole job gives up after this long
 #define MAPPING_RETRY_MS        10000 // retry a mapping the website did not get yet
-#define PENDING_POLL_FALLBACK_MS 15000
+#define PENDING_POLL_FALLBACK_MS 5000
 /* The stream is one long socket. On a weak link it stalls long before it closes,
  * and a stalled stream is a door that hears about a new fingerprint late. Two
  * minutes was longer than the admin page is willing to wait. */
@@ -426,6 +425,11 @@ std::map<int, int> fingerprintToMember;
 // to the website and never retried by this device, so it cannot loop.
 bool enrollingFromServer = false;
 int lastHandledJobId = 0;
+// If reporting a failed enrollment is interrupted, retry the report rather
+// than silently abandoning the pending website job. Used by the network task.
+int pendingFailureJobId = 0;
+String pendingFailureReason = "";
+uint32_t pendingFailureRetryAt = 0;
 
 // The exact reason for the outcome of the last enrollment, for the Serial log
 // and for the website ("step 2/3 not accepted: image unclear (status 6)",
@@ -438,6 +442,7 @@ String enrollDetail = "";
 bool mappingPending = false;
 int mapFingerprintId = 0;
 int mapMemberId = 0;
+int mapJobId = 0;
 String mapMemberName = "";
 unsigned long mapNextTryMs = 0;
 
@@ -513,6 +518,7 @@ bool checkPendingEnroll();
 int postMappingToServer(int fingerprintId, int memberId, const String &memberName);
 void reportJobStarted(int jobId, int fingerprintId);
 void reportJobFailed(int jobId, const String &reason);
+void retryPendingEnrollmentFailure();
 void retryPendingMapping();
 void keepServerLinkAlive();
 void stopEventStream();
@@ -681,6 +687,7 @@ void networkTask(void *) {
     if (networkRestReloadRequested.exchange(false)) {
       loadRestScheduleFromServer();
     }
+    retryPendingEnrollmentFailure();
     keepServerLinkAlive();
     retryPendingMapping();
     periodicSync();
@@ -1846,24 +1853,32 @@ void showRefused(const String &name, const String &body) {
 }
 
 /* ── Add Fingerprint from the website ─────────────────────────────────────── */
-// Asks the website for a pending job and enrolls it. Runs when the real-time
-// stream says something changed, and on a slow fallback poll if the stream is down.
+// Asks the website for a pending job on an event and on the periodic safety poll.
 bool checkPendingEnroll() {
-  if (enrollingFromServer || mappingPending) return false;
+  if (enrollingFromServer || mappingPending || pendingFailureJobId) return false;
   if (WiFi.status() != WL_CONNECTED) return false;
 
   HTTPClient http;
   http.setTimeout(SERVER_TIMEOUT_MS);
-  beginServerRequest(http, "/api/attendance/biometrics?pending=1");
+  // One job is enough for this single reader; keep the response small even
+  // if many older pending jobs are still on the server.
+  beginServerRequest(http, "/api/attendance/biometrics?pending=1&limit=1");
   if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
   const int httpCode = http.GET();
   String payload = "";
   if (httpCode == 200) payload = http.getString();
   http.end();
-  if (httpCode != 200) return false;
+  if (httpCode != 200) {
+    Serial.print("Could not check enrollment jobs, HTTP ");
+    Serial.println(httpCode);
+    return false;
+  }
 
   DynamicJsonDocument doc(2048);
-  if (deserializeJson(doc, payload)) return false;
+  if (deserializeJson(doc, payload)) {
+    Serial.println("Could not read enrollment job reply; check website version and connection");
+    return false;
+  }
   if ((doc["count"] | 0) <= 0) return false;
 
   JsonObject job = doc["jobs"][0].as<JsonObject>();
@@ -1885,16 +1900,21 @@ bool checkPendingEnroll() {
   Serial.println(fingerprintId);
 
   enrollingFromServer = true;
+  // Show that the command reached this scanner BEFORE any network request or
+  // slot checks can stall. Do not ask for a finger until preflight is complete.
+  showEnrollScreen(memberName, fingerprintId, 0, "PREPARING...", "Please wait");
 
-  // Tell the website the device really has the job, so the admin page can say
-  // "the device is ready, place the finger now" instead of spinning silently.
-  // Nothing is sent to the sensor here, so it cannot disturb the enrollment.
+  // Acknowledge receipt; this does not mean the first capture is ready yet.
+  // The admin and employee should follow the LCD's PLACE/LIFT instructions.
   reportJobStarted(jobId, fingerprintId);
 
   EnrollResult result;
   if (!sensorReady && !detectSensor(1)) {
     enrollDetail = "sensor not responding; check Serial `sensor`, power and UART wiring";
     result = ENROLL_SENSOR_ERROR;
+  } else if (memberId <= 0) {
+    enrollDetail = "invalid employee in enrollment request";
+    result = ENROLL_FAILED;
   } else if (fingerprintId < 1 || fingerprintId >= (int)finger.capacity()) {
     enrollDetail = "ID " + String(fingerprintId) + " is outside this R307's usable slots 1-" + String((int)finger.capacity() - 1);
     result = ENROLL_FAILED;
@@ -1905,6 +1925,7 @@ bool checkPendingEnroll() {
 
   bool added = false;
   if (result == ENROLL_OK) {
+    showEnrollScreen(memberName, fingerprintId, ENROLL_SCANS, "SENDING TO WEB", "Please wait");
     const int code = postMappingToServer(fingerprintId, memberId, memberName);
     if (code == 200) {
       rememberMapping(fingerprintId, memberName, memberId);
@@ -1914,18 +1935,20 @@ bool checkPendingEnroll() {
       delay(2000);
     } else if (code >= 400 && code < 500) {
       // The website refused the mapping (for example the ID was taken).
-      reportJobFailed(jobId, "website refused the mapping");
-      showLines("Not saved on website", "Choose another ID", "in admin", "");
+      showLines("Web refused mapping", "Template on sensor", "Check web / Serial", "");
       beepError();
+      reportJobFailed(jobId, "website refused the mapping");
       delay(WARNING_SHOW_MS);
     } else {
       // The finger is stored on the sensor; the website will get the mapping soon.
       mappingPending = true;
       mapFingerprintId = fingerprintId;
       mapMemberId = memberId;
+      mapJobId = jobId;
       mapMemberName = memberName;
       mapNextTryMs = millis() + MAPPING_RETRY_MS;
-      rememberMapping(fingerprintId, memberName, memberId);
+      // Do not cache an unconfirmed owner. A later refusal must not make an
+      // offline scan look as though it belongs to this employee.
       added = true;
       showBig(memberName, "OK", "Syncing to web...");
       beepSuccess();
@@ -1936,10 +1959,11 @@ bool checkPendingEnroll() {
     // which step failed and what the sensor answered.
     String reason = enrollReason(result);
     if (enrollDetail.length() > 0) reason = enrollDetail;
-    reportJobFailed(jobId, reason);
-    showLines("DOES NOT SCAN", reason, "Not saved - retry", "on the website below");
+    showLines("ENROLL FAILED", reason, "Check website", "and try again");
     beepError();
-    delay(WARNING_SHOW_MS);
+    reportJobFailed(jobId, reason);
+    // Leave the explanation visible long enough to read it at the door.
+    delay(6000);
   }
 
   enrollingFromServer = false;
@@ -1958,7 +1982,7 @@ int postMappingToServer(int fingerprintId, int memberId, const String &memberNam
   beginServerRequest(http, "/api/attendance/mappings");
   addDeviceHeaders(http);
 
-  DynamicJsonDocument doc(256);
+  DynamicJsonDocument doc(768);
   doc["fingerprintId"] = fingerprintId;
   doc["memberId"] = memberId;
   doc["memberName"] = memberName;
@@ -1967,16 +1991,27 @@ int postMappingToServer(int fingerprintId, int memberId, const String &memberNam
   String json;
   serializeJson(doc, json);
   const int httpCode = http.POST(json);
+  const String body = httpCode == 200 ? http.getString() : String("");
   http.end();
 
   Serial.print("Mapping posted, HTTP ");
   Serial.println(httpCode);
+  if (httpCode == 408 || httpCode == 429) return -1; // transient: retry, don't declare a refusal
+  if (httpCode == 200) {
+    DynamicJsonDocument reply(1024);
+    const bool confirmed = !deserializeJson(reply, body) && (reply["success"] | false) &&
+                           (reply["fingerprintId"] | 0) == fingerprintId &&
+                           memberId > 0 && (reply["memberId"] | 0) == memberId;
+    if (!confirmed) {
+      Serial.println("Website did not confirm this employee and fingerprint; will retry");
+      return -1; // an unrelated HTTP 200 is not a mapping acknowledgement
+    }
+  }
   return httpCode;
 }
 
-// Tells the website the device picked the job up, so the admin page stops
-// guessing whether the scanner is even online. Sent BEFORE the first sensor
-// command, so it can never disturb the enrollment session.
+// Tells the website the device picked the job up. The LCD already says
+// PREPARING; the actual place/lift instructions follow the safety checks.
 void reportJobStarted(int jobId, int fingerprintId) {
   if (jobId <= 0 || WiFi.status() != WL_CONNECTED) return;
 
@@ -1985,13 +2020,13 @@ void reportJobStarted(int jobId, int fingerprintId) {
   beginServerRequest(http, "/api/attendance/mappings");
   addDeviceHeaders(http);
 
-  DynamicJsonDocument doc(256);
+  DynamicJsonDocument doc(512);
   doc["action"] = "job_started";
   doc["jobId"] = jobId;
   doc["fingerprintId"] = fingerprintId;
   doc["deviceId"] = deviceId;
   doc["templates"] = templateCount;
-  doc["detail"] = "Device is ready - lift the finger, then place it flat (ID " +
+  doc["detail"] = "Scanner received the request. Wait for PLACE FINGER on its screen (ID " +
                   String(fingerprintId) + ")";
   String json;
   serializeJson(doc, json);
@@ -2013,45 +2048,66 @@ void reportJobStarted(int jobId, int fingerprintId) {
   Serial.println(httpCode);
 }
 
-// Tells the website the job failed, so the admin page stops waiting.
+// A failed enrollment must not remain silently pending on the website if its
+// first report was lost. Retry the report, not the fingerprint capture.
 void reportJobFailed(int jobId, const String &reason) {
-  if (jobId <= 0 || WiFi.status() != WL_CONNECTED) return;
+  if (jobId <= 0) return;
+  pendingFailureJobId = jobId;
+  pendingFailureReason = reason.substring(0, 160);
+  pendingFailureRetryAt = millis();
+  retryPendingEnrollmentFailure();
+}
+
+void retryPendingEnrollmentFailure() {
+  if (!pendingFailureJobId || WiFi.status() != WL_CONNECTED ||
+      (int32_t)(millis() - pendingFailureRetryAt) < 0) return;
 
   HTTPClient http;
   http.setTimeout(SERVER_TIMEOUT_MS);
   beginServerRequest(http, "/api/attendance/mappings");
   addDeviceHeaders(http);
 
-  DynamicJsonDocument doc(256);
+  DynamicJsonDocument doc(512);
   doc["action"] = "job_failed";
-  doc["jobId"] = jobId;
-  doc["reason"] = reason;
+  doc["jobId"] = pendingFailureJobId;
+  doc["reason"] = pendingFailureReason;
   String json;
   serializeJson(doc, json);
   const int httpCode = http.POST(json);
+  const String body = httpCode == 200 ? http.getString() : String("");
   http.end();
 
-  Serial.print("Reported failed job ");
-  Serial.print(jobId);
-  Serial.print(" (");
-  Serial.print(reason);
-  Serial.print("), HTTP ");
+  DynamicJsonDocument reply(512);
+  const bool confirmed = httpCode == 200 && !deserializeJson(reply, body) &&
+                         (reply["success"] | false) && (reply["jobId"] | 0) == pendingFailureJobId;
+  Serial.print("Reporting failed enrollment ");
+  Serial.print(pendingFailureJobId);
+  Serial.print(", HTTP ");
   Serial.println(httpCode);
+  if (confirmed) {
+    pendingFailureJobId = 0;
+    pendingFailureReason = "";
+  } else {
+    Serial.println("Enrollment failure report not confirmed; will retry");
+    pendingFailureRetryAt = millis() + 5000UL;
+  }
 }
 
-// Retries a mapping the website has not accepted yet. A 200 or a 4xx ends the retries.
+// Retry only the website mapping, never the sensor capture. A verified 200
+// finishes it; a definite refusal reports the failure to the original job.
 void retryPendingMapping() {
   if (!mappingPending || enrollingFromServer) return;
-  if (millis() < mapNextTryMs) return;
+  if ((int32_t)(millis() - mapNextTryMs) < 0) return;
 
   const int code = postMappingToServer(mapFingerprintId, mapMemberId, mapMemberName);
-  if (code == 200 || (code >= 400 && code < 500)) {
+  if (code == 200) {
     mappingPending = false;
-    if (code == 200) {
-      Serial.println("Pending mapping delivered to the website");
-    } else {
-      Serial.println("Website refused the pending mapping; dropped");
-    }
+    rememberMapping(mapFingerprintId, mapMemberName, mapMemberId);
+    Serial.println("Pending mapping delivered to the website");
+  } else if (code >= 400 && code < 500) {
+    mappingPending = false;
+    Serial.println("Website refused the pending mapping");
+    reportJobFailed(mapJobId, "website refused the mapping");
   } else {
     mapNextTryMs = millis() + MAPPING_RETRY_MS;
   }
@@ -2245,7 +2301,24 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
       Serial.print(step);
       Serial.print("/2, attempt ");
       Serial.println(attempt);
-      if (finger.enroll((uint16_t)id, step, waitMs)) {
+      // A transient early no-finger reply must not end the job before the
+      // promised placement window. Keep the same prompt and remaining budget.
+      // The R307 adapter classifies unexpected responses after conversion or
+      // STORE as image/sensor errors, so an ambiguous write is never retried.
+      const uint32_t waitStarted = millis();
+      bool accepted = false;
+      for (;;) {
+        const uint32_t elapsed = (uint32_t)(millis() - waitStarted);
+        if (elapsed >= waitMs) break;
+        accepted = finger.enroll((uint16_t)id, step, waitMs - elapsed);
+        if (accepted || finger.getLastStatus() != BIOVO_ACK_TIMEOUT) break;
+        const uint32_t used = (uint32_t)(millis() - waitStarted);
+        if (used >= waitMs) break;
+        Serial.println("No image yet; still waiting for this placement");
+        const uint32_t pause = waitMs - used < 100U ? waitMs - used : 100U;
+        delay(pause);
+      }
+      if (accepted) {
         Serial.println("Capture accepted");
         beepSuccess();
         captureDone = true;
@@ -2341,7 +2414,17 @@ EnrollResult confirmEnrolledFinger(int id, const String &who, uint32_t deadlineM
       return ENROLL_NOT_CONFIRMED;
     }
     const uint32_t scanWait = (uint32_t)scanRemaining < ENROLL_ADD_TIMEOUT_MS ? (uint32_t)scanRemaining : ENROLL_ADD_TIMEOUT_MS;
-    const int state = searchGlass(matchedId, scanWait);
+    int state = 0;
+    for (;;) {
+      const uint32_t elapsed = (uint32_t)(millis() - scanStart);
+      if (elapsed >= scanWait) break;
+      state = searchGlass(matchedId, scanWait - elapsed);
+      if (state != 0) break;
+      const uint32_t used = (uint32_t)(millis() - scanStart);
+      if (used >= scanWait) break;
+      const uint32_t pause = scanWait - used < 100U ? scanWait - used : 100U;
+      delay(pause);
+    }
     Serial.print("Confirm scan ");
     Serial.print(found + 1);
     Serial.print("/");
@@ -2430,6 +2513,7 @@ EnrollResult enrollFingerprint(int id, const String &who) {
   Serial.println("Two captures: place the same finger flat and still for each one, and lift it in between.");
 
   enrollDetail = "";
+  showEnrollScreen(who, id, 0, "PREPARING...", "Please wait");
 
   // A stale/offline mapping must never authorize deleting another employee's
   // sensor slot. Re-check the live website immediately before slot cleanup.
@@ -2582,8 +2666,8 @@ void manualEnroll(int id) {
 
 /* ── Real-time event stream (Server-Sent Events) ─────────────────────────── */
 // The device keeps one stream open. The server pushes "data: refresh" when a
-// job is queued or a mapping changes. Between events nothing is sent.
-// A slow fallback poll runs only while the stream is down.
+// job is queued or a mapping changes. A periodic poll is also kept as a
+// safety net when the stream is down or appears connected but misses an event.
 void keepServerLinkAlive() {
   static bool wifiWasConnected = false;
   const bool wifiConnected = WiFi.status() == WL_CONNECTED;
@@ -2609,8 +2693,8 @@ void keepServerLinkAlive() {
   /* The pending-job poll is a SAFETY NET, not only a fallback. A weak link can
    * leave the event stream socket open and silent, and a door that hears about
    * a new fingerprint only when that socket recovers is the "I must stand near
-   * the router to add a finger" the owner reported. Asking a tiny question every
-   * 15 s costs nothing and keeps Add Fingerprint fast. */
+   * the router to add a finger" the owner reported. Poll every five seconds
+   * even with a connected stream so a lost event cannot hide an enrollment. */
   if (!enrollingFromServer && millis() - lastPendingCheck > PENDING_POLL_FALLBACK_MS) {
     lastPendingCheck = millis();
     checkPendingEnroll();
@@ -2671,10 +2755,13 @@ void pumpEventStream() {
     }
   }
   if (gotRefresh && !enrollingFromServer) {
-    Serial.println("Real-time event: refreshing names, jobs and the open hours");
+    Serial.println("Real-time event: checking enrollment, then names and open hours");
+    // An enrollment should not wait behind two unrelated HTTP requests, which
+    // may each take seconds on a weak link. Enrollment itself still validates
+    // the latest mappings before it can prepare any sensor slot.
+    checkPendingEnroll();
     loadMappingsFromServer();
     loadRestScheduleFromServer();
-    checkPendingEnroll();
   }
 }
 

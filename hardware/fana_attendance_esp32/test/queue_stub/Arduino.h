@@ -11,6 +11,7 @@ class String {
   String(const std::string &s) : text_(s) {}
   String(unsigned long n) : text_(std::to_string(n)) {}
   size_t length() const { return text_.length(); }
+  String substring(size_t from, size_t to) const { return String(text_.substr(from, to - from)); }
   const char *c_str() const { return text_.c_str(); }
   char operator[](size_t i) const { return text_[i]; }
   int indexOf(char c) const {

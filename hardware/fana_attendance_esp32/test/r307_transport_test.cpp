@@ -176,6 +176,25 @@ static void test_fresh_capture_and_confirmation() {
   assert(!reader.enroll(1000, 1, 500)); // capacity is a count; last slot is 999
 }
 
+static void test_no_finger_after_capture_is_not_a_wait_timeout() {
+  nowMs = 0;
+  FakeSensor s;
+  R307Compat reader(s);
+  prepare(s, reader);
+  // If the sensor loses the image during conversion, do not report that the
+  // person failed to appear for the entire waiting period.
+  s.ack(FINGERPRINT_GETIMAGE);
+  s.plan(FINGERPRINT_IMAGE2TZ, {FINGERPRINT_NOFINGER});
+  assert(!reader.enroll(5, 1, 30000));
+  assert(reader.getLastStatus() == 0x06); // unclear image; prompt/retry
+  // A no-finger-shaped STORE error must never lead to a blind second write.
+  s.ack(FINGERPRINT_GETIMAGE); s.ack(FINGERPRINT_IMAGE2TZ); s.ack(FINGERPRINT_REGMODEL);
+  s.plan(FINGERPRINT_STORE, {FINGERPRINT_NOFINGER});
+  assert(!reader.enroll(5, 2, 30000));
+  assert(reader.getLastStatus() == 0xFE); // sensor error, not no-finger timeout
+  assert(s.plans.empty());
+}
+
 static void test_mismatch_and_ambiguous_store() {
   nowMs = 0;
   FakeSensor s;
@@ -250,6 +269,7 @@ int main() {
   test_capture_time_precedes_matching_delays();
   test_quality_and_no_finger();
   test_fresh_capture_and_confirmation();
+  test_no_finger_after_capture_is_not_a_wait_timeout();
   test_mismatch_and_ambiguous_store();
   test_bad_and_late_packets();
   test_late_boot();

@@ -48,19 +48,32 @@ class R307Compat {
   // Some optical readers support the optional LED commands. Not all R307
   // variants do; failure must never disable fingerprint capture.
   //
-  // Two commands are tried, because they are not equally supported: the plain
-  // LEDON, and the "aura" LED configuration (blue, always on) that many clones
-  // answer even when they refuse the plain one. A reader that turns its own
-  // illumination off after a capture - the "the sensor does not light up"
-  // report - is the reason this exists.
+  // Three commands are tried, in the order that costs the least: the plain
+  // LEDON, then the "aura" LED configuration (breathing blue, unlimited cycles)
+  // that many clones answer even when they refuse the plain one, and finally a
+  // steady-on blue in the same layout.
+  //
+  // The aura command is deliberately the BREATHING pattern in blue with zero
+  // cycles, i.e. "blink blue forever". The owner's request (Oct 2026) was
+  // exactly that: "make the blue light continuous / blinking non-stop, so a
+  // finger placed at any moment is scanned". A steady-on LED that the module
+  // itself switches off after a capture is what produced the dark window; a
+  // breathing pattern that never ends keeps the glass visibly alive, and a
+  // repeat of this same command is harmless if the reader already honours it.
   bool requestLightOn(uint32_t timeoutMs = 1200) {
     uint8_t reply[32];
     const uint8_t light[] = {FINGERPRINT_LEDON};
     if (command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
 #ifdef FINGERPRINT_AURALEDCONFIG
-    const uint8_t aura[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_ON, 0x00,
-                            FINGERPRINT_LED_BLUE, 0x00, 0x00};
+    // Layout used by R307/AS608 clones: func, start colour, end colour, cycles.
+    // cycles = 0 means "never stop", so the blue light keeps breathing.
+    const uint8_t aura[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_BREATHING,
+                            FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
     if (command(aura, sizeof(aura), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
+    // A clone that refuses breathing but accepts a steady blue is still lit.
+    const uint8_t steady[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_ON,
+                              FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
+    if (command(steady, sizeof(steady), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
 #endif
     return false;
   }

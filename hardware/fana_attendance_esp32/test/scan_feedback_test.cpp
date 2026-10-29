@@ -23,38 +23,42 @@ int main() {
   const auto mulu = notice("b", "Mulu", 1790000100U, DELIVERY_OUT);
   const auto review = notice("c", "Sara", 0, DELIVERY_REVIEW);
 
-  // Wi-Fi association is not confirmation: start sending, then say saved if
-  // a website receipt has not arrived. The original name/time must survive.
+  // Wi-Fi association is not confirmation: the door says SENDING and keeps
+  // saying it for a full round-trip budget. A slow-but-working website must
+  // never be called "saved offline" after 1.8 s (owner, Oct 2026: "even though
+  // there is Wi-Fi the system says saved on device"). The original name/time
+  // must survive either way.
   feedback.saved(abebe, true, 100);
-  assert(feedback.phase() == ScanFeedback::SENDING);
+  assert(feedback.phase() == ScanFeedback::SENDING && feedback.linkWasUp());
   assert(!feedback.tick(1899));
-  assert(feedback.tick(1900) && feedback.phase() == ScanFeedback::SAVED);
+  assert(!feedback.tick(8000));
+  assert(feedback.tick(8101) && feedback.phase() == ScanFeedback::SAVED);
   assert(std::strcmp(feedback.current().name, "Abebe") == 0);
   assert(feedback.current().scannedAt == abebe.scannedAt);
   // A confirmed reply for the same event can update the current result now.
-  assert(feedback.mayShow(abebe, 1901));
-  feedback.delivered(abebe, 1901);
+  assert(feedback.mayShow(abebe, 8102));
+  feedback.delivered(abebe, 8102);
   assert(feedback.phase() == ScanFeedback::SENT_IN);
-  assert(!feedback.tick(4900));
-  assert(feedback.tick(4901) && feedback.phase() == ScanFeedback::IDLE);
+  assert(!feedback.tick(11101));
+  assert(feedback.tick(11102) && feedback.phase() == ScanFeedback::IDLE);
 
   // Offline gives the honest stored message immediately. Later deliveries of
   // several people can be shown in order without overwriting a fresh scan.
-  feedback.saved(mulu, false, 6000);
-  assert(feedback.phase() == ScanFeedback::SAVED);
-  assert(!feedback.mayShow(abebe, 7000));
-  assert(feedback.mayShow(abebe, 7500));
-  feedback.delivered(abebe, 7500);
+  feedback.saved(mulu, false, 20000);
+  assert(feedback.phase() == ScanFeedback::SAVED && !feedback.linkWasUp());
+  assert(!feedback.mayShow(abebe, 21000));
+  assert(feedback.mayShow(abebe, 21500));
+  feedback.delivered(abebe, 21500);
   assert(feedback.phase() == ScanFeedback::SENT_IN);
   assert(std::strcmp(feedback.current().name, "Abebe") == 0);
-  assert(feedback.mayShow(mulu, 9000));
-  feedback.delivered(mulu, 9000);
+  assert(feedback.mayShow(mulu, 23000));
+  feedback.delivered(mulu, 23000);
   assert(feedback.phase() == ScanFeedback::SENT_OUT);
   assert(feedback.current().scannedAt == mulu.scannedAt);
-  feedback.delivered(review, 10500);
+  feedback.delivered(review, 24500);
   assert(feedback.phase() == ScanFeedback::REVIEW);
   auto already = notice("d", "Sami", 1790000200U, DELIVERY_ALREADY);
-  feedback.delivered(already, 12000);
+  feedback.delivered(already, 26000);
   assert(feedback.phase() == ScanFeedback::ALREADY); // not a new IN or OUT
 
   /* A warning about a placement is a STATE, not a pause: it expires on its own
@@ -84,7 +88,8 @@ int main() {
 
   // millis wrap must not leave the message stuck or lose the next status.
   feedback.saved(abebe, true, UINT32_MAX - 1000U);
-  assert(feedback.tick(800U) && feedback.phase() == ScanFeedback::SAVED);
+  assert(!feedback.tick(4100U));
+  assert(feedback.tick(7100U) && feedback.phase() == ScanFeedback::SAVED);
 
   const char *id = "0123456789abcdef0123456789abcdef";
   assert(receiptMatches(id, 1790000000U, 55, 7, id, 1790000000U, 55, 7, "clock_in", true));

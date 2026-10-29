@@ -256,15 +256,89 @@ static void test_optional_led() {
   assert(reader.begin(1500));
   s.ack(FINGERPRINT_LEDON);
   assert(reader.requestLightOn());
-  // A reader that rejects LED-ON must still process ordinary capture commands.
+  // A clone that refuses the plain LED-ON but accepts the aura LED layout is
+  // lit by the second command - the "sensor does not light up" reader.
   s.plan(FINGERPRINT_LEDON, {1});
+  s.ack(FINGERPRINT_AURALEDCONFIG);
+  assert(reader.requestLightOn());
+  // A reader that rejects both still processes ordinary capture commands.
+  s.plan(FINGERPRINT_LEDON, {1});
+  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
   assert(!reader.requestLightOn());
   s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
   assert(reader.fingerPresent() == 0);
+  // The handshake is a password verify: it proves the module is listening
+  // without touching its memory.
+  s.ack(FINGERPRINT_VERIFYPASSWORD);
+  assert(reader.handshake(1200));
+}
+
+/* The door is between two employees of the same group. While the first finger
+ * is still resting on the glass, the sketch must not spend a match - it asks
+ * the short question instead, and a missing reply costs the short timeout, not
+ * two and a half seconds. */
+static void test_short_lift_poll() {
+  nowMs = 0;
+  FakeSensor s;
+  R307Compat reader(s);
+  prepare(s, reader);
+  s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(reader.fingerPresent(220) == 0);
+  // A finger (or an unclear press) on the glass reports as "something there".
+  s.ack(FINGERPRINT_GETIMAGE);
+  assert(reader.fingerPresent(220) == 1);
+  s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_IMAGEMESS});
+  assert(reader.fingerPresent(220) == 1);
+  // A silent reader cannot hold the next employee for 2.5 s either: the short
+  // poll gives up in roughly the short timeout, and the only extra cost is one
+  // quiet-line drain after the lost frame.
+  nowMs = 0;
+  s.plan(FINGERPRINT_GETIMAGE, {}, 0, false, true);
+  s.plan(FINGERPRINT_GETIMAGE, {}, 0, false, true);
+  assert(reader.fingerPresent(220) == -1);
+  assert(nowMs < 1500);
+}
+
+/* The plain LED-ON is not the only way to light an R307 clone: the aura layout
+ * is tried second, and a reader that answers either one is treated as lit. */
+static void test_light_has_two_commands() {
+  nowMs = 0;
+  FakeSensor s;
+  R307Compat reader(s);
+  prepare(s, reader);
+  s.plan(FINGERPRINT_LEDON, {1});          // plain command refused
+  s.ack(FINGERPRINT_AURALEDCONFIG);        // clone answers the aura layout
+  assert(reader.requestLightOn(300));
+  assert(s.commands.back()[0] == FINGERPRINT_AURALEDCONFIG);
+  s.ack(FINGERPRINT_VERIFYPASSWORD);
+  assert(reader.handshake(300));
+}
+
+/* An enrollment placement must be able to say WHY it saw nothing: the counters
+ * separate "nobody touched the glass" from "the image was unclear". */
+static void test_placement_answer_counters() {
+  nowMs = 0;
+  FakeSensor s;
+  R307Compat reader(s);
+  prepare(s, reader);
+  for (int i = 0; i < 20; ++i) s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(!reader.enroll(7, 1, 200));
+  assert(reader.emptyGlassInLastWait() >= 2);
+  assert(reader.imagesSeenInLastWait() == 0);
+  assert(reader.unclearInLastWait() == 0);
+  nowMs = 0;
+  s.plans.clear();   // drop the empty-glass replies the first wait did not use
+  s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_IMAGEFAIL});
+  assert(!reader.enroll(7, 1, 200));
+  assert(reader.unclearInLastWait() == 1);
+  assert(reader.emptyGlassInLastWait() == 0);
 }
 
 int main() {
   test_optional_led();
+  test_light_has_two_commands();
+  test_short_lift_poll();
+  test_placement_answer_counters();
   test_capacity_and_full_range();
   test_capture_time_precedes_matching_delays();
   test_quality_and_no_finger();
@@ -273,5 +347,5 @@ int main() {
   test_mismatch_and_ambiguous_store();
   test_bad_and_late_packets();
   test_late_boot();
-  std::cout << "R307 transport tests passed: timeouts, full search range, quality, lift, capture, mismatch, late/bad packets and recovery\n";
+  std::cout << "R307 transport tests passed: timeouts, full search range, quality, lift, short lift poll, two light commands, wait counters, capture, mismatch, late/bad packets and recovery\n";
 }

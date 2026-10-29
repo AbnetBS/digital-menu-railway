@@ -2696,8 +2696,9 @@ export default function AttendanceTab() {
               <div className="rounded-xl border border-amber-800 bg-amber-950/30 p-3">
                 <p className="font-black text-amber-200">Manual</p>
                 <p className="mt-1 text-stone-300">
-                  Connect the device to the website, then in Serial Monitor at 115200 baud type <code>enroll 7</code> using the ID you want.
-                  After it says Stored, map the ID here in Staff Fingerprints: choose that same person and ID below, choose the finger name, then press Add.
+                  In Serial Monitor at 115200 baud type <code>enroll 7</code> using the ID you want. This works with or without the
+                  website: the device uses the employee names it already saved. After it says Stored, map the ID here in
+                  Staff Fingerprints: choose that same person and ID below, choose the finger name, then press Add.
                 </p>
               </div>
             </div>

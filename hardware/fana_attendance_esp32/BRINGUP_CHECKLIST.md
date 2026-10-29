@@ -9,8 +9,9 @@ a real sensor, wire, power supply, LCD, or buzzer works.
 
 - Unplug USB and every external power supply before moving wires.
 - Do not connect the sensor's VCC until its exact board/input-voltage rating is
-  confirmed from its markings or datasheet. `FPC1020A` by itself does not tell
-  us whether the board in hand accepts 3.3 V or 5 V. **Do not try both voltages.**
+  confirmed from its markings or the seller's datasheet. An R307 module is
+  commonly a regulated 5 V board, but the marketing name alone does not prove
+  what the board in hand accepts. **Do not try both voltages.**
 - Never put 5 V on an ESP32 GPIO. Keep the LCD's SDA/SCL behind the level
   shifter. Do not drive a buzzer directly from GPIO23.
 - Take a clear photo of the fingerprint module's front and back, including its
@@ -42,18 +43,32 @@ and connect only these four wires; leave the LCD, buzzer, and LEDs disconnected:
 | TX | GPIO16 (ESP32 RX2) |
 | RX | GPIO17 (ESP32 TX2) |
 
-Use the pin labels, not wire color alone. Upload
-`hardware/diagnostics/fpc1020a_count_check/fpc1020a_count_check.ino` and open
-Serial Monitor at **115200 baud**. It sends one non-destructive `COUNT` command; it does not enroll or delete
-fingerprints. The sensor UART is **19200 baud, 8N1**. Because this sensor was
-reported to heat up, stay beside the power switch and unplug USB immediately if
-the sensor gets hot, smells, smokes, or the ESP32 resets. Unplug USB after the
-result; do not try another voltage at random.
+Use the pin labels, not wire colour alone (R307 wire colours differ between
+sellers). This project uses the **R307 optical reader at 57600 baud, 8N1**, and
+the production sketch is its own diagnostic - there is no separate R307 test
+sketch in `diagnostics/` (the FPC1020A/Biovo files there are for the old,
+abandoned module and must not be used).
 
-**PASS:** `PASS - COUNT reply OK; stored templates = N`. `N = 0` is valid: it
-means the sensor answered but has no saved templates. A failed count means the
-link has not passed; do not repeat the test until VCC, common GND, and crossed
-TX/RX have been rechecked.
+Upload `fana_attendance_esp32.ino` and open Serial Monitor at **115200 baud**.
+Then:
+
+1. `sensor` - 20 `COUNT` commands. **PASS:** every round answered. Silence means
+   power or wiring; garbled answers mean the baud rate, the level or a sagging
+   supply. `COUNT` never enrolls or deletes anything.
+2. `lamp` - asks the reader to switch its illumination on and reports which of
+   the two light commands it accepted. **PASS:** a lit glass. A reader that
+   answers neither is left to its own firmware: it must be lit by itself.
+3. `watch 10` - place a finger once and lift it. **PASS:** the log says
+   `finger on the glass` then `glass empty` for that placement.
+
+`watch` is the decisive test for "the sensor does not light up": if a finger on
+the glass does not produce `finger on the glass`, the reader cannot see, and no
+enrollment can succeed until the light, the glass, the supply and the ground are
+fixed. The sketch now says the same thing on the LCD (`Reader sees nothing`)
+while an enrollment window is running.
+
+Stay beside the power switch: unplug USB immediately if the module gets hot,
+smells, smokes, or the ESP32 resets. Do not try another voltage at random.
 
 ### 3. LCD and level shifter
 
@@ -93,10 +108,15 @@ resistor values, and supply; do not bypass the transistor.
 ### 6. Reassemble and verify the complete attendance device
 
 Only after the individual parts pass, reconnect one part at a time and flash
-the archived baseline at
-`hardware/baselines/pre-pr55-pr56/fana_attendance_esp32/fana_attendance_esp32.ino`.
-Keep a short result log: ESP32 / sensor / LCD / green LED / red LED / buzzer,
-with each marked PASS or FAIL and the exact Serial message for any failure.
+`fana_attendance_esp32.ino` itself (the archived baseline under
+`hardware/baselines/` is the old FPC1020A build - useful for comparison only,
+never for this reader). Keep a short result log: ESP32 / sensor / LCD / green
+LED / red LED / buzzer, with each marked PASS or FAIL and the exact Serial
+message for any failure.
+
+Then run the three reader checks from step 2 again on the assembled device, and
+one scan of an already-enrolled finger: the LCD must show **SAVED ON DEVICE**
+within a second or two, with or without Wi-Fi.
 
 The next safe first step is to identify the sensor board from its front/back
 photos and confirm its VCC rating. Do not reconnect its power wire until then.

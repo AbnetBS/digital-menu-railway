@@ -45,25 +45,61 @@ class R307Compat {
   // earlier than matching/response handling and wraps like Arduino millis().
   uint32_t capturedImageMillis() const { return capturedImageMs_; }
 
-  // Some optical readers support the optional LED-ON command. Not all R307
+  // Some optical readers support the optional LED commands. Not all R307
   // variants do; failure must never disable fingerprint capture.
-  bool requestLightOn() {
+  //
+  // Two commands are tried, because they are not equally supported: the plain
+  // LEDON, and the "aura" LED configuration (blue, always on) that many clones
+  // answer even when they refuse the plain one. A reader that turns its own
+  // illumination off after a capture - the "the sensor does not light up"
+  // report - is the reason this exists.
+  bool requestLightOn(uint32_t timeoutMs = 1200) {
     uint8_t reply[32];
     const uint8_t light[] = {FINGERPRINT_LEDON};
-    return command(light, sizeof(light), 1, 1200, false, reply) && lastStatus_ == 0;
+    if (command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
+#ifdef FINGERPRINT_AURALEDCONFIG
+    const uint8_t aura[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_ON, 0x00,
+                            FINGERPRINT_LED_BLUE, 0x00, 0x00};
+    if (command(aura, sizeof(aura), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
+#endif
+    return false;
+  }
+
+  // A cheap protocol handshake: proves the module is listening and re-synchronizes
+  // a reader that has been silent or confused for a while. It never changes the
+  // capacity used for searching and never touches a stored template, so it is
+  // safe to send in the middle of a placement window.
+  bool handshake(uint32_t timeoutMs = 2000) {
+    uint8_t reply[32];
+    const uint8_t verify[] = {FINGERPRINT_VERIFYPASSWORD, 0, 0, 0, 0};
+    return command(verify, sizeof(verify), 1, timeoutMs, true, reply) && lastStatus_ == 0;
   }
 
   // A non-destructive lift check. GETIMAGE does not overwrite the character
-  // buffers, unlike image2Tz or SEARCH, so it is safe between the two captures.
+  // buffers, unlike image2Tz or SEARCH, so it is safe between the two captures
+  // and while the door watches for the next person.
   // 1 = finger/unclear image, 0 = no finger, -1 = communication/reader error.
-  int fingerPresent() {
+  //
+  // timeoutMs is short (a few hundred ms) when this is used to notice a LIFT:
+  // a lost reply must never hold the door for two and a half seconds while the
+  // next employee is already pressing the glass.
+  int fingerPresent(uint32_t timeoutMs = 2500) {
     uint8_t reply[32];
     const uint8_t image[] = {FINGERPRINT_GETIMAGE};
-    if (!command(image, sizeof(image), 1, 2500, true, reply)) return -1;
+    if (!command(image, sizeof(image), 1, timeoutMs, true, reply)) return -1;
     if (lastStatus_ == 0x00 || lastStatus_ == 0x06) return 1;
     if (lastStatus_ == 0x08) return 0;
     return -1;
   }
+
+  /* What the reader answered during the LAST waitForImage() window.
+   * "Seen 0, empty 812" is the honest description of "the finger was never on
+   * the glass (or the reader cannot see it)", which is a very different problem
+   * from "the finger was there and the image was unclear". The sketch puts
+   * these numbers on the Serial log and in the enrollment failure report. */
+  uint32_t imagesSeenInLastWait() const { return imagesSeen_; }
+  uint32_t emptyGlassInLastWait() const { return emptyGlass_; }
+  uint32_t unclearInLastWait() const { return unclear_; }
 
   bool search(uint16_t &matchedId, uint8_t &permission, uint32_t waitMs) {
     matchedId = 0;
@@ -204,6 +240,9 @@ class R307Compat {
   Stream &stream_;
   uint16_t capacity_ = 0;
   uint32_t capturedImageMs_ = 0;
+  uint32_t imagesSeen_ = 0;   // GETIMAGE replies that carried a usable image
+  uint32_t emptyGlass_ = 0;   // GETIMAGE replies that said "no finger"
+  uint32_t unclear_ = 0;      // GETIMAGE replies that said "image unclear"
   uint8_t lastStatus_ = 0xFF;
   uint8_t lastRawStatus_ = 0xFF;
   bool needsQuiet_ = false;
@@ -293,14 +332,23 @@ class R307Compat {
 
   bool waitForImage(uint32_t waitMs) {
     const uint32_t started = millis();
+    imagesSeen_ = 0;
+    emptyGlass_ = 0;
+    unclear_ = 0;
     do {
       uint8_t reply[32];
       const uint8_t image[] = {FINGERPRINT_GETIMAGE};
       if (!command(image, sizeof(image), 1, 2500, true, reply)) return false;
       if (lastStatus_ != 0x08) {
-        if (lastStatus_ == 0) capturedImageMs_ = millis();
+        if (lastStatus_ == 0) {
+          capturedImageMs_ = millis();
+          imagesSeen_++;
+        } else {
+          unclear_++;
+        }
         return lastStatus_ == 0;
       }
+      emptyGlass_++;
       if ((uint32_t)(millis() - started) >= waitMs) return false;
       delay(70);
     } while ((uint32_t)(millis() - started) < waitMs);

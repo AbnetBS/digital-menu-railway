@@ -56,6 +56,14 @@ class HTTPClient {
 static void beginServerRequest(HTTPClient &, const String &) {}
 static void addDeviceHeaders(HTTPClient &) {}
 static void rememberMapping(int finger, const String &, int member) { assert(finger == 42 && member == 9); ++remembered; }
+// The sketch writes the confirmed name back to its offline cache here; the
+// test only needs to know it was asked for.
+static int cacheWrites = 0;
+static bool saveMappingCache() { ++cacheWrites; return true; }
+static uint16_t mapPendingTries = 0;
+// The sketch gives up on a mapping the website never confirms, otherwise that
+// one flag would block every later enrollment. Too high to fire in this test.
+static const uint16_t MAPPING_MAX_TRIES = 30;
 static void reportJobFailed(int job, const String &reason) { assert(reason == String("website refused the mapping")); failedJob = job; }
 // -- INSERT REAL ENROLLMENT MAPPING POST --
 // -- INSERT REAL ENROLLMENT MAPPING RETRY --

@@ -399,7 +399,7 @@ pass(
 pass(
   "firmware follows the R307 protocol: two fresh captures and one confirmed match",
   firmware.includes("#define ENROLL_STEPS            2") &&
-    firmware.includes("finger.enroll((uint16_t)id, step, waitMs - elapsed)") &&
+    firmware.includes("finger.enroll((uint16_t)id, step, slice)") &&
     firmware.includes('showEnrollScreen(who, id, ENROLL_STEPS + found, "PLACE FINGER",') &&
     firmware.includes("#define ENROLL_VERIFY_PLACEMENTS 1") &&
     firmware.includes("#define ENROLL_SCANS            (ENROLL_STEPS + ENROLL_VERIFY_PLACEMENTS)")

@@ -157,6 +157,12 @@ bool lcdReady = false;
 /* True while an enrollment session is running (the Serial command and the
  * website job both set it). The LCD is never re-initialized mid-enrollment. */
 bool enrollmentActive = false;
+/* Set when a placement window had to say "Reader sees nothing". It outlives the
+ * window so the failure screen and the website can name the actual fault
+ * instead of the generic "no finger was placed": a person who never pressed and
+ * a reader that cannot see produce the same R307 status, and only the sketch
+ * knows which one it was. */
+bool enrollReaderBlind = false;
 /* Clears that flag on every return path of a function that sets it. */
 struct EnrollmentGuard {
   EnrollmentGuard() { enrollmentActive = true; }
@@ -2176,7 +2182,14 @@ bool checkPendingEnroll() {
     // which step failed and what the sensor answered.
     String reason = enrollReason(result);
     if (enrollDetail.length() > 0) reason = enrollDetail;
-    showLines("ENROLL FAILED", reason, "Check website", "and try again");
+    if (enrollReaderBlind) {
+      reason = reason + " (the reader never saw anything on the glass)";
+    }
+    // The LCD takes 20 characters per row and the full detail is for the
+    // website and the Serial log, so the glass says the shortest true thing.
+    showLines("ENROLL FAILED",
+              enrollReaderBlind ? String("Reader saw nothing") : String(enrollReason(result)),
+              "Check website", "and try again");
     beepError();
     reportJobFailed(jobId, reason);
     // Leave the explanation visible long enough to read it at the door.
@@ -2610,6 +2623,7 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
         }
         if (!saidBlind && blindFor >= (uint32_t)ENROLL_NO_SIGHT_MS) {
           saidBlind = true;
+          enrollReaderBlind = true;
           Serial.println("The reader still sees nothing on the glass: check its light, its power and the glass itself");
           showEnrollScreen(who, id, step - 1, "PLACE FINGER", "Reader sees nothing");
         }
@@ -2663,6 +2677,8 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
                        " s: the reader answered 'no finger' " + String(emptyReplies) +
                        " times and 'unclear' " + String(unclearReplies) +
                        " times - check its light, power and the glass";
+        if (enrollReaderBlind)
+          enrollDetail = enrollDetail + " (it saw nothing at all for over ten seconds)";
         return ENROLL_NO_FINGER;
       }
       if (st == BIOVO_ACK_IMAGEMESS) {
@@ -2862,6 +2878,7 @@ EnrollResult enrollFingerprint(int id, const String &who) {
   EnrollmentGuard enrollmentGuard;
   // Every job starts with the preferred two-placement flow.
   enrollKeepFingerDown = false;
+  enrollReaderBlind = false;
 
   Serial.print("Enrolling ID ");
   Serial.println(id);

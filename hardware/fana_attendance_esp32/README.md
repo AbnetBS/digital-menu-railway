@@ -91,6 +91,7 @@ Read the Serial log at 115200 baud while the job runs. Every step prints what th
 | `No image yet; still waiting for this placement` (repeating) | the reader is answering "no finger" | keep the finger flat on the glass; check that the glass is lit |
 | `The reader has seen nothing yet: re-syncing it and asking for its light` | nothing answered for 6 s; the window repairs itself once | nothing yet - watch the next lines |
 | LCD shows `Reader sees nothing` under `PLACE FINGER` | 10 s and the reader has not seen a finger at all | the reader cannot see: run `watch 10` and place a finger - if it still says no finger, it is the light, the glass, the power or the wiring, not the sketch |
+| LCD shows `ENROLL FAILED / Reader saw nothing` | the whole job was blind; that flag survives the window | the reader never saw the glass: same checks as above. A person who simply did not press gets `no finger was placed` instead |
 | `reader answers during the wait: no-finger 812, unclear 0` | nothing ever touched the glass/optics | clean the glass, check the reader's red light, power and GND |
 | `unclear 14` | the reader sees something but the image is unusable | clean the glass, press flatter, dry the finger |
 | `the two captures did not match` | two different fingers (or two very different placements) | use the same finger, same area of the pad |

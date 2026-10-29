@@ -36,6 +36,8 @@ struct SerialStub {
 static bool enrollmentActive = false;
 // The last session of a job takes both captures from one steady press.
 static bool enrollKeepFingerDown = false;
+// True once a placement window had to say "Reader sees nothing".
+static bool enrollReaderBlind = false;
 struct EnrollmentGuard {
   EnrollmentGuard() { enrollmentActive = true; }
   ~EnrollmentGuard() { enrollmentActive = false; }
@@ -122,7 +124,7 @@ static void reset() {
   nowMs = 0; finger = FakeFinger(); screens.clear(); enrollHints.clear(); enrollDetail = "";
   fingerprintToStaff.clear(); mappingOnline = true; mappingCalls = 0; mapOnSecondCheck = false;
   awaitingFingerLift = false; mappingListKnown = false; lampRequests = 0;
-  enrollKeepFingerDown = false;
+  enrollKeepFingerDown = false; enrollReaderBlind = false;
 }
 static void emptyGlass() { finger.add('P', 0, BIOVO_ACK_TIMEOUT); finger.add('P', 0, BIOVO_ACK_TIMEOUT); }
 static void slotCleanup() { finger.add('C', 4); finger.add('D', 1); finger.add('C', 4); }
@@ -299,6 +301,9 @@ static void test_blind_glass_stops_promising() {
     if (hint.find("Reader sees nothing") != std::string::npos) saidIt = true;
   }
   assert(saidIt);
+  // The flag outlives the window: the failure screen and the website use it to
+  // say the reader never saw anything, not that nobody pressed.
+  assert(enrollReaderBlind);
   assert(finger.actions.empty());
 }
 

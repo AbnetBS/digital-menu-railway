@@ -261,10 +261,17 @@ static void test_optional_led() {
   s.plan(FINGERPRINT_LEDON, {1});
   s.ack(FINGERPRINT_AURALEDCONFIG);
   assert(reader.requestLightOn());
-  // A reader that rejects both still processes ordinary capture commands.
+  // A reader that rejects every light layout (plain, breathing blue, steady
+  // blue) still processes ordinary capture commands.
   s.plan(FINGERPRINT_LEDON, {1});
   s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
   assert(!reader.requestLightOn());
+  // The light commands are always blue and either breathing forever or steady:
+  // the glass must stay visibly alive, never go dark between two scans.
+  assert(s.commands[s.commands.size() - 2][2] == FINGERPRINT_LED_BLUE);
+  assert(s.commands[s.commands.size() - 2][1] == FINGERPRINT_LED_BREATHING);
+  assert(s.commands.back()[1] == FINGERPRINT_LED_ON);
   s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
   assert(reader.fingerPresent() == 0);
   // The handshake is a password verify: it proves the module is listening

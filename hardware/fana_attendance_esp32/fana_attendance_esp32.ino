@@ -63,10 +63,18 @@
  *           combines both views into one rotation-tolerant template. The
  *           device then confirms the stored ID on fresh placements. If that
  *           fails twice, the last attempt takes both pictures from ONE steady
- *           press. Every wait has a timeout, so the device never hangs. A
+ *           press. Every wait has a timeout, so the device never hangs.
+ *
+ *           A reader that does not light up is the failure the owner reported,
+ *           so the placement window repairs what can be repaired: the light is
+ *           requested two different ways before and during every placement,
+ *           a reader that has seen nothing for 6 s is re-synchronized, and at
+ *           10 s the LCD stops asking for a finger it cannot see and says
+ *           "Reader sees nothing" instead. A window that saw nothing at all is
+ *           asked once more (TRY AGAIN) before the job is called failed. A
  *           failed job is reported back to the website with its reason - and
- *           with what the reader actually answered - and is not retried in a
- *           loop.
+ *           with the number of no-finger and unclear answers the reader gave -
+ *           and is not retried in a loop.
  *   Manual: Serial "enroll <id>" stores a finger even with no website (it uses
  *           the names saved in flash); map it in admin afterwards.
  *   Idle:   "Fana Cafe Attendance / Place finger / Connected -58dB #### / Time
@@ -274,7 +282,20 @@ std::atomic<bool> queueNeedsReview{false};
 #define ENROLL_SCANS            (ENROLL_STEPS + ENROLL_VERIFY_PLACEMENTS)
 #define ENROLL_PLACE_SETTLE_MS  700   // short beat after the prompt, then the reader polls
 #define ENROLL_LIFT_PAUSE_MS    900   // pause for the lift between two steps (no sensor command)
-#define ENROLL_ADD_TIMEOUT_MS   60000 // give each placement a full minute after its LCD prompt
+/* 30 s per placement window, and a window that saw nothing is asked once more
+ * (ENROLL_NO_FINGER_WINDOWS). A full minute of silence before the first retry
+ * is a minute the admin spends believing the scanner is broken; two shorter
+ * windows give the reader (and the person) a second chance without that wait,
+ * and the worst case - nobody at the door at all - is still under a minute. */
+#define ENROLL_ADD_TIMEOUT_MS   30000 // how long one placement window waits for a finger
+#define ENROLL_NO_FINGER_WINDOWS 2    // windows worth trying when nothing is seen
+/* Inside a placement window, if the reader has seen nothing at all: re-sync it
+ * and its light once (ENROLL_RESYNC_MS), then stop promising that the glass
+ * works and say on the LCD that the reader sees nothing (ENROLL_NO_SIGHT_MS).
+ * These are the numbers that make "the sensor does not light up, then it says
+ * no fingerprint" visible at the door instead of only in the log. */
+#define ENROLL_RESYNC_MS        6000  // nothing seen for this long: re-sync the reader
+#define ENROLL_NO_SIGHT_MS      10000 // nothing seen for this long: say so on the LCD
 #define ENROLL_MAX_ATTEMPTS     6     // attempts allowed per step
 #define ENROLL_HOLD_STILL_AT    3     // unclear images before "lift and place again"
 #define ENROLL_MAX_UNCLEAR      6     // unclear images allowed per step
@@ -1599,7 +1620,14 @@ bool detectSensor(uint8_t tries) {
       sensorPollMs = SENSOR_POLL_MS;
       // This command is optional on R307 variants. Keep scanning even if the
       // reader does not support an independently controlled blue LED.
-      readerLightSupported = finger.requestLightOn();
+      // Twice: a reader that has just powered up often ignores the first
+      // optional command, and this is the moment the sketch learns whether the
+      // illumination can be controlled at all.
+      readerLightSupported = finger.requestLightOn(600);
+      if (!readerLightSupported) {
+        delay(250);
+        readerLightSupported = finger.requestLightOn(500);
+      }
       lastLightRequestMs = millis();
       lampMisses = 0;
       if (!readerLightSupported) Serial.println("Reader does not confirm LED-ON; capture remains enabled");
@@ -1659,10 +1687,18 @@ void keepReaderLampOn(uint32_t minGapMs) {
  * at boot. Some modules answer the LED command only after they have been left
  * alone for a moment, and one extra frame on the UART costs nothing. */
 void nudgeReaderLamp() {
+  /* A reader that refuses the optional light command costs a timeout every
+   * time it is asked, and a timeout inside a placement window is time the
+   * person's finger spends unread. Refusals back off; successes keep the fast
+   * cadence. */
+  if (lampMisses >= 3 && (uint32_t)(millis() - lastLightRequestMs) < (uint32_t)READER_LAMP_IDLE_MS * 8UL) return;
   lastLightRequestMs = millis();
-  if (!finger.requestLightOn(400)) return;
-  readerLightSupported = true;
-  lampMisses = 0;
+  if (finger.requestLightOn(400)) {
+    readerLightSupported = true;
+    lampMisses = 0;
+  } else if (lampMisses < 1000) {
+    lampMisses++;
+  }
 }
 
 void maintainReaderLight() {
@@ -2456,6 +2492,9 @@ int waitGlassEmpty(const String &who, int id, uint32_t budgetMs, uint8_t progres
   showEnrollScreen(who, id, progress, "LIFT YOUR FINGER", "Then place it again");
   keepReaderLampOn(READER_LAMP_BURST_MS);   // a dark glass cannot report a lift
   while ((uint32_t)(millis() - startedAt) < budgetMs) {
+    // A dark glass cannot report a lift either: keep asking for the light while
+    // this waits, at the idle cadence (a no-op when the reader confirms it).
+    keepReaderLampOn(READER_LAMP_IDLE_MS);
     const int state = glassHasFinger();
     if (state == 0) {
       errors = 0;
@@ -2530,6 +2569,9 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
       const uint32_t waitStarted = millis();
       uint32_t emptyReplies = 0;
       uint32_t unclearReplies = 0;
+      const uint32_t lastSightMs = waitStarted;
+      bool reSynced = false;
+      bool saidBlind = false;
       bool accepted = false;
       for (;;) {
         const uint32_t elapsed = (uint32_t)(millis() - waitStarted);
@@ -2547,6 +2589,26 @@ EnrollResult runCaptureSession(int id, const String &who, uint32_t deadlineMs) {
         if (accepted) break;
         const uint8_t code = finger.getLastStatus();
         if (code != BIOVO_ACK_TIMEOUT) break;   // a real answer ends the wait
+        /* That slice saw nothing at all. Two repairs, both local to the reader:
+         * once, a protocol re-sync (a confused module answers nothing), and then
+         * an honest LCD line instead of a prompt that promises a glass the
+         * reader cannot see. The job itself keeps its full budget. */
+        const uint32_t blindFor = (uint32_t)(millis() - lastSightMs);
+        if (!reSynced && step == 1 && blindFor >= (uint32_t)ENROLL_RESYNC_MS) {
+          /* Only before the FIRST capture of a session. Between the two captures
+           * the reader is holding the first image in its own buffer, and a
+           * handshake is not worth the risk of disturbing it: a blind second
+           * capture gets the light request below and nothing more. */
+          reSynced = true;
+          Serial.println("The reader has seen nothing yet: re-syncing it and asking for its light");
+          nudgeReaderLamp();
+          finger.handshake(1200);
+        }
+        if (!saidBlind && blindFor >= (uint32_t)ENROLL_NO_SIGHT_MS) {
+          saidBlind = true;
+          Serial.println("The reader still sees nothing on the glass: check its light, its power and the glass itself");
+          showEnrollScreen(who, id, step - 1, "PLACE FINGER", "Reader sees nothing");
+        }
         nudgeReaderLamp();
         const uint32_t used = (uint32_t)(millis() - waitStarted);
         if (used >= waitMs) break;
@@ -2802,6 +2864,13 @@ EnrollResult enrollFingerprint(int id, const String &who) {
   enrollDetail = "";
   showEnrollScreen(who, id, 0, "PREPARING...", "Please wait");
 
+  /* Wake the glass before anybody is asked for a finger. This is the one place
+   * that always tries the light, even when the reader refused the command at
+   * boot: a module that has since started answering it is picked up here, and
+   * an enrollment is exactly when a dark reader wastes a minute of a person's
+   * time. */
+  nudgeReaderLamp();
+
   // An offline or stale name list must never authorize deleting another
   // employee's sensor slot, so the check below has to be honest about what it
   // knows. It no longer insists on a live request: see
@@ -2832,6 +2901,7 @@ EnrollResult enrollFingerprint(int id, const String &who) {
 
   const uint32_t deadlineMs = millis() + ENROLL_TOTAL_BUDGET_MS;
   EnrollResult outcome = ENROLL_FAILED;
+  uint8_t blindWindows = 0;
 
   for (uint8_t session = 1; session <= ENROLL_MAX_SESSIONS; session++) {
     if (session > 1) {
@@ -2873,6 +2943,22 @@ EnrollResult enrollFingerprint(int id, const String &who) {
       Serial.println("Last attempt: taking both pictures from one steady press");
     }
     outcome = runCaptureSession(id, who, deadlineMs);
+
+    /* Nothing was seen on the glass for a whole window. Before that becomes a
+     * failed job, ask once more: a reader whose light came back late, or a
+     * person who pressed a moment after the prompt, then still enrolls instead
+     * of sending the admin back to the website for nothing. */
+    while (outcome == ENROLL_NO_FINGER && ++blindWindows < ENROLL_NO_FINGER_WINDOWS &&
+           (int32_t)(deadlineMs - millis()) > 0) {
+      Serial.println("No finger was seen in that window: asking for it once more");
+      nudgeReaderLamp();
+      showEnrollScreen(who, id, 0, "TRY AGAIN", "Same finger, flat");
+      beepError();
+      delay(ENROLL_LIFT_PAUSE_MS);
+      const int blindLift = waitGlassEmpty(who, id, ENROLL_LIFT_BUDGET_MS, 0);
+      if (blindLift < 0) return ENROLL_SENSOR_ERROR;
+      outcome = runCaptureSession(id, who, deadlineMs);
+    }
 
     if (outcome == ENROLL_OK) {
       const int16_t newCount = finger.getCount(3000);
@@ -2927,7 +3013,8 @@ void manualEnroll(int id) {
     Serial.println((int)finger.capacity() - 1);
     return;
   }
-  // enrollFingerprint checks the live mapping before it can clear a slot.
+  // enrollFingerprint checks the fingerprint names before it can clear a slot
+  // (a live download when the link answers, the copy in flash otherwise).
   const EnrollResult result = enrollFingerprint(id, "");
   if (result == ENROLL_OK) {
     // The sensor stores only the template. The admin must map this ID to a staff member.

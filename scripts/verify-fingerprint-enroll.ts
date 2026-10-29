@@ -31,7 +31,7 @@ const preparing=firmware.indexOf('showEnrollScreen(memberName, fingerprintId, 0,
 const receipt=firmware.indexOf("reportJobStarted(jobId, fingerprintId)");
 const enrollment=firmware.indexOf("enrollFingerprint(fingerprintId, memberName)");
 check("device shows preparation and announces receipt before sensor enrollment",preparing>=0&&receipt>preparing&&enrollment>receipt);
-check("placement gets a full prompt window",firmware.includes("#define ENROLL_ADD_TIMEOUT_MS   60000")&&firmware.includes("finger.enroll((uint16_t)id, step, slice)"));
+check("placement gets a full prompt window",firmware.includes("#define ENROLL_ADD_TIMEOUT_MS   30000")&&firmware.includes("finger.enroll((uint16_t)id, step, slice)"));
 check("device requests a single job",firmware.includes('/api/attendance/biometrics?pending=1&limit=1')&&biometrics.includes('searchParams.get("limit") === "1" ? 1 : 20'));
 check("early no-finger status is retried during capture and confirmation",firmware.includes('code != BIOVO_ACK_TIMEOUT')&&firmware.includes('searchGlass(matchedId, slice)'));
 check("successful enrollment alone posts a mapping",/if \(result == ENROLL_OK\) \{[\s\S]{0,160}postMappingToServer/.test(firmware));
@@ -60,6 +60,12 @@ check("a confirmed mapping is written into the offline name cache",firmware.incl
 check("the saved name list is enough to enroll when the link is weak",firmware.includes("if (!mappingListKnown) {")&&firmware.includes("if (loadMappingsFromServer(budget)) return true;"));
 check("the first answer on screen says where the scan is, not please wait",firmware.includes('case ScanFeedback::SENDING: showLines(name, "SAVED ON DEVICE", when, "Sending to website");'));
 check("the door says the scan is kept while it is offline",firmware.includes('"No wifi - scans safe"')&&firmware.includes('s - saved"'));
+check("a dark reader is asked for its light two different ways",adapter.includes("FINGERPRINT_AURALEDCONFIG")&&adapter.includes("FINGERPRINT_LED_BLUE")&&adapter.includes("bool requestLightOn(uint32_t timeoutMs = 1200)"));
+check("a reader that sees nothing is re-synchronized inside the placement window",firmware.includes("#define ENROLL_RESYNC_MS")&&firmware.includes("finger.handshake(1200)")&&adapter.includes("bool handshake(uint32_t timeoutMs = 2000)"));
+check("the LCD stops promising a glass the reader cannot see",firmware.includes("#define ENROLL_NO_SIGHT_MS")&&firmware.includes('"Reader sees nothing"'));
+check("a window that saw nothing is asked again before the job fails",firmware.includes("#define ENROLL_NO_FINGER_WINDOWS 2")&&firmware.includes('"TRY AGAIN"')&&firmware.includes("blindLift"));
+check("the light is requested before the first placement of every job",firmware.indexOf("nudgeReaderLamp();\n\n  // An offline or stale name list")>0);
+
 check("Serial can prove whether the reader sees a finger at all",firmware.includes("void watchSensor(int seconds)")&&firmware.includes('cmd.startsWith("watch")'));
 
 if(failed){console.error(`\n❌ R307 fingerprint guard failed (${failed})`);process.exit(1);}

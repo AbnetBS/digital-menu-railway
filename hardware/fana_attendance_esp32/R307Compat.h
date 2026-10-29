@@ -45,12 +45,34 @@ class R307Compat {
   // earlier than matching/response handling and wraps like Arduino millis().
   uint32_t capturedImageMillis() const { return capturedImageMs_; }
 
-  // Some optical readers support the optional LED-ON command. Not all R307
+  // Some optical readers support the optional LED commands. Not all R307
   // variants do; failure must never disable fingerprint capture.
+  //
+  // Two commands are tried, because they are not equally supported: the plain
+  // LEDON, and the "aura" LED configuration (blue, always on) that many clones
+  // answer even when they refuse the plain one. A reader that turns its own
+  // illumination off after a capture - the "the sensor does not light up"
+  // report - is the reason this exists.
   bool requestLightOn(uint32_t timeoutMs = 1200) {
     uint8_t reply[32];
     const uint8_t light[] = {FINGERPRINT_LEDON};
-    return command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0;
+    if (command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
+#ifdef FINGERPRINT_AURALEDCONFIG
+    const uint8_t aura[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_ON, 0x00,
+                            FINGERPRINT_LED_BLUE, 0x00, 0x00};
+    if (command(aura, sizeof(aura), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
+#endif
+    return false;
+  }
+
+  // A cheap protocol handshake: proves the module is listening and re-synchronizes
+  // a reader that has been silent or confused for a while. It never changes the
+  // capacity used for searching and never touches a stored template, so it is
+  // safe to send in the middle of a placement window.
+  bool handshake(uint32_t timeoutMs = 2000) {
+    uint8_t reply[32];
+    const uint8_t verify[] = {FINGERPRINT_VERIFYPASSWORD, 0, 0, 0, 0};
+    return command(verify, sizeof(verify), 1, timeoutMs, true, reply) && lastStatus_ == 0;
   }
 
   // A non-destructive lift check. GETIMAGE does not overwrite the character

@@ -48,15 +48,18 @@
  * Sensor UART: 57600 baud, 8N1 (common R307 factory default).
  *
  * WHAT HAPPENS
- *   Scan:   the finger is matched and the answer shows at once (SAVED ON
- *           DEVICE, or SENT TO WEBSITE with IN / OUT / late / already
- *           registered). One placement = one scan, however long the finger
- *           stays on the sensor. The reader is ready for the next person the
- *           instant the finger is lifted: while a finger rests on the glass
- *           the sketch only polls "is anything there?" instead of running a
- *           whole match, and the reader's light is re-asserted right after
- *           every scan. Wi-Fi strength changes WHERE the scan is kept, never
- *           how long the door takes.
+ *   Scan:   the finger is matched and the answer shows at once - the employee's
+ *           name and the recorded time, plus WHERE it went: SENDING TO WEBSITE
+ *           (then SENT TO WEBSITE with IN / OUT / late / already registered)
+ *           when there is a link, or SAVED OFFLINE (queued, will send by
+ *           itself) when there is not. One placement = one scan, however long
+ *           the finger stays on the sensor. The reader is ready for the next
+ *           person the instant the finger is lifted: while a finger rests on
+ *           the glass the sketch only polls "is anything there?" instead of
+ *           running a whole match, the light command is re-sent every second,
+ *           and NOTHING in the scan path blocks (a warning is a screen with a
+ *           timer, not a pause). Wi-Fi strength changes WHERE the scan is kept,
+ *           never how long the door takes.
  *   Add:    the admin presses Add Fingerprint on the website. The LCD guides
  *           R307's two enrollment captures: PLACE FINGER, LIFT, then place
  *           the same finger again at a slightly different angle. The R307
@@ -84,6 +87,14 @@
  *           Ethiopian time (UTC+3, no daylight saving). The IP address and the
  *           template count live on the device's own status page and on
  *           Serial, not on the door.
+ *   After:  "<name> / SENDING TO WEBSITE / Time HH:MM:SS", which becomes
+ *           "SENT TO WEBSITE / Attendance IN|OUT" when the website confirms
+ *           that exact scan - or "SAVED OFFLINE / Queued - will send" when
+ *           there is no usable link (owner, Oct 2026: the two cases must look
+ *           different at a glance).
+ *   Wrong:  an unregistered or unclear finger shows its warning for 2.5 s and
+ *           the door KEEPS SCANNING underneath it ("Door keeps scanning").
+ *           Nothing pauses, so a finger placed at any moment is read.
  *
  * Setup:
  *   1. Install the libraries above.
@@ -182,15 +193,35 @@ struct DeliveryNotice {
 // BEGIN SCAN FEEDBACK STATE (also compiled by the host regression tests)
 class ScanFeedback {
  public:
-  enum Phase : uint8_t { IDLE, SENDING, SAVED, SENT_IN, SENT_OUT, ALREADY, REVIEW };
+  /* NOTICE is a warning about THIS placement (unregistered finger, unclear
+   * image, a scan that could not be written). It lives here, in the same state
+   * machine as the results, because the door must never PAUSE to show it: the
+   * old code sat in delay(WARNING_SHOW_MS) with no command going to the reader,
+   * which is exactly the "the sensor goes dark for five seconds and I have to
+   * press during the dark time" report. A notice expires on its own while the
+   * scan loop keeps running underneath it. */
+  enum Phase : uint8_t { IDLE, SENDING, SAVED, SENT_IN, SENT_OUT, ALREADY, REVIEW, NOTICE };
   void saved(const DeliveryNotice &notice, bool connected, uint32_t now) {
     current_ = notice;
     phase_ = connected ? SENDING : SAVED;
     shownAt_ = now;
   }
   bool mayShow(const DeliveryNotice &notice, uint32_t now) const {
+    // A warning about the finger that is on the glass right now outranks a
+    // receipt for somebody else's earlier scan: the person at the door must be
+    // able to read why it did not work. The receipt is shown right after.
+    if (phase_ == NOTICE) return false;
     return phase_ == IDLE || strcmp(current_.eventId, notice.eventId) == 0 ||
            (uint32_t)(now - shownAt_) >= 1500U;
+  }
+  // Show a short warning without stopping the scanner.
+  void notice(const char *title, const char *line2, const char *line3, uint32_t now, uint32_t ms) {
+    putLine(noticeTitle_, sizeof(noticeTitle_), title);
+    putLine(noticeLine2_, sizeof(noticeLine2_), line2);
+    putLine(noticeLine3_, sizeof(noticeLine3_), line3);
+    noticeMs_ = ms;
+    phase_ = NOTICE;
+    shownAt_ = now;
   }
   void delivered(const DeliveryNotice &notice, uint32_t now) {
     current_ = notice;
@@ -203,6 +234,13 @@ class ScanFeedback {
     shownAt_ = now;
   }
   bool tick(uint32_t now) {
+    if (phase_ == NOTICE) {
+      if ((uint32_t)(now - shownAt_) >= noticeMs_) {
+        phase_ = IDLE;   // the door goes back to its idle screen, still scanning
+        return true;
+      }
+      return false;
+    }
     if (phase_ == SENDING && (uint32_t)(now - shownAt_) >= 1800U) {
       phase_ = SAVED; // no confirmed reply yet: the durable copy is still safe
       shownAt_ = now;
@@ -216,8 +254,24 @@ class ScanFeedback {
   }
   Phase phase() const { return phase_; }
   const DeliveryNotice &current() const { return current_; }
+  const char *noticeTitle() const { return noticeTitle_; }
+  const char *noticeLine2() const { return noticeLine2_; }
+  const char *noticeLine3() const { return noticeLine3_; }
  private:
+  // No Arduino/String dependency here: this block is also compiled by the host
+  // tests, so one plain copy loop keeps it portable.
+  static void putLine(char *dst, size_t cap, const char *src) {
+    size_t i = 0;
+    if (src) {
+      for (; i + 1 < cap && src[i]; ++i) dst[i] = src[i];
+    }
+    dst[i] = '\0';
+  }
   DeliveryNotice current_{};
+  char noticeTitle_[21] = "";
+  char noticeLine2_[21] = "";
+  char noticeLine3_[21] = "";
+  uint32_t noticeMs_ = 2500;
   Phase phase_ = IDLE;
   uint32_t shownAt_ = 0;
 };
@@ -244,6 +298,10 @@ std::atomic<int> queueLastHttpCode{0};
 std::atomic<bool> websiteClockUsed{false};
 bool scanGreenOn = false;
 uint32_t scanGreenSince = 0;
+// The red LED belongs to a warning notice and is switched off by the loop, not
+// by a blocking delay (see showSensorWarning()).
+bool warningLedOn = false;
+uint32_t warningLedSince = 0;
 String bootId;
 std::atomic<bool> networkJoinRequested{false};
 std::atomic<bool> networkScanRequested{false};
@@ -266,7 +324,18 @@ std::atomic<bool> queueNeedsReview{false};
  * the reader sat dark for up to five seconds and the next person's scan looked
  * "slow" - or, during Add Fingerprint, never happened at all. */
 #define READER_LAMP_BURST_MS    400UL
-#define READER_LAMP_IDLE_MS     2500UL
+/* Resend the (optional) light command this often while the door is idle. It
+ * used to be 2.5 s, which is long enough for a reader that switches its own
+ * illumination off to look dark between two employees. One short command per
+ * second costs nothing on a 57600-baud line and keeps the glass lit and
+ * blinking continuously, so a finger is never "too early". */
+#define READER_LAMP_IDLE_MS     1000UL
+/* A reader that answers the light command is never left dark for long: the
+ * first two misses are retried at the normal cadence, and only a reader that
+ * keeps failing drops to this gap (it costs a timeout per try, and its glass is
+ * no longer something this sketch can control). A fixed number, NOT a multiple
+ * of the idle cadence - shortening the cadence must never lengthen a dark gap. */
+#define LAMP_RETRY_BACKOFF_MS   3000UL
 /* A weak WiFi answers slowly. Four seconds was short enough that the website was
  * given up on while the router was still delivering the reply, which is why an
  * enrollment could fail far from the router. */
@@ -1283,18 +1352,33 @@ void renderScanFeedback() {
   const String when = capturedTimeText(notice.scannedAt);
   switch (scanFeedback.phase()) {
     case ScanFeedback::IDLE: showIdleScreen(); break;
-    /* The first answer is never "please wait". The owner's rule (Oct 2026) is
-     * that the door must say, within seconds and whatever the Wi-Fi is doing,
-     * WHERE this scan is. It is on the device - always - so that is what the
-     * screen says at once; the last row is the only thing that differs between
-     * a strong link and no link, and it turns into Attendance IN/OUT the moment
-     * the website confirms this exact scan. */
-    case ScanFeedback::SENDING: showLines(name, "SAVED ON DEVICE", when, "Sending to website"); break;
-    case ScanFeedback::SAVED: showLines(name, "SAVED ON DEVICE", when, "Will sync later"); break;
+    /* THE TWO CASES MUST LOOK DIFFERENT (owner, Oct 2026):
+     *
+     *   "if there is good connection the system write name, time and sent to
+     *    website but if the connection is poor or not connected it says saved
+     *    on offline queue"
+     *
+     * Every row carries the employee's name and the recorded time, so nobody
+     * has to guess who or when. Row 2 is only ever a statement about THIS scan:
+     *   SENDING TO WEBSITE   a link exists and the website is being told now
+     *   SENT TO WEBSITE      the website confirmed this exact scan (IN/OUT)
+     *   SAVED OFFLINE        no usable link: it is in the offline queue and
+     *                        will go by itself when the link returns
+     * A Wi-Fi association alone is never shown as "sent": only the website's
+     * own receipt for this event flips the screen to SENT. */
+    case ScanFeedback::SENDING: showLines(name, "SENDING TO WEBSITE", when, "");
+      break;
+    case ScanFeedback::SAVED: showLines(name, "SAVED OFFLINE", when, "Queued - will send"); break;
     case ScanFeedback::SENT_IN: showLines(name, "SENT TO WEBSITE", when, "Attendance IN"); break;
     case ScanFeedback::SENT_OUT: showLines(name, "SENT TO WEBSITE", when, "Attendance OUT"); break;
     case ScanFeedback::ALREADY: showLines(name, "ALREADY REGISTERED", when, "No new entry"); break;
     case ScanFeedback::REVIEW: showLines(name, "NEEDS REVIEW", when, "Ask the admin"); break;
+    /* A warning about the placement that just happened. The last row says the
+     * door is still live, because it is: the scan loop never stopped. */
+    case ScanFeedback::NOTICE:
+      showLines(String(scanFeedback.noticeTitle()), String(scanFeedback.noticeLine2()),
+                String(scanFeedback.noticeLine3()), "Door keeps scanning");
+      break;
   }
 }
 
@@ -1305,6 +1389,12 @@ void updateScanFeedback() {
   if (scanGreenOn && (uint32_t)(now - scanGreenSince) >= RESULT_SHOW_MS) {
     digitalWrite(GREEN_LED, LOW);
     scanGreenOn = false;
+  }
+  // The red light belongs to the warning message: both end together, and
+  // neither one delays the next scan.
+  if (warningLedOn && (uint32_t)(now - warningLedSince) >= WARNING_SHOW_MS) {
+    digitalWrite(RED_LED, LOW);
+    warningLedOn = false;
   }
   if (scanFeedback.tick(now)) renderScanFeedback();
   DeliveryNotice notice;
@@ -1675,7 +1765,7 @@ void keepReaderLampOn(uint32_t minGapMs) {
   if (!readerLightSupported) return;
   // A reader that stopped acknowledging the command is asked less often, so a
   // silent module can never spend a second of the scan loop every few seconds.
-  const uint32_t gap = lampMisses == 0 ? minGapMs : (uint32_t)READER_LAMP_IDLE_MS * 8UL;
+  const uint32_t gap = lampMisses < 2 ? minGapMs : (uint32_t)LAMP_RETRY_BACKOFF_MS;
   if ((uint32_t)(millis() - lastLightRequestMs) < gap) return;
   lastLightRequestMs = millis();
   // Wi-Fi is irrelevant: the light is local to the reader. The short timeout is
@@ -1697,7 +1787,7 @@ void nudgeReaderLamp() {
    * time it is asked, and a timeout inside a placement window is time the
    * person's finger spends unread. Refusals back off; successes keep the fast
    * cadence. */
-  if (lampMisses >= 3 && (uint32_t)(millis() - lastLightRequestMs) < (uint32_t)READER_LAMP_IDLE_MS * 8UL) return;
+  if (lampMisses >= 3 && (uint32_t)(millis() - lastLightRequestMs) < (uint32_t)LAMP_RETRY_BACKOFF_MS) return;
   lastLightRequestMs = millis();
   if (finger.requestLightOn(400)) {
     readerLightSupported = true;
@@ -1862,7 +1952,9 @@ void scanForFinger() {
   // at the next loop pass (READER_LAMP_BURST_MS later), without delaying this
   // scan's timestamp or its feedback.
   if (matched || st == BIOVO_ACK_NOUSER || st == BIOVO_ACK_IMAGEMESS)
-    lastLightRequestMs = millis() - READER_LAMP_BURST_MS;
+    // Backdated by the IDLE gap, so the very next maintainReaderLight() sends the
+    // command instead of waiting out the rest of the normal cadence.
+    lastLightRequestMs = millis() - READER_LAMP_IDLE_MS;
   // SENSOR_FAIL_LIMIT passes in a row with nothing back is not "no finger at
   // the door", it is no module. Say so, once, and let the health check look for
   // it. (The enrollment paths do not need this: a silent module there already
@@ -1919,13 +2011,26 @@ void scanForFinger() {
   }
 }
 
+/* A warning about a placement, shown WITHOUT stopping the door.
+ *
+ * Owner, Oct 2026: "if I put an unregistered finger the sensor becomes dark and
+ * after about 5 seconds it comes back - I have to put my finger during the dark
+ * time." The old version sat in delay(WARNING_SHOW_MS): two and a half seconds
+ * with no command going to the reader (so its illumination and its finger
+ * detection went quiet), plus the latch, plus the result screen - the hand-timed
+ * dark window he describes. A finger placed during it was not even looked at.
+ *
+ * Now the warning is a STATE with an expiry: the LCD and the red LED say what
+ * happened, the message disappears by itself, and scanForFinger() keeps running
+ * underneath it on every pass of loop(), so the next finger is read the moment
+ * it lands on the glass. */
 void showSensorWarning(const String &title, const String &line2, const String &line3) {
-  showLines(title, line2, line3, "");
+  scanFeedback.notice(title.c_str(), line2.c_str(), line3.c_str(), millis(), WARNING_SHOW_MS);
+  renderScanFeedback();
   digitalWrite(RED_LED, HIGH);
-  beepError();
-  delay(WARNING_SHOW_MS);
-  digitalWrite(RED_LED, LOW);
-  showIdleScreen();
+  warningLedOn = true;
+  warningLedSince = millis();
+  beepError();   // 300 ms: the only stop left in this path, and it is audible
 }
 
 // Use the image-capture time, before matching, network and display delays.
@@ -1960,6 +2065,12 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   digitalWrite(GREEN_LED, HIGH);
   scanGreenOn = true;
   scanGreenSince = millis();
+  // A good scan replaces whatever warning was on the glass, so its red light
+  // goes with it instead of burning until its own timer ends.
+  if (warningLedOn) {
+    digitalWrite(RED_LED, LOW);
+    warningLedOn = false;
+  }
   wakeDeliveryTask();
   // Light the glass again for the next person before the buzzer is even done.
   keepReaderLampOn(READER_LAMP_BURST_MS);
@@ -2062,12 +2173,9 @@ void showRefused(const String &name, const String &body) {
   }
   Serial.print("Refused: ");
   Serial.println(reason);
-  showLines(name, "NOT ACCEPTED", reason.substring(0, LCD_COLS), "Ask the admin");
-  digitalWrite(RED_LED, HIGH);
-  beepError();
-  delay(WARNING_SHOW_MS);
-  digitalWrite(RED_LED, LOW);
-  showIdleScreen();
+  // Non-blocking, like every other warning on the door: the scanner must not go
+  // quiet while a refusal is on the screen (see showSensorWarning()).
+  showSensorWarning(name, "NOT ACCEPTED", reason.substring(0, LCD_COLS));
 }
 
 /* ── Add Fingerprint from the website ─────────────────────────────────────── */

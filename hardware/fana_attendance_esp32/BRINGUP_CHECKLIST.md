@@ -115,8 +115,11 @@ LED / red LED / buzzer, with each marked PASS or FAIL and the exact Serial
 message for any failure.
 
 Then run the three reader checks from step 2 again on the assembled device, and
-one scan of an already-enrolled finger: the LCD must show **SAVED ON DEVICE**
-within a second or two, with or without Wi-Fi.
+one scan of an already-enrolled finger: within a second or two the LCD must show
+the employee's name with **SENT TO WEBSITE** (link present) or **SAVED OFFLINE**
+(no link) and the recorded time. Put an unregistered finger next: the screen must
+say **NOT REGISTERED / Door keeps scanning**, and the very next registered finger
+must be read immediately - no dark waiting period.
 
 The next safe first step is to identify the sensor board from its front/back
 photos and confirm its VCC rating. Do not reconnect its power wire until then.

@@ -1,6 +1,6 @@
 # Fana attendance device — ESP32 + R307
 
-The production sketch is `fana_attendance_esp32.ino`. It now targets the **R307 optical fingerprint reader** and keeps the existing Fana website workflow: remote enrollment jobs, fingerprint-to-member mapping, IN/OUT clocking, offline queue, 20×4 LCD, LEDs, buzzer, Wi-Fi setup and scheduled deep sleep.
+The production sketch is `fana_attendance_esp32.ino`. It now targets the **R307 optical fingerprint reader** and keeps the existing Fana website workflow: remote enrollment jobs, fingerprint-to-member mapping, IN/OUT clocking, offline queue, 20×4 LCD, LEDs, buzzer, Wi-Fi setup and optional scheduled deep sleep. The scanner now stays awake by default.
 
 ## Required libraries
 
@@ -54,39 +54,46 @@ The sketch opens UART2 at **57600 baud, 8N1**, matching the tested R307 shown by
 4. The employee lifts it.
 5. The same finger is placed again with a small position/angle change for capture 2.
 6. The R307 combines the two captures and stores one template.
-7. Fresh confirmation placements must find the same template ID.
+7. Lift again, then place the finger a **third time**. One fresh confirmation scan must find the same template ID.
 8. Only then is the ID mapped to the employee on the website.
 
-The R307’s internal matcher supports rotated placements. Employees should still place the finger pad flat enough to capture useful ridge detail.
+Use the same finger, place its pad flat and keep it still until the reader beeps. The firmware retries transient unclear images without lowering the sensor's matching security. If it reports a different ID, check whether that finger is already enrolled. Enrollment needs a live website connection, including the Serial `enroll <id>` command: the device checks current mappings before preparing a slot, so an offline/stale list cannot authorize deletion. Keep one scanner active and do not manually change fingerprint mappings while an enrollment is underway; the website and reader cannot atomically lock a physical slot across the network.
 
-## Normal scan
+## Normal scan and offline attendance time
 
-- One placement produces one attendance event.
-- The sensor returns a template ID.
-- The ESP32 posts that ID to `/api/attendance/clock`.
-- The LCD shows IN, OUT, late, already registered, or the server’s refusal.
-- A finger left on the glass does not repeatedly clock.
-- If internet is unavailable, the event is queued in LittleFS and synchronized later.
+- One placement produces one attendance event; a held finger does not clock repeatedly.
+- **Every recognized scan is saved in LittleFS first**, whether Wi-Fi is strong, weak or disconnected. The LCD and beep confirm **saved on this device**, not yet accepted by the website. It no longer shows an immediate server IN/OUT result.
+- Networking, reconnects and queue delivery run in a separate task. A slow HTTP call or a setup portal does not intentionally wait in the scanner loop. A deliberate remote enrollment temporarily owns the reader; enrollment needs connectivity.
+- **A kept scan carries its own time.** The device timestamps the successful image-capture reply, before matching and network delays. Kept scans are delivered oldest first once the website is reachable; IN/OUT, date and lateness use the recorded scan time, not reconnection time. The server stores a receipt with each unique scan and commits attendance and automatic overtime together, making retries after a lost response safe.
+- Sync the clock before the outage: after power-on, allow Wi-Fi and NTP (UDP 123) to work, and check that the LCD shows the time. During an outage the ESP32 estimates time using its monotonic clock; there can be a few seconds of error and oscillator drift over long outages.
+- If a scan occurs before the first NTP sync, it is saved with boot-relative uptime. If NTP succeeds later **without an intervening power loss**, a durable boot-time anchor reconstructs an estimate for that scan, including after a later reboot. If power is lost before that first sync, the absolute time is unknowable without a battery-backed RTC: the record is retained for **manual review**, never stamped as arrival. Legacy untimed records get the same treatment.
+- If a cached fingerprint-to-employee mapping changed before a scan reaches the server, or a newer attendance record was already written first, the conflicting record is retained for manual review rather than silently credited to the wrong person. Keep fingerprint mappings stable while scans are queued. Legacy scans or a device with no cached member mapping cannot prove the original employee; review such changes carefully.
+- The queue has finite flash space. If flash is full, damaged or unavailable, or a write is incomplete, the LCD says **SCAN NOT SAVED** and an error sounds. Do not assume attendance was recorded; use the supervised PIN/paper backup and inspect the storage. Do not format or erase flash without recovering the queue and review records.
 
-## First upload
+## First upload and staged deployment
 
-1. Select **ESP32 Dev Module**.
-2. Install the required libraries.
-3. Confirm the R307 pinout and wiring.
-4. Upload `fana_attendance_esp32.ino`.
-5. Open Serial Monitor at **115200 baud**.
-6. On first boot, join `Fana-Attendance-Setup` with password `fana12345`, then configure restaurant Wi-Fi.
-7. Confirm Serial shows `Found R307 fingerprint sensor` and the template count.
+1. Back up the database and deploy the updated website **before** this firmware. The new server receipts are required for safe retries; old server versions do not provide this guarantee. The first schema upgrade can take database locks, so stage it outside a busy shift.
+2. Select **ESP32 Dev Module** with a partition that includes LittleFS. Tested compile: ESP32 Arduino core 2.0.17, ArduinoJson 6.21.5, WiFiManager 2.0.17, hd44780 1.3.2 and Adafruit Fingerprint 2.1.3. Confirm the R307 pinout and wiring.
+3. Keep `fana_attendance_esp32.ino`, `R307Compat.h` and `OfflineQueue.h` in the same sketch folder. Compile and upload using settings that **preserve LittleFS and existing queues**; an erase-all upload destroys pending attendance. Deploying the website alone does not flash the reader.
+4. Open Serial Monitor at **115200 baud**. On first boot, join `Fana-Attendance-Setup` with password `fana12345` and configure restaurant Wi-Fi. The setup portal closes after its timeout; the reader remains available while it is open.
+5. While online, confirm the sensor is found, the correct employee mappings load, and the LCD shows the current time. Enroll and confirm a test finger, then test an existing employee's IN/OUT scans and held-finger latch. Do not erase existing templates as a troubleshooting shortcut.
+6. Test at the actual door: disconnect the access point, scan two known employees, reconnect, and verify their original scan times in attendance. Also interrupt internet while Wi-Fi stays associated. Check serial output, storage errors, manual-review warnings and the reader light. Physical tests are essential; the host simulation and compiler do not test optics, power or the installed network.
 
-## Offline attendance time
+### Long outages, device authorization and TLS
 
-**A kept scan carries its own time.** When the network is unavailable, the ESP32 stores the scan in LittleFS with the moment the finger was placed. Kept scans are delivered oldest first after connectivity returns. If the device has not reached NTP since it was powered on it claims no time at all; the server then uses arrival time rather than accepting an invented timestamp.
+The server accepts recorded scans older than three days only if `ATTENDANCE_DEVICE_TOKEN` is configured and the device sends the matching token; otherwise it responds 403 and leaves them queued, never writes the arrival time. Set the same private token in the server environment and the sketch's `deviceToken`, coordinating rollout with all existing scanners. Never commit or share the secret. With no token the device endpoints remain publicly callable and only the three-day window is allowed.
+
+On ESP32 Arduino core 2.x, the legacy URL-only `HTTPClient` call **does not verify the HTTPS certificate**. Before using a token on an untrusted network, set `serverRootCA` in the sketch to the site's correct PEM root CA and use an `https://` `serverURL`; test certificate validation and plan for certificate/CA rotation. Otherwise an attacker on the network could impersonate the server or obtain the token. The firmware warns on Serial if a token is configured without verified HTTPS. Do not enable a server token until the installed firmware can authenticate with it.
+
+### Reader's blue light
+
+Scanning and the LED request do not depend on Wi-Fi. The firmware requests the optional R307 LED-ON command at detection and reasserts it when supported. R307 variants differ: some do not support continuous host-controlled illumination or may turn it off after capture. No physical reader was available for verification, so continuous blue light is **not guaranteed**; check this exact unit's behavior and specifications. Unsupported LED control does not disable scanning.
 
 ## Serial commands
 
 At 115200 baud:
 
-- `enroll <id>` — enroll and confirm one R307 template manually
+- `enroll <id>` — enroll and confirm one R307 template manually; the website must be reachable to check mappings, and an admin must then map that ID to the employee
 - `list` — report the number of stored templates
 - `test` — one sensor communication test
 - `sensor` — repeated link test
@@ -95,13 +102,15 @@ At 115200 baud:
 - `empty confirm` — erase all templates
 - `rest show` — show scanner awake/rest schedule
 - `rest off` — keep the scanner awake
-- `rest on` — allow the configured schedule to control sleep
+- `rest on` — explicitly allow the configured schedule to put the scanner to sleep (not compatible with always-available scanning)
 - `rest reload` — reload the schedule
 - `wifi` — the link as the board sees it: status, IP, signal in dBm, channel,
   access point, how many reconnects and radio resets it has done by itself
 - `wifi scan` — every 2.4 GHz network the board can hear, with its strength
   (the fastest way to see whether the cafe's 2.4 GHz name is strong at the door)
-- `wifi join` — forget the current socket and reconnect now
+- `wifi join` — forget the current socket and reconnect in the background
+- `queue review` — print records requiring manual reconciliation. The `reason` and original record are shown; keep the output private.
+- `queue review clear CONFIRM` — erase the review file **only after** copying and manually reconciling every record. A power cut between copy and acknowledgement can leave duplicate review lines; compare event IDs.
 
 ## WiFi that stays connected
 
@@ -115,8 +124,8 @@ The board heals its own link. This is what changed, and why.
   scans in LittleFS, and reconnects in the background.
 - **Reconnect escalation.** Ask the driver (`WiFi.reconnect()`) every 8 s; after
   45 s reset the radio (`WiFi.disconnect(true, false)` then `WiFi.begin()`,
-  credentials kept); allow at least 30 s between radio resets for slow routers;
-  after 10 minutes restart the board as the last resort.
+  credentials kept); allow at least 30 s between radio resets for slow routers.
+  Do not restart the whole board merely because Wi-Fi has been down for ten minutes.
 - **The LCD tells the truth while it does this, and shows the strength.** Row 2
   carries the connection word, the number and four bars in its twenty
   characters:
@@ -135,13 +144,13 @@ The board heals its own link. This is what changed, and why.
   with the same name is at least 8 dBm stronger (a mesh, or a second router).
 - **A new fingerprint job is polled every 15 s** even when the real-time stream
   looks connected, because a weak link can leave that socket open and silent.
-  This is what made "Add Fingerprint" work only near the router.
+  This can help when the stream stays open but stops delivering events; it does not prove Wi-Fi caused a particular enrollment failure.
 - **Requests wait 8 s instead of 4 s**, and the "device is ready" message is
   sent twice if the first one is lost.
 
 ### Making the signal stronger at the door (hardware)
 
-The board's radio is the weak part, not the website. In order of effect:
+A weak radio link is one possible cause, not proof that the website or reader is healthy. Check the signal and Serial logs at the installed location. Possible improvements:
 
 1. **2.4 GHz only.** The ESP32 has no 5 GHz radio. If the router publishes one
    name for both bands, the phone picks 5 GHz and works; the board is left with
@@ -167,27 +176,21 @@ enrollment and the real-time stream will be unreliable.
 
 ## Capacity
 
-The tested R307 reports a capacity of **1000 templates**. The sketch validates IDs against the capacity reported by the actual module rather than trusting only a product listing.
+The R307 previously reported a capacity of **1000 slots**. The sketch checks the actual reader's reported capacity and searches that whole range. It treats capacity as the number of zero-based slots, so a 1000-slot reader accepts website IDs **1–999** (slot 0 is reserved); the website currently permits ID 1000, which this firmware rejects. Verify the range against the physical unit before relying on the last slot.
 
 Existing FPC1020A templates cannot be transferred. Every employee must be enrolled again on the R307. Existing website employees, attendance history, payroll records and role settings remain unchanged.
 
 ## Activity schedule and battery operation
 
-The admin **Activity** schedule comes automatically from Role & Time shifts. An
-awake scanner refreshes immediately after edits. A sleeping scanner receives the
-change at its next timer wake (up to 10 minutes), then uses 45-second rest slices
-while a fingerprint job waits. Only the scanner and LCD sleep; website/PIN paths
-remain available.
+The scanner stays awake by default, independently of the website's Activity schedule. `rest on` is an explicit technician opt-in to the earlier deep-sleep schedule until the next boot; during sleep it cannot read fingerprints. Leave rest off for uninterrupted attendance. If deliberately enabled, Role & Time edits reach a sleeping board at its next timer wake (up to 10 minutes); it then uses 45-second rest slices while a fingerprint job waits. Only the scanner and LCD sleep; website/PIN paths remain available.
 
-For battery operation, use watt-hours for planning: a nominal 10,000 mAh,
-3.7 V bank is about 37 Wh, not 10,000 mAh at 5 V. A 6000 mAh label must likewise
-be converted using its cell voltage. Avoid banks with Auto-shutoff at low load.
+If the device loses power during an outage, even an always-awake setting cannot keep it running: use suitable backup power, and add a battery-backed RTC if exact times are required through a power cut before NTP has ever synchronized. For battery planning, use watt-hours: a nominal 10,000 mAh, 3.7 V bank is about 37 Wh, not 10,000 mAh at 5 V; a 6000 mAh label also needs its cell voltage to calculate Wh. Avoid banks with Auto-shutoff at low load.
 
 ## Recovery and deployment checks
 
-- The LCD connection line and dBm/bars describe the **local Wi-Fi radio link**, not proof that the internet or website is reachable. The device retries the website even if Wi-Fi stays connected during an internet outage. The router must use a compatible 2.4 GHz network.
-- Flashing the website does not flash the ESP32. Compile and upload this sketch, then test by switching the access point off/on and separately interrupting/restoring internet while Wi-Fi stays up. Check that a scan during each outage appears in attendance, in order, and with the expected time. Check the LCD and Serial logs.
-- LittleFS is no longer automatically formatted if mounting fails, to avoid erasing queued scans. The LCD says **SCAN NOT SAVED** when a queue write fails. A new/unformatted device may need one deliberate filesystem initialization; back up/recover any existing data before formatting.
-- Kept scans are retried in order; a non-200 response or corrupt entry pauses the queue instead of deleting it. Check Serial for `Offline queue paused` and fix the server/token/mapping or inspect the device. Storage is finite and the current queue has no exactly-once delivery guarantee if a response or power is lost after the server commits. Reconcile attendance after an outage.
-- A scan has an accurate saved time only if the device has synchronized its clock since its most recent boot. A long Wi-Fi outage can trigger a restart; after that, scans cannot carry a known time until NTP returns. The server accepts an offline timestamp up to three days old; older/unknown timestamps fall back to arrival time. Check the attendance report after outages, especially those spanning a restart or more than three days.
-- Set `serverURL` to the real HTTPS site. To use `ATTENDANCE_DEVICE_TOKEN`, place the same secret in `deviceToken` and in Coolify, coordinating rollout so old firmware is not locked out. Never commit the secret. The default empty token leaves device endpoints open. Review TLS certificate verification for the installed ESP32 Arduino core before sending a token or relying on this over an untrusted network.
+- A connected Wi-Fi indicator and dBm describe only the radio, not the internet or website. At −90 dBm, connectivity may be highly unreliable; the local queue is the fallback, not a substitute for a nearby 2.4 GHz access point.
+- `Offline queue paused, HTTP ...` means delivery is retried while the record remains on the device. Authentication errors, unrecognized mappings, bad time, storage damage or a missing server require attention. A 409 conflict or an unrecoverable pre-NTP record is copied to the review file and flagged on the LCD as `Scans need review!`; inspect it with `queue review`.
+- Preserve the existing LittleFS partition on upgrade. The firmware never automatically formats on mount failure. A new/unformatted device may need one **deliberate** filesystem initialization; back up existing data before any format.
+- The queue appends records and retains acknowledged bytes until it drains fully. A persistent backlog, repeated review records or anchor files can fill flash. Monitor capacity and resolve failures promptly. Anchors are small and retained for any still-queued records.
+- Queue and review files contain staff identifiers and scan data. Protect physical/Serial access and backups. The optional local status page reports whether review is required but does not expose the review records.
+- Verify the optional LED command and uninterrupted operation on the actual R307, ESP32, power supply and network before relying on this change in production. The compiled firmware has not been flashed or tested on the user's hardware.

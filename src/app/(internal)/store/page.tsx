@@ -241,38 +241,66 @@ export default function StorePage() {
     } | null>(null),
     [reportError, setReportError] = useState('');
   const pendingSeen = useRef<Set<number> | null>(null);
-  const loadSequence = useRef(0);
+  const loadInFlight = useRef<Promise<void> | null>(null);
+  const loadEpoch = useRef(0);
+  const loadController = useRef<AbortController | null>(null);
+  const signingOut = useRef(false);
+  const refreshAgain = useRef(false);
+  const sendInFlight = useRef(false);
   const load = useCallback(async (silent = false) => {
-    const sequence = ++loadSequence.current;
+    if (signingOut.current) return;
+    if (!silent) setError('');
+    // SSE, push, a save and a visibility change can arrive together. Do not
+    // run multiple expensive snapshots at once. If an event arrived during a
+    // read, take one more snapshot afterwards so a committed change is not lost.
+    if (loadInFlight.current) {
+      refreshAgain.current = true;
+      return loadInFlight.current;
+    }
+    const work = (async () => {
+      do {
+        refreshAgain.current = false;
+        const epoch = loadEpoch.current;
+        const controller = new AbortController();
+        loadController.current = controller;
+        try {
+          const res = await fetch('/api/store', { cache: 'no-store', signal: controller.signal });
+          const payload = await res.json();
+          // A response started before sign-out must not restore the old session.
+          if (epoch !== loadEpoch.current) continue;
+          if (res.ok) {
+            if (payload.who?.manager && Array.isArray(payload.requests)) {
+              const current = new Set<number>(
+                payload.requests
+                  .filter((r: RequestRow) => r.status === 'pending')
+                  .map((r: RequestRow) => Number(r.id)),
+              );
+              if (
+                pendingSeen.current &&
+                [...current].some((id) => !pendingSeen.current!.has(id))
+              )
+                playAlarm();
+              pendingSeen.current = current;
+            } else pendingSeen.current = null;
+            setData(payload);
+          } else if (res.status === 401) {
+            pendingSeen.current = null;
+            setData(null);
+            setError(payload.error || 'Your session ended. Please sign in again.');
+          } else setError(payload.error || 'Could not load store');
+        } catch {
+          if (epoch === loadEpoch.current) setError('Could not connect to the store');
+        } finally {
+          if (loadController.current === controller) loadController.current = null;
+          if (epoch === loadEpoch.current) setLoading(false);
+        }
+      } while (refreshAgain.current && !signingOut.current);
+    })();
+    loadInFlight.current = work;
     try {
-      const res = await fetch('/api/store', { cache: 'no-store' });
-      const payload = await res.json();
-      if (sequence !== loadSequence.current) return;
-      if (res.ok) {
-        if (payload.who?.manager && Array.isArray(payload.requests)) {
-          const current = new Set<number>(
-            payload.requests
-              .filter((r: RequestRow) => r.status === 'pending')
-              .map((r: RequestRow) => Number(r.id)),
-          );
-          if (
-            pendingSeen.current &&
-            [...current].some((id) => !pendingSeen.current!.has(id))
-          )
-            playAlarm();
-          pendingSeen.current = current;
-        } else pendingSeen.current = null;
-        setData(payload);
-        if (!silent) setError('');
-      } else if (res.status === 401) {
-        pendingSeen.current = null;
-        setData(null);
-        setError(payload.error || 'Your session ended. Please sign in again.');
-      } else setError(payload.error || 'Could not load store');
-    } catch {
-      setError('Could not connect to the store');
+      await work;
     } finally {
-      setLoading(false);
+      loadInFlight.current = null;
     }
   }, []);
   useEffect(() => {
@@ -312,13 +340,32 @@ export default function StorePage() {
   }, []);
   useEffect(() => {
     if (!signedIn) return;
-    // Instant refresh while connected, with polling and foreground recovery as a fallback.
+    // Live events are the normal path. Poll every 10 s only when disconnected;
+    // a 60 s visible-page safety refresh also covers missed events or replicas.
+    // Background tabs keep receiving events/alerts but do not poll needlessly.
+    let connected = false;
+    let lastRefresh = Date.now();
+    const refresh = () => {
+      lastRefresh = Date.now();
+      void load(true);
+    };
     const events = new EventSource('/api/realtime?channel=store');
-    events.onmessage = () => void load(true);
-    events.onerror = () => void load(true);
-    const timer = window.setInterval(() => void load(true), 10000);
+    events.onopen = () => {
+      connected = true;
+      refresh(); // close the gap between the last snapshot and reconnection
+    };
+    events.onmessage = refresh;
+    events.onerror = () => {
+      if (connected) {
+        connected = false;
+        refresh();
+      }
+    };
+    const timer = window.setInterval(() => {
+      if (!document.hidden && (!connected || Date.now() - lastRefresh >= 60000)) refresh();
+    }, 10000);
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void load(true);
+      if (document.visibilityState === 'visible') refresh();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -358,6 +405,8 @@ export default function StorePage() {
     payload: Record<string, unknown> = {},
     success = 'Saved',
   ) {
+    if (sendInFlight.current) return false;
+    sendInFlight.current = true;
     setBusy(true);
     setError('');
     setNotice('');
@@ -369,18 +418,21 @@ export default function StorePage() {
       });
       const d = await r.json();
       if (!r.ok) {
-        await load();
         setError(d.error || 'Could not save');
+        void load(true);
         return false;
       }
+      // The server has committed. Confirm immediately instead of keeping the
+      // Send button busy for a second, full Store snapshot over a slow link.
       setNotice(success);
-      await load();
+      void load(true);
       if (['account', 'remove_account'].includes(action)) void refreshNames();
       return true;
     } catch {
       setError('Could not connect. Check the connection and try again.');
       return false;
     } finally {
+      sendInFlight.current = false;
       setBusy(false);
     }
   }
@@ -560,8 +612,11 @@ export default function StorePage() {
   useEffect(() => {
     if (tab !== 'reports' || !data?.who.manager) return;
     const abort = new AbortController();
-    const refresh = () =>
-      fetch(`/api/store/report?from=${recent.from}&to=${recent.to}`, {
+    let running = false;
+    const refresh = () => {
+      if (document.hidden || running) return;
+      running = true;
+      void fetch(`/api/store/report?from=${recent.from}&to=${recent.to}`, {
         signal: abort.signal,
         cache: 'no-store',
       })
@@ -573,11 +628,15 @@ export default function StorePage() {
         })
         .catch((e) => {
           if (e.name !== 'AbortError') setReportError(e.message);
-        });
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 10000);
+        })
+        .finally(() => { running = false; });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 10000);
+    document.addEventListener('visibilitychange', refresh);
     return () => {
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
       abort.abort();
     };
   }, [tab, data?.who.manager, recent.from, recent.to]);
@@ -742,11 +801,24 @@ export default function StorePage() {
                       return;
                     }
                   }
-                  await fetch('/api/staff/login', { method: 'DELETE' });
-                  await refreshNames();
-                  pendingSeen.current = null;
-                  setData(null);
-                  setLoading(false);
+                  signingOut.current = true;
+                  loadEpoch.current++;
+                  refreshAgain.current = false;
+                  // A late Store GET also refreshes the session cookie. Abort it
+                  // before clearing the cookie, so it cannot sign us back in.
+                  loadController.current?.abort();
+                  try {
+                    const response = await fetch('/api/staff/login', { method: 'DELETE' });
+                    if (!response.ok) throw new Error('Sign-out failed');
+                    pendingSeen.current = null;
+                    setData(null);
+                    setLoading(false);
+                    await refreshNames();
+                  } catch {
+                    setError('Could not sign out. Check the connection and try again.');
+                  } finally {
+                    signingOut.current = false;
+                  }
                 }}
               >
                 <LogOut size={15} /> Sign out

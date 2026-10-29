@@ -146,6 +146,8 @@ export async function POST(request: Request) {
     });
 
     publish(CHANNELS.orders);
+    // The inserted done line can deduct recipe ingredients via the Store trigger.
+    publish(CHANNELS.store);
     return NextResponse.json({ ok: true, noteId: id, ...result });
   } catch (error) {
     if (error instanceof Error && error.message === "ALREADY_PAID") {

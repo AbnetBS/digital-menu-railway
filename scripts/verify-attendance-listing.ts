@@ -397,11 +397,11 @@ pass(
     biometricsApi.includes("publish(CHANNELS.device)")
 );
 pass(
-  "firmware follows the R307 protocol: two fresh captures and two confirmations",
+  "firmware follows the R307 protocol: two fresh captures and one confirmed match",
   firmware.includes("#define ENROLL_STEPS            2") &&
-    firmware.includes("finger.enroll((uint16_t)id, step, ENROLL_ADD_TIMEOUT_MS)") &&
+    firmware.includes("finger.enroll((uint16_t)id, step, waitMs)") &&
     firmware.includes('showEnrollScreen(who, id, ENROLL_STEPS + found, "PLACE FINGER",') &&
-    firmware.includes("#define ENROLL_VERIFY_PLACEMENTS 2") &&
+    firmware.includes("#define ENROLL_VERIFY_PLACEMENTS 1") &&
     firmware.includes("#define ENROLL_SCANS            (ENROLL_STEPS + ENROLL_VERIFY_PLACEMENTS)")
 );
 pass(

@@ -1,54 +1,7 @@
 #!/usr/bin/env tsx
-/**
- * Regression guard: AN OFFLINE SCAN KEEPS THE MOMENT OF THE FINGER (owner, Oct 2026).
- *
- * The owner's question:
- *
- *   "does the offline scan lie when there is not stable connection or no
- *    connection? if someone place his finger it will store it and put it in
- *    list in that scanned time when the connection is back, right?"
- *
- * Storing was already true. The TIME was not: the device kept a scan it could
- * not deliver, and the website stamped it with the moment it ARRIVED. Three
- * real consequences in a cafe with an unstable connection:
- *
- *   • a person who scanned IN on time at 12:30 during an outage that ended at
- *     13:20 was written down as IN 13:20, i.e. LATE by 35 minutes;
- *   • an IN and an OUT that were both kept arrived seconds apart, so the
- *     one-hour repeat lock answered "already registered" and the day stayed
- *     OPEN with no hours at all;
- *   • a scan kept overnight landed on the next day's row of the sheet.
- *
- * What has to stay true now:
- *
- *   1. The device stamps a kept scan with the moment of the finger (`scannedAt`,
- *      epoch seconds) from the same NTP clock that drives its LCD row, and the
- *      last good clock plus the elapsed milliseconds carries it forward while
- *      NTP itself is unreachable.
- *   2. A device that has NOT reached NTP since it was powered on claims no time
- *      at all - it never invents one - and then the website stamps the arrival,
- *      exactly as it always did. A line queued by older firmware has no
- *      `scannedAt` and gets none.
- *   3. The website believes that time ONLY from an allowed device and only for
- *      the fingerprint path. A PIN typed in a browser, or a correction typed by
- *      the admin, always counts as now: nobody can write history by sending a
- *      time.
- *   4. The time is bounded: never in the future (beyond a small grace for a
- *      fast clock) and never older than three days. Outside that, the arrival
- *      time is used and the reason is recorded.
- *   5. The day row, the IN, the OUT, the late minutes, the early-out check and
- *      the one-hour repeat rule are ALL counted on that moment, while
- *      `updated_at` keeps the arrival - and the note says both times, so a
- *      back-dated scan is never a secret.
- *   6. Kept scans are delivered oldest first. A non-200 response pauses the
- *      queue and retains the scan for retry or investigation.
- *
- * The rules are imported from the real module (src/lib/attendance.ts) and the
- * device behavior is checked by static guards; physical firmware testing is required.
- *
- * Run with: npx tsx scripts/verify-offline-scan-time.ts
- */
-import { existsSync, readFileSync } from "node:fs";
+/** Offline scan-time regression guards. The real PostgreSQL route test and
+ * native queue simulator complement these parser and source assertions. */
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -68,12 +21,11 @@ const pass = (name: string, cond: boolean, extra = "") => {
 
 const ROOT = path.resolve(__dirname, "..");
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
-const exists = (rel: string) => existsSync(path.join(ROOT, rel));
 
 const clockApi = read("src/app/api/attendance/clock/route.ts");
 const rules = read("src/lib/attendance.ts");
 const firmware = read("hardware/fana_attendance_esp32/fana_attendance_esp32.ino");
-const rawFirmware = firmware;
+const queue = read("hardware/fana_attendance_esp32/OfflineQueue.h");
 const hostTest = read("hardware/fana_attendance_esp32/test/README.md");
 const deviceReadme = read("hardware/fana_attendance_esp32/README.md");
 
@@ -142,7 +94,7 @@ const refused: Array<[string, unknown, string]> = [
 for (const [what, raw, reason] of refused) {
   const scan = scannedTimeOf(raw, arrived);
   pass(
-    `${what} is refused and the scan is stamped on arrival`,
+    `${what} is marked untrusted by the legacy parser`,
     !scan.trusted && scan.reason === reason && scan.time.getTime() === arrived.getTime(),
     `reason=${scan.reason} time=${scan.time.toISOString()}`
   );
@@ -153,8 +105,16 @@ pass(
     !scannedTimeOf(epochSeconds(back(3 * DAY + MINUTE)), arrived).trusted
 );
 pass(
-  "a refused time still produces a usable moment, so the scan is never lost",
+  "a refused time has an arrival fallback for legacy callers, but remains untrusted",
   refused.every(([, raw]) => scannedTimeOf(raw, arrived).time instanceof Date)
+);
+
+pass(
+  "the parser can retain authenticated scans older than three days without accepting nonsensical or future times",
+  scannedTimeOf(epochSeconds(back(7 * DAY)), arrived, { allowOlder: true }).time.getTime() === back(7 * DAY).getTime() &&
+    !scannedTimeOf("bad", arrived, { allowOlder: true }).trusted &&
+    !scannedTimeOf(epochSeconds(new Date("2019-01-01T00:00:00Z")), arrived, { allowOlder: true }).trusted &&
+    !scannedTimeOf(epochSeconds(new Date(arrived.getTime() + DAY)), arrived, { allowOlder: true }).trusted
 );
 
 /* ── 4. the note keeps both times ────────────────────────────────────────── */
@@ -221,93 +181,41 @@ pass(
     rules.includes("export const OFFLINE_SCAN_FUTURE_GRACE_MINUTES = 2;")
 );
 
-/* ── 6. the device keeps the moment of the finger ────────────────────────── */
+/* ── 6. durable queue and timestamp path ─────────────────────────────────── */
+pass("the device reads NTP without blocking the scanner", firmware.includes("unsigned long wallClockEpoch()") &&
+  firmware.includes("if (!getLocalTime(&t, 0) || t.tm_year < (2020 - 1900)) return 0;"));
+pass("the scanner records image-capture uptime and timestamp before enqueueing", firmware.includes("finger.capturedImageMillis()") &&
+  firmware.includes("const unsigned long scannedAt = scanEpochAtUptime(capturedUptimeMs);") &&
+  firmware.includes("esp_timer_get_time() / 1000ULL") && firmware.includes("saveToQueue(fingerprintId, name, memberId, scannedAt, uptimeMs)"));
+pass("64-bit monotonic uptime and an atomic anchor survive millis wrap", firmware.includes("uint64_t uptimeAtSyncSeconds") &&
+  firmware.includes("portENTER_CRITICAL(&clockMux)") && firmware.includes("if (!epoch) return 0;"));
+pass("an unanchored scan is held until a durable anchor or manual review", firmware.includes("pendingUnknownTime = true") &&
+  firmware.includes("saveClockAnchor(bootId, epoch") && firmware.includes("readClockAnchor(originalBoot") &&
+  firmware.includes('copyToReview(head, "unknown_time")'));
+pass("every delivery has a stable event ID and recorded time", firmware.includes('postDoc["eventId"] = eventId;') &&
+  firmware.includes('postDoc["scannedAt"] = scannedAt;') && firmware.includes('postDoc["requireRecordedTime"] = true;') &&
+  firmware.includes("mbedtls_md_info_from_type(MBEDTLS_MD_SHA256)"));
+pass("no network request holds the queue lock", firmware.includes("offlineQueue->peek(head)") &&
+  firmware.includes("http.POST(json)") && firmware.includes("offlineQueue->acknowledge(head)") && queue.includes("Guard guard(mutex_);"));
+pass("failed writes and corrupt records cannot masquerade as saved scans", firmware.includes("LittleFS.begin(false)") &&
+  firmware.includes("SCAN NOT SAVED") && queue.includes("written == record.length()") && queue.includes("return BLOCKED;"));
+pass("failed or unauthorized HTTP requests leave the record queued", /if \(httpCode != 200\) \{[\s\S]{0,180}return false;/.test(firmware));
+pass("changed mappings or out-of-order scans are retained for review", firmware.includes('copyToReview(head, "server_conflict")') &&
+  clockApi.includes('status: "mapping_changed"') && clockApi.includes('status: "out_of_order"'));
+pass("the route rejects invalid recorded times instead of substituting arrival", clockApi.includes("if (exactTime && !scan.trusted)") &&
+  clockApi.includes('status: "invalid_scan_time"') && clockApi.includes('deviceId.endsWith("_offline")'));
+pass("older scans require a configured token and duplicate event receipts are atomic", clockApi.includes("ATTENDANCE_DEVICE_TOKEN") &&
+  clockApi.includes("pg_advisory_xact_lock") && clockApi.includes("tx.insert(attendanceScanEvents)") &&
+  clockApi.includes("db.transaction(async (tx)"));
+pass("the README documents the time, power loss, token and review limitations", deviceReadme.includes("**A kept scan carries its own time.**") &&
+  deviceReadme.includes("Kept scans are delivered oldest first") && deviceReadme.includes("battery-backed RTC") &&
+  deviceReadme.includes("queue review") && deviceReadme.includes("older than three days"));
 
-pass(
-  "the device knows the real time from the same NTP clock as its LCD row",
-  firmware.includes("unsigned long wallClockEpoch()") &&
-    firmware.includes("if (!getLocalTime(&t, 0) || t.tm_year < (2020 - 1900)) return 0;") &&
-    firmware.includes("const time_t epoch = mktime(&t);")
-);
-pass(
-  "the last good clock plus the elapsed milliseconds carries the time while NTP is silent",
-  firmware.includes("unsigned long epochAtSync = 0;") &&
-    firmware.includes("unsigned long millisAtSync = 0;") &&
-    firmware.includes("return epochAtSync + (unsigned long)((millis() - millisAtSync) / 1000UL);") &&
-    firmware.includes("if (epoch == 0) return;   // NTP has not answered: keep the pair we already have")
-);
-pass(
-  "that pair is refreshed from the loop, once a second",
-  /void loop\(\) \{[\s\S]{0,400}noteWallClock\(\);/.test(firmware) &&
-    firmware.includes("if (millis() - lastWallClockNote < 1000) return;")
-);
-pass(
-  "a device that never reached NTP claims no time and never invents one",
-  firmware.includes("if (epochAtSync == 0) return 0;") &&
-    /const unsigned long scannedAt = scanEpochNow\(\);\n    if \(scannedAt > 0\) doc\["scannedAt"\] = scannedAt;/.test(
-      firmware
-    ) &&
-    /if \(scannedAt > 0\) postDoc\["scannedAt"\] = scannedAt;/.test(firmware)
-);
-pass(
-  "the kept scan still travels as an offline scan of this device",
-  firmware.includes("postDoc[\"deviceId\"] = deviceId + \"_offline\";") &&
-    firmware.includes("LittleFS.open(\"/queue.json\", \"a\")")
-);
-pass(
-  "the millis() wrap after 49 days cannot corrupt a kept time",
-  rawFirmware.includes("The unsigned subtraction stays right when") &&
-    rawFirmware.includes("millis() wraps around after 49 days")
-);
-pass(
-  "offline queue behavior remains statically guarded after retiring the FPC emulator",
-  firmware.includes("syncOfflineQueue()") && firmware.includes('postDoc["scannedAt"]') &&
-    hostTest.includes("former native harness")
-);
-pass("offline failures retain ordering and preserve the original queue", firmware.includes('if (blocked) { remaining += line + "\\n"; continue; }') && firmware.includes('LittleFS.rename("/queue.tmp", "/queue.json")') && firmware.includes('if (LittleFS.exists("/queue.json"))'));
-pass("failed filesystem writes are not presented as saved scans", firmware.includes('LittleFS.begin(false)') && firmware.includes('SCAN NOT SAVED') && firmware.includes('const size_t written = f.println(json)'));
-pass("auth and rate-limit failures are retried rather than discarded", firmware.includes('httpCode != 401 && httpCode != 403 && httpCode != 408 && httpCode != 429'));
-pass(
-  "the README says a kept scan carries its own time, and what happens without NTP",
-  deviceReadme.includes("**A kept scan carries its own time.**") &&
-  deviceReadme.includes("If the device has not reached NTP since it was powered on it claims no time at all") &&
-  deviceReadme.includes("Kept scans are delivered oldest first")
-);
-
-/* ── 7. the compiled device proves it ───────────────────────────────────── */
-
-const testDir = path.join(ROOT, "hardware/fana_attendance_esp32/test");
-if (!exists("hardware/fana_attendance_esp32/test/run.sh")) {
-  pass("obsolete FPC host emulator is replaced by R307 static guards", hostTest.includes("R307 firmware regression tests"), testDir);
-} else if (spawnSync("g++", ["--version"]).status !== 0) {
-  console.log("⚠️  g++ not found - the compiled offline-queue test was skipped");
-} else {
-  const run = spawnSync("bash", [path.join(testDir, "run.sh")], { encoding: "utf8" });
-  const out = `${run.stdout || ""}${run.stderr || ""}`;
-  pass(
-    "the simulated device passes its whole suite",
-    run.status === 0 && out.includes("HARNESS PASSED"),
-    out.split("\n").filter((l) => l.startsWith("FAIL") || l.includes("error:")).slice(0, 6).join("\n")
-  );
-  const wanted = [
-    "a scan nobody could deliver is kept in flash, not dropped",
-    "the kept scan carries the moment of the finger",
-    "the kept scan is delivered once the internet is back",
-    "it goes to the clock route and says it came late",
-    "and it still says WHEN THE FINGER WAS PLACED, not when the internet came back",
-    "a delivered scan leaves the queue empty",
-    "a scan made while NTP is silent still gets a real time",
-    "and that time is what is written into the queue",
-    "a device that never got a time keeps the scan but claims no time",
-    "so it sends no time, and the website stamps the arrival as it always did",
-    "an older queued line is still delivered, without a made-up time",
-    "both kept scans are delivered, oldest first",
-    "a scan the website refuses is dropped, not retried for ever",
-    "a scan that still cannot reach the website stays queued, with its time",
-  ];
-  const missing = wanted.filter((line) => !out.includes(`PASS ${line}`));
-  pass("every offline-time behaviour is proven on the simulated device", missing.length === 0, missing.join(" | "));
-}
+/* ── 7. compiled host simulator ─────────────────────────────────────────── */
+const run = spawnSync("python3", [path.join(ROOT, "hardware/fana_attendance_esp32/test/run_host_tests.py")], { encoding: "utf8" });
+const out = `${run.stdout || ""}${run.stderr || ""}`;
+pass("actual queue and R307 flow pass their compiled host simulations",
+  run.status === 0 && out.includes("Offline queue tests passed") && out.includes("Enrollment flow tests passed"), out);
 
 if (failures > 0) {
   console.error(`\n❌ OFFLINE SCAN TIME GUARD FAILED (${failures})\n`);
@@ -315,6 +223,6 @@ if (failures > 0) {
 }
 console.log("\n✅ Offline scan time guard PASSED");
 console.log("   • a kept scan travels with the moment of the finger, not the moment the internet came back");
-console.log("   • NTP silent: the last good clock plus the elapsed milliseconds; never NTP: no claimed time");
-console.log("   • only an allowed device may say when, never a browser; never the future, never older than 3 days");
+console.log("   • pre-NTP scans use a durable same-boot anchor or are retained for review");
+console.log("   • only an allowed device may backdate; >3 days requires its configured token");
 console.log("   • day row, IN, OUT, lateness and the one-hour rule all follow that moment; the note keeps both times");

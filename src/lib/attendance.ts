@@ -181,23 +181,15 @@ export function rescanAction(
  * queued they arrive seconds apart, so the one-hour repeat lock swallows the
  * OUT and the day stays open with no hours at all.
  *
- * So the device sends `scannedAt` - the moment of the finger, from the same
- * NTP clock that drives its LCD row - and this function decides whether that
- * moment can be believed. It is deliberately strict, because it is the one
- * field a client could use to write history:
- *
- *   • nothing sensible to read            -> the arrival time (as before)
- *   • a moment in the future              -> the arrival time
- *   • a moment older than 3 days          -> the arrival time (a queue that
- *                                            survived a long outage is still
- *                                            delivered, just not back-dated
- *                                            into another week)
- *
- * Whatever happens, `arrivedAt` is kept so the log can say both times and
- * nothing is hidden from the owner.
+ * The device sends `scannedAt` from its clock. This parser reports whether a
+ * time is usable; its legacy fallback is arrival, but the clock route MUST
+ * reject an invalid/missing timestamp on queued scans rather than using that
+ * fallback. `allowOlder` enables valid dates beyond three days; the route also
+ * requires a configured, verified device token for those older scans.
+ * `arrivedAt` remains available for the audit note.
  */
 
-/** How far back a queued scan may reach and still be written at its own time. */
+/** Older scans require an explicitly configured device token at the route. */
 export const OFFLINE_SCAN_MAX_AGE_DAYS = 3;
 
 /** A device clock may run slightly fast; this much ahead is still "now". */
@@ -229,10 +221,15 @@ const PLAUSIBLE_EPOCH_SECONDS = 1000000000;
 
 /**
  * Read the moment a scan really happened. Accepts the epoch SECONDS the device
- * sends (and, tolerantly, epoch milliseconds or an ISO stamp), and falls back
- * to the arrival time whenever the value cannot be trusted.
+ * sends (and, tolerantly, epoch milliseconds or an ISO stamp). For legacy
+ * callers it returns arrival with `trusted: false` when validation fails;
+ * callers requiring recorded time must reject that result.
  */
-export function scannedTimeOf(raw: unknown, arrivedAt: Date = new Date()): ScannedTime {
+export function scannedTimeOf(
+  raw: unknown,
+  arrivedAt: Date = new Date(),
+  options: { allowOlder?: boolean } = {}
+): ScannedTime {
   const fallback = (reason: ScannedTimeReason): ScannedTime => ({
     time: arrivedAt,
     trusted: false,
@@ -263,10 +260,13 @@ export function scannedTimeOf(raw: unknown, arrivedAt: Date = new Date()): Scann
   }
 
   if (!time || Number.isNaN(time.getTime())) return fallback("unreadable");
+  // The ESP32 refuses to consider its clock synchronized before 2020. Even an
+  // authenticated device must not turn a boot-relative number into a date.
+  if (options.allowOlder && time.getTime() < Date.UTC(2020, 0, 1)) return fallback("unreadable");
   if (time.getTime() > arrivedAt.getTime() + OFFLINE_SCAN_FUTURE_GRACE_MINUTES * MS_PER_MINUTE) {
     return fallback("in_the_future");
   }
-  if (time.getTime() < arrivedAt.getTime() - OFFLINE_SCAN_MAX_AGE_DAYS * MS_PER_DAY) {
+  if (!options.allowOlder && time.getTime() < arrivedAt.getTime() - OFFLINE_SCAN_MAX_AGE_DAYS * MS_PER_DAY) {
     return fallback("too_old");
   }
   return { time, trusted: true, reason: "used", arrivedAt };

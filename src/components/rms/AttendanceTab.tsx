@@ -1543,10 +1543,9 @@ export default function AttendanceTab() {
                 </button>
               </div>
               <p className="text-[11px] text-stone-400">
-                Add Fingerprint saves the person and sends the job to the device: the scanner shows his name, he
-                places the same finger for the three enrollment steps, and the device only prints Fingerprint Added ✓
-                after it has scanned that finger once more and the sensor really found it. A finger the sensor cannot
-                find again is reported as a failure here, never as added.
+                Add Fingerprint sends the job to the device. Follow the scanner: place the same finger twice for
+                capture, lifting it between placements, then lift and place it a third time to confirm. The device
+                reports Fingerprint Added ✓ only when the sensor finds that ID on the confirmation scan.
               </p>
             </div>
           )}
@@ -1622,7 +1621,7 @@ export default function AttendanceTab() {
                       </p>
                       <p className="text-[10px] text-amber-300/80 mt-1">
                         {job.startedAt
-                          ? "The scanner is waiting. Lift the finger if it is on the glass, then follow the LCD: PLACE FINGER three times, lifting and placing the SAME finger for each step, and place it once more when it says CONFIRM."
+                          ? "The scanner is waiting. Follow the LCD: place the SAME finger twice for capture, lifting it between placements. Lift again and place it a third time to confirm."
                           : "Sending the job to the scanner. If this does not change in about 20 seconds the device is offline."}
                       </p>
                       {job.detail ? <p className="text-[10px] text-amber-200/90 mt-1 font-bold">{job.detail}</p> : null}
@@ -2620,7 +2619,7 @@ export default function AttendanceTab() {
               <div className="rounded-xl border border-amber-800 bg-amber-950/30 p-3">
                 <p className="font-black text-amber-200">Manual</p>
                 <p className="mt-1 text-stone-300">
-                  On the device Serial Monitor at 115200 baud, type <code>enroll 7</code> using the ID you want.
+                  Connect the device to the website, then in Serial Monitor at 115200 baud type <code>enroll 7</code> using the ID you want.
                   After it says Stored, map the ID here in Staff Fingerprints: choose that same person and ID below, choose the finger name, then press Add.
                 </p>
               </div>

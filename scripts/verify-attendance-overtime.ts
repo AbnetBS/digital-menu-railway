@@ -208,8 +208,8 @@ pass("and the day is marked overtime by the same rule, not only by a button",
   /isOvertime: Boolean\(existing\.isOvertime\) \|\| shiftOtMinutes > 0/.test(clockApi));
 pass("the device is told the hours so its screen can show them",
   clockApi.includes("overtimeLabel: otLabel || null") && clockApi.includes("OT ${otLabel}"));
-pass("a database hiccup on the overtime never loses the clock-out itself",
-  /let overtimeMinutes = shiftOtMinutes;\s*try \{[\s\S]*\} catch \(e\) \{\s*console\.warn/.test(clockApi));
+pass("a database hiccup rolls back clock-out and overtime together so the queued scan can retry",
+  clockApi.includes("db.transaction(async (tx)") && /recordShiftOvertimeAtClockOut\(\{[\s\S]*?\}, tx\)/.test(clockApi) && store.includes('client: OvertimeDb = db'));
 
 /* ── 8. the admin tab: the button beside the Leaderboard and his table ──── */
 

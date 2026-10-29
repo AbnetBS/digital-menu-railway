@@ -1435,6 +1435,8 @@ export async function PUT(request: Request) {
     // through the realtime channel published below.
 
     publish(CHANNELS.orders);
+    // Printing/delivery can finish buna lines, firing the Store stock trigger.
+    if (body.status === "printed" || body.status === "closed") publish(CHANNELS.store);
     return NextResponse.json(updated[0]);
   } catch (error) {
     if (error instanceof Error && error.message === CORRECTION_LOCK_MESSAGE) {

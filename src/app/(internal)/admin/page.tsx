@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import AdminPanel from "@/components/AdminPanel";
 import { MenuItem, Category, SiteSettings, Review, GalleryItem } from "@/types";
 import { DEFAULT_SETTINGS, DEFAULT_CATEGORIES, DEFAULT_MENU_ITEMS, DEFAULT_REVIEWS, DEFAULT_GALLERY } from "@/lib/initial-data";
@@ -21,29 +21,33 @@ export default function DedicatedAdminPage() {
   const [password, setPassword] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const refreshSequence = useRef(0);
 
   const loadAdminData = async () => {
-    try {
-      // PERFORMANCE: no /api/seed call (routes self-initialize); all reads parallel.
-      // The ?v= busts the public HTTP cache so the owner ALWAYS sees fresh data
-      // after saving (public GETs are now `Cache-Control: max-age=60`).
-      const v = Date.now();
-      const [sRes, cRes, mRes, rRes, gRes] = await Promise.all([
-        fetch(`/api/settings?v=${v}`),
-        fetch(`/api/categories?v=${v}`),
-        fetch(`/api/menu?v=${v}`),
-        fetch(`/api/reviews?v=${v}&all=1`), // full list for moderation (approve/reject)
-        fetch(`/api/gallery?v=${v}`),
-      ]);
-
-      if (sRes.ok) setSettings(await sRes.json());
-      if (cRes.ok) setCategories(await cRes.json());
-      if (mRes.ok) setMenuItems(await mRes.json());
-      if (rRes.ok) setReviews(await rRes.json());
-      if (gRes.ok) setGallery(await gRes.json());
-    } catch (err) {
-      console.error(err);
-    }
+    const sequence = ++refreshSequence.current;
+    // Refresh each section as soon as its own response arrives. Waiting for
+    // the slowest of the five before rendering any of them made an unrelated
+    // gallery/reviews request hold up the menu. Cache-busting keeps admin edits
+    // fresh; one failed section does not hide the other four.
+    const v = Date.now();
+    const load = async <T,>(url: string, set: (value: T) => void) => {
+      try {
+        const response = await fetch(url);
+        if (response.ok) {
+          const data = await response.json() as T;
+          if (sequence === refreshSequence.current) set(data);
+        }
+      } catch (err) {
+        console.error(`Could not refresh ${url.split("?")[0]}`, err);
+      }
+    };
+    await Promise.all([
+      load(`/api/settings?v=${v}`, setSettings),
+      load(`/api/categories?v=${v}`, setCategories),
+      load(`/api/menu?v=${v}`, setMenuItems),
+      load(`/api/reviews?v=${v}&all=1`, setReviews),
+      load(`/api/gallery?v=${v}`, setGallery),
+    ]);
   };
 
   useEffect(() => {

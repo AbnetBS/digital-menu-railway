@@ -805,6 +805,8 @@ export async function PUT(request: Request) {
     }
 
     publish(CHANNELS.orders);
+    // The Store trigger deducts ingredients when a line first becomes done.
+    if (nextStatus === "done" && existing[0].stationStatus !== "done") publish(CHANNELS.store);
     return NextResponse.json(updated[0]);
   } catch (error) {
     console.error("[station-items PUT error]", error);

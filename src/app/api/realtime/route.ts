@@ -23,7 +23,7 @@ export async function GET(request: Request) {
   // (The door device itself has no session and uses /api/attendance/events.)
   const requested = searchParams.get("channel");
   const channel =
-    requested === CHANNELS.attendance || requested === CHANNELS.device ? requested : CHANNELS.orders;
+    requested === CHANNELS.attendance || requested === CHANNELS.device || requested === CHANNELS.store ? requested : CHANNELS.orders;
 
   const encoder = new TextEncoder();
   let unsub: (() => void) | null = null;

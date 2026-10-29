@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element -- Store uploads are data URLs and menu images use existing external sources. */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   AlertTriangle,
@@ -22,6 +22,19 @@ import {
 import { BASE_UNIT, UNITS, toBase, type Dimension } from '@/lib/store/units';
 import { compressImage } from '@/lib/image-utils';
 import StoreExamples from '@/components/rms/StoreExamples';
+import StoreRequestBuilder from '@/components/rms/StoreRequestBuilder';
+import { onPushAlert } from '@/lib/push-client';
+import {
+  enableStoreAlerts,
+  disableStoreAlerts,
+  storeAlertsEnabledLocally,
+} from '@/lib/store/alerts-client';
+import {
+  armAudioOnFirstGesture,
+  setStationBell,
+  unlockAudio,
+  playAlarm,
+} from '@/lib/sound';
 
 type Item = {
   id: number;
@@ -200,7 +213,6 @@ export default function StorePage() {
     [addAmount, setAddAmount] = useState(''),
     [addUnit, setAddUnit] = useState('');
   const [breakMember, setBreakMember] = useState(0),
-    [breakSearch, setBreakSearch] = useState(''),
     [breakItem, setBreakItem] = useState(''),
     [breakPrice, setBreakPrice] = useState(''),
     [breakKey, setBreakKey] = useState('');
@@ -228,15 +240,34 @@ export default function StorePage() {
       waste: Waste[];
     } | null>(null),
     [reportError, setReportError] = useState('');
+  const pendingSeen = useRef<Set<number> | null>(null);
+  const loadSequence = useRef(0);
   const load = useCallback(async (silent = false) => {
+    const sequence = ++loadSequence.current;
     try {
       const res = await fetch('/api/store', { cache: 'no-store' });
       const payload = await res.json();
+      if (sequence !== loadSequence.current) return;
       if (res.ok) {
+        if (payload.who?.manager && Array.isArray(payload.requests)) {
+          const current = new Set<number>(
+            payload.requests
+              .filter((r: RequestRow) => r.status === 'pending')
+              .map((r: RequestRow) => Number(r.id)),
+          );
+          if (
+            pendingSeen.current &&
+            [...current].some((id) => !pendingSeen.current!.has(id))
+          )
+            playAlarm();
+          pendingSeen.current = current;
+        } else pendingSeen.current = null;
         setData(payload);
         if (!silent) setError('');
-      } else if (res.status === 401 || res.status === 403) {
+      } else if (res.status === 401) {
+        pendingSeen.current = null;
         setData(null);
+        setError(payload.error || 'Your session ended. Please sign in again.');
       } else setError(payload.error || 'Could not load store');
     } catch {
       setError('Could not connect to the store');
@@ -249,14 +280,57 @@ export default function StorePage() {
     void Promise.resolve().then(() => refreshNames());
   }, [load, refreshNames]);
   const signedIn = Boolean(data);
+  const isManager = Boolean(data?.who.manager);
+  useEffect(() => {
+    if (!isManager || !signedIn || !storeAlertsEnabledLocally()) return;
+    const heal = () => {
+      void enableStoreAlerts(false);
+    };
+    heal();
+    const interval = window.setInterval(heal, 5 * 60 * 1000);
+    const visible = () => {
+      if (!document.hidden) heal();
+    };
+    document.addEventListener('visibilitychange', visible);
+    window.addEventListener('online', heal);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', visible);
+      window.removeEventListener('online', heal);
+    };
+  }, [isManager, signedIn]);
+  useEffect(
+    () =>
+      onPushAlert((msg) => {
+        if (signedIn && msg.tag === 'fana-store-request') void load(true);
+      }),
+    [signedIn, load],
+  );
+  useEffect(() => {
+    setStationBell('kitchen');
+    armAudioOnFirstGesture();
+  }, []);
   useEffect(() => {
     if (!signedIn) return;
+    // Instant refresh while connected, with polling and foreground recovery as a fallback.
+    const events = new EventSource('/api/realtime?channel=store');
+    events.onmessage = () => void load(true);
+    events.onerror = () => void load(true);
     const timer = window.setInterval(() => void load(true), 10000);
-    return () => window.clearInterval(timer);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load(true);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      events.close();
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [signedIn, load]);
   async function login(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    unlockAudio();
     const a = names.find((x) => String(x.id) === loginName);
     if (!a) {
       setError('Choose your name');
@@ -612,12 +686,65 @@ export default function StorePage() {
               {data.who.name} ·{' '}
               {data.who.manager ? 'Manager' : data.who.station}
             </span>
+            {data.who.manager && (
+              <button
+                type="button"
+                className={secondary}
+                onClick={() => {
+                  unlockAudio();
+                  playAlarm();
+                }}
+              >
+                Test request alarm
+              </button>
+            )}
+            {data.who.manager && (
+              <button
+                type="button"
+                className={secondary}
+                onClick={async () => {
+                  unlockAudio();
+                  const problem = await enableStoreAlerts(true);
+                  if (problem) setError(problem);
+                  else
+                    setNotice(
+                      'Background Store notifications enabled on this device.',
+                    );
+                }}
+              >
+                Enable background alerts
+              </button>
+            )}
+            {data.who.manager && (
+              <button
+                type="button"
+                className={secondary}
+                onClick={async () => {
+                  const problem = await disableStoreAlerts();
+                  if (problem) setError(problem);
+                  else
+                    setNotice(
+                      'Background Store notifications disabled on this device.',
+                    );
+                }}
+              >
+                Turn off background alerts
+              </button>
+            )}
             {!data.who.admin && (
               <button
                 className={secondary}
                 onClick={async () => {
+                  if (data.who.manager) {
+                    const problem = await disableStoreAlerts();
+                    if (problem) {
+                      setError(problem);
+                      return;
+                    }
+                  }
                   await fetch('/api/staff/login', { method: 'DELETE' });
                   await refreshNames();
+                  pendingSeen.current = null;
                   setData(null);
                   setLoading(false);
                 }}
@@ -632,6 +759,13 @@ export default function StorePage() {
         </div>
       </header>
       <main className="mx-auto max-w-[1500px] px-5 py-7">
+        {data.who.manager && (
+          <p className="mb-3 text-xs text-stone-500">
+            For alerts when another tab is open, use Test request alarm and
+            enable background alerts on this device. Allow browser notifications
+            and keep the volume on.
+          </p>
+        )}
         <div className="mb-6 flex flex-wrap gap-2">
           {visibleTabs.map((t) => (
             <button
@@ -674,343 +808,361 @@ export default function StorePage() {
             {notice}
           </div>
         )}
-        {tab === 'stock' && (
-          <section>
-            {data.items.some((i) => Number(i.balance) <= Number(i.low_at)) && (
-              <div className="mb-5 flex items-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800">
-                <AlertTriangle size={18} />
-                {
-                  data.items.filter(
-                    (i) => Number(i.balance) <= Number(i.low_at),
-                  ).length
-                }{' '}
-                stock item(s) at or below their warning level. Check the red LOW
-                labels.
-              </div>
-            )}
-            <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-black">Store stock</h2>
-                <p className="mt-1 text-sm text-stone-500">
-                  What is available in the storeroom, before it is issued to a
-                  station.
-                </p>
-              </div>
-              {data.who.manager && (
-                <button className={btn} onClick={() => setNewOpen(!newOpen)}>
-                  <Plus size={16} /> New stock item
-                </button>
-              )}
-            </div>
-            {data.who.manager && data.items.length === 0 && !examplesHidden && (
-              <StoreExamples
-                onDismiss={() => {
-                  setExamplesHidden(true);
-                  try {
-                    window.localStorage.setItem(
-                      'fana-store-hide-examples',
-                      '1',
-                    );
-                  } catch {
-                    /* Keep hidden for this visit. */
-                  }
-                }}
-              />
-            )}
-            {newOpen && data.who.manager && (
-              <form
-                className="mb-5 grid gap-4 rounded-2xl border border-stone-200 bg-white p-5 md:grid-cols-3"
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (
-                    await send(
-                      'new_item',
-                      {
-                        name,
-                        dimension,
-                        amount: amount || 0,
-                        unit,
-                        low: low || 0,
-                        lowUnit,
-                        image,
-                      },
-                      'Stock item added',
-                    )
-                  ) {
-                    setNewOpen(false);
-                    setName('');
-                    setAmount('');
-                    setLow('');
-                    setImage('');
-                  }
-                }}
-              >
-                <h3 className="font-black md:col-span-3">New stock item</h3>
-                <label className="text-sm font-semibold">
-                  Name
-                  <input
-                    required
-                    className={clsInput + ' mt-1'}
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                  />
-                </label>
-                <label className="text-sm font-semibold">
-                  Measurement
-                  <select
-                    className={clsInput + ' mt-1'}
-                    value={dimension}
-                    onChange={(e) => {
-                      const d = e.target.value as Dimension;
-                      setDimension(d);
-                      setUnit(base(d));
-                      setLowUnit(base(d));
-                    }}
-                  >
-                    <option value="volume">Measurable · liquid</option>
-                    <option value="mass">Measurable · weight</option>
-                    <option value="count">Not measurable · pieces</option>
-                  </select>
-                </label>
-                <label className="text-sm font-semibold">
-                  Photo (optional)
-                  <input
-                    className={clsInput + ' mt-1'}
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (!f) return;
-                      void compressImage(f, 500, 0.7)
-                        .then(setImage)
-                        .catch((e: Error) =>
-                          setError(e.message || 'Could not read photo'),
-                        );
-                    }}
-                  />
-                </label>
-                <label className="text-sm font-semibold">
-                  Opening amount
-                  <input
-                    className={clsInput + ' mt-1'}
-                    type="number"
-                    min="0"
-                    step="any"
-                    required
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                  />
-                </label>
-                <label className="text-sm font-semibold">
-                  Unit
-                  <select
-                    className={clsInput + ' mt-1'}
-                    value={unit}
-                    onChange={(e) => setUnit(e.target.value)}
-                  >
-                    {UNITS[dimension].map((u) => (
-                      <option key={u}>{u}</option>
-                    ))}
-                  </select>
-                </label>
-                <div />
-                <label className="text-sm font-semibold">
-                  Low-stock warning at or below
-                  <input
-                    className={clsInput + ' mt-1'}
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={low}
-                    onChange={(e) => setLow(e.target.value)}
-                  />
-                </label>
-                <label className="text-sm font-semibold">
-                  Warning unit
-                  <select
-                    className={clsInput + ' mt-1'}
-                    value={lowUnit}
-                    onChange={(e) => setLowUnit(e.target.value)}
-                  >
-                    {UNITS[dimension].map((u) => (
-                      <option key={u}>{u}</option>
-                    ))}
-                  </select>
-                </label>
-                <div className="flex items-end gap-2">
-                  <button disabled={busy} className={btn}>
-                    Add stock item
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewOpen(false)}
-                    className={secondary}
-                  >
-                    Cancel
-                  </button>
+        {tab === 'stock' &&
+          (data.who.manager ? (
+            <section>
+              {data.items.some(
+                (i) => Number(i.balance) <= Number(i.low_at),
+              ) && (
+                <div className="mb-5 flex items-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-800">
+                  <AlertTriangle size={18} />
+                  {
+                    data.items.filter(
+                      (i) => Number(i.balance) <= Number(i.low_at),
+                    ).length
+                  }{' '}
+                  stock item(s) at or below their warning level. Check the red
+                  LOW labels.
                 </div>
-              </form>
-            )}
-            <div className="relative mb-4">
-              <Search
-                size={17}
-                className="absolute left-3 top-3 text-stone-400"
-              />
-              <input
-                className={clsInput + ' pl-10'}
-                placeholder="Search stock items"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {data.items
-                .filter((i) =>
-                  i.name.toLowerCase().includes(search.toLowerCase()),
-                )
-                .map((i) => (
-                  <article
-                    key={i.id}
-                    className="overflow-hidden rounded-2xl border border-stone-200 bg-white"
-                  >
-                    <div className="flex h-36 items-center justify-center bg-stone-100">
-                      {i.image ? (
-                        <img
-                          src={i.image}
-                          alt=""
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <Boxes className="text-stone-300" size={44} />
-                      )}
-                    </div>
-                    <div className="p-5">
-                      <div className="flex items-start justify-between gap-2">
-                        <h3 className="font-black">{i.name}</h3>
-                        {Number(i.balance) <= Number(i.low_at) && (
-                          <span className="flex items-center gap-1 rounded-full bg-red-50 px-2 py-1 text-[10px] font-bold text-red-700">
-                            <AlertTriangle size={12} /> LOW
-                          </span>
-                        )}
-                      </div>
-                      <p className="mt-1 text-xs text-stone-500">
-                        Available in store
-                      </p>
-                      <p className="mt-1 text-xl font-black">
-                        {display(i.balance, i.dimension)}
-                      </p>
-                      <p className="mt-1 text-xs text-stone-400">
-                        Warning at {display(i.low_at, i.dimension)}
-                      </p>
-                      {data.who.manager && (
-                        <div className="mt-4 flex gap-2">
-                          <button
-                            className={secondary + ' flex-1'}
-                            onClick={() => {
-                              setAddItem(i);
-                              setAddAmount('');
-                              setAddUnit(base(i.dimension));
-                            }}
-                          >
-                            + Add stock
-                          </button>
-                          <button
-                            className={secondary}
-                            onClick={async () => {
-                              const v = window.prompt(
-                                `Low-stock warning in ${base(i.dimension)}:`,
-                                String(i.low_at),
-                              );
-                              if (v !== null)
-                                await send(
-                                  'threshold',
-                                  {
-                                    itemId: i.id,
-                                    amount: v,
-                                    unit: base(i.dimension),
-                                  },
-                                  'Warning threshold updated',
-                                );
-                            }}
-                          >
-                            Warning
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </article>
-                ))}
-            </div>
-            {!data.items.length && (
-              <p className="rounded-2xl bg-white p-8 text-center text-stone-500">
-                No stock items yet. The manager can add the first item.
-              </p>
-            )}
-            {addItem && (
-              <form
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (
-                    await send(
-                      'add_stock',
-                      { itemId: addItem.id, amount: addAmount, unit: addUnit },
-                      'Stock added',
-                    )
-                  )
-                    setAddItem(null);
-                }}
-                className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4"
-              >
-                <div className="w-full max-w-md rounded-2xl bg-white p-6">
-                  <h3 className="text-xl font-black">Add {addItem.name}</h3>
+              )}
+              <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <h2 className="text-2xl font-black">Store stock</h2>
                   <p className="mt-1 text-sm text-stone-500">
-                    Currently {display(addItem.balance, addItem.dimension)}
+                    What is available in the storeroom, before it is issued to a
+                    station.
                   </p>
-                  <div className="mt-5 flex gap-2">
+                </div>
+                {data.who.manager && (
+                  <button className={btn} onClick={() => setNewOpen(!newOpen)}>
+                    <Plus size={16} /> New stock item
+                  </button>
+                )}
+              </div>
+              {data.who.manager &&
+                data.items.length === 0 &&
+                !examplesHidden && (
+                  <StoreExamples
+                    onDismiss={() => {
+                      setExamplesHidden(true);
+                      try {
+                        window.localStorage.setItem(
+                          'fana-store-hide-examples',
+                          '1',
+                        );
+                      } catch {
+                        /* Keep hidden for this visit. */
+                      }
+                    }}
+                  />
+                )}
+              {newOpen && data.who.manager && (
+                <form
+                  className="mb-5 grid gap-4 rounded-2xl border border-stone-200 bg-white p-5 md:grid-cols-3"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (
+                      await send(
+                        'new_item',
+                        {
+                          name,
+                          dimension,
+                          amount: amount || 0,
+                          unit,
+                          low: low || 0,
+                          lowUnit,
+                          image,
+                        },
+                        'Stock item added',
+                      )
+                    ) {
+                      setNewOpen(false);
+                      setName('');
+                      setAmount('');
+                      setLow('');
+                      setImage('');
+                    }
+                  }}
+                >
+                  <h3 className="font-black md:col-span-3">New stock item</h3>
+                  <label className="text-sm font-semibold">
+                    Name
                     <input
                       required
-                      className={clsInput}
-                      type="number"
-                      step="any"
-                      min="0"
-                      placeholder="Amount bought"
-                      value={addAmount}
-                      onChange={(e) => setAddAmount(e.target.value)}
+                      className={clsInput + ' mt-1'}
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
                     />
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Measurement
                     <select
-                      className={clsInput + ' max-w-28'}
-                      value={addUnit}
-                      onChange={(e) => setAddUnit(e.target.value)}
+                      className={clsInput + ' mt-1'}
+                      value={dimension}
+                      onChange={(e) => {
+                        const d = e.target.value as Dimension;
+                        setDimension(d);
+                        setUnit(base(d));
+                        setLowUnit(base(d));
+                      }}
                     >
-                      {UNITS[addItem.dimension].map((u) => (
+                      <option value="volume">Measurable · liquid</option>
+                      <option value="mass">Measurable · weight</option>
+                      <option value="count">Not measurable · pieces</option>
+                    </select>
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Photo (optional)
+                    <input
+                      className={clsInput + ' mt-1'}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        void compressImage(f, 500, 0.7)
+                          .then(setImage)
+                          .catch((e: Error) =>
+                            setError(e.message || 'Could not read photo'),
+                          );
+                      }}
+                    />
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Opening amount
+                    <input
+                      className={clsInput + ' mt-1'}
+                      type="number"
+                      min="0"
+                      step="any"
+                      required
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                    />
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Unit
+                    <select
+                      className={clsInput + ' mt-1'}
+                      value={unit}
+                      onChange={(e) => setUnit(e.target.value)}
+                    >
+                      {UNITS[dimension].map((u) => (
                         <option key={u}>{u}</option>
                       ))}
                     </select>
-                  </div>
-                  <div className="mt-5 flex gap-2">
+                  </label>
+                  <div />
+                  <label className="text-sm font-semibold">
+                    Low-stock warning at or below
+                    <input
+                      className={clsInput + ' mt-1'}
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={low}
+                      onChange={(e) => setLow(e.target.value)}
+                    />
+                  </label>
+                  <label className="text-sm font-semibold">
+                    Warning unit
+                    <select
+                      className={clsInput + ' mt-1'}
+                      value={lowUnit}
+                      onChange={(e) => setLowUnit(e.target.value)}
+                    >
+                      {UNITS[dimension].map((u) => (
+                        <option key={u}>{u}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="flex items-end gap-2">
                     <button disabled={busy} className={btn}>
-                      Add to store
+                      Add stock item
                     </button>
                     <button
                       type="button"
+                      onClick={() => setNewOpen(false)}
                       className={secondary}
-                      onClick={() => setAddItem(null)}
                     >
                       Cancel
                     </button>
                   </div>
-                </div>
-              </form>
-            )}
-          </section>
-        )}
+                </form>
+              )}
+              <div className="relative mb-4">
+                <Search
+                  size={17}
+                  className="absolute left-3 top-3 text-stone-400"
+                />
+                <input
+                  className={clsInput + ' pl-10'}
+                  placeholder="Search stock items"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {data.items
+                  .filter((i) =>
+                    i.name.toLowerCase().includes(search.toLowerCase()),
+                  )
+                  .map((i) => (
+                    <article
+                      key={i.id}
+                      className="overflow-hidden rounded-2xl border border-stone-200 bg-white"
+                    >
+                      <div className="flex h-36 items-center justify-center bg-stone-100">
+                        {i.image ? (
+                          <img
+                            src={i.image}
+                            alt=""
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <Boxes className="text-stone-300" size={44} />
+                        )}
+                      </div>
+                      <div className="p-5">
+                        <div className="flex items-start justify-between gap-2">
+                          <h3 className="font-black">{i.name}</h3>
+                          {Number(i.balance) <= Number(i.low_at) && (
+                            <span className="flex items-center gap-1 rounded-full bg-red-50 px-2 py-1 text-[10px] font-bold text-red-700">
+                              <AlertTriangle size={12} /> LOW
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 text-xs text-stone-500">
+                          Available in store
+                        </p>
+                        <p className="mt-1 text-xl font-black">
+                          {display(i.balance, i.dimension)}
+                        </p>
+                        <p className="mt-1 text-xs text-stone-400">
+                          Warning at {display(i.low_at, i.dimension)}
+                        </p>
+                        {data.who.manager && (
+                          <div className="mt-4 flex gap-2">
+                            <button
+                              className={secondary + ' flex-1'}
+                              onClick={() => {
+                                setAddItem(i);
+                                setAddAmount('');
+                                setAddUnit(base(i.dimension));
+                              }}
+                            >
+                              + Add stock
+                            </button>
+                            <button
+                              className={secondary}
+                              onClick={async () => {
+                                const v = window.prompt(
+                                  `Low-stock warning in ${base(i.dimension)}:`,
+                                  String(i.low_at),
+                                );
+                                if (v !== null)
+                                  await send(
+                                    'threshold',
+                                    {
+                                      itemId: i.id,
+                                      amount: v,
+                                      unit: base(i.dimension),
+                                    },
+                                    'Warning threshold updated',
+                                  );
+                              }}
+                            >
+                              Warning
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+              </div>
+              {!data.items.length && (
+                <p className="rounded-2xl bg-white p-8 text-center text-stone-500">
+                  No stock items yet. The manager can add the first item.
+                </p>
+              )}
+              {addItem && (
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (
+                      await send(
+                        'add_stock',
+                        {
+                          itemId: addItem.id,
+                          amount: addAmount,
+                          unit: addUnit,
+                        },
+                        'Stock added',
+                      )
+                    )
+                      setAddItem(null);
+                  }}
+                  className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4"
+                >
+                  <div className="w-full max-w-md rounded-2xl bg-white p-6">
+                    <h3 className="text-xl font-black">Add {addItem.name}</h3>
+                    <p className="mt-1 text-sm text-stone-500">
+                      Currently {display(addItem.balance, addItem.dimension)}
+                    </p>
+                    <div className="mt-5 flex gap-2">
+                      <input
+                        required
+                        className={clsInput}
+                        type="number"
+                        step="any"
+                        min="0"
+                        placeholder="Amount bought"
+                        value={addAmount}
+                        onChange={(e) => setAddAmount(e.target.value)}
+                      />
+                      <select
+                        className={clsInput + ' max-w-28'}
+                        value={addUnit}
+                        onChange={(e) => setAddUnit(e.target.value)}
+                      >
+                        {UNITS[addItem.dimension].map((u) => (
+                          <option key={u}>{u}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="mt-5 flex gap-2">
+                      <button disabled={busy} className={btn}>
+                        Add to store
+                      </button>
+                      <button
+                        type="button"
+                        className={secondary}
+                        onClick={() => setAddItem(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              )}
+            </section>
+          ) : (
+            <StoreRequestBuilder
+              items={data.items}
+              busy={busy}
+              serverError={error}
+              onSend={(lines, key) =>
+                send('request_batch', { lines, key }, 'Request sent')
+              }
+            />
+          ))}
         {tab === 'requests' && (
           <section>
             <h2 className="text-2xl font-black">Stock requests</h2>
             <p className="mt-1 text-sm text-stone-500">
               Requests remain editable until the store manager accepts them.
             </p>
-            {!data.who.manager && (
+            {editId !== null && (
               <div className="my-5 rounded-2xl border border-stone-200 bg-white p-5">
                 <h3 className="font-black">
                   {editId ? `Edit request #${editId}` : 'New request'}
@@ -1102,13 +1254,21 @@ export default function StorePage() {
                         </p>
                       </div>
                       {data.who.manager ? (
-                        <button
-                          disabled={busy}
-                          className={btn}
-                          onClick={() => accept(r)}
-                        >
-                          Accept & issue
-                        </button>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            className={secondary}
+                            onClick={() => editRequest(r)}
+                          >
+                            Edit request
+                          </button>
+                          <button
+                            disabled={busy}
+                            className={btn}
+                            onClick={() => accept(r)}
+                          >
+                            Accept &amp; issue
+                          </button>
+                        </div>
                       ) : (
                         <button
                           className={secondary}
@@ -1210,6 +1370,46 @@ export default function StorePage() {
                     onChange={(e) => setIngredientSearch(e.target.value)}
                     placeholder="Type a stock item name"
                   />
+                </label>
+                <label className="mt-3 block text-xs font-bold text-stone-500">
+                  Select an ingredient
+                  <select
+                    className={clsInput + ' mt-1'}
+                    value=""
+                    onChange={(e) => {
+                      const id = Number(e.target.value);
+                      const ingredient = itemById(id);
+                      if (
+                        ingredient &&
+                        !recipeDraft.some((l) => l.itemId === id)
+                      )
+                        setRecipeDraft((old) => [
+                          ...old,
+                          {
+                            itemId: id,
+                            amount: '',
+                            unit: base(ingredient.dimension),
+                          },
+                        ]);
+                    }}
+                  >
+                    <option value="">Choose from all stock items</option>
+                    {data.items
+                      .filter((i) =>
+                        i.name
+                          .toLowerCase()
+                          .includes(ingredientSearch.toLowerCase()),
+                      )
+                      .map((i) => (
+                        <option
+                          key={i.id}
+                          value={i.id}
+                          disabled={recipeDraft.some((l) => l.itemId === i.id)}
+                        >
+                          {i.name}
+                        </option>
+                      ))}
+                  </select>
                 </label>
                 <div className="mt-3 space-y-2">
                   {recipeDraft.map((l, i) => lineEditor('recipe', l, i))}
@@ -1693,15 +1893,6 @@ export default function StorePage() {
               }}
             >
               <label className="text-sm font-bold">
-                Find employee
-                <input
-                  className={clsInput + ' mt-1'}
-                  value={breakSearch}
-                  onChange={(e) => setBreakSearch(e.target.value)}
-                  placeholder="Search employee"
-                />
-              </label>
-              <label className="text-sm font-bold">
                 Employee
                 <select
                   required
@@ -1710,20 +1901,12 @@ export default function StorePage() {
                   onChange={(e) => setBreakMember(Number(e.target.value))}
                 >
                   <option value="">Select employee</option>
-                  {(data.members || [])
-                    .filter(
-                      (m) =>
-                        m.name
-                          .toLowerCase()
-                          .includes(breakSearch.toLowerCase()) ||
-                        m.id === breakMember,
-                    )
-                    .map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                        {m.active === false ? ' (inactive)' : ''}
-                      </option>
-                    ))}
+                  {(data.members || []).map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                      {m.active === false ? ' (inactive)' : ''}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="text-sm font-bold">

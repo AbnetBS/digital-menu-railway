@@ -118,7 +118,10 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     (async () => {
       const seen = await visibleClients();
-      const someoneIsLooking = seen.length > 0;
+      // A different app tab being visible must not silence a hidden Store alert.
+      const someoneIsLooking = tag === "fana-store-request"
+        ? seen.some((client) => { try { return new URL(client.url).pathname === "/store"; } catch { return false; } })
+        : seen.length > 0;
 
       // Always tell open pages, so a page that IS on screen rings its loud
       // in-app alarm (and refreshes its list) the instant the push lands.

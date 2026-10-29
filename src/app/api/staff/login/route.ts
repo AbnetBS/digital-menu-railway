@@ -80,7 +80,10 @@ export async function POST(request: Request) {
         {
           httpOnly: true,
           path: "/",
-          maxAge: 60 * 60 * 12, // 12 hours (one shift)
+          // Store and station staff asked to stay signed in between visits. Browsers
+          // cap persistent cookies; 400 days is refreshed by the session endpoint.
+          maxAge: ["store_manager", "stock_accepter", "kitchen", "barista", "juice"].includes(staff.role)
+            ? 60 * 60 * 24 * 400 : 60 * 60 * 12,
           sameSite: "lax",
           secure: process.env.NODE_ENV === "production",
         }

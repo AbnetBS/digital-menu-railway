@@ -13,11 +13,7 @@ assert.ok(html.includes('cannot be requested or used in recipes'));
 for (const file of ['coffee.jpg', 'milk.jpg', 'eggs.jpg'])
   assert.ok(existsSync('public/store-examples/' + file));
 const page = readFileSync('src/app/(internal)/store/page.tsx', 'utf8');
-assert.ok(
-  page.includes(
-    'data.who.manager && data.items.length === 0 && !examplesHidden',
-  ),
-);
+assert.match(page, /data\.who\.manager\s*&&\s*data\.items\.length\s*===\s*0\s*&&\s*!examplesHidden/);
 assert.match(page, /localStorage\.setItem\(\s*'fana-store-hide-examples',\s*'1'/);
 const schema = readFileSync('src/lib/store/schema.ts', 'utf8');
 assert.ok(

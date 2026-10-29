@@ -22,6 +22,16 @@ CREATE TABLE IF NOT EXISTS store_requests (
  status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted')),
  created_at timestamptz NOT NULL DEFAULT now(), accepted_at timestamptz, accepted_by text
 );
+-- A retry key makes a mixed-destination submission atomic and repeat-safe.
+CREATE TABLE IF NOT EXISTS store_push_subscriptions (
+ endpoint text PRIMARY KEY, p256dh text NOT NULL, auth text NOT NULL, staff_id integer, session_iat bigint NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS store_request_batches (
+ idempotency_key text PRIMARY KEY, requester_id integer NOT NULL, payload_hash text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS store_request_edits (
+ id bigserial PRIMARY KEY, request_id integer NOT NULL REFERENCES store_requests(id), actor text NOT NULL, before_lines jsonb NOT NULL, after_lines jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS store_request_lines (
  request_id integer NOT NULL REFERENCES store_requests(id) ON DELETE CASCADE,
  item_id integer NOT NULL REFERENCES store_items(id), amount numeric(18,3) NOT NULL CHECK(amount > 0),

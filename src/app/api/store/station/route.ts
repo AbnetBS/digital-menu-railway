@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 import { pool } from '@/db';
 import { ensureTablesExist } from '@/db/migrate';
-import { readStaffSession, requireStaff } from '@/lib/session';
+import {
+  readStaffSession,
+  requireStaff,
+  refreshStoreSession,
+} from '@/lib/session';
 import { ensureStoreSchema } from '@/lib/store/schema';
 import { isDimension, toBase, type Dimension } from '@/lib/store/units';
 
@@ -68,9 +72,12 @@ export async function GET() {
         [who.station],
       ),
     ]);
-    return NextResponse.json(
-      { who, items: items.rows, history: history.rows },
-      { headers: { 'Cache-Control': 'no-store' } },
+    return refreshStoreSession(
+      NextResponse.json(
+        { who, items: items.rows, history: history.rows },
+        { headers: { 'Cache-Control': 'no-store' } },
+      ),
+      guard.session,
     );
   } catch (e) {
     return fail(e);

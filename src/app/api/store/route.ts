@@ -1,9 +1,13 @@
+import { createHash } from 'node:crypto';
+import { publish, CHANNELS } from '@/lib/realtime';
+import { sendStoreRequestPush } from '@/lib/store/alerts';
 import { NextResponse } from 'next/server';
 import { pool } from '@/db';
 import { ensureTablesExist } from '@/db/migrate';
 import {
   readAdminSession,
   readStaffSession,
+  refreshStoreSession,
   requireStaffOrAdmin,
 } from '@/lib/session';
 import { hashSecret } from '@/lib/auth';
@@ -155,9 +159,12 @@ export async function GET() {
       )
     ).rows;
     if (!who.manager)
-      return NextResponse.json(
-        { who, items, requests },
-        { headers: { 'Cache-Control': 'no-store' } },
+      return refreshStoreSession(
+        NextResponse.json(
+          { who, items, requests },
+          { headers: { 'Cache-Control': 'no-store' } },
+        ),
+        staffSession,
       );
     const [balances, menu, recipes, accounts, members, breakages] =
       await Promise.all([
@@ -178,19 +185,22 @@ export async function GET() {
           'SELECT b.*,m.name AS member_name FROM payroll_breakages b LEFT JOIN attendance_members m ON m.id=b.member_id ORDER BY b.created_at DESC,b.id DESC',
         ),
       ]);
-    return NextResponse.json(
-      {
-        who,
-        items,
-        requests,
-        balances: balances.rows,
-        menu: menu.rows,
-        recipes: recipes.rows,
-        accounts: accounts.rows,
-        members: members.rows,
-        breakages: breakages.rows,
-      },
-      { headers: { 'Cache-Control': 'no-store' } },
+    return refreshStoreSession(
+      NextResponse.json(
+        {
+          who,
+          items,
+          requests,
+          balances: balances.rows,
+          menu: menu.rows,
+          recipes: recipes.rows,
+          accounts: accounts.rows,
+          members: members.rows,
+          breakages: breakages.rows,
+        },
+        { headers: { 'Cache-Control': 'no-store' } },
+      ),
+      who.admin ? await readAdminSession() : staffSession,
     );
   } catch (e) {
     return failure(e);
@@ -212,6 +222,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     const action = text(body.action, 40);
     const client = await pool.connect();
+    let newRequestCreated = false;
     try {
       await client.query('BEGIN');
       if (action === 'account') {
@@ -441,8 +452,94 @@ export async function POST(request: Request) {
           low,
           i.id,
         ]);
-      } else if (action === 'request' || action === 'edit_request') {
+      } else if (action === 'request_batch') {
         if (who.role !== 'stock_accepter')
+          throw new UserError(
+            'Sign in as a stock accepter to request items',
+            403,
+          );
+        const key = String(body.key || '');
+        if (!/^[0-9a-f-]{36}$/i.test(key))
+          throw new UserError('Invalid request key');
+        if (
+          !Array.isArray(body.lines) ||
+          body.lines.length < 1 ||
+          body.lines.length > 100
+        )
+          throw new UserError('Choose 1 to 100 items');
+        const payloadHash = createHash('sha256')
+          .update(JSON.stringify(body.lines))
+          .digest('hex');
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [key]);
+        const prior = await client.query(
+          'SELECT requester_id,payload_hash FROM store_request_batches WHERE idempotency_key=$1',
+          [key],
+        );
+        if (prior.rowCount) {
+          if (
+            Number(prior.rows[0].requester_id) !== who.id ||
+            prior.rows[0].payload_hash !== payloadHash
+          )
+            throw new UserError(
+              'This request was already sent with different details. Check your requests before starting a new one.',
+              409,
+            );
+        } else {
+          const grouped = new Map<
+            string,
+            Array<{ itemId: unknown; amount: unknown; unit: unknown }>
+          >();
+          for (const line of body.lines) {
+            if (!line || typeof line !== 'object' || Array.isArray(line))
+              throw new UserError('Invalid request line');
+            const station = String(line.station || '');
+            if (!['kitchen', 'barista', 'juice', 'buna'].includes(station))
+              throw new UserError('Choose a valid station');
+            const group = grouped.get(station) || [];
+            group.push(line);
+            grouped.set(station, group);
+          }
+          const totals = new Map<number, number>();
+          const groups: Array<{
+            station: string;
+            list: Array<{ id: number; amount: number }>;
+          }> = [];
+          for (const [station, group] of grouped) {
+            const list = await lines(client, group);
+            for (const l of list)
+              totals.set(l.id, (totals.get(l.id) || 0) + l.amount);
+            groups.push({ station, list });
+          }
+          for (const [id, amount] of totals) {
+            const i = await item(client, id);
+            if (amount > Number(i.balance) + 0.0000001)
+              throw new UserError(
+                `${i.name}: total requested across stations exceeds store stock`,
+                409,
+              );
+          }
+          newRequestCreated = true;
+          await client.query(
+            'INSERT INTO store_request_batches(idempotency_key,requester_id,payload_hash) VALUES($1,$2,$3)',
+            [key, who.id, payloadHash],
+          );
+          for (const group of groups) {
+            const r = await client.query(
+              'INSERT INTO store_requests(requester_id,requester_name,station) VALUES($1,$2,$3) RETURNING id',
+              [who.id, who.name, group.station],
+            );
+            for (const l of group.list)
+              await client.query(
+                'INSERT INTO store_request_lines(request_id,item_id,amount) VALUES($1,$2,$3)',
+                [r.rows[0].id, l.id, l.amount],
+              );
+          }
+        }
+      } else if (action === 'request' || action === 'edit_request') {
+        if (
+          who.role !== 'stock_accepter' &&
+          !(action === 'edit_request' && who.manager)
+        )
           throw new UserError(
             'Sign in as a stock accepter to request items',
             403,
@@ -457,13 +554,29 @@ export async function POST(request: Request) {
             'SELECT * FROM store_requests WHERE id=$1 FOR UPDATE',
             [id],
           );
-          if (!r.rows[0] || r.rows[0].requester_id !== who.id)
+          if (!r.rows[0] || (!who.manager && r.rows[0].requester_id !== who.id))
             throw new UserError('Request not found', 404);
           if (r.rows[0].status !== 'pending')
             throw new UserError(
               'An accepted request can no longer be edited',
               409,
             );
+          const previous = await client.query(
+            'SELECT item_id,amount FROM store_request_lines WHERE request_id=$1 ORDER BY item_id',
+            [id],
+          );
+          await client.query(
+            'INSERT INTO store_request_edits(request_id,actor,before_lines,after_lines) VALUES($1,$2,$3::jsonb,$4::jsonb)',
+            [
+              id,
+              who.name,
+              JSON.stringify({
+                station: r.rows[0].station,
+                lines: previous.rows,
+              }),
+              JSON.stringify({ station: destination, lines: body.lines }),
+            ],
+          );
           await client.query(
             'UPDATE store_requests SET station=$1 WHERE id=$2',
             [destination, id],
@@ -473,6 +586,7 @@ export async function POST(request: Request) {
             [id],
           );
         } else {
+          newRequestCreated = true;
           const r = await client.query(
             'INSERT INTO store_requests(requester_id,requester_name,station) VALUES($1,$2,$3) RETURNING id',
             [who.id, who.name, destination],
@@ -631,6 +745,11 @@ export async function POST(request: Request) {
         );
       } else throw new UserError('Unknown action');
       await client.query('COMMIT');
+      if (
+        ['request', 'request_batch', 'edit_request', 'accept'].includes(action)
+      )
+        publish(CHANNELS.store);
+      if (newRequestCreated) void sendStoreRequestPush();
       return NextResponse.json({ success: true });
     } catch (e) {
       await client.query('ROLLBACK');

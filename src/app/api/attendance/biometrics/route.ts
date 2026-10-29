@@ -17,10 +17,9 @@ import { ENROLL_JOB_TTL_MINUTES, MAX_FINGERS_PER_MEMBER } from "@/lib/attendance
  *   1. Admin -> Attendance -> Staff Members -> Add Fingerprint.
  *   2. POST here with { action: "enroll", memberId: 5 } creates a PENDING job
  *      (the ID is picked by the server when the admin does not type one).
- *   3. The ESP32 polls `GET /api/attendance/biometrics?pending` every 2
- *      seconds, sees the job and shows "Enroll Abebe / ID 5 / Place finger"
- *      on its 20x4 LCD.
- *   4. The person puts his finger on the FPC1020A. The device stores it under
+ *   3. The ESP32 hears the device event or polls for a pending job, then
+ *      displays its preparation and place/lift instructions on the 20x4 LCD.
+ *   4. The person places the same finger on the R307. The device stores it under
  *      that ID and posts it back to /api/attendance/mappings.
  *   5. The admin page polls `GET /api/attendance/biometrics?job=<id>` and reads
  *      the job as done, so it can print "Fingerprint Added ✓".
@@ -29,7 +28,7 @@ import { ENROLL_JOB_TTL_MINUTES, MAX_FINGERS_PER_MEMBER } from "@/lib/attendance
  * It carries names and IDs, never a PIN.
  */
 
-/** The next free fingerprint ID inside the FPC1020A (1-1000). */
+/** The next free fingerprint ID in the configured R307 range (1-1000). */
 function nextFreeId(taken: number[]): number | null {
   const used = new Set(taken);
   for (let id = 1; id <= 1000; id++) if (!used.has(id)) return id;
@@ -54,12 +53,15 @@ export async function GET(request: Request) {
   try {
     if (pending === "1") {
       const cutoff = new Date(Date.now() - ENROLL_JOB_TTL_MINUTES * 60 * 1000);
+      // The door processes one job at a time and has a small JSON buffer.
+      // Keep the existing response for other clients unless it opts into one.
+      const limit = searchParams.get("limit") === "1" ? 1 : 20;
       const jobs = await db
         .select()
         .from(attendanceEnrollJobs)
         .where(eq(attendanceEnrollJobs.status, "pending"))
         .orderBy(desc(attendanceEnrollJobs.id))
-        .limit(20);
+        .limit(limit);
       const fresh = jobs.filter((j) => !j.createdAt || new Date(j.createdAt) >= cutoff);
       return NextResponse.json({
         count: fresh.length,
@@ -96,8 +98,8 @@ export async function GET(request: Request) {
           memberName: job.memberName,
           fingerprintId: job.fingerprintId,
           status: job.status,
-          // The device's own words: "Device is ready - place the finger now"
-          // while it waits, "step 2/3 not accepted: ... (status 6)" if it fails.
+          // The device's own receipt or failure details. Receipt does not
+          // imply the sensor is ready; the LCD gives the placement prompt.
           detail: job.detail,
           startedAt: job.startedAt,
           completedAt: job.completedAt,

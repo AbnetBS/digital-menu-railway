@@ -153,11 +153,10 @@ interface EnrollJob {
   jobId: number;
   fingerprintId: number;
   status: "pending" | "done" | "failed" | "cancelled";
-  // The device's own words about this job: "Device is ready - place the
-  // finger now" while it waits, or the exact scan and status it failed on.
+  // The device's own words about this job, including any failure reason.
   detail?: string | null;
-  // Set once the ESP32 has the job, so the page can say whether the scanner
-  // is waiting for a finger or never saw the job at all.
+  // Set once the ESP32 received the job. It may still be preparing; follow
+  // the actual PLACE/LIFT instructions on the scanner's LCD.
   startedAt?: string | null;
 }
 
@@ -326,8 +325,11 @@ export default function AttendanceTab() {
   // because those dates are what turns a worked day into Holiday OT.
   const [holidayOpen, setHolidayOpen] = useState(false);
 
-  // Enroll jobs, one per member being enrolled right now
+  // Enroll jobs, one per member being enrolled right now. Prevent duplicate
+  // clicks from creating overlapping jobs for the single physical scanner.
   const [jobs, setJobs] = useState<Record<number, EnrollJob>>({});
+  const [enrollStarting, setEnrollStarting] = useState(false);
+  const enrollStartingRef = useRef(false);
 
   // Manual enroll (Staff Fingerprints tab)
   const [manualMemberId, setManualMemberId] = useState<number | "">("");
@@ -719,7 +721,7 @@ export default function AttendanceTab() {
     if (activeView === "prints") loadMembers();
   }, [activeView, loadMembers]);
 
-  /* ── the "place your finger" jobs: real time, no polling ─────────────── */
+  /* ── the "place your finger" jobs: events plus a polling safety net ───── */
   const pendingIds = Object.entries(jobs)
     .filter(([, j]) => j.status === "pending")
     .map(([memberId]) => Number(memberId));
@@ -734,69 +736,80 @@ export default function AttendanceTab() {
   useEffect(() => {
     if (pendingIds.length === 0) return;
     let cancelled = false;
+    let running = false;
+    let refreshAgain = false;
+    let controller: AbortController | null = null;
     const tick = async () => {
-      for (const memberId of pendingIds) {
-        const job = jobsRef.current[memberId];
-        if (!job || job.status !== "pending") continue;
-        try {
-          const r = await fetch(`/api/attendance/biometrics?job=${job.jobId}`);
-          if (!r.ok) continue;
-          const d = await r.json();
-          if (cancelled) continue;
-          // The status is not the only thing that moves: while the job stays
-          // pending the device still reports that it picked it up ("Device is
-          // ready - place the finger now"), and that has to reach the screen.
-          const next: EnrollJob = {
-            ...job,
-            status: d.job.status,
-            detail: d.job.detail ?? job.detail ?? null,
-            startedAt: d.job.startedAt ?? job.startedAt ?? null,
-          };
-          if (next.status !== job.status || next.detail !== job.detail || next.startedAt !== job.startedAt) {
-            setJobs((prev) => ({ ...prev, [memberId]: { ...prev[memberId], ...next } }));
+      if (cancelled) return;
+      if (running) { refreshAgain = true; return; }
+      running = true;
+      try {
+        for (const memberId of pendingIds) {
+          if (cancelled) break;
+          const job = jobsRef.current[memberId];
+          if (!job || job.status !== "pending") continue;
+          const request = new AbortController();
+          controller = request;
+          const timeout = setTimeout(() => request.abort(), 8000);
+          try {
+            const r = await fetch(`/api/attendance/biometrics?job=${job.jobId}`, { cache: "no-store", signal: request.signal });
+            if (!r.ok) continue;
+            const d = await r.json();
+            const current = jobsRef.current[memberId];
+            // A cancelled/old request must never turn a newer attempt into a
+            // failure or show a success for the wrong enrollment.
+            if (cancelled || request.signal.aborted || !current || current.status !== "pending" ||
+                current.jobId !== job.jobId || d.job?.id !== job.jobId) continue;
+            const next: EnrollJob = {
+              ...current,
+              status: d.job.status,
+              detail: d.job.detail ?? current.detail ?? null,
+              startedAt: d.job.startedAt ?? current.startedAt ?? null,
+            };
+            if (next.status !== current.status || next.detail !== current.detail || next.startedAt !== current.startedAt) {
+              jobsRef.current = { ...jobsRef.current, [memberId]: next };
+              setJobs((prev) => {
+                const latest = prev[memberId];
+                if (!latest || latest.status !== "pending" || latest.jobId !== job.jobId) return prev;
+                return { ...prev, [memberId]: { ...latest, ...next } };
+              });
+            }
+            if (next.status === "done") {
+              say(`Fingerprint Added ✓ ${d.job.memberName || ""}`);
+              loadMembers();
+            } else if (next.status === "failed") {
+              say(d.job.detail ? `Fingerprint was not added: ${d.job.detail}` :
+                "Fingerprint was not added. Check the device screen and try again.", true);
+            }
+          } catch {
+            /* Keep waiting; reconnects and the next poll may succeed. */
+          } finally {
+            clearTimeout(timeout);
+            if (controller === request) controller = null;
           }
-          if (d.job.status === "done") {
-            say(`Fingerprint Added ✓ ${d.job.memberName || ""}`);
-            loadMembers();
-          } else if (d.job.status === "failed") {
-            say(
-              d.job.detail
-                ? `Fingerprint was not added: ${d.job.detail}`
-                : "Fingerprint was not added. Check the device screen and try again.",
-              true
-            );
-          }
-        } catch {
-          /* keep waiting: the device may simply be offline for a moment */
         }
+      } finally {
+        running = false;
+        if (!cancelled && refreshAgain) { refreshAgain = false; void tick(); }
       }
     };
-    tick();
-    // Real time: the device channel fires when a fingerprint mapping lands
-    // (the ESP32 finished enrolling), so "Fingerprint Added ✓" is instant.
-    // Falls back to the old 2-second poll if the stream cannot be opened.
-    let es: EventSource | null = null;
-    let t: ReturnType<typeof setInterval> | null = null;
-    if (typeof EventSource !== "undefined") {
-      es = new EventSource("/api/realtime?channel=device");
-      es.onmessage = () => {
-        tick();
-      };
-      es.onerror = () => {
-        if (es && es.readyState === EventSource.CLOSED) {
-          es.close();
-          es = null;
-          t = setInterval(tick, 2000);
-        }
-        // otherwise EventSource reconnects by itself
-      };
-    } else {
-      t = setInterval(tick, 2000);
+    void tick();
+    const es = typeof EventSource !== "undefined" ? new EventSource("/api/realtime?channel=device") : null;
+    if (es) {
+      es.onmessage = () => { void tick(); };
+      es.onopen = () => { void tick(); }; // recover updates missed during reconnect
     }
+    // The stream can look connected while an event is missed (or land on a
+    // different website instance), so poll while a job is pending as well.
+    const timer = setInterval(() => { if (document.visibilityState !== "hidden") void tick(); }, 2000);
+    const onVisible = () => { if (document.visibilityState !== "hidden") void tick(); };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
-      if (es) es.close();
-      if (t) clearInterval(t);
+      controller?.abort();
+      es?.close();
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(pendingIds), loadMembers]);
@@ -957,16 +970,19 @@ export default function AttendanceTab() {
   };
 
   /**
-   * Add Fingerprint: the server opens a pending job, the ESP32 picks it up on
-   * its 2 second poll and shows the name on its LCD, the person places his
-   * finger, the device posts the mapping back and this card turns into
+   * Add Fingerprint: the server opens a pending job, the ESP32 receives it and
+   * shows the place/lift instructions, then posts the confirmed mapping back.
+   * The status is refreshed by the device event and a polling safety net; the card turns into
    * "Fingerprint Added ✓".
    */
   const startEnroll = async (memberId?: number | null) => {
-    let id = memberId ?? null;
-    if (!id) id = await saveMember();
-    if (!id) return;
+    if (enrollStartingRef.current) return;
+    enrollStartingRef.current = true;
+    setEnrollStarting(true);
     try {
+      let id = memberId ?? null;
+      if (!id) id = await saveMember();
+      if (!id) return;
       const r = await fetch("/api/attendance/biometrics", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -977,21 +993,23 @@ export default function AttendanceTab() {
         say(d.error || "Could not start the enrollment", true);
         return;
       }
-      setJobs((prev) => ({
-        ...prev,
-        // detail/startedAt start empty: they belong to THIS attempt, so an old
-        // failure message never shows up under a fresh job.
-        [id as number]: {
-          jobId: d.job.id,
-          fingerprintId: d.job.fingerprintId,
-          status: "pending",
-          detail: null,
-          startedAt: null,
-        },
-      }));
-      say(`${d.message} • the device shows his name now`);
+      // Record the new identity immediately so a slow response from a prior
+      // attempt cannot overwrite it before React finishes rendering.
+      const next: EnrollJob = {
+        jobId: d.job.id,
+        fingerprintId: d.job.fingerprintId,
+        status: "pending",
+        detail: null,
+        startedAt: null,
+      };
+      jobsRef.current = { ...jobsRef.current, [id]: next };
+      setJobs((prev) => ({ ...prev, [id as number]: next }));
+      say("Request sent. Wait for instructions on the scanner's screen.");
     } catch {
       say("Network error. Try again.", true);
+    } finally {
+      enrollStartingRef.current = false;
+      setEnrollStarting(false);
     }
   };
 
@@ -1009,7 +1027,13 @@ export default function AttendanceTab() {
         say(d.error || "Could not cancel the enrollment", true);
         return;
       }
+      // Do not let an older cancellation or status reply affect a newer job.
+      if (jobsRef.current[memberId]?.jobId !== job.jobId) return;
+      const nextJobs = { ...jobsRef.current };
+      delete nextJobs[memberId];
+      jobsRef.current = nextJobs;
       setJobs((prev) => {
+        if (prev[memberId]?.jobId !== job.jobId) return prev;
         const next = { ...prev };
         delete next[memberId];
         return next;
@@ -1580,9 +1604,10 @@ export default function AttendanceTab() {
               <div className="flex flex-wrap gap-3">
                 <button
                   onClick={() => startEnroll(editingMemberId)}
-                  className="bg-[#3D2314] hover:bg-white/10 border border-[#C9A227]/40 text-amber-200 font-black text-xs uppercase rounded-xl px-5 py-3 flex items-center gap-2"
+                  disabled={enrollStarting}
+                  className="bg-[#3D2314] hover:bg-white/10 border border-[#C9A227]/40 text-amber-200 font-black text-xs uppercase rounded-xl px-5 py-3 flex items-center gap-2 disabled:opacity-50"
                 >
-                  <Fingerprint className="w-4 h-4" /> Add Fingerprint
+                  <Fingerprint className="w-4 h-4" /> {enrollStarting ? "Sending..." : "Add Fingerprint"}
                 </button>
                 <button
                   onClick={doneMember}
@@ -1666,12 +1691,12 @@ export default function AttendanceTab() {
                     <div className="bg-amber-950/40 border border-amber-700 rounded-xl p-3">
                       <p className="text-xs font-bold text-amber-200 flex items-center gap-2">
                         <RefreshCw className="w-3 h-3 animate-spin" />
-                        {job.startedAt ? "Device is ready • " : "Waiting for the device • "}ID {job.fingerprintId}
+                        {job.startedAt ? "Scanner received the request • " : "Waiting for the scanner • "}ID {job.fingerprintId}
                       </p>
                       <p className="text-[10px] text-amber-300/80 mt-1">
                         {job.startedAt
-                          ? "The scanner is waiting. Follow the LCD: place the SAME finger twice for capture, lifting it between placements. Lift again and place it a third time to confirm."
-                          : "Sending the job to the scanner. If this does not change in about 20 seconds the device is offline."}
+                          ? "Wait for PLACE FINGER on the scanner. Place the SAME finger twice, lifting between captures; lift again and place it a third time to confirm."
+                          : "Request sent. Keep the scanner powered and wait for its screen. If it does not respond, check the connection."}
                       </p>
                       {job.detail ? <p className="text-[10px] text-amber-200/90 mt-1 font-bold">{job.detail}</p> : null}
                       <button
@@ -1689,26 +1714,28 @@ export default function AttendanceTab() {
                     <div className="bg-rose-950/40 border border-rose-800 rounded-xl p-3">
                       <p className="text-xs font-bold text-rose-200">Fingerprint was not added</p>
                       <p className="text-[10px] text-rose-300/80 mt-1">
-                        {job.detail || "No finger was placed, or the scanner could not read it. Try again."}
+                        {job.detail || "The scanner did not finish. Check its screen and try again."}
                       </p>
                       {!job.startedAt ? (
                         <p className="text-[10px] text-rose-300/70 mt-1">
-                          The scanner never picked this job up. Check that it is powered on and on the same WiFi.
+                          No receipt confirmation was recorded. Check that the scanner is powered and connected.
                         </p>
                       ) : null}
                       <button
                         onClick={() => startEnroll(m.id)}
-                        className="mt-2 text-[10px] font-bold text-amber-200 hover:text-white underline"
+                        disabled={enrollStarting}
+                        className="mt-2 text-[10px] font-bold text-amber-200 hover:text-white underline disabled:opacity-50"
                       >
-                        Try again
+                        {enrollStarting ? "Sending..." : "Try again"}
                       </button>
                     </div>
                   ) : (
                     <button
                       onClick={() => startEnroll(m.id)}
-                      className="w-full bg-[#3D2314] hover:bg-white/10 border border-[#C9A227]/40 text-amber-200 font-black text-[11px] uppercase rounded-xl px-4 py-2.5 flex items-center justify-center gap-2"
+                      disabled={enrollStarting}
+                      className="w-full bg-[#3D2314] hover:bg-white/10 border border-[#C9A227]/40 text-amber-200 font-black text-[11px] uppercase rounded-xl px-4 py-2.5 flex items-center justify-center gap-2 disabled:opacity-50"
                     >
-                      <Fingerprint className="w-4 h-4" /> Add Fingerprint
+                      <Fingerprint className="w-4 h-4" /> {enrollStarting ? "Sending..." : "Add Fingerprint"}
                     </button>
                   )}
                 </div>

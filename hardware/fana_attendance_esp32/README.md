@@ -49,15 +49,15 @@ The sketch opens UART2 at **57600 baud, 8N1**, matching the tested R307 shown by
 ## R307 enrollment flow
 
 1. Admin presses **Add Fingerprint** on the website.
-2. The device receives the pending job.
-3. The employee places the finger for capture 1.
+2. When the scanner picks up the job, its LCD shows **PREPARING...**. The website says the job was received, not that the sensor is already ready. Wait for the LCD to ask for a finger.
+3. At **PLACE FINGER** / **Place & hold**, the employee places the finger for capture 1.
 4. The employee lifts it.
 5. The same finger is placed again with a small position/angle change for capture 2.
 6. The R307 combines the two captures and stores one template.
 7. Lift again, then place the finger a **third time**. One fresh confirmation scan must find the same template ID.
 8. Only then is the ID mapped to the employee on the website.
 
-Use the same finger, place its pad flat and keep it still until the reader beeps. The firmware retries transient unclear images without lowering the sensor's matching security. If it reports a different ID, check whether that finger is already enrolled. Enrollment needs a live website connection, including the Serial `enroll <id>` command: the device checks current mappings before preparing a slot, so an offline/stale list cannot authorize deletion. Keep one scanner active and do not manually change fingerprint mappings while an enrollment is underway; the website and reader cannot atomically lock a physical slot across the network.
+Use the same finger, place its pad flat and keep it still until the reader beeps. Each placement prompt has up to 60 seconds within the overall enrollment budget; the firmware retries early no-finger replies and transient unclear images without lowering matching security. If the job fails, the LCD holds the reason for six seconds and the website receives the detail; an interrupted failure report is retried while the device remains on. If a verified capture was stored but the website did not confirm the matching employee and ID, the mapping is retried without repeating the capture; the unconfirmed owner is not added to the scanner's offline cache. Pending mapping and failure reports are kept in RAM, not persisted across a reboot. If the sensor reports a different ID, check whether that finger is already enrolled. Enrollment needs a live website connection, including the Serial `enroll <id>` command: the device checks current mappings before preparing a slot, so an offline/stale list cannot authorize deletion. Keep one scanner active and do not manually change fingerprint mappings while an enrollment is underway; the website and reader cannot atomically lock a physical slot across the network.
 
 ## Normal scan and offline attendance time
 
@@ -143,11 +143,13 @@ The board heals its own link. This is what changed, and why.
 - **A stronger access point is preferred.** When the link is up but below
   −78 dBm, every 5 minutes the board scans and rejoins if another access point
   with the same name is at least 8 dBm stronger (a mesh, or a second router).
-- **A new fingerprint job is polled every 15 s** even when the real-time stream
+- **A new fingerprint job is polled about every 5 s** even when the real-time stream
   looks connected, because a weak link can leave that socket open and silent.
-  This can help when the stream stays open but stops delivering events; it does not prove Wi-Fi caused a particular enrollment failure.
-- **Requests wait 8 s instead of 4 s**, and the "device is ready" message is
-  sent twice if the first one is lost.
+  The event stream can trigger pickup sooner; slow or busy requests can add delay.
+  This does not prove Wi-Fi caused a particular enrollment failure.
+- **Requests wait 8 s instead of 4 s**, and the receipt message is
+  sent twice if the first one is lost. If the failure report is unconfirmed,
+  the scanner retries the report without repeating the fingerprint capture.
 
 ### Making the signal stronger at the door (hardware)
 

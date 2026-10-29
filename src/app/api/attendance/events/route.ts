@@ -8,13 +8,11 @@ export const runtime = "nodejs";
 /**
  * GET /api/attendance/events?channel=device
  *
- * Server-Sent Events endpoint for the ESP32 door device. The scanner opens
- * this stream ONCE and then does NO polling at all: when the admin queues a
- * fingerprint enrollment (POST /api/attendance/biometrics) or a mapping is
- * added (POST /api/attendance/mappings), the server publishes to the device
- * channel and the ESP32 is told instantly. Between events the connection is
- * idle (only a keep-alive comment every 25 s), so there is zero traffic
- * until something actually happens.
+ * Server-Sent Events endpoint for the ESP32 door device. When the admin queues
+ * an enrollment or a mapping changes, the device channel signals the scanner
+ * to refresh. Between events this stream only sends a keep-alive comment every
+ * 25 s. The scanner also polls pending enrollments as a safety net for missed
+ * events, including events sent to a different website instance.
  *
  * Auth: the same device token as the mappings endpoint
  * (ATTENDANCE_DEVICE_TOKEN, sent as `x-attendance-device` or ?device=).

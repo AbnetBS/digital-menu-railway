@@ -37,9 +37,26 @@ with tempfile.TemporaryDirectory(prefix="fana-r307-test-") as temp:
     generated.write_text(test, encoding="utf-8")
     feedback_generated = temp / "scan_feedback_test.cpp"
     feedback_generated.write_text(feedback, encoding="utf-8")
+    reporting_start = sketch.index("// A failed enrollment must not remain")
+    reporting_end = sketch.index("// Retry only the website mapping", reporting_start)
+    reporting = (here / "enrollment_reporting_test.cpp").read_text(encoding="utf-8")
+    reporting = reporting.replace("// -- INSERT REAL ENROLLMENT FAILURE REPORTING --", sketch[reporting_start:reporting_end])
+    reporting_generated = temp / "enrollment_reporting_test.cpp"
+    reporting_generated.write_text(reporting, encoding="utf-8")
+    post_start = sketch.index("int postMappingToServer(int fingerprintId, int memberId, const String &memberName) {")
+    post_end = sketch.index("// Tells the website the device picked the job up", post_start)
+    mapping_start = sketch.index("// Retry only the website mapping")
+    mapping_end = sketch.index("/* ── Enrollment:", mapping_start)
+    mapping = (here / "enrollment_mapping_test.cpp").read_text(encoding="utf-8")
+    mapping = mapping.replace("// -- INSERT REAL ENROLLMENT MAPPING POST --", sketch[post_start:post_end])
+    mapping = mapping.replace("// -- INSERT REAL ENROLLMENT MAPPING RETRY --", sketch[mapping_start:mapping_end])
+    mapping_generated = temp / "enrollment_mapping_test.cpp"
+    mapping_generated.write_text(mapping, encoding="utf-8")
     for source, name, stub in [
         (here / "r307_transport_test.cpp", "transport", "stub"),
         (generated, "enrollment", "stub"),
+        (reporting_generated, "enrollment-reporting", "queue_stub"),
+        (mapping_generated, "enrollment-mapping", "queue_stub"),
         (here / "offline_queue_test.cpp", "offline-queue", "queue_stub"),
         (feedback_generated, "scan-feedback", "stub"),
     ]:

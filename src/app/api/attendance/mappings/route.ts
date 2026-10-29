@@ -67,14 +67,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Send a JSON body" }, { status: 400 });
     }
 
-    // The device picked the job up. It says so BEFORE it sends the sensor its
-    // first command, so the admin page can tell the difference between "the
-    // scanner never saw this job" (still no started_at) and "somebody now has
-    // to put a finger on the glass" (started_at is set).
+    // The device picked the job up. Receipt is reported before sensor
+    // preflight; the LCD will say when it is ready for finger placement.
     if (body.action === "job_started") {
       const jobId = Number(body.jobId);
       if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 });
-      const detail = String(body.detail ?? "Device is ready - place the finger now").slice(0, 160);
+      const detail = String(body.detail ?? "Scanner received the job; follow the scanner screen").slice(0, 160);
       await db
         .update(attendanceEnrollJobs)
         // Stays "pending" on purpose: a device that dies mid-enrollment leaves
@@ -94,12 +92,13 @@ export async function POST(request: Request) {
       const reason = String(body.reason ?? "Device could not finish the job").slice(0, 160);
       await db
         .update(attendanceEnrollJobs)
-        // The reason is kept: the admin page prints exactly which of the six
-        // scans failed and what the sensor answered.
+        // The reason is kept so the admin can see which step failed.
         .set({ status: "failed", completedAt: new Date(), detail: reason })
         .where(and(eq(attendanceEnrollJobs.id, jobId), eq(attendanceEnrollJobs.status, "pending")));
       publish(CHANNELS.device);
-      return NextResponse.json({ success: true, reason });
+      // Echo the job identity so the scanner can verify this report reached
+      // the website, rather than treating a captive portal's HTTP 200 as an ACK.
+      return NextResponse.json({ success: true, jobId, reason });
     }
 
     const fingerprintId = Number(body.fingerprintId);

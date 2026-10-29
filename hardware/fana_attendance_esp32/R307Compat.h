@@ -123,14 +123,29 @@ class R307Compat {
     if (!waitForImage(waitMs)) return false;
     uint8_t reply[32];
     const uint8_t convert[] = {FINGERPRINT_IMAGE2TZ, step};
-    if (!command(convert, sizeof(convert), 1, 3500, true, reply) || lastStatus_ != 0) return false;
+    if (!command(convert, sizeof(convert), 1, 3500, true, reply)) return false;
+    if (lastStatus_ != 0) {
+      // A no-finger-shaped reply AFTER GETIMAGE succeeded is not a 60-second
+      // waiting timeout. The image was lost/unusable; ask for a fresh capture.
+      if (lastStatus_ == 0x08) lastStatus_ = 0x06;
+      return false;
+    }
     if (step == 2) {
       const uint8_t combine[] = {FINGERPRINT_REGMODEL};
-      if (!command(combine, sizeof(combine), 1, 5000, true, reply) || lastStatus_ != 0) return false;
+      if (!command(combine, sizeof(combine), 1, 5000, true, reply)) return false;
+      if (lastStatus_ != 0) {
+        // A no-finger response here is unexpected, not a placement timeout.
+        if (lastStatus_ == 0x08) lastStatus_ = 0xFE;
+        return false;
+      }
       const uint8_t store[] = {FINGERPRINT_STORE, 1, (uint8_t)(id >> 8), (uint8_t)id};
-      // A lost STORE acknowledgement is ambiguous: do not blindly send the
-      // write twice or announce success. The job fails and can be retried.
-      if (!command(store, sizeof(store), 1, 5000, false, reply) || lastStatus_ != 0) return false;
+      // A lost or unexpected STORE acknowledgement is ambiguous: do not
+      // blindly send the write twice or announce success.
+      if (!command(store, sizeof(store), 1, 5000, false, reply)) return false;
+      if (lastStatus_ != 0) {
+        if (lastStatus_ == 0x08) lastStatus_ = 0xFE;
+        return false;
+      }
     }
     return true;
   }

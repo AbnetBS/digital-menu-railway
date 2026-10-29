@@ -65,19 +65,21 @@ static void showEnrollScreen(const String &, int, uint8_t done, const String &pr
   screens.push_back({done, prompt.text});
 }
 
-struct Action { char type; int result; uint8_t status; int id; };
+struct Action { char type; int result; uint8_t status; int id; uint32_t durationMs; };
 struct FakeFinger {
   std::deque<Action> actions;
   std::vector<Action> seen;
   uint8_t status = 0;
   uint8_t raw = 0;
-  void add(char type, int result, uint8_t st = 0, int id = 0) { actions.push_back({type, result, st, id}); }
+  void add(char type, int result, uint8_t st = 0, int id = 0, uint32_t durationMs = 25) {
+    actions.push_back({type, result, st, id, durationMs});
+  }
   Action next(char type) {
     assert(!actions.empty());
     Action a = actions.front(); actions.pop_front();
     assert(a.type == type);
     seen.push_back(a); status = a.status; raw = a.status;
-    delay(25);
+    delay(a.durationMs);
     return a;
   }
   int16_t getCount(uint32_t) { return static_cast<int16_t>(next('C').result); }
@@ -116,12 +118,39 @@ static void test_actual_enrollment() {
   assert(enrollFingerprint(400, "Abebe") == ENROLL_OK);
   assert(finger.actions.empty());
   assert(awaitingFingerLift && !enrollmentActive);
+  assert(!screens.empty() && screens.front().second == "PREPARING...");
   bool showedProgressOne = false, showedProgressTwo = false;
   for (const auto &s : screens) {
     if (s.first == 1 && s.second == "LIFT YOUR FINGER") showedProgressOne = true;
     if (s.first == 2 && s.second == "PLACE FINGER") showedProgressTwo = true;
   }
   assert(showedProgressOne && showedProgressTwo);
+}
+static void test_early_no_finger_does_not_end_the_prompt() {
+  reset();
+  // A premature no-finger result is not proof that the whole wait elapsed.
+  // Keep PLACE FINGER visible and accept a finger that arrives afterwards.
+  finger.add('E', 0, BIOVO_ACK_TIMEOUT, 1);
+  finger.add('E', 1, 0, 1);
+  emptyGlass();
+  finger.add('E', 1, 0, 2);
+  assert(runCaptureSession(5, "Abebe", 300000) == ENROLL_OK);
+  assert(!screens.empty() && screens.front().second == "PLACE FINGER");
+  assert(finger.actions.empty());
+
+  reset();
+  finger.add('E', 0, BIOVO_ACK_TIMEOUT, 1, ENROLL_ADD_TIMEOUT_MS);
+  const uint32_t began = millis();
+  assert(runCaptureSession(5, "Abebe", 300000) == ENROLL_NO_FINGER);
+  assert(millis() - began >= ENROLL_ADD_TIMEOUT_MS);
+  assert(finger.actions.empty());
+
+  reset();
+  emptyGlass();
+  finger.add('S', 0, BIOVO_ACK_TIMEOUT);
+  finger.add('S', 1, 0, 5);
+  assert(confirmEnrolledFinger(5, "Abebe", 300000) == ENROLL_OK);
+  assert(finger.actions.empty());
 }
 static void test_silence_is_not_lift() {
   reset();
@@ -179,6 +208,7 @@ static void test_slot_delete_errors() {
 }
 int main() {
   test_actual_enrollment();
+  test_early_no_finger_does_not_end_the_prompt();
   test_silence_is_not_lift();
   test_retry_quality_but_not_mismatch();
   test_unconfirmed_and_uncertain_write();

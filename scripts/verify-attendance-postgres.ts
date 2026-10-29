@@ -29,8 +29,8 @@ async function main() {
 
     await pool.query("INSERT INTO attendance_roles(id,name) VALUES (1,'Test role')");
     await pool.query("INSERT INTO attendance_role_shifts(role_id,label,start_time,end_time) VALUES (1,'Day','08:00','16:00')");
-    await pool.query("INSERT INTO attendance_members(id,name,role_id) VALUES (1,'Test employee',1),(2,'Other employee',1)");
-    await pool.query("INSERT INTO attendance_biometrics(member_id,fingerprint_id) VALUES (1,55),(2,56)");
+    await pool.query("INSERT INTO attendance_members(id,name,role_id) VALUES (1,'Test employee',1),(2,'Other employee',1),(3,'Abebe',1),(4,'Mulu',1),(5,'Sara',1)");
+    await pool.query("INSERT INTO attendance_biometrics(member_id,fingerprint_id) VALUES (1,55),(2,56),(3,57),(4,58),(5,59)");
     const id = () => randomBytes(16).toString("hex");
     const at = (stamp: string) => Math.floor(new Date(stamp).getTime() / 1000);
     const scanIn = at("2026-10-15T08:00:00+03:00");
@@ -46,6 +46,7 @@ async function main() {
     assert.ok(responses.every((response) => response.status === 200));
     const inResults = await Promise.all(responses.map((response) => response.json()));
     assert.ok(inResults.every((result) => result.action === "clock_in" && result.logId === inResults[0].logId));
+    assert.ok(inResults.every((result) => result.eventId === eventIn && result.recordedAtEpoch === scanIn));
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM attendance_logs")).rows[0].n, 1);
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM attendance_scan_events")).rows[0].n, 1);
     let row = (await pool.query("SELECT * FROM attendance_logs WHERE member_id=1")).rows[0];
@@ -59,11 +60,16 @@ async function main() {
     assert.equal((await repeat.json()).action, "already_registered");
     assert.equal((await pool.query("SELECT clock_out FROM attendance_logs WHERE member_id=1")).rows[0].clock_out, null);
 
-    // A lost success reply can be retried even if the mapping has since gone.
+    // Old receipts did not have the echo fields; retries must still return a
+    // verifiable identity and original time even if the mapping has gone.
+    await pool.query("UPDATE attendance_scan_events SET response = response - 'eventId' - 'recordedAtEpoch' WHERE event_id=$1", [eventIn]);
     await pool.query("DELETE FROM attendance_biometrics WHERE fingerprint_id=55");
     const retryAfterDelete = await post(bodyIn);
     assert.equal(retryAfterDelete.status, 200);
-    assert.equal((await retryAfterDelete.json()).action, "clock_in");
+    const replay = await retryAfterDelete.json();
+    assert.equal(replay.action, "clock_in");
+    assert.equal(replay.eventId, eventIn);
+    assert.equal(replay.recordedAtEpoch, scanIn);
     await pool.query("INSERT INTO attendance_biometrics(member_id,fingerprint_id) VALUES (1,55)");
     assert.equal((await post({ ...bodyIn, scannedAt: scanIn + 60 })).status, 409, "event IDs cannot change meaning");
     assert.equal((await post({ ...base, eventId: id(), capturedMemberId: 2, scannedAt: scanOut })).status, 409, "changed mapping must not credit the wrong person");
@@ -94,6 +100,27 @@ async function main() {
     assert.equal(row.total_minutes, 630);
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM attendance_overtime WHERE member_id=1")).rows[0].n, 1);
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM attendance_scan_events")).rows[0].n, 3);
+
+    // Three different people scanned while disconnected. Once their queued
+    // requests reach the route, each name and original time is preserved.
+    const queuedPeople = [
+      { memberId: 3, fingerprintId: 57, at: at("2026-10-16T08:01:10+03:00") },
+      { memberId: 4, fingerprintId: 58, at: at("2026-10-16T08:03:20+03:00") },
+      { memberId: 5, fingerprintId: 59, at: at("2026-10-16T08:05:30+03:00") },
+    ];
+    for (const person of queuedPeople) {
+      const eventId = id();
+      const response = await post({ ...base, fingerprintId: person.fingerprintId, capturedMemberId: person.memberId, eventId, scannedAt: person.at });
+      assert.equal(response.status, 200);
+      const data = await response.json();
+      assert.equal(data.eventId, eventId);
+      assert.equal(data.recordedAtEpoch, person.at);
+      assert.equal(data.memberId, person.memberId);
+      assert.equal(data.action, "clock_in");
+    }
+    const threeRows = (await pool.query("SELECT member_id, clock_in FROM attendance_logs WHERE member_id IN (3,4,5) ORDER BY member_id")).rows;
+    assert.equal(threeRows.length, 3);
+    threeRows.forEach((r, i) => assert.equal(new Date(r.clock_in).getTime(), queuedPeople[i].at * 1000));
 
     delete process.env.ATTENDANCE_DEVICE_TOKEN;
     const noToken = await post({ ...base, fingerprintId: 56, capturedMemberId: 2, eventId: id(), scannedAt: scanIn }, "");

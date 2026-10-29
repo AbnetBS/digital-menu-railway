@@ -169,7 +169,14 @@ export async function POST(request: Request) {
               receipt.capturedMemberId !== capturedMemberId || receipt.scannedAt.getTime() !== scan.time.getTime()) {
             return NextResponse.json({ error: "Scan eventId reused with different data" }, { status: 409 });
           }
-          return NextResponse.json(receipt.response);
+          // Receipts written by older releases may not contain the echo fields.
+          // Include them on replay too, so the scanner can verify this exact
+          // event and time before it removes anything from its local queue.
+          return NextResponse.json({
+            ...receipt.response,
+            eventId,
+            recordedAtEpoch: Math.floor(receipt.scannedAt.getTime() / 1000),
+          });
         }
       }
       // Backdating beyond the old three-day limit is allowed only when a real
@@ -180,13 +187,16 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Configure ATTENDANCE_DEVICE_TOKEN to synchronize scans older than three days", status: "device_token_required" }, { status: 403 });
       }
       const respond = async (payload: Record<string, unknown>) => {
+        const confirmed = eventId
+          ? { ...payload, eventId, recordedAtEpoch: Math.floor(scan.time.getTime() / 1000) }
+          : payload;
         if (eventId) {
           await tx.insert(attendanceScanEvents).values({
             eventId, fingerprintId: requestedFinger, capturedMemberId, deviceId,
-            scannedAt: scan.time, response: payload, receivedAt: scan.arrivedAt,
+            scannedAt: scan.time, response: confirmed, receivedAt: scan.arrivedAt,
           });
         }
-        return NextResponse.json(payload);
+        return NextResponse.json(confirmed);
       };
 
       /* ── who is scanning? ──────────────────────────────────────────────── */

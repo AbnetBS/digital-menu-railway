@@ -186,7 +186,7 @@ pass("the device reads NTP without blocking the scanner", firmware.includes("uns
   firmware.includes("if (!getLocalTime(&t, 0) || t.tm_year < (2020 - 1900)) return 0;"));
 pass("the scanner records image-capture uptime and timestamp before enqueueing", firmware.includes("finger.capturedImageMillis()") &&
   firmware.includes("const unsigned long scannedAt = scanEpochAtUptime(capturedUptimeMs);") &&
-  firmware.includes("esp_timer_get_time() / 1000ULL") && firmware.includes("saveToQueue(fingerprintId, name, memberId, scannedAt, uptimeMs)"));
+  firmware.includes("esp_timer_get_time() / 1000ULL") && firmware.includes("saveToQueue(fingerprintId, name, memberId, scannedAt, uptimeMs, eventId)"));
 pass("64-bit monotonic uptime and an atomic anchor survive millis wrap", firmware.includes("uint64_t uptimeAtSyncSeconds") &&
   firmware.includes("portENTER_CRITICAL(&clockMux)") && firmware.includes("if (!epoch) return 0;"));
 pass("an unanchored scan is held until a durable anchor or manual review", firmware.includes("pendingUnknownTime = true") &&
@@ -199,7 +199,15 @@ pass("no network request holds the queue lock", firmware.includes("offlineQueue-
   firmware.includes("http.POST(json)") && firmware.includes("offlineQueue->acknowledge(head)") && queue.includes("Guard guard(mutex_);"));
 pass("failed writes and corrupt records cannot masquerade as saved scans", firmware.includes("LittleFS.begin(false)") &&
   firmware.includes("SCAN NOT SAVED") && queue.includes("written == record.length()") && queue.includes("return BLOCKED;"));
-pass("failed or unauthorized HTTP requests leave the record queued", /if \(httpCode != 200\) \{[\s\S]{0,180}return false;/.test(firmware));
+pass("failed or unauthorized HTTP requests leave the record queued", /if \(httpCode != 200\) \{[\s\S]{0,220}return QUEUE_WAIT;/.test(firmware));
+pass("a 200 is not accepted without the exact website receipt", firmware.includes("&& receiptMatches(") && firmware.includes("if (!valid)") &&
+  firmware.includes('answer["recordedAtEpoch"]') && firmware.includes('answer["eventId"]') &&
+  clockApi.includes("recordedAtEpoch: Math.floor(scan.time.getTime() / 1000)"));
+pass("new scans and a recovered clock wake an independent delivery task", firmware.includes("void deliveryTask(void *)") &&
+  firmware.includes("xTaskNotifyGive(deliveryTaskHandle)") && firmware.includes("QUEUE_OFFLINE_POLL_MS") &&
+  firmware.includes("QUEUE_RETRY_MS"));
+pass("the LCD distinguishes local storage from website confirmation", firmware.includes('"SAVED ON DEVICE"') &&
+  firmware.includes('"Will sync later"') && firmware.includes('"SENT TO WEBSITE"') && firmware.includes('"ALREADY REGISTERED"'));
 pass("changed mappings or out-of-order scans are retained for review", firmware.includes('copyToReview(head, "server_conflict")') &&
   clockApi.includes('status: "mapping_changed"') && clockApi.includes('status: "out_of_order"'));
 pass("the route rejects invalid recorded times instead of substituting arrival", clockApi.includes("if (exactTime && !scan.trusted)") &&
@@ -208,14 +216,15 @@ pass("older scans require a configured token and duplicate event receipts are at
   clockApi.includes("pg_advisory_xact_lock") && clockApi.includes("tx.insert(attendanceScanEvents)") &&
   clockApi.includes("db.transaction(async (tx)"));
 pass("the README documents the time, power loss, token and review limitations", deviceReadme.includes("**A kept scan carries its own time.**") &&
-  deviceReadme.includes("Kept scans are delivered oldest first") && deviceReadme.includes("battery-backed RTC") &&
+  deviceReadme.includes("sends oldest first") && deviceReadme.includes("battery-backed RTC") &&
   deviceReadme.includes("queue review") && deviceReadme.includes("older than three days"));
 
 /* ── 7. compiled host simulator ─────────────────────────────────────────── */
 const run = spawnSync("python3", [path.join(ROOT, "hardware/fana_attendance_esp32/test/run_host_tests.py")], { encoding: "utf8" });
 const out = `${run.stdout || ""}${run.stderr || ""}`;
 pass("actual queue and R307 flow pass their compiled host simulations",
-  run.status === 0 && out.includes("Offline queue tests passed") && out.includes("Enrollment flow tests passed"), out);
+  run.status === 0 && out.includes("Offline queue tests passed") && out.includes("Enrollment flow tests passed") &&
+  out.includes("Queue delivery tests passed") && out.includes("Scan feedback tests passed"), out);
 
 if (failures > 0) {
   console.error(`\n❌ OFFLINE SCAN TIME GUARD FAILED (${failures})\n`);

@@ -83,11 +83,14 @@
 #include <mbedtls/md.h>
 #include <atomic>
 #include <map>
+#include <string.h>
 #include <LittleFS.h>
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/queue.h>
+#include <sys/time.h>
 #include <WebServer.h>
 /* The rest windows put the board into a real deep sleep, so the sleep API is
  * part of the sketch. The host test stubs this header (test/stub/esp_sleep.h):
@@ -141,6 +144,63 @@ struct EnrollmentGuard {
   ~EnrollmentGuard() { enrollmentActive = false; }
 };
 
+// Only plain, fixed-size data crosses from the delivery task to the scanner.
+// The network task never writes the LCD or waits for a person to read it.
+enum DeliveryKind : uint8_t { DELIVERY_IN, DELIVERY_OUT, DELIVERY_ALREADY, DELIVERY_REVIEW };
+struct DeliveryNotice {
+  char eventId[33];
+  char name[65];
+  uint32_t scannedAt;
+  DeliveryKind kind;
+};
+
+// BEGIN SCAN FEEDBACK STATE (also compiled by the host regression tests)
+class ScanFeedback {
+ public:
+  enum Phase : uint8_t { IDLE, SENDING, SAVED, SENT_IN, SENT_OUT, ALREADY, REVIEW };
+  void saved(const DeliveryNotice &notice, bool connected, uint32_t now) {
+    current_ = notice;
+    phase_ = connected ? SENDING : SAVED;
+    shownAt_ = now;
+  }
+  bool mayShow(const DeliveryNotice &notice, uint32_t now) const {
+    return phase_ == IDLE || strcmp(current_.eventId, notice.eventId) == 0 ||
+           (uint32_t)(now - shownAt_) >= 1500U;
+  }
+  void delivered(const DeliveryNotice &notice, uint32_t now) {
+    current_ = notice;
+    switch (notice.kind) {
+      case DELIVERY_IN: phase_ = SENT_IN; break;
+      case DELIVERY_OUT: phase_ = SENT_OUT; break;
+      case DELIVERY_ALREADY: phase_ = ALREADY; break;
+      case DELIVERY_REVIEW: phase_ = REVIEW; break;
+    }
+    shownAt_ = now;
+  }
+  bool tick(uint32_t now) {
+    if (phase_ == SENDING && (uint32_t)(now - shownAt_) >= 1800U) {
+      phase_ = SAVED; // no confirmed reply yet: the durable copy is still safe
+      shownAt_ = now;
+      return true;
+    }
+    if (phase_ != IDLE && phase_ != SENDING && (uint32_t)(now - shownAt_) >= 3000U) {
+      phase_ = IDLE;
+      return true;
+    }
+    return false;
+  }
+  Phase phase() const { return phase_; }
+  const DeliveryNotice &current() const { return current_; }
+ private:
+  DeliveryNotice current_{};
+  Phase phase_ = IDLE;
+  uint32_t shownAt_ = 0;
+};
+// END SCAN FEEDBACK STATE
+
+enum QueueSyncResult : uint8_t { QUEUE_EMPTY, QUEUE_PROGRESS, QUEUE_WAIT };
+enum QueueStatus : uint8_t { QUEUE_OFFLINE, QUEUE_IDLE, QUEUE_SENDING, QUEUE_CLOCK_WAIT, QUEUE_ERROR, QUEUE_STORAGE_ERROR };
+
 HardwareSerial mySerial(2);
 R307Compat finger(mySerial);
 WebServer server(80);
@@ -151,6 +211,14 @@ SemaphoreHandle_t sensorMutex = nullptr;
 SemaphoreHandle_t mappingMutex = nullptr;
 SemaphoreHandle_t queueMutex = nullptr;
 OfflineQueue *offlineQueue = nullptr;
+TaskHandle_t deliveryTaskHandle = nullptr;
+QueueHandle_t deliveryNotices = nullptr;
+ScanFeedback scanFeedback;
+std::atomic<uint8_t> queueStatus{QUEUE_OFFLINE};
+std::atomic<int> queueLastHttpCode{0};
+std::atomic<bool> websiteClockUsed{false};
+bool scanGreenOn = false;
+uint32_t scanGreenSince = 0;
 String bootId;
 std::atomic<bool> networkJoinRequested{false};
 std::atomic<bool> networkScanRequested{false};
@@ -164,7 +232,10 @@ std::atomic<bool> queueNeedsReview{false};
  * given up on while the router was still delivering the reply, which is why an
  * enrollment could fail far from the router. */
 #define SERVER_TIMEOUT_MS       8000  // never wait longer than this for the website
-#define RESULT_SHOW_MS          1500  // a normal result stays on the LCD this long
+#define RESULT_SHOW_MS          1500  // enrollment/legacy result feedback
+#define QUEUE_RETRY_MS          3000  // retry website failures without waiting for another scan
+#define QUEUE_OFFLINE_POLL_MS   1000  // notice Wi-Fi recovery even if other network work is busy
+#define WEBSITE_TIME_RETRY_MS   10000 // fallback if NTP is blocked after boot
 #define WARNING_SHOW_MS         2500  // a problem stays on the LCD this long
 /* Like the owner's earlier working flow: two R307 captures, then one fresh
  * confirmation. The website is told "added" only when the reader itself
@@ -399,6 +470,11 @@ void startTimeSync();
 void applyWifiTuning();
 void serviceWifi();
 void networkTask(void *arg);
+void deliveryTask(void *arg);
+void wakeDeliveryTask();
+void updateScanFeedback();
+void renderScanFeedback();
+bool syncTimeFromWebsite();
 void loadCachedMappings();
 bool mappedNameForId(int id, String &name);
 bool mappedPersonForId(int id, String &name, int &memberId);
@@ -443,8 +519,8 @@ void stopEventStream();
 void startEventStream();
 void pumpEventStream();
 bool loadMappingsFromServer();
-bool saveToQueue(int fingerprintId, const String &staffName, int memberId, unsigned long scannedAt, uint64_t uptimeMs);
-bool syncOfflineQueue();
+bool saveToQueue(int fingerprintId, const String &staffName, int memberId, unsigned long scannedAt, uint64_t uptimeMs, String &eventId);
+QueueSyncResult syncOfflineQueue();
 void periodicSync();
 void maybeRest();
 void loadRestScheduleFromServer();
@@ -516,6 +592,7 @@ void setup() {
   sensorMutex = xSemaphoreCreateMutex();
   mappingMutex = xSemaphoreCreateMutex();
   queueMutex = xSemaphoreCreateMutex();
+  deliveryNotices = xQueueCreate(16, sizeof(DeliveryNotice));
   char id[17];
   snprintf(id, sizeof(id), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
   bootId = String(id);
@@ -529,6 +606,12 @@ void setup() {
     Serial.println("Could not create scanner locks: network disabled; inspect memory. Scans may not be saved.");
     return; // never run two tasks against an unprotected reader/queue
   }
+  if (!deliveryNotices) Serial.println("Could not create delivery display queue; confirmations will be logged on Serial");
+  const BaseType_t deliveryStarted = xTaskCreatePinnedToCore(deliveryTask, "attendance-delivery", 12288, nullptr, 1, &deliveryTaskHandle, 0);
+  if (deliveryStarted != pdPASS) {
+    queueStatus = QUEUE_ERROR;
+    Serial.println("Delivery task could not start; scans remain local. Inspect memory.");
+  }
   const BaseType_t started = xTaskCreatePinnedToCore(networkTask, "attendance-network", 16384, nullptr, 1, nullptr, 0);
   if (started != pdPASS) Serial.println("Network task could not start; scans remain local. Inspect memory.");
 }
@@ -541,11 +624,13 @@ void loop() {
     noteWallClock();
     checkSensorHealth();
     checkLcdHealth();
+    updateScanFeedback();
     refreshIdleClock();
     if (sensorReady) {
       maintainReaderLight();
       scanForFinger();
     }
+    updateScanFeedback();
     handleSerialCommand();
     maybeRest();
     if (sensorMutex) xSemaphoreGive(sensorMutex);
@@ -1077,10 +1162,56 @@ void showEnrollScreen(const String &who, int id, uint8_t done, const String &pro
 void showIdleScreen() {
   lcdWriteRow(0, "Fana Cafe Attendance");
   lcdWriteRow(1, sensorReady ? "Place finger" : String("SENSOR OFFLINE!"));
-  lcdWriteRow(2, queueNeedsReview ? String("Scans need review!") : wifiStatusLine());
+  const uint8_t status = queueStatus.load();
+  lcdWriteRow(2, queueNeedsReview ? String("Scans need review!") :
+                 status == QUEUE_STORAGE_ERROR ? String("Queue needs help") :
+                 status == QUEUE_ERROR ? String("Sync waiting") : wifiStatusLine());
   const String clock = wallClockText();
   lcdWriteRow(3, clock.length() > 0 ? "Time " + clock : String("Time not set yet"));
   idleVisible = true;    // the clock refresh may redraw this screen from now on
+}
+
+// The queue stores UTC epoch seconds; the cafe's wall clock is UTC+3.
+String capturedTimeText(uint32_t epoch) {
+  if (!epoch) return "Time not set yet";
+  const uint32_t day = (epoch + ET_UTC_OFFSET_SEC) % 86400UL;
+  char value[15];
+  snprintf(value, sizeof(value), "Time %02u:%02u:%02u",
+           (unsigned)(day / 3600U), (unsigned)((day / 60U) % 60U), (unsigned)(day % 60U));
+  return String(value);
+}
+
+void renderScanFeedback() {
+  const DeliveryNotice &notice = scanFeedback.current();
+  const String name = String(notice.name);
+  const String when = capturedTimeText(notice.scannedAt);
+  switch (scanFeedback.phase()) {
+    case ScanFeedback::IDLE: showIdleScreen(); break;
+    case ScanFeedback::SENDING: showLines(name, "SENDING TO WEBSITE", when, "Please wait"); break;
+    case ScanFeedback::SAVED: showLines(name, "SAVED ON DEVICE", when, "Will sync later"); break;
+    case ScanFeedback::SENT_IN: showLines(name, "SENT TO WEBSITE", when, "Attendance IN"); break;
+    case ScanFeedback::SENT_OUT: showLines(name, "SENT TO WEBSITE", when, "Attendance OUT"); break;
+    case ScanFeedback::ALREADY: showLines(name, "ALREADY REGISTERED", when, "No new entry"); break;
+    case ScanFeedback::REVIEW: showLines(name, "NEEDS REVIEW", when, "Ask the admin"); break;
+  }
+}
+
+// Called only by the scanner task. Delivery notices may arrive in the
+// background; a different person's fresh result gets time to be read first.
+void updateScanFeedback() {
+  const uint32_t now = millis();
+  if (scanGreenOn && (uint32_t)(now - scanGreenSince) >= RESULT_SHOW_MS) {
+    digitalWrite(GREEN_LED, LOW);
+    scanGreenOn = false;
+  }
+  if (scanFeedback.tick(now)) renderScanFeedback();
+  DeliveryNotice notice;
+  if (deliveryNotices && xQueuePeek(deliveryNotices, &notice, 0) == pdTRUE && scanFeedback.mayShow(notice, now)) {
+    if (xQueueReceive(deliveryNotices, &notice, 0) == pdTRUE) {
+      scanFeedback.delivered(notice, now);
+      renderScanFeedback();
+    }
+  }
 }
 
 /* ── WiFi that comes back on its own (owner, Oct 2026) ───────────────────── *
@@ -1210,9 +1341,9 @@ void serviceWifi() {
       Serial.print(downMs / 1000);
       Serial.println(" s. Repairing the stream, the clock and the names.");
       applyWifiTuning();
-      // The sockets and the NTP answer did not survive the drop. The queued
-      // scans are sent by periodicSync(), which runs every 30 s, so this
-      // moment stays short and the glass keeps reading fingers.
+      // Wake the independent delivery task immediately; mapping/schedule
+      // HTTP calls below cannot hold saved attendance behind them.
+      wakeDeliveryTask();
       startTimeSync();
       loadMappingsFromServer();
       loadRestScheduleFromServer();
@@ -1301,9 +1432,10 @@ void noteWallClock() {
   if (pendingUnknownTime && offlineQueue && uptime <= 0xFFFFFFFFULL) {
     // This anchor also resolves all earlier no-clock scans from this boot,
     // even if power is lost after the NTP sync and before delivery.
-    if (offlineQueue->saveClockAnchor(bootId, epoch, (uint32_t)uptime))
+    if (offlineQueue->saveClockAnchor(bootId, epoch, (uint32_t)uptime)) {
       pendingUnknownTime = false;
-    else
+      wakeDeliveryTask();
+    } else
       Serial.println("Could not save clock anchor; unknown-time scans remain queued");
   }
   portENTER_CRITICAL(&clockMux);
@@ -1597,23 +1729,26 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   Serial.print(" - ");
   Serial.println(name);
 
-  if (!saveToQueue(fingerprintId, name, memberId, scannedAt, uptimeMs)) {
+  String eventId;
+  if (!saveToQueue(fingerprintId, name, memberId, scannedAt, uptimeMs, eventId)) {
     showSensorWarning(name, "SCAN NOT SAVED", "Tell the admin");
     return;
   }
   if (!scannedAt) pendingUnknownTime = true;
-  // A successful beep means the local flash write succeeded, not that the
-  // website has accepted it. The server confirms separately when it reconnects.
+  DeliveryNotice notice{};
+  snprintf(notice.eventId, sizeof(notice.eventId), "%s", eventId.c_str());
+  snprintf(notice.name, sizeof(notice.name), "%s", name.c_str());
+  notice.scannedAt = (uint32_t)scannedAt;
+  scanFeedback.saved(notice, WiFi.status() == WL_CONNECTED && deliveryTaskHandle, millis());
+  renderScanFeedback();
+  // A green light confirms a safe local write. Only a validated server reply
+  // changes the LCD to SENT. The delivery task starts immediately and never
+  // holds the scanner while the website is slow.
   digitalWrite(GREEN_LED, HIGH);
+  scanGreenOn = true;
+  scanGreenSince = millis();
+  wakeDeliveryTask();
   beepSuccess();
-  if (scannedAt == 0) {
-    showLines(name, "Saved on device", "Clock not set yet", "Waiting for time");
-  } else {
-    showLines(name, "Saved on device", "Will sync in order", "Keep scanner on");
-  }
-  delay(RESULT_SHOW_MS);
-  digitalWrite(GREEN_LED, LOW);
-  showIdleScreen();
 }
 
 // Sends one scan. Returns the HTTP code (200 accepted, 4xx refused, 5xx server
@@ -2638,12 +2773,13 @@ bool loadMappingsFromServer() {
 }
 
 /* ── Offline queue: one durable record per matched placement ─────────────── */
-bool saveToQueue(int fingerprintId, const String &staffName, int memberId, unsigned long scannedAt, uint64_t uptimeMs) {
+bool saveToQueue(int fingerprintId, const String &staffName, int memberId, unsigned long scannedAt, uint64_t uptimeMs, String &eventId) {
   if (!offlineQueue) return false;
-  char eventId[33];
-  snprintf(eventId, sizeof(eventId), "%08lx%08lx%08lx%08lx",
+  char id[33];
+  snprintf(id, sizeof(id), "%08lx%08lx%08lx%08lx",
            (unsigned long)esp_random(), (unsigned long)esp_random(),
            (unsigned long)esp_random(), (unsigned long)esp_random());
+  eventId = String(id);
   DynamicJsonDocument doc(1024);
   doc["eventId"] = eventId;
   doc["fingerprintId"] = fingerprintId;
@@ -2669,28 +2805,59 @@ bool saveToQueue(int fingerprintId, const String &staffName, int memberId, unsig
   return true;
 }
 
-// Process at most ONE record. The queue lock is not held during HTTP, so a
-// weak or stalled connection cannot prevent another person from scanning.
-bool syncOfflineQueue() {
-  if (!offlineQueue || WiFi.status() != WL_CONNECTED) return false;
+// BEGIN RECEIPT VALIDATION (also compiled by the host regression tests)
+bool receiptMatches(const char *expectedId, uint32_t expectedTime, int expectedFinger,
+                    int expectedMember, const char *receivedId, uint32_t receivedTime,
+                    int receivedFinger, int receivedMember, const char *action, bool success) {
+  if (!expectedId || !receivedId || !action || !expectedId[0] || strcmp(expectedId, receivedId) != 0 ||
+      expectedTime != receivedTime || expectedFinger != receivedFinger || receivedMember <= 0 ||
+      (expectedMember > 0 && expectedMember != receivedMember)) return false;
+  if (strcmp(action, "already_registered") == 0) return true;
+  return success && (strcmp(action, "clock_in") == 0 || strcmp(action, "clock_out") == 0);
+}
+// END RECEIPT VALIDATION
+
+void publishDeliveryNotice(const char *eventId, const char *name, uint32_t scannedAt, DeliveryKind kind) {
+  DeliveryNotice notice{};
+  snprintf(notice.eventId, sizeof(notice.eventId), "%s", eventId ? eventId : "");
+  snprintf(notice.name, sizeof(notice.name), "%s", name && name[0] ? name : "Employee");
+  notice.scannedAt = scannedAt;
+  notice.kind = kind;
+  Serial.print(kind == DELIVERY_REVIEW ? "NEEDS REVIEW: " : kind == DELIVERY_ALREADY ? "ALREADY REGISTERED: " : "SENT TO WEBSITE: ");
+  Serial.print(notice.name);
+  Serial.print(" - ");
+  Serial.println(capturedTimeText(scannedAt));
+  if (deliveryNotices && xQueueSend(deliveryNotices, &notice, 0) != pdTRUE)
+    Serial.println("LCD confirmation list is full; website result is still recorded above");
+}
+
+// Process ONE head. A network request never holds the flash queue lock and
+// a scan is removed only after an exact, recognizable website receipt.
+QueueSyncResult syncOfflineQueue() {
+  if (!offlineQueue) { queueStatus = QUEUE_STORAGE_ERROR; return QUEUE_WAIT; }
+  if (WiFi.status() != WL_CONNECTED) { queueStatus = QUEUE_OFFLINE; return QUEUE_WAIT; }
   OfflineQueue::Head head;
   const OfflineQueue::Peek state = offlineQueue->peek(head);
-  if (state == OfflineQueue::EMPTY) return false;
+  if (state == OfflineQueue::EMPTY) { queueStatus = QUEUE_IDLE; return QUEUE_EMPTY; }
   if (state != OfflineQueue::READY) {
+    queueStatus = QUEUE_STORAGE_ERROR;
     Serial.println("Offline queue paused: damaged storage or a partial record; ask the admin to inspect it");
-    return false;
+    return QUEUE_WAIT;
   }
   DynamicJsonDocument doc(1024);
   if (deserializeJson(doc, head.line)) {
+    queueStatus = QUEUE_STORAGE_ERROR;
     Serial.println("Offline queue paused: invalid entry retained for inspection");
-    return false;
+    return QUEUE_WAIT;
   }
   const int fid = doc["fingerprintId"] | 0;
   unsigned long scannedAt = doc["scannedAt"] | 0UL;
   const char *eventId = doc["eventId"] | "";
+  const char *savedName = doc["staffName"] | "";
   if (fid <= 0) {
+    queueStatus = QUEUE_STORAGE_ERROR;
     Serial.println("Offline queue paused: invalid fingerprint ID");
-    return false;
+    return QUEUE_WAIT;
   }
   if (!scannedAt && doc["bootId"].is<const char *>() && doc["uptimeSeconds"].is<uint32_t>()) {
     const String originalBoot = doc["bootId"].as<String>();
@@ -2703,22 +2870,25 @@ bool syncOfflineQueue() {
   }
   if (!scannedAt) {
     const String originalBoot = doc["bootId"] | "";
-    // If this boot can still get NTP, wait for the durable anchor. After a
-    // reboot, an unanchored/legacy scan can no longer be dated automatically:
-    // retain it for manual review and let later timestamped scans proceed.
     if (originalBoot == bootId) {
-      Serial.println("Offline queue waiting for the first NTP clock anchor");
-      return false;
+      queueStatus = QUEUE_CLOCK_WAIT;
+      Serial.println("Offline queue waiting for the first clock anchor (NTP or website time)");
+      return QUEUE_WAIT;
     }
+    // A previous boot with no time anchor cannot be dated safely. Preserve it
+    // for review before letting later timestamped scans continue.
     if (!offlineQueue->copyToReview(head, "unknown_time")) {
+      queueStatus = QUEUE_STORAGE_ERROR;
       Serial.println("Offline queue paused: could not preserve unknown-time scan for review");
-      return false;
+      return QUEUE_WAIT;
     }
     queueNeedsReview = true;
-    if (!offlineQueue->acknowledge(head)) return false;
+    if (!offlineQueue->acknowledge(head)) { queueStatus = QUEUE_STORAGE_ERROR; return QUEUE_WAIT; }
+    publishDeliveryNotice(eventId, savedName, 0, DELIVERY_REVIEW);
     Serial.println("Scan without a recoverable time saved for manual review; type queue review on Serial");
-    return true;
+    return QUEUE_PROGRESS;
   }
+
   HTTPClient http;
   http.setTimeout(SERVER_TIMEOUT_MS);
   beginServerRequest(http, "/api/attendance/clock");
@@ -2730,9 +2900,7 @@ bool syncOfflineQueue() {
   postDoc["deviceId"] = deviceId + "_offline";
   postDoc["method"] = "fingerprint";
   postDoc["scannedAt"] = scannedAt;
-  // Old firmware's queue had no event ID. Derive a stable one from its saved
-  // content, cursor and this ESP32's hardware ID, so old scans get safe retries
-  // too. A new record already has a random ID written before its first send.
+  // Legacy records have no ID. Keep the derived ID stable for safe retries.
   char legacyId[33] = {0};
   if (!eventId[0]) {
     const uint64_t chip = ESP.getEfuseMac();
@@ -2741,9 +2909,10 @@ bool syncOfflineQueue() {
     unsigned char digest[32];
     const mbedtls_md_info_t *sha = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     if (!sha || mbedtls_md(sha, (const unsigned char *)key.c_str(), key.length(), digest) != 0) {
+      queueStatus = QUEUE_STORAGE_ERROR;
       Serial.println("Cannot identify legacy scan safely; kept on device");
       http.end();
-      return false;
+      return QUEUE_WAIT;
     }
     for (int i = 0; i < 16; i++) snprintf(legacyId + 2 * i, 3, "%02x", digest[i]);
     eventId = legacyId;
@@ -2751,48 +2920,128 @@ bool syncOfflineQueue() {
   postDoc["eventId"] = eventId;
   postDoc["requireRecordedTime"] = true;
   if (postDoc.overflowed()) {
+    queueStatus = QUEUE_STORAGE_ERROR;
     Serial.println("Scan request too large; kept on device");
     http.end();
-    return false;
+    return QUEUE_WAIT;
   }
   String json;
   serializeJson(postDoc, json);
+  queueStatus = QUEUE_SENDING;
   const int httpCode = http.POST(json);
+  const String body = httpCode > 0 ? http.getString() : String("");
   http.end();
+  queueLastHttpCode = httpCode;
   if (httpCode == 409) {
-    // A mapping changed or a newer entry already exists. Never attribute the
-    // scan to the wrong person or discard it: preserve it for admin review.
-    if (!offlineQueue->copyToReview(head, "server_conflict")) return false;
+    if (!offlineQueue->copyToReview(head, "server_conflict")) { queueStatus = QUEUE_STORAGE_ERROR; return QUEUE_WAIT; }
     queueNeedsReview = true;
-    if (!offlineQueue->acknowledge(head)) return false;
+    if (!offlineQueue->acknowledge(head)) { queueStatus = QUEUE_STORAGE_ERROR; return QUEUE_WAIT; }
+    publishDeliveryNotice(eventId, savedName, (uint32_t)scannedAt, DELIVERY_REVIEW);
     Serial.println("Conflicting scan saved for manual review; type queue review on Serial");
-    return true;
+    return QUEUE_PROGRESS;
   }
   if (httpCode != 200) {
+    queueStatus = QUEUE_ERROR;
     Serial.print("Offline queue paused, HTTP ");
     Serial.println(httpCode);
-    return false;
+    return QUEUE_WAIT;
+  }
+  // A captive portal, old website or proxy can answer HTTP 200 without saving
+  // attendance. Do not lose the scan or say SENT unless the response names
+  // this exact event, finger, member and recorded scan time.
+  DynamicJsonDocument answer(2048);
+  const DeserializationError parseError = deserializeJson(answer, body);
+  const char *responseId = answer["eventId"] | "";
+  const char *action = answer["action"] | "";
+  const bool valid = !parseError && receiptMatches(eventId, (uint32_t)scannedAt, fid, capturedMember,
+      responseId, answer["recordedAtEpoch"] | 0UL, answer["fingerprintId"] | 0,
+      answer["memberId"] | 0, action, answer["success"] | false);
+  if (!valid) {
+    queueStatus = QUEUE_ERROR;
+    Serial.println("Website reply did not confirm this scan; kept on device. Check website deployment or captive portal.");
+    return QUEUE_WAIT;
   }
   if (!offlineQueue->acknowledge(head)) {
+    queueStatus = QUEUE_STORAGE_ERROR;
     Serial.println("Server accepted scan, but cursor write failed; safe retry required");
-    return false;
+    return QUEUE_WAIT;
   }
-  Serial.print("Synced offline ID ");
-  Serial.println(fid);
+  const char *serverName = answer["memberName"] | "";
+  const DeliveryKind kind = strcmp(action, "clock_in") == 0 ? DELIVERY_IN :
+                            strcmp(action, "clock_out") == 0 ? DELIVERY_OUT : DELIVERY_ALREADY;
+  publishDeliveryNotice(eventId, serverName[0] ? serverName : savedName, (uint32_t)scannedAt, kind);
+  return QUEUE_PROGRESS;
+}
+
+void wakeDeliveryTask() {
+  if (deliveryTaskHandle) xTaskNotifyGive(deliveryTaskHandle);
+}
+
+// NTP is preferred. Some routers block UDP 123 even when the website works:
+// use its no-cache clock as a same-boot fallback, with a round-trip estimate.
+// This cannot reconstruct a scan from a previous unanchored boot.
+bool syncTimeFromWebsite() {
+  if (wallClockEpoch() || WiFi.status() != WL_CONNECTED) return false;
+  const uint64_t started = (uint64_t)esp_timer_get_time() / 1000ULL;
+  HTTPClient http;
+  http.setTimeout(SERVER_TIMEOUT_MS);
+  beginServerRequest(http, "/api/attendance/device-time");
+  http.addHeader("Cache-Control", "no-cache");
+  if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
+  const int code = http.GET();
+  const String body = code == 200 ? http.getString() : String("");
+  http.end();
+  const uint64_t ended = (uint64_t)esp_timer_get_time() / 1000ULL;
+  if (code != 200 || ended < started || ended - started > 10000ULL || wallClockEpoch()) return false;
+  DynamicJsonDocument answer(256);
+  if (deserializeJson(answer, body) || strcmp(answer["service"] | "", "fana-attendance-time-v1") != 0) return false;
+  const uint32_t epoch = answer["epochSeconds"] | 0UL;
+  const uint32_t subsecond = answer["millisecond"] | 1000U;
+  if (epoch < 1577836800UL || epoch >= 4102444800UL || subsecond > 999) return false;
+  const uint64_t estimatedMs = (uint64_t)epoch * 1000ULL + subsecond + (ended - started) / 2ULL;
+  struct timeval tv;
+  tv.tv_sec = (time_t)(estimatedMs / 1000ULL);
+  tv.tv_usec = (suseconds_t)((estimatedMs % 1000ULL) * 1000ULL);
+  if (settimeofday(&tv, nullptr) != 0) return false;
+  websiteClockUsed = true;
+  Serial.println("Clock set from website (estimated; NTP is preferred)");
   return true;
 }
 
+// A separate task means enrollment, SSE, name refresh and a slow website status
+// request cannot keep a queued attendance scan waiting behind them.
+void deliveryTask(void *) {
+  uint32_t lastTimeTry = 0;
+  bool triedTime = false;
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) {
+      queueStatus = QUEUE_OFFLINE;
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(QUEUE_OFFLINE_POLL_MS));
+      continue;
+    }
+    const uint32_t now = millis();
+    if (!wallClockEpoch() && (!triedTime || (uint32_t)(now - lastTimeTry) >= WEBSITE_TIME_RETRY_MS)) {
+      triedTime = true;
+      lastTimeTry = now;
+      syncTimeFromWebsite();
+    }
+    const QueueSyncResult result = syncOfflineQueue();
+    if (result == QUEUE_PROGRESS) {
+      vTaskDelay(pdMS_TO_TICKS(25));
+      continue;
+    }
+    // New scans and clock anchors wake this immediately; 1-second offline/idle
+    // polling also notices reconnection even while the other task is busy.
+    const uint32_t wait = result == QUEUE_EMPTY ? QUEUE_OFFLINE_POLL_MS : QUEUE_RETRY_MS;
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait));
+  }
+}
+
 void periodicSync() {
-  static unsigned long lastAttempt = 0;
-  static uint32_t nextDelay = 0;
   static unsigned long lastNames = 0;
   static bool mappingsLoaded = false;
+  if (WiFi.status() != WL_CONNECTED) return;
   const unsigned long now = millis();
-  if ((uint32_t)(now - lastAttempt) >= nextDelay) {
-    lastAttempt = now;
-    // Continue draining promptly after success, back off after a failure/empty.
-    nextDelay = syncOfflineQueue() ? 250 : 10000;
-  }
   const uint32_t namesDelay = mappingsLoaded ? 900000UL : 10000UL;
   if ((uint32_t)(now - lastNames) >= namesDelay) {
     lastNames = now;
@@ -2866,6 +3115,43 @@ void printWifiScan() {
   WiFi.scanDelete();
 }
 
+void printQueueStatus() {
+  Serial.println("--- Attendance sync status ---");
+  Serial.print("WiFi: ");
+  Serial.println(WiFi.status() == WL_CONNECTED ? "connected (website may still be unreachable)" : "disconnected");
+  Serial.print("Sync state: ");
+  switch (queueStatus.load()) {
+    case QUEUE_OFFLINE: Serial.println("waiting for WiFi"); break;
+    case QUEUE_IDLE: Serial.println("no queued scans"); break;
+    case QUEUE_SENDING: Serial.println("sending"); break;
+    case QUEUE_CLOCK_WAIT: Serial.println("waiting for a valid clock anchor"); break;
+    case QUEUE_STORAGE_ERROR: Serial.println("queue storage needs inspection"); break;
+    default: Serial.println("website/connection error; retrying"); break;
+  }
+  Serial.print("Last attendance HTTP code: ");
+  Serial.println(queueLastHttpCode.load());
+  Serial.print("Clock: ");
+  Serial.println(wallClockEpoch() ? (websiteClockUsed ? "set (website fallback was used)" : "set") : "not set yet");
+  Serial.print("Manual review records: ");
+  Serial.println(queueNeedsReview ? "YES - type queue review" : "none known");
+  if (!offlineQueue) { Serial.println("Queue unavailable"); return; }
+  OfflineQueue::Head head;
+  const OfflineQueue::Peek state = offlineQueue->peek(head);
+  if (state == OfflineQueue::EMPTY) Serial.println("Queue: empty");
+  else if (state == OfflineQueue::BLOCKED) Serial.println("Queue: blocked; do not erase it");
+  else {
+    DynamicJsonDocument doc(1024);
+    if (deserializeJson(doc, head.line)) Serial.println("Queue: invalid head; do not erase it");
+    else {
+      Serial.print("First waiting event ID: "); Serial.println(doc["eventId"] | "legacy (no event ID)");
+      Serial.print("First waiting finger ID: "); Serial.println(doc["fingerprintId"] | 0);
+      Serial.print("First waiting name: "); Serial.println(doc["staffName"] | "unknown");
+      Serial.print("First waiting time: "); Serial.println(capturedTimeText(doc["scannedAt"] | 0UL));
+      Serial.println("Other scans, if any, remain queued behind this one.");
+    }
+  }
+}
+
 void handleSerialCommand() {
   if (!Serial.available()) return;
   String cmd = Serial.readStringUntil('\n');
@@ -2888,6 +3174,8 @@ void handleSerialCommand() {
     restCommand(cmd.substring(4));
   } else if (cmd == "wifi") {
     printWifiReport();
+  } else if (cmd == "queue status") {
+    printQueueStatus();
   } else if (cmd == "queue review") {
     // Maintenance command: dump retained records, never delete them implicitly.
     if (!queueMutex || xSemaphoreTake(queueMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
@@ -2917,7 +3205,7 @@ void handleSerialCommand() {
     networkJoinRequested = true;
     Serial.println("WiFi reconnect requested in the background");
   } else if (cmd.length() > 0) {
-    Serial.println("Commands: enroll <id> | list | test | sensor | sensor hard | wifi | wifi scan | wifi join | queue review | empty confirm | rest show");
+    Serial.println("Commands: enroll <id> | list | test | sensor | sensor hard | wifi | wifi scan | wifi join | queue status | queue review | empty confirm | rest show");
   }
 }
 
@@ -3103,7 +3391,7 @@ void handleStatus() {
     server.send(503, "text/plain", "Scanner busy; retry");
     return;
   }
-  DynamicJsonDocument doc(768);
+  DynamicJsonDocument doc(1024);
   doc["deviceId"] = deviceId;
   // The two things worth knowing when a door "does not scan": whether the
   // module is answering at all, and how long it has been since it last did.
@@ -3141,6 +3429,9 @@ void handleStatus() {
   doc["time"] = wallClockText();
   doc["timeReady"] = timeReady;
   doc["queueNeedsReview"] = queueNeedsReview.load();
+  doc["queueStatus"] = queueStatus.load();
+  doc["queueLastHttpCode"] = queueLastHttpCode.load();
+  doc["websiteClockFallbackUsed"] = websiteClockUsed.load();
   if (mappingMutex) xSemaphoreTake(mappingMutex, portMAX_DELAY);
   doc["mappings"] = fingerprintToStaff.size();
   if (mappingMutex) xSemaphoreGive(mappingMutex);

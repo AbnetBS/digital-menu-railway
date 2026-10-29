@@ -2232,8 +2232,12 @@ int postMappingToServer(int fingerprintId, int memberId, const String &memberNam
 void reportJobStarted(int jobId, int fingerprintId) {
   if (jobId <= 0 || WiFi.status() != WL_CONNECTED) return;
 
+  /* This runs BEFORE the first PLACE FINGER prompt, so it must not hold the
+   * door for the eight second website budget (twice, because the retry below).
+   * The receipt is a courtesy to the admin page; the job row already exists on
+   * the website whether or not it arrives. A weak link gets three seconds. */
   HTTPClient http;
-  http.setTimeout(SERVER_TIMEOUT_MS);
+  http.setTimeout(3000);
   beginServerRequest(http, "/api/attendance/mappings");
   addDeviceHeaders(http);
 
@@ -2834,8 +2838,10 @@ EnrollResult confirmEnrolledFinger(int id, const String &who, uint32_t deadlineM
 bool enrollMappingsAreCurrent() {
   // With a saved list in flash the fresh request is a bonus, not a necessity,
   // so it gets a short budget: the person at the door must not stand in front
-  // of a PREPARING screen while a weak link times out twice.
-  const uint32_t budget = mappingListKnown ? 3500UL : (uint32_t)SERVER_TIMEOUT_MS;
+  // of a PREPARING screen while a weak link times out twice. A cafe link that
+  // answers at all answers this small GET in well under a second; one that
+  // does not is treated exactly like no link.
+  const uint32_t budget = mappingListKnown ? 1500UL : (uint32_t)SERVER_TIMEOUT_MS;
   if (loadMappingsFromServer(budget)) return true;   // sets mappingListKnown itself
   if (!mappingListKnown) {
     enrollDetail = "the scanner has no employee list yet: connect it to the website once, then retry";

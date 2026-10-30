@@ -15,6 +15,7 @@ class R307Compat {
   // Retry this after a reader comes back late, not only at power-up.
   bool begin(uint32_t timeoutMs = 2500) {
     capacity_ = 0;
+    lightMode_ = 0;
     uint8_t reply[32];
     const uint8_t verify[] = {FINGERPRINT_VERIFYPASSWORD, 0, 0, 0, 0};
     if (!command(verify, sizeof(verify), 1, timeoutMs, true, reply) || lastStatus_ != 0) return false;
@@ -45,38 +46,52 @@ class R307Compat {
   // earlier than matching/response handling and wraps like Arduino millis().
   uint32_t capturedImageMillis() const { return capturedImageMs_; }
 
-  // Some optical readers support the optional LED commands. Not all R307
-  // variants do; failure must never disable fingerprint capture.
-  //
-  // Three commands are tried, in the order that costs the least: the plain
-  // LEDON, then the "aura" LED configuration (breathing blue, unlimited cycles)
-  // that many clones answer even when they refuse the plain one, and finally a
-  // steady-on blue in the same layout.
-  //
-  // The aura command is deliberately the BREATHING pattern in blue with zero
-  // cycles, i.e. "blink blue forever". The owner's request (Oct 2026) was
-  // exactly that: "make the blue light continuous / blinking non-stop, so a
-  // finger placed at any moment is scanned". A steady-on LED that the module
-  // itself switches off after a capture is what produced the dark window; a
-  // breathing pattern that never ends keeps the glass visibly alive, and a
-  // repeat of this same command is harmless if the reader already honours it.
+  // Optional reader illumination. Prefer the sensor's own unlimited flashing
+  // pattern: repeatedly restarting a breathing animation can create long dark
+  // gaps. Some R307 variants only support LEDON (or no LED command at all).
   bool requestLightOn(uint32_t timeoutMs = 1200) {
     uint8_t reply[32];
-    const uint8_t light[] = {FINGERPRINT_LEDON};
-    if (command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
 #ifdef FINGERPRINT_AURALEDCONFIG
-    // Layout used by R307/AS608 clones: func, start colour, end colour, cycles.
-    // cycles = 0 means "never stop", so the blue light keeps breathing.
-    const uint8_t aura[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_BREATHING,
-                            FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
-    if (command(aura, sizeof(aura), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
-    // A clone that refuses breathing but accepts a steady blue is still lit.
+    // Adafruit aura layout: command, control, speed, colour, cycle count.
+    const uint8_t flashing[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_FLASHING,
+                                0x20, FINGERPRINT_LED_BLUE, 0x00};
     const uint8_t steady[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_ON,
-                              FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
-    if (command(steady, sizeof(steady), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
+                              0x00, FINGERPRINT_LED_BLUE, 0x00};
+#endif
+    const uint8_t light[] = {FINGERPRINT_LEDON};
+    // Remember the accepted layout. A clone that only supports LEDON must not
+    // pay for an unsupported aura timeout on every idle refresh.
+    if (lightMode_) {
+      bool ok = false;
+#ifdef FINGERPRINT_AURALEDCONFIG
+      if (lightMode_ == 1) ok = command(flashing, sizeof(flashing), 1, timeoutMs, false, reply) && lastStatus_ == 0;
+      if (lightMode_ == 3) ok = command(steady, sizeof(steady), 1, timeoutMs, false, reply) && lastStatus_ == 0;
+#endif
+      if (lightMode_ == 2) ok = command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0;
+      if (ok) return true;
+      lightMode_ = 0; // re-probe on the next refresh, not in this scan pass
+      return false;
+    }
+#ifdef FINGERPRINT_AURALEDCONFIG
+    if (command(flashing, sizeof(flashing), 1, timeoutMs, false, reply) && lastStatus_ == 0) {
+      lightMode_ = 1;
+      return true;
+    }
+#endif
+    if (command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0) {
+      lightMode_ = 2;
+      return true;
+    }
+#ifdef FINGERPRINT_AURALEDCONFIG
+    if (command(steady, sizeof(steady), 1, timeoutMs, false, reply) && lastStatus_ == 0) {
+      lightMode_ = 3;
+      return true;
+    }
 #endif
     return false;
   }
+
+  bool lightFlashes() const { return lightMode_ == 1; }
 
   // A cheap protocol handshake: proves the module is listening and re-synchronizes
   // a reader that has been silent or confused for a while. It never changes the
@@ -135,6 +150,9 @@ class R307Compat {
       const uint8_t convert[] = {FINGERPRINT_IMAGE2TZ, 1};
       if (!command(convert, sizeof(convert), 1, 3500, true, reply)) return false;
       if (lastStatus_ != 0) {
+        // A captured image that cannot be converted (including a lost image)
+        // is a bad placement, not an empty glass.
+        if (lastStatus_ == 0x08) lastStatus_ = 0x06;
         if (lastStatus_ == 0x06 && attempt == 0) {
           previousQuality = lastStatus_;
           delay(250);
@@ -152,7 +170,12 @@ class R307Compat {
         permission = 1;
         return true;
       }
-      if (lastStatus_ == 0x05 && attempt == 0) {
+      // A no-finger reply after capture is an unusable image, not an empty
+      // glass. NOMATCH and NOTFOUND both mean no stored template matched in
+      // this command; NOMATCH has a different meaning during enrollment.
+      if (lastStatus_ == 0x08) lastStatus_ = 0x06;
+      if (lastStatus_ == 0x09) lastStatus_ = 0x05;
+      if ((lastStatus_ == 0x05 || lastStatus_ == 0x06) && attempt == 0) {
         previousQuality = lastStatus_;
         delay(250);
         continue;
@@ -252,6 +275,7 @@ class R307Compat {
   Adafruit_Fingerprint sensor_;
   Stream &stream_;
   uint16_t capacity_ = 0;
+  uint8_t lightMode_ = 0; // unknown, flashing, plain on, steady aura
   uint32_t capturedImageMs_ = 0;
   uint32_t imagesSeen_ = 0;   // GETIMAGE replies that carried a usable image
   uint32_t emptyGlass_ = 0;   // GETIMAGE replies that said "no finger"

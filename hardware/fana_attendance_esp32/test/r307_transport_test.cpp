@@ -145,6 +145,29 @@ static void test_quality_and_no_finger() {
   assert(!reader.search(id, permission, 1500));
   assert(reader.getLastStatus() == 0x05);
   s.plans.clear();
+  // Other readers return NOMATCH from search; it is also a refusal, not an
+  // enrollment mismatch. A lift during retry must not erase the warning.
+  s.ack(FINGERPRINT_GETIMAGE); s.ack(FINGERPRINT_IMAGE2TZ);
+  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOMATCH});
+  for (int i = 0; i < 6; ++i) s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(!reader.search(id, permission, 1500) && reader.getLastStatus() == 0x05);
+  s.plans.clear();
+  // Image was captured but disappeared before conversion: tell the employee
+  // to retry, rather than treating it as untouched glass.
+  s.ack(FINGERPRINT_GETIMAGE);
+  s.plan(FINGERPRINT_IMAGE2TZ, {FINGERPRINT_NOFINGER});
+  for (int i = 0; i < 6; ++i) s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(!reader.search(id, permission, 1500) && reader.getLastStatus() == 0x06);
+  s.plans.clear();
+  s.ack(FINGERPRINT_GETIMAGE); s.ack(FINGERPRINT_IMAGE2TZ);
+  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOFINGER});
+  for (int i = 0; i < 6; ++i) s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(!reader.search(id, permission, 1500) && reader.getLastStatus() == 0x06);
+  s.plans.clear();
+  // Nobody touched the reader: do not invent a rejection.
+  for (int i = 0; i < 30; ++i) s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(!reader.search(id, permission, 200) && reader.getLastStatus() == 0x08);
+  s.plans.clear();
   s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
   assert(reader.fingerPresent() == 0);
   s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_IMAGEFAIL});
@@ -252,32 +275,35 @@ static void test_optional_led() {
   nowMs = 0;
   FakeSensor s;
   R307Compat reader(s);
-  s.init();
-  assert(reader.begin(1500));
+  prepare(s, reader);
+  s.ack(FINGERPRINT_AURALEDCONFIG);
+  assert(reader.requestLightOn() && reader.lightFlashes());
+  const auto &flash = s.commands.back();
+  assert(flash[1] == FINGERPRINT_LED_FLASHING && flash[2] == 0x20);
+  assert(flash[3] == FINGERPRINT_LED_BLUE && flash[4] == 0);
+  // If the cached mode fails, the next request re-probes and falls back.
+  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+  assert(!reader.requestLightOn() && !reader.lightFlashes());
+  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
   s.ack(FINGERPRINT_LEDON);
-  assert(reader.requestLightOn());
-  // A clone that refuses the plain LED-ON but accepts the aura LED layout is
-  // lit by the second command - the "sensor does not light up" reader.
+  assert(reader.requestLightOn() && !reader.lightFlashes());
+  s.ack(FINGERPRINT_LEDON);
+  assert(reader.requestLightOn() && s.commands.back()[0] == FINGERPRINT_LEDON);
+  s.plan(FINGERPRINT_LEDON, {1});
+  assert(!reader.requestLightOn());
+  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
   s.plan(FINGERPRINT_LEDON, {1});
   s.ack(FINGERPRINT_AURALEDCONFIG);
-  assert(reader.requestLightOn());
-  // A reader that rejects every light layout (plain, breathing blue, steady
-  // blue) still processes ordinary capture commands.
-  s.plan(FINGERPRINT_LEDON, {1});
-  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+  assert(reader.requestLightOn() && !reader.lightFlashes());
+  assert(s.commands.back()[1] == FINGERPRINT_LED_ON);
   s.plan(FINGERPRINT_AURALEDCONFIG, {1});
   assert(!reader.requestLightOn());
-  // The light commands are always blue and either breathing forever or steady:
-  // the glass must stay visibly alive, never go dark between two scans.
-  assert(s.commands[s.commands.size() - 2][2] == FINGERPRINT_LED_BLUE);
-  assert(s.commands[s.commands.size() - 2][1] == FINGERPRINT_LED_BREATHING);
-  assert(s.commands.back()[1] == FINGERPRINT_LED_ON);
+  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+  s.plan(FINGERPRINT_LEDON, {1});
+  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+  assert(!reader.requestLightOn());
   s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
   assert(reader.fingerPresent() == 0);
-  // The handshake is a password verify: it proves the module is listening
-  // without touching its memory.
-  s.ack(FINGERPRINT_VERIFYPASSWORD);
-  assert(reader.handshake(1200));
 }
 
 /* The door is between two employees of the same group. While the first finger
@@ -306,21 +332,6 @@ static void test_short_lift_poll() {
   assert(nowMs < 1500);
 }
 
-/* The plain LED-ON is not the only way to light an R307 clone: the aura layout
- * is tried second, and a reader that answers either one is treated as lit. */
-static void test_light_has_two_commands() {
-  nowMs = 0;
-  FakeSensor s;
-  R307Compat reader(s);
-  prepare(s, reader);
-  s.plan(FINGERPRINT_LEDON, {1});          // plain command refused
-  s.ack(FINGERPRINT_AURALEDCONFIG);        // clone answers the aura layout
-  assert(reader.requestLightOn(300));
-  assert(s.commands.back()[0] == FINGERPRINT_AURALEDCONFIG);
-  s.ack(FINGERPRINT_VERIFYPASSWORD);
-  assert(reader.handshake(300));
-}
-
 /* An enrollment placement must be able to say WHY it saw nothing: the counters
  * separate "nobody touched the glass" from "the image was unclear". */
 static void test_placement_answer_counters() {
@@ -343,7 +354,6 @@ static void test_placement_answer_counters() {
 
 int main() {
   test_optional_led();
-  test_light_has_two_commands();
   test_short_lift_poll();
   test_placement_answer_counters();
   test_capacity_and_full_range();

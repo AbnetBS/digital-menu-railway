@@ -54,7 +54,21 @@ with tempfile.TemporaryDirectory(prefix="fana-r307-test-") as temp:
     mapping = mapping.replace("// -- INSERT REAL ENROLLMENT MAPPING RETRY --", sketch[mapping_start:mapping_end])
     mapping_generated = temp / "enrollment_mapping_test.cpp"
     mapping_generated.write_text(mapping, encoding="utf-8")
+    scan_start = sketch.index("void scanForFinger() {")
+    scan_end = sketch.index("/* A warning about a placement", scan_start)
+    scan_test = (here / "scan_flow_test.cpp").read_text(encoding="utf-8")
+    scan_test = scan_test.replace("// -- INSERT REAL SCAN FLOW --", sketch[scan_start:scan_end])
+    scan_generated = temp / "scan_flow_test.cpp"
+    scan_generated.write_text(scan_test, encoding="utf-8")
+    light_start = sketch.index("void maintainReaderLight() {")
+    light_end = sketch.index("// Answers true when the sensor replies", light_start)
+    light_test = (here / "light_policy_test.cpp").read_text(encoding="utf-8")
+    light_test = light_test.replace("// -- INSERT REAL LIGHT POLICY --", sketch[light_start:light_end])
+    light_generated = temp / "light_policy_test.cpp"
+    light_generated.write_text(light_test, encoding="utf-8")
     for source, name, stub in [
+        (scan_generated, "scan-flow", "stub"),
+        (light_generated, "light-policy", "stub"),
         (here / "r307_transport_test.cpp", "transport", "stub"),
         (generated, "enrollment", "stub"),
         (reporting_generated, "enrollment-reporting", "queue_stub"),

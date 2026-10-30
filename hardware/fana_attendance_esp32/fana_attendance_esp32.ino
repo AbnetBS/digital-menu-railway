@@ -48,11 +48,11 @@
  * Sensor UART: 57600 baud, 8N1 (common R307 factory default).
  *
  * WHAT HAPPENS
- *   Scan:   the finger is matched and the answer shows at once - the employee's
- *           name and the recorded time, plus WHERE it went: SENDING TO WEBSITE
- *           (then SENT TO WEBSITE with IN / OUT / late / already registered)
- *           when there is a link, or SAVED OFFLINE (queued, will send by
- *           itself) when there is not. One placement = one scan, however long
+ *   Scan:   the finger is matched locally and the answer shows at once - the
+ *           employee's name, the recorded time and "Verifying....", then either
+ *           "Sent to website" (with IN / OUT / already registered) or "Stored
+ *           offline queue" (the scan keeps its original time and uploads by
+ *           itself). One placement = one scan, however long
  *           the finger stays on the sensor. The reader is ready for the next
  *           person the instant the finger is lifted: while a MATCHED finger
  *           rests on the glass the sketch only polls "is anything there?"
@@ -80,25 +80,40 @@
  *           and is not retried in a loop.
  *   Manual: Serial "enroll <id>" stores a finger even with no website (it uses
  *           the names saved in flash); map it in admin afterwards.
- *   Idle:   "Fana Cafe Attendance / Place finger - ready / Connected -58dB / Time
- *           HH:MM:SS" (owner, Oct 2026). Row 2 says whether the scan will
- *           reach the website AND, when it will not, that the scan is still
- *           kept ("Offline 34s - saved"). Row 3 is the wall clock from NTP on
- *           Ethiopian time (UTC+3, no daylight saving). The IP address and the
- *           template count live on the device's own status page and on
- *           Serial, not on the door.
- *   After:  "<name> / SENDING TO WEBSITE / Time HH:MM:SS / Wait for receipt",
- *           which becomes "SENT TO WEBSITE / Attendance IN|OUT" the moment the
- *           website confirms that exact scan. Only when NOTHING is confirmed
- *           (no Wi-Fi, or a link that never gets an answer within 8 s) does the
- *           screen say "SAVED OFFLINE" - with the reason on the last row
- *           ("No Wi-Fi now" or "Site not replying") - because the scan is then
- *           held in the offline queue and sent by itself. Owner, Oct 2026: a
- *           scan that WAS delivered must never be called "saved on device".
+ *   Idle:   "Fana Cafe Attendance / Place finger - ready / Connected -58dB #### / Time
+ *           HH:MM:SS" (owner, Oct 2026). Row 2 ALWAYS carries the connection
+ *           status, the live dBm number and the four signal blocks (and
+ *           "Offline 34s - saved" / "No wifi - scans safe" when the link is
+ *           down, because a kept scan is not a fault). Row 3 is the wall clock
+ *           from NTP on Ethiopian time (UTC+3, no daylight saving), and it
+ *           alternates every 2.5 s with an alert when one is needed ("Scans
+ *           need review", "Queue needs help", "Sync waiting"), so neither the
+ *           clock nor the alert is ever lost. The IP address and the template
+ *           count live on the device's own status page and on Serial.
+ *   After:  the result card, drawn the instant the finger matches (owner, Oct
+ *           2026), four rows:
+ *             row 0  employee name          from the list saved in flash
+ *             row 1  Time HH:MM:SS          the moment the image was taken
+ *             row 2  Verifying....          with the green LED + one beep
+ *             row 3  Please wait            then "Sending to site"
+ *           When the green indication finishes (1.5 s) row 2 reports where the
+ *           scan really is: "Sent to website" (with Attendance IN / OUT on row
+ *           3) once the website confirms THAT exact scan, or "Stored offline
+ *           queue" when nothing was confirmed - with the reason on row 3 ("No
+ *           Wi-Fi now" or "Site not replying"). The scan is written to flash
+ *           before any network work and keeps its ORIGINAL scan time, and the
+ *           delivery task uploads it by itself when Wi-Fi returns, so nobody
+ *           rescans. Owner, Oct 2026: a scan that WAS delivered must never be
+ *           called "saved on device".
  *   Wrong:  an unregistered, wrong-side, unclear or garbled press shows a RED
- *           LED and a distinct two-pulse buzzer with instructions (NOT
- *           RECOGNIZED / IMAGE UNCLEAR). The scanner keeps looking the whole
- *           time the warning is visible, and a good scan replaces it at once.
+ *           LED and a distinct two-pulse buzzer as fast as the reader answers
+ *           (every fixed cost in front of it was cut: no second capture, an
+ *           800 ms image deadline, a 1.5 s conversion deadline, a ~600 ms
+ *           recovery cap and a 1.2 s warning throttle - see WARNING_REPEAT_MS
+ *           and R307Compat.h. The refusal prints its own timing on Serial)
+ *           ("Not registered / Ask the admin" or "Image unclear / Press flat and
+ *           still"), and the card clears itself after the warning. The scanner
+ *           keeps looking the whole time, and a good scan replaces it at once.
  *           The reader's own evidence decides whether a finger was there, so a
  *           bad press can never produce a blank, silent, dark glass. A definite
  *           no-match is answered immediately (no second capture), which is what
@@ -230,11 +245,30 @@ class ScanFeedback {
    * ever comes from the website's own receipt; until then the honest states are
    * SENDING (link up, waiting) and SAVED (nothing confirmed, still queued). */
   static const uint32_t WAIT_FOR_RECEIPT_MS = 8000U;
+  /* How long the green LED + success beep last. When they end the screen stops
+   * saying "Please wait" and reports where the scan actually is (owner, Oct
+   * 2026: "once the initial green indication finishes, replace Verifying...
+   * with either Sent to website or Stored in offline queue"). */
+  static const uint32_t GREEN_SHOW_MS = 1500U;
+  /* Shown the instant the reader matches a finger and the name is known from
+   * the list saved in flash - BEFORE the LittleFS write, so the employee sees
+   * their name and "Verifying...." with no wait at all. The final state follows
+   * within milliseconds (see saved()). */
+  void verifying(const DeliveryNotice &notice, bool connected, uint32_t now) {
+    current_ = notice;
+    linkUpAtSave_ = connected;
+    phase_ = SENDING;
+    shownAt_ = now;
+  }
   void saved(const DeliveryNotice &notice, bool connected, uint32_t now) {
     current_ = notice;
     linkUpAtSave_ = connected;
     phase_ = connected ? SENDING : SAVED;
     shownAt_ = now;
+  }
+  // True once the green indication has finished for the scan on screen.
+  bool greenPhaseOver(uint32_t now) const {
+    return phase_ == SENDING && (uint32_t)(now - shownAt_) >= GREEN_SHOW_MS;
   }
   // Was there a usable link when this scan was stored? Only used to explain on
   // the LCD WHY the scan is sitting in the queue.
@@ -404,8 +438,14 @@ std::atomic<bool> queueNeedsReview{false};
 /* A finger that stays on the glass and is not registered is looked at again on
  * every pass, forever: the door must never stop scanning. This only throttles
  * how often the SAME screen is re-announced (buzzer + red LED), so a resting
- * finger does not beep in the employee's face twice a second. */
-#define WARNING_REPEAT_MS       4000
+ * finger does not beep in the employee's face repeatedly.
+ *
+ * It was 4000 ms, which made a genuinely NEW bad press silent when the reader
+ * did not report the lift in between - the owner's "it takes long before the
+ * red LED and buzzer". A lift (GO_OUT / no-finger) clears the throttle outright
+ * (warningKind = 0xFF), and this window only catches a hand that never left the
+ * glass. */
+#define WARNING_REPEAT_MS       1200
 /* Like the owner's earlier working flow: two R307 captures, then one fresh
  * confirmation. The website is told "added" only when the reader itself
  * finds the new ID. No biometric acceptance/security setting is lowered.
@@ -470,6 +510,10 @@ std::atomic<bool> queueNeedsReview{false};
 #define WIFI_AP_HUNT_MS         300000UL // look for a stronger access point this often
 #define WIFI_AP_HUNT_GAIN       8        // only move if it is this much stronger
 #define IDLE_CLOCK_REFRESH_MS   1000   // the idle screen's clock row moves once a second
+/* How long the "Scans need review" / queue alert stays up before the idle row
+ * alternates back to the clock. Both must be readable: the alert is a call for
+ * a human, the clock is what proves the board is alive. */
+#define IDLE_ALERT_ALT_MS       2500UL
 
 /* Rest windows: automatic awake hours generated from Role & Time shifts,
  * padded one hour before and after. Activity shows the same intervals. */
@@ -706,6 +750,7 @@ bool mappedPersonForId(int id, String &name, int &memberId);
 void rememberMapping(int id, const String &name, int memberId);
 String wifiStatusLine();
 String wifiMeter(int rssi);
+String idleAlertLine();
 void rejoinStrongestAp();
 String wallClockText();
 unsigned long wallClockEpoch();
@@ -1394,16 +1439,41 @@ void showEnrollScreen(const String &who, int id, uint8_t done, const String &pro
  * where the person who needs them looks; the person at the door needs the two
  * things above instead.
  * ───────────────────────────────────────────────────────────────────────── */
+/* The line that matters when something needs a human: a scan kept for review,
+ * a damaged queue, or a website that keeps refusing. Empty when all is well. */
+String idleAlertLine() {
+  if (queueNeedsReview) return String("Scans need review");
+  const uint8_t status = queueStatus.load();
+  if (status == QUEUE_STORAGE_ERROR) return String("Queue needs help");
+  if (status == QUEUE_ERROR) return String("Sync waiting");
+  return String("");
+}
+
+/* IDLE CARD (owner, Oct 2026) - four rows, and the Wi-Fi row is ALWAYS there:
+ *
+ *   row 0  Fana Cafe Attendance
+ *   row 1  Place finger - ready          (or SENSOR OFFLINE!)
+ *   row 2  Connected -58dB ████          live status, number and four blocks
+ *   row 3  Time 09:41:07                 alternating with an alert when needed
+ *
+ * The owner asked for the connection status, the signal number and the four
+ * blocks to be restored, AND for the "Scans need review" line. They used to
+ * compete for the same row, so the signal disappeared exactly when something
+ * needed attention. Now the signal keeps its own row always, and an alert
+ * shares row 3 with the clock, alternating every IDLE_ALERT_ALT_MS so both stay
+ * readable and the clock never stops moving. */
 void showIdleScreen() {
   lcdWriteRow(0, "Fana Cafe Attendance");
   // The prompt says what the reader is doing: always listening, never "wait".
   lcdWriteRow(1, sensorReady ? "Place finger - ready" : String("SENSOR OFFLINE!"));
-  const uint8_t status = queueStatus.load();
-  lcdWriteRow(2, queueNeedsReview ? String("Scans need review!") :
-                 status == QUEUE_STORAGE_ERROR ? String("Queue needs help") :
-                 status == QUEUE_ERROR ? String("Sync waiting") : wifiStatusLine());
+  // Connection status + dBm + four blocks, in one 20-character row.
+  lcdWriteRow(2, wifiStatusLine());
   const String clock = wallClockText();
-  lcdWriteRow(3, clock.length() > 0 ? "Time " + clock : String("Time not set yet"));
+  const String clockLine = clock.length() > 0 ? "Time " + clock : String("Time not set yet");
+  const String alert = idleAlertLine();
+  // Alternate: the alert gets every other 2.5 s slot, the clock keeps the rest.
+  const bool alertTurn = alert.length() > 0 && ((millis() / IDLE_ALERT_ALT_MS) % 2UL) == 1UL;
+  lcdWriteRow(3, alertTurn ? alert : clockLine);
   idleVisible = true;    // the clock refresh may redraw this screen from now on
 }
 
@@ -1423,38 +1493,48 @@ void renderScanFeedback() {
   const String when = capturedTimeText(notice.scannedAt);
   switch (scanFeedback.phase()) {
     case ScanFeedback::IDLE: showIdleScreen(); break;
-    /* THE TWO CASES MUST LOOK DIFFERENT (owner, Oct 2026):
+    /* THE CARD THE OWNER ASKED FOR (Oct 2026), four rows:
      *
-     *   "if there is good connection the system write name, time and sent to
-     *    website but if the connection is poor or not connected it says saved
-     *    on offline queue"
+     *   row 0  employee name          recognised locally, from the saved list
+     *   row 1  Time HH:MM:SS          the moment the image was taken
+     *   row 2  Verifying....          then Sent to website / Stored offline queue
+     *   row 3  what happens next
      *
-     * Every row carries the employee's name and the recorded time, so nobody
-     * has to guess who or when. Row 2 is only ever a statement about THIS scan:
-     *   SENDING TO WEBSITE   a link exists and the website is being told now
-     *   SENT TO WEBSITE      the website confirmed this exact scan (IN/OUT)
-     *   SAVED OFFLINE        nothing was confirmed: it is in the offline queue
-     *                        and will go by itself when the link returns
-     * A Wi-Fi association alone is never shown as "sent": only the website's
-     * own receipt for this event flips the screen to SENT, and the queue is
-     * only shown when there really is no confirmation (README, Oct 2026). */
+     * "Recognise it locally and immediately show the employee's name, scan time
+     *  and Verifying...." - that is the first frame, shown before any network
+     * work. The green LED and one success beep run with it. When the green
+     * indication finishes (ScanFeedback::GREEN_SHOW_MS) the screen stops saying
+     * "Please wait" and reports where the scan actually is:
+     *
+     *   Sent to website         the website confirmed THIS exact scan
+     *   Stored offline queue    nothing was confirmed: it is safe in the queue
+     *                           and uploads by itself when the link returns
+     *
+     * A Wi-Fi association alone is never shown as "sent": only the website's own
+     * receipt for this event flips the screen to Sent. A slow link keeps
+     * "Verifying...." (with "Sending to site" underneath) until the receipt
+     * arrives or the round-trip budget runs out - it never claims the scan was
+     * stored while the website is still answering (owner's earlier report:
+     * "even with Wi-Fi it says saved on device"). */
     case ScanFeedback::SENDING:
-      showLines(name, "SENDING TO WEBSITE", when, "Wait for receipt");
+      showLines(name, when, "Verifying....",
+                scanFeedback.greenPhaseOver(millis()) ? String("Sending to site") : String("Please wait"));
       break;
-    /* "SAVED OFFLINE" is the whole sentence the owner asked for, and row 3 says
-     * WHY: either there was no Wi-Fi at all, or there was a link and the website
-     * never answered. Both mean the same thing - the scan is on the device and
-     * will be sent later by itself. */
+    /* OFFLINE: the queue already holds the scan with its ORIGINAL scan time, so
+     * the card says exactly that and row 3 explains why. The delivery task
+     * uploads it by itself the moment Wi-Fi returns - nobody has to rescan. */
     case ScanFeedback::SAVED:
-      showLines(name, "SAVED OFFLINE", when,
+      showLines(name, when, "Stored offline queue",
                 scanFeedback.linkWasUp() ? String("Site not replying") : String("No Wi-Fi now"));
       break;
-    case ScanFeedback::SENT_IN: showLines(name, "SENT TO WEBSITE", when, "Attendance IN"); break;
-    case ScanFeedback::SENT_OUT: showLines(name, "SENT TO WEBSITE", when, "Attendance OUT"); break;
-    case ScanFeedback::ALREADY: showLines(name, "ALREADY REGISTERED", when, "No new entry"); break;
-    case ScanFeedback::REVIEW: showLines(name, "NEEDS REVIEW", when, "Ask the admin"); break;
-    /* A warning about the placement that just happened. The last row says the
-     * door is still live, because it is: the scan loop never stopped. */
+    case ScanFeedback::SENT_IN: showLines(name, when, "Sent to website", "Attendance IN"); break;
+    case ScanFeedback::SENT_OUT: showLines(name, when, "Sent to website", "Attendance OUT"); break;
+    case ScanFeedback::ALREADY: showLines(name, when, "Sent to website", "Already registered"); break;
+    case ScanFeedback::REVIEW: showLines(name, when, "Needs review", "Ask the admin"); break;
+    /* A warning about the placement that just happened (Not registered / Image
+     * unclear / Sensor not answering). The last row says the door is still live,
+     * because it is: the scan loop never stopped. The card clears itself when
+     * its timer ends, so nothing stale is left on the glass. */
     case ScanFeedback::NOTICE:
       showLines(String(scanFeedback.noticeTitle()), String(scanFeedback.noticeLine2()),
                 String(scanFeedback.noticeLine3()), "Door keeps scanning");
@@ -1466,9 +1546,13 @@ void renderScanFeedback() {
 // background; a different person's fresh result gets time to be read first.
 void updateScanFeedback() {
   const uint32_t now = millis();
-  if (scanGreenOn && (uint32_t)(now - scanGreenSince) >= RESULT_SHOW_MS) {
+  if (scanGreenOn && (uint32_t)(now - scanGreenSince) >= ScanFeedback::GREEN_SHOW_MS) {
     digitalWrite(GREEN_LED, LOW);
     scanGreenOn = false;
+    /* The green indication is over: redraw at once so "Please wait" becomes the
+     * real state ("Sending to site" / "Sent to website" / "Stored offline
+     * queue") without waiting for the next event. */
+    renderScanFeedback();
   }
   // The red light belongs to the warning message: both end together, and
   // neither one delays the next scan.
@@ -2088,6 +2172,7 @@ void scanForFinger() {
 
   uint16_t matchedId = 0;
   uint8_t permission = 0;
+  const uint32_t searchStartedMs = millis();
   const bool matched = finger.search(matchedId, permission, sensorPollMs) && matchedId > 0;
   const uint8_t st = finger.getLastStatus();
   noteSensorAnswer(st);
@@ -2181,18 +2266,27 @@ void scanForFinger() {
     if (!repeat) {
       warningKind = group;
       warningShownAt = millis();
+      /* The wording the owner asked for (Oct 2026):
+       *   "Show Not registered. Ask the admin as quickly as possible."
+       * Red LED + two warning beeps go with it, and the card clears itself
+       * after WARNING_SHOW_MS - the door is never left showing a stale warning. */
       if (st == BIOVO_ACK_IMAGEMESS) {
-        showSensorWarning("IMAGE UNCLEAR", "Press flat and still", "Clean the glass");
+        showSensorWarning("Image unclear", "Press flat and still", "Clean the glass");
       } else if (refused || st == 0x09) {
-        showSensorWarning("NOT RECOGNIZED", "Finger not enrolled", "Ask admin to add it");
+        showSensorWarning("Not registered", "Ask the admin", "Finger not enrolled");
       } else {
         // A finger was seen but the reader could not finish the check (garbled
         // or lost frame). Same visible answer: the door did not accept it.
-        showSensorWarning("NOT RECOGNIZED", "Press again, flat", "Ask admin if it repeats");
+        showSensorWarning("Not registered", "Press again, flat", "Ask admin if repeats");
       }
       /* One line per refusal on Serial: the raw status, which the LCD cannot
-       * show and which is the only way to tell a bad finger from a bad wire. */
-      Serial.print("Finger refused: status 0x");
+       * show and which is the only way to tell a bad finger from a bad wire -
+       * plus how long the reader took to answer. That number is the whole point
+       * of the owner's "it must answer as fast as it can": if it is large, the
+       * reader or its wiring is the cause, not the sketch. */
+      Serial.print("Finger refused in ");
+      Serial.print((unsigned long)(millis() - searchStartedMs));
+      Serial.print(" ms: status 0x");
       if (st < 0x10) Serial.print("0");
       Serial.print(st, HEX);
       Serial.print(" (");
@@ -2258,17 +2352,31 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   Serial.print(" - ");
   Serial.println(name);
 
+  /* ── THE CARD COMES FIRST (owner, Oct 2026) ────────────────────────────────
+   * "Recognise it locally and immediately show the employee's name, scan time
+   *  and Verifying....". The name is already known from the list in flash and
+   * the time is the moment the image was taken, so the card is drawn before the
+   * flash write and before any network work. Nothing on it claims a result yet:
+   * "Verifying...." is exactly true at this point. */
+  const bool linkUp = WiFi.status() == WL_CONNECTED && deliveryTaskHandle;
+  DeliveryNotice notice{};
+  notice.eventId[0] = '\0';
+  snprintf(notice.name, sizeof(notice.name), "%s", name.c_str());
+  notice.scannedAt = (uint32_t)scannedAt;
+  scanFeedback.verifying(notice, linkUp, millis());
+  renderScanFeedback();
+
   String eventId;
   if (!saveToQueue(fingerprintId, name, memberId, scannedAt, uptimeMs, eventId)) {
     showSensorWarning(name, "SCAN NOT SAVED", "Tell the admin");
     return;
   }
   if (!scannedAt) pendingUnknownTime = true;
-  DeliveryNotice notice{};
+  /* Now the scan is durable and has its event id: the card moves to its real
+   * state - "Sending to site" while a receipt is awaited, "Stored offline
+   * queue" when there is no link - and the delivery task takes it from here. */
   snprintf(notice.eventId, sizeof(notice.eventId), "%s", eventId.c_str());
-  snprintf(notice.name, sizeof(notice.name), "%s", name.c_str());
-  notice.scannedAt = (uint32_t)scannedAt;
-  scanFeedback.saved(notice, WiFi.status() == WL_CONNECTED && deliveryTaskHandle, millis());
+  scanFeedback.saved(notice, linkUp, millis());
   renderScanFeedback();
   // A green light confirms a safe local write. Only a validated server reply
   // changes the LCD to SENT. The delivery task starts immediately and never

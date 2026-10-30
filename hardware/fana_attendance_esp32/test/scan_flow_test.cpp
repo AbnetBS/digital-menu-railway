@@ -75,7 +75,7 @@ int main() {
   assert(warnings == 0 && successes == 0); // no touch is not a refusal
   finger.status = BIOVO_ACK_NOUSER;
   scanForFinger();
-  assert(warnings == 1 && title == "NOT RECOGNIZED" && line3 == "Ask admin to add it");
+  assert(warnings == 1 && title == "Not registered" && line2 == "Ask the admin");
   assert(!awaitingFingerLift && reasserts > 0);
   scanForFinger();
   assert(warnings == 1); // same held finger is not repeatedly buzzed
@@ -86,7 +86,7 @@ int main() {
   assert(warnings == 2); // fresh placement, even within throttle interval
   finger.status = BIOVO_ACK_IMAGEMESS;
   scanForFinger();
-  assert(warnings == 3 && title == "IMAGE UNCLEAR" && line2 == "Press flat and still");
+  assert(warnings == 3 && title == "Image unclear" && line2 == "Press flat and still");
   assert(!awaitingFingerLift);
 
   /* The fault the owner reported last (Oct 2026): a wrong, unregistered or
@@ -99,7 +99,7 @@ int main() {
   nowMs += WARNING_REPEAT_MS;
   finger.images = 1; finger.unclear = 0;
   scanForFinger();
-  assert(warnings == 4 && title == "NOT RECOGNIZED" && line2 == "Press again, flat");
+  assert(warnings == 4 && title == "Not registered" && line2 == "Press again, flat");
   assert(!awaitingFingerLift);         // still scanning, no latch
   finger.images = 0;
 

@@ -86,6 +86,37 @@ int main() {
   assert(!feedback.tick(41000U));
   assert(feedback.tick(42500U) && feedback.phase() == ScanFeedback::IDLE);
 
+  /* THE INSTANT CARD (owner, Oct 2026): "recognise it locally and immediately
+   * show the employee's name, scan time and Verifying....", then replace it when
+   * the green indication finishes with either "Sent to website" or "Stored
+   * offline queue". verifying() is called BEFORE the flash write, so it must
+   * report the pending state and nothing else. */
+  ScanFeedback card;
+  DeliveryNotice pending = notice("", "Abebe", 1790000000U, DELIVERY_IN);
+  card.verifying(pending, true, 1000);
+  assert(card.phase() == ScanFeedback::SENDING);
+  assert(std::strcmp(card.current().name, "Abebe") == 0);
+  assert(card.current().scannedAt == 1790000000U);
+  assert(!card.greenPhaseOver(2499));         // green indication still running
+  assert(card.greenPhaseOver(2500));          // ... and now finished
+  // A receipt inside the green window wins: the row becomes "Sent to website".
+  card.delivered(abebe, 1500);
+  assert(card.phase() == ScanFeedback::SENT_IN);
+  // A slow link keeps VERIFYING through the green window (never claims the scan
+  // was stored while the website may still be answering) and only then says
+  // "Stored offline queue".
+  ScanFeedback slow;
+  slow.saved(abebe, true, 5000);
+  assert(slow.phase() == ScanFeedback::SENDING && slow.linkWasUp());
+  assert(slow.greenPhaseOver(6500));
+  assert(!slow.tick(12999) && slow.phase() == ScanFeedback::SENDING);
+  assert(slow.tick(13000) && slow.phase() == ScanFeedback::SAVED);
+  // No link at all: the card says stored immediately, with the reason.
+  ScanFeedback offlineCard;
+  offlineCard.saved(mulu, false, 20000);
+  assert(offlineCard.phase() == ScanFeedback::SAVED && !offlineCard.linkWasUp());
+  assert(offlineCard.current().scannedAt == mulu.scannedAt);   // original time
+
   // millis wrap must not leave the message stuck or lose the next status.
   feedback.saved(abebe, true, UINT32_MAX - 1000U);
   assert(!feedback.tick(4100U));
@@ -101,5 +132,5 @@ int main() {
   assert(!receiptMatches(id, 1790000000U, 55, 7, id, 1790000000U, 55, 7, "clock_in", false));
   assert(!receiptMatches(id, 1790000000U, 55, 7, id, 1790000000U, 55, 7, "unexpected", true));
   assert(!receiptMatches(id, 1790000000U, 55, 0, id, 1790000000U, 55, 0, "clock_in", true));
-  std::cout << "Scan feedback tests passed: online, offline, delayed receipts, review, non-blocking warnings, wrap and false-200 rejection\n";
+  std::cout << "Scan feedback tests passed: instant verifying card, online, offline, delayed receipts, review, non-blocking warnings, wrap and false-200 rejection\n";
 }

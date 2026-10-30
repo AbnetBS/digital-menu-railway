@@ -107,15 +107,18 @@ Read the Serial log at 115200 baud while the job runs. Every step prints what th
 - **Fast, and ready again at once (owner, Oct 2026).** The owner's target: a group of four people, each one scanned, verified and told where it went in *under four seconds*, Wi-Fi or no Wi-Fi, with the reader live again the moment the green light comes on. Two changes get there. First, while a **matched** finger still rests on the glass the board no longer runs full matches: it asks the reader one cheap question ("is anything on the glass?", answer in tens of milliseconds) so the lift is noticed immediately and the next person is scanned without the dead second that used to sit after every scan. Second, the reader's illumination is re-asserted right after each scan instead of up to five seconds later. The Serial log prints the real number for every scan: `Scan saved and shown in 1240 ms from the finger image`.
 - **The two cases look different at a glance (owner, Oct 2026).** He asked for exactly this: *"if there is good connection the system write name, time and sent to website, but if the connection is poor or not connected it says saved on offline queue."*
 
-  | Link | Row 1 | Row 2 | Row 3 | Row 4 |
+  | Moment | Row 1 | Row 2 | Row 3 | Row 4 |
   |---|---|---|---|---|
-  | working, waiting | employee name | **SENDING TO WEBSITE** | `Time HH:MM:SS` | `Wait for receipt` |
-  | confirmed | employee name | **SENT TO WEBSITE** | `Time HH:MM:SS` | `Attendance IN` / `Attendance OUT` |
-  | no Wi-Fi | employee name | **SAVED OFFLINE** | `Time HH:MM:SS` | `No Wi-Fi now` |
-  | link up, no answer | employee name | **SAVED OFFLINE** | `Time HH:MM:SS` | `Site not replying` |
+  | instantly (before any network) | employee name | `Time HH:MM:SS` | **Verifying....** | `Please wait` |
+  | green indication over, still sending | employee name | `Time HH:MM:SS` | **Verifying....** | `Sending to site` |
+  | website confirmed | employee name | `Time HH:MM:SS` | **Sent to website** | `Attendance IN` / `Attendance OUT` |
+  | no Wi-Fi | employee name | `Time HH:MM:SS` | **Stored offline queue** | `No Wi-Fi now` |
+  | link up, no answer (8 s) | employee name | `Time HH:MM:SS` | **Stored offline queue** | `Site not replying` |
+
+  The card is drawn the **moment the finger matches** - the name comes from the list already saved in flash and the time is the moment the image was taken - so nothing waits for the network or the flash write. The green LED and one success beep run with it, and when that indication finishes the status row reports where the scan really is. A slow link keeps `Verifying....` (with `Sending to site` underneath) until the receipt arrives or the round-trip budget runs out, so a delivered scan is never labelled "saved on device". When it is stored, the queue keeps the **original scan time** and the delivery task uploads it by itself the moment Wi-Fi returns.
 
   Every scan is written to LittleFS before anything else, so the scan is never lost - and the screen never says "saved on device" while the website has confirmed it. A **Wi-Fi association alone is not proof**: only the website's own receipt for that exact scan turns the row into **SENT TO WEBSITE**. The waiting screen used to flip to `SAVED OFFLINE` after 1.8 s, which is shorter than one round trip through a weak router, so delivered scans were being reported as "saved on device"; the budget is now **8 s**, and the last row says *why* a scan is still in the queue. An `ALREADY REGISTERED / No new entry` response is shown as such, not as a new IN/OUT.
-- **A warning never stops the door, and a refused finger never closes it.** A nonmatching finger (`NOT RECOGNIZED / Finger not enrolled / Ask admin to add it`), a wrong-side press, a garbled press (`NOT RECOGNIZED / Press again, flat`) or an unclear one (`IMAGE UNCLEAR / Press flat and still / Clean the glass`) is shown for 3 s with the **red LED** and a distinctive **two-pulse buzzer** - and the scanner keeps reading the glass the whole time; the last row says **Door keeps scanning**. Two separate faults used to make this a blank, silent, dark glass:
+- **A warning never stops the door, and a refused finger never closes it.** A nonmatching finger (`Not registered / Ask the admin`), a wrong-side or garbled press (`Not registered / Press again, flat`), or an unclear one (`Image unclear / Press flat and still / Clean the glass`) is shown as fast as the reader answers, for 3 s, with the **red LED** and a distinctive **two-pulse buzzer**, and the card clears itself when the warning ends - and the scanner keeps reading the glass the whole time; the last row says **Door keeps scanning**. Two separate faults used to make this a blank, silent, dark glass:
   1. The old code put a *refused* placement into the same one-scan latch used for a match, so after a wrong finger the door stopped matching and only watched for a lift - the "it goes dark for five seconds and I have to time my finger" report. A refusal never sets the latch now: the very next pass searches again, and a good scan taken while the warning is still on the LCD replaces it on the spot. Only a **matched** finger holds the latch, so nobody is clocked twice.
   2. Some readers answer a bad press with a *garbled* frame or an unexpected status, and the sketch treated anything it did not recognise as "nobody touched the glass" - so no warning, no red LED, no buzzer and no message ever appeared. The driver now counts the images the reader actually captured during the search (`searchSawFinger()`), and the door believes that evidence: a finger that was seen is reported, whatever the status byte says. Nothing is ever invented for an empty glass, and a wiring fault is still reported separately as **SENSOR NOT answering** (with the red LED and the error beep).
   3. A **definite** no-match is answered immediately - the old code ran a whole second capture before saying anything, which is what made the red light feel late.
@@ -141,6 +144,17 @@ Read the Serial log at 115200 baud while the job runs. Every step prints what th
 The server accepts recorded scans older than three days only if `ATTENDANCE_DEVICE_TOKEN` is configured and the device sends the matching token; otherwise it responds 403 and leaves them queued, never writes the arrival time. Set the same private token in the server environment and the sketch's `deviceToken`, coordinating rollout with all existing scanners. Never commit or share the secret. With no token the device endpoints remain publicly callable and only the three-day window is allowed.
 
 On ESP32 Arduino core 2.x, the legacy URL-only `HTTPClient` call **does not verify the HTTPS certificate**. Before using a token on an untrusted network, set `serverRootCA` in the sketch to the site's correct PEM root CA and use an `https://` `serverURL`; test certificate validation and plan for certificate/CA rotation. Otherwise an attacker on the network could impersonate the server or obtain the token. The firmware warns on Serial if a token is configured without verified HTTPS. Do not enable a server token until the installed firmware can authenticate with it.
+
+### Idle screen rows (owner, Oct 2026)
+
+```
+Fana Cafe Attendance      row 0  identity
+Place finger - ready      row 1  the reader is listening (SENSOR OFFLINE! if not)
+Connected -58dB ████      row 2  connection + live dBm + the four signal blocks
+Time 09:41:07             row 3  the clock - alternating with an alert if one exists
+```
+
+Row 2 is **always** the link: `Connected -58dB ████`, or `Offline 34s - saved` / `No wifi - scans safe` when the link is down (a kept scan is not a fault). The four blocks follow the usual thresholds (-55 / -65 / -75 / -85 dBm). Row 3 alternates every 2.5 s between the clock and any alert that needs a human - `Scans need review`, `Queue needs help`, `Sync waiting` - so the signal no longer disappears exactly when something needs attention, and the clock never stops moving. Everything redraws once a second, so the number and the blocks are live.
 
 ### Reader's light
 

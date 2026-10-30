@@ -80,7 +80,7 @@
  *           and is not retried in a loop.
  *   Manual: Serial "enroll <id>" stores a finger even with no website (it uses
  *           the names saved in flash); map it in admin afterwards.
- *   Idle:   "Fana Cafe Attendance / Place finger / Connected -58dB #### / Time
+ *   Idle:   "Fana Cafe Attendance / Place finger - ready / Connected -58dB / Time
  *           HH:MM:SS" (owner, Oct 2026). Row 2 says whether the scan will
  *           reach the website AND, when it will not, that the scan is still
  *           kept ("Offline 34s - saved"). Row 3 is the wall clock from NTP on
@@ -928,7 +928,7 @@ void networkTask(void *) {
  * really changed, and lcd.clear() runs once (in startLcd()), so the screen
  * never flickers while it is being updated.
  * Layout used by this sketch:
- *   idle        Fana Cafe Attendance / Place finger / Wifi (Not) Connected / Time HH:MM:SS
+ *   idle        Fana Cafe Attendance / Place finger - ready / Wifi (Not) Connected / Time HH:MM:SS
  *   result      name / big word / (continuation) / note
  *   enrollment  Enroll <who> / ID n [....] k/4 / instruction / hint
  * ------------------------------------------------------------------------- */
@@ -1373,7 +1373,7 @@ void showEnrollScreen(const String &who, int id, uint8_t done, const String &pro
 
 /* ── THE IDLE SCREEN (owner, Oct 2026) ───────────────────────────────────── *
  *   row 0   Fana Cafe Attendance            whose door this is
- *   row 1   Place finger                    what to do - or SENSOR OFFLINE!
+ *   row 1   Place finger - ready            what to do - or SENSOR OFFLINE!
  *                                           when the scanner itself is not
  *                                           answering, so nobody keeps
  *                                           pressing a dead glass

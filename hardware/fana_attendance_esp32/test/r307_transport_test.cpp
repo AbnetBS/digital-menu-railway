@@ -276,30 +276,29 @@ static void test_optional_led() {
   FakeSensor s;
   R307Compat reader(s);
   prepare(s, reader);
-  s.ack(FINGERPRINT_AURALEDCONFIG);
-  assert(reader.requestLightOn() && reader.lightFlashes());
-  const auto &flash = s.commands.back();
-  assert(flash[1] == FINGERPRINT_LED_FLASHING && flash[2] == 0x20);
-  assert(flash[3] == FINGERPRINT_LED_BLUE && flash[4] == 0);
-  // If the cached mode fails, the next request re-probes and falls back.
-  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
-  assert(!reader.requestLightOn() && !reader.lightFlashes());
-  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+  // The reader used to work with plain LEDON first. In particular, do not
+  // issue the flashing aura command merely because a reader acknowledges it.
+  size_t before = s.commands.size();
   s.ack(FINGERPRINT_LEDON);
-  assert(reader.requestLightOn() && !reader.lightFlashes());
-  s.ack(FINGERPRINT_LEDON);
-  assert(reader.requestLightOn() && s.commands.back()[0] == FINGERPRINT_LEDON);
-  s.plan(FINGERPRINT_LEDON, {1});
-  assert(!reader.requestLightOn());
-  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+  assert(reader.requestLightOn());
+  assert(s.commands.size() == before + 1 && s.commands.back()[0] == FINGERPRINT_LEDON);
+  // A successful light request must be followed by an ordinary real match.
+  s.ack(FINGERPRINT_GETIMAGE); s.ack(FINGERPRINT_IMAGE2TZ);
+  s.plan(FINGERPRINT_HISPEEDSEARCH, {0, 0, 42, 0, 55});
+  uint16_t id = 0; uint8_t permission = 0;
+  assert(reader.search(id, permission, 1500) && id == 42);
+  // On variants that reject the original command retain its original fallbacks.
   s.plan(FINGERPRINT_LEDON, {1});
   s.ack(FINGERPRINT_AURALEDCONFIG);
-  assert(reader.requestLightOn() && !reader.lightFlashes());
+  assert(reader.requestLightOn());
+  assert(s.commands.back()[1] == FINGERPRINT_LED_BREATHING);
+  s.plan(FINGERPRINT_LEDON, {1});
+  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+  s.ack(FINGERPRINT_AURALEDCONFIG);
+  assert(reader.requestLightOn());
   assert(s.commands.back()[1] == FINGERPRINT_LED_ON);
-  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
-  assert(!reader.requestLightOn());
-  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
   s.plan(FINGERPRINT_LEDON, {1});
+  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
   s.plan(FINGERPRINT_AURALEDCONFIG, {1});
   assert(!reader.requestLightOn());
   s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});

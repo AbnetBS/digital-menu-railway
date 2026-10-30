@@ -15,7 +15,6 @@ class R307Compat {
   // Retry this after a reader comes back late, not only at power-up.
   bool begin(uint32_t timeoutMs = 2500) {
     capacity_ = 0;
-    lightMode_ = 0;
     uint8_t reply[32];
     const uint8_t verify[] = {FINGERPRINT_VERIFYPASSWORD, 0, 0, 0, 0};
     if (!command(verify, sizeof(verify), 1, timeoutMs, true, reply) || lastStatus_ != 0) return false;
@@ -46,52 +45,26 @@ class R307Compat {
   // earlier than matching/response handling and wraps like Arduino millis().
   uint32_t capturedImageMillis() const { return capturedImageMs_; }
 
-  // Optional reader illumination. Prefer the sensor's own unlimited flashing
-  // pattern: repeatedly restarting a breathing animation can create long dark
-  // gaps. Some R307 variants only support LEDON (or no LED command at all).
+  // Restore the previously used light commands, in their original order.
+  // A flashing aura command was introduced in PR #70 and may interfere
+  // with capture on some readers even when it is acknowledged.
   bool requestLightOn(uint32_t timeoutMs = 1200) {
     uint8_t reply[32];
-#ifdef FINGERPRINT_AURALEDCONFIG
-    // Adafruit aura layout: command, control, speed, colour, cycle count.
-    const uint8_t flashing[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_FLASHING,
-                                0x20, FINGERPRINT_LED_BLUE, 0x00};
-    const uint8_t steady[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_ON,
-                              0x00, FINGERPRINT_LED_BLUE, 0x00};
-#endif
     const uint8_t light[] = {FINGERPRINT_LEDON};
-    // Remember the accepted layout. A clone that only supports LEDON must not
-    // pay for an unsupported aura timeout on every idle refresh.
-    if (lightMode_) {
-      bool ok = false;
+    if (command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
 #ifdef FINGERPRINT_AURALEDCONFIG
-      if (lightMode_ == 1) ok = command(flashing, sizeof(flashing), 1, timeoutMs, false, reply) && lastStatus_ == 0;
-      if (lightMode_ == 3) ok = command(steady, sizeof(steady), 1, timeoutMs, false, reply) && lastStatus_ == 0;
-#endif
-      if (lightMode_ == 2) ok = command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0;
-      if (ok) return true;
-      lightMode_ = 0; // re-probe on the next refresh, not in this scan pass
-      return false;
-    }
-#ifdef FINGERPRINT_AURALEDCONFIG
-    if (command(flashing, sizeof(flashing), 1, timeoutMs, false, reply) && lastStatus_ == 0) {
-      lightMode_ = 1;
-      return true;
-    }
-#endif
-    if (command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0) {
-      lightMode_ = 2;
-      return true;
-    }
-#ifdef FINGERPRINT_AURALEDCONFIG
-    if (command(steady, sizeof(steady), 1, timeoutMs, false, reply) && lastStatus_ == 0) {
-      lightMode_ = 3;
-      return true;
-    }
+    // Layout used by R307/AS608 clones: func, start colour, end colour, cycles.
+    // cycles = 0 means "never stop", so the blue light keeps breathing.
+    const uint8_t aura[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_BREATHING,
+                            FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
+    if (command(aura, sizeof(aura), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
+    // A clone that refuses breathing but accepts a steady blue is still lit.
+    const uint8_t steady[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_ON,
+                              FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
+    if (command(steady, sizeof(steady), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
 #endif
     return false;
   }
-
-  bool lightFlashes() const { return lightMode_ == 1; }
 
   // A cheap protocol handshake: proves the module is listening and re-synchronizes
   // a reader that has been silent or confused for a while. It never changes the
@@ -275,7 +248,6 @@ class R307Compat {
   Adafruit_Fingerprint sensor_;
   Stream &stream_;
   uint16_t capacity_ = 0;
-  uint8_t lightMode_ = 0; // unknown, flashing, plain on, steady aura
   uint32_t capturedImageMs_ = 0;
   uint32_t imagesSeen_ = 0;   // GETIMAGE replies that carried a usable image
   uint32_t emptyGlass_ = 0;   // GETIMAGE replies that said "no finger"

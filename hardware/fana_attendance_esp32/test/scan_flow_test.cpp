@@ -20,6 +20,7 @@ struct Logger { template<class T> void println(T) {} } Serial;
 #define BIOVO_ACK_GO_OUT 0x0F
 #define LIFT_POLL_MS 220UL
 #define READER_LAMP_BURST_MS 300UL
+#define READER_LAMP_IDLE_MS 700UL
 #define WARNING_REPEAT_MS 4000
 #define SENSOR_POLL_MAX_MS 4000
 struct Reader {
@@ -32,7 +33,8 @@ struct Reader {
   uint32_t capturedImageMillis() { return millis(); }
   int fingerPresent(uint32_t) { return present; }
 } finger;
-bool awaitingFingerLift = false, readerLightNeedsRefresh = false;
+bool awaitingFingerLift = false;
+unsigned long lastLightRequestMs = 0;
 bool sensorLinkReported = false;
 uint8_t warningKind = 0xff, sensorSilentPasses = 0;
 uint32_t warningShownAt = 0, sensorLastReplyMs = 0;
@@ -40,7 +42,7 @@ uint16_t sensorPollMs = 1500;
 std::string title, line2, line3;
 int warnings = 0, successes = 0, reasserts = 0;
 void keepReaderLampOn(uint32_t) {}
-void reassertReaderLight() { reasserts++; readerLightNeedsRefresh = false; }
+void reassertReaderLight() { reasserts++; }
 void noteSensorAnswer(uint8_t) {}
 bool sensorLinkLooksDead() { return false; }
 bool sensorAnswers() { return true; }

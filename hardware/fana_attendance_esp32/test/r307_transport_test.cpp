@@ -376,6 +376,44 @@ static void test_optional_led() {
   }
 }
 
+/* SPEED (owner, Oct 2026): "when an unregistered finger is placed the system took
+ * long before the red LED and buzzer - it must be as soon as it can."
+ *
+ * The reader's answer is the floor: nothing can be faster than the module. What
+ * the sketch must not do is ADD to it. These bounds are the fixed costs that used
+ * to sit in front of the red LED: an over-long GETIMAGE deadline, a retry of the
+ * whole conversion, and a quiet-line drain with a two-second cap. */
+static void test_refusal_latency_is_bounded() {
+  // Typical reader, unregistered finger: one capture, one conversion, one search.
+  nowMs = 0;
+  FakeSensor s;
+  R307Compat reader(s);
+  prepare(s, reader);
+  s.ack(FINGERPRINT_GETIMAGE);        // image arrives at once
+  s.ack(FINGERPRINT_IMAGE2TZ);
+  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOTFOUND});
+  uint16_t id = 0; uint8_t permission = 0;
+  const uint32_t before = nowMs;
+  assert(!reader.search(id, permission, 1500));
+  const uint32_t spent = nowMs - before;
+  assert(reader.getLastStatus() == 0x05);
+  // No artificial wait belongs in this path at all (the old code spent 250 ms
+  // re-capturing before it would admit the finger was not enrolled).
+  assert(spent < 250);
+
+  // Worst case: the reader says nothing at all on every frame of one search.
+  // That must still be measured in about a second, not in tens of seconds.
+  nowMs = 0;
+  FakeSensor silent;
+  R307Compat reader2(silent);
+  prepare(silent, reader2);
+  for (int i = 0; i < 12; ++i) silent.plan(FINGERPRINT_GETIMAGE, {}, 0, false, true);
+  const uint32_t worstStart = nowMs;
+  assert(!reader2.search(id, permission, 400));
+  const uint32_t worst = nowMs - worstStart;
+  assert(worst < 4000);   // bounded by the short GETIMAGE deadline + one drain
+}
+
 /* A definitively unregistered finger must be reported at once, not after a
  * second full capture, and the driver must be able to say that it SAW a finger
  * (that is what makes the red LED and buzzer fire for a bad press). */
@@ -466,6 +504,7 @@ static void test_placement_answer_counters() {
 int main() {
   test_optional_led();
   test_refusal_is_fast_and_visible();
+  test_refusal_latency_is_bounded();
   test_short_lift_poll();
   test_placement_answer_counters();
   test_capacity_and_full_range();

@@ -107,6 +107,10 @@
  *           called "saved on device".
  *   Wrong:  an unregistered, wrong-side, unclear or garbled press shows a RED
  *           LED and a distinct two-pulse buzzer as fast as the reader answers
+ *           (every fixed cost in front of it was cut: no second capture, an
+ *           800 ms image deadline, a 1.5 s conversion deadline, a ~600 ms
+ *           recovery cap and a 1.2 s warning throttle - see WARNING_REPEAT_MS
+ *           and R307Compat.h. The refusal prints its own timing on Serial)
  *           ("Not registered / Ask the admin" or "Image unclear / Press flat and
  *           still"), and the card clears itself after the warning. The scanner
  *           keeps looking the whole time, and a good scan replaces it at once.
@@ -434,8 +438,14 @@ std::atomic<bool> queueNeedsReview{false};
 /* A finger that stays on the glass and is not registered is looked at again on
  * every pass, forever: the door must never stop scanning. This only throttles
  * how often the SAME screen is re-announced (buzzer + red LED), so a resting
- * finger does not beep in the employee's face twice a second. */
-#define WARNING_REPEAT_MS       4000
+ * finger does not beep in the employee's face repeatedly.
+ *
+ * It was 4000 ms, which made a genuinely NEW bad press silent when the reader
+ * did not report the lift in between - the owner's "it takes long before the
+ * red LED and buzzer". A lift (GO_OUT / no-finger) clears the throttle outright
+ * (warningKind = 0xFF), and this window only catches a hand that never left the
+ * glass. */
+#define WARNING_REPEAT_MS       1200
 /* Like the owner's earlier working flow: two R307 captures, then one fresh
  * confirmation. The website is told "added" only when the reader itself
  * finds the new ID. No biometric acceptance/security setting is lowered.
@@ -2162,6 +2172,7 @@ void scanForFinger() {
 
   uint16_t matchedId = 0;
   uint8_t permission = 0;
+  const uint32_t searchStartedMs = millis();
   const bool matched = finger.search(matchedId, permission, sensorPollMs) && matchedId > 0;
   const uint8_t st = finger.getLastStatus();
   noteSensorAnswer(st);
@@ -2269,8 +2280,13 @@ void scanForFinger() {
         showSensorWarning("Not registered", "Press again, flat", "Ask admin if repeats");
       }
       /* One line per refusal on Serial: the raw status, which the LCD cannot
-       * show and which is the only way to tell a bad finger from a bad wire. */
-      Serial.print("Finger refused: status 0x");
+       * show and which is the only way to tell a bad finger from a bad wire -
+       * plus how long the reader took to answer. That number is the whole point
+       * of the owner's "it must answer as fast as it can": if it is large, the
+       * reader or its wiring is the cause, not the sketch. */
+      Serial.print("Finger refused in ");
+      Serial.print((unsigned long)(millis() - searchStartedMs));
+      Serial.print(" ms: status 0x");
       if (st < 0x10) Serial.print("0");
       Serial.print(st, HEX);
       Serial.print(" (");

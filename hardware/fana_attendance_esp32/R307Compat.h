@@ -159,8 +159,11 @@ class R307Compat {
         return false;
       }
       uint8_t reply[32];
+      /* Converting a captured image is a fast operation on a healthy reader.
+       * 1500 ms (with the retry) keeps a stalled conversion from holding the
+       * result - and therefore the red LED - for seven seconds. */
       const uint8_t convert[] = {FINGERPRINT_IMAGE2TZ, 1};
-      if (!command(convert, sizeof(convert), 1, 3500, true, reply)) return false;
+      if (!command(convert, sizeof(convert), 1, 1500, true, reply)) return false;
       if (lastStatus_ != 0) {
         // A captured image that cannot be converted (including a lost image)
         // is a bad placement, not an empty glass.
@@ -175,7 +178,9 @@ class R307Compat {
       // Search the full reported capacity, not Adafruit's hard-coded 0x00A3.
       const uint8_t find[] = {FINGERPRINT_HISPEEDSEARCH, 1, 0, 0,
                               (uint8_t)(capacity_ >> 8), (uint8_t)capacity_};
-      const uint32_t searchMs = waitMs > 3500 ? waitMs : 3500;
+      /* The match itself: generous enough for a big template database, but
+       * bounded so a lost reply cannot hide the result. */
+      const uint32_t searchMs = waitMs > 3000 ? waitMs : 3000;
       if (!command(find, sizeof(find), 5, searchMs, true, reply)) return false;
       if (lastStatus_ == 0) {
         matchedId = ((uint16_t)reply[1] << 8) | reply[2];
@@ -256,10 +261,18 @@ class R307Compat {
 
   // Wait for a genuinely quiet UART after a timeout, not just a single flush.
   // The cap prevents a noisy wire from keeping the device here forever.
+  /* Clears a lost/garbled frame off the wire before the next command.
+   *
+   * BOUNDED ON PURPOSE. The quiet window used to be 500 ms with a ~2.1 s cap,
+   * and it runs inside command(): a single garbled reply therefore delayed the
+   * NEXT command - and with it the red LED and buzzer for an unregistered
+   * finger - by up to two seconds. 200 ms of silence is already far longer than
+   * a 57600-baud frame takes, and the cap keeps one noisy line from ever
+   * costing the door more than ~0.6 s. */
   void drain(uint32_t quietMs) {
     const uint32_t started = millis();
     uint32_t lastByte = started;
-    const uint32_t cap = quietMs * 4 + 100;
+    const uint32_t cap = quietMs * 3;
     while ((uint32_t)(millis() - started) < cap && (uint32_t)(millis() - lastByte) < quietMs) {
       if (stream_.available()) {
         stream_.read();
@@ -403,7 +416,7 @@ class R307Compat {
                uint32_t timeoutMs, bool retrySafe, uint8_t *reply, bool recover = true) {
     const uint8_t attempts = retrySafe ? 2 : 1;
     for (uint8_t attempt = 0; attempt < attempts; attempt++) {
-      if (needsQuiet_) drain(500);
+      if (needsQuiet_) drain(200);
       Adafruit_Fingerprint_Packet packet(FINGERPRINT_COMMANDPACKET, length, const_cast<uint8_t *>(data));
       sensor_.writeStructuredPacket(packet);
       if (readReply(expectedLength, timeoutMs, reply)) {
@@ -424,7 +437,12 @@ class R307Compat {
     do {
       uint8_t reply[32];
       const uint8_t image[] = {FINGERPRINT_GETIMAGE};
-      if (!command(image, sizeof(image), 1, 2500, true, reply)) return false;
+      /* 800 ms, not 2500: a healthy reader answers GETIMAGE in tens of
+       * milliseconds even with no finger. The old deadline meant one lost frame
+       * froze the whole scan loop for five seconds (two attempts), which the
+       * owner experienced as the door going quiet. The retry still covers a
+       * lost frame. */
+      if (!command(image, sizeof(image), 1, 800, true, reply)) return false;
       if (lastStatus_ != 0x08) {
         if (lastStatus_ == 0) {
           capturedImageMs_ = millis();
@@ -436,7 +454,7 @@ class R307Compat {
       }
       emptyGlass_++;
       if ((uint32_t)(millis() - started) >= waitMs) return false;
-      delay(70);
+      delay(45);   // poll a little faster: less wait before a press is seen
     } while ((uint32_t)(millis() - started) < waitMs);
     lastStatus_ = 0x08;
     return false;

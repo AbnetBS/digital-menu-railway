@@ -9,6 +9,12 @@ import { markRestWakeRequested } from "@/lib/attendance-rest";
 import { and, desc, eq } from "drizzle-orm";
 import { ENROLL_JOB_TTL_MINUTES, MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
 
+export const dynamic = "force-dynamic";
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+};
+
 /**
  * FINGERPRINTS OF THE ATTENDANCE LIST (owner, Oct 2026).
  *
@@ -63,24 +69,27 @@ export async function GET(request: Request) {
         .orderBy(desc(attendanceEnrollJobs.id))
         .limit(limit);
       const fresh = jobs.filter((j) => !j.createdAt || new Date(j.createdAt) >= cutoff);
-      return NextResponse.json({
-        count: fresh.length,
-        jobs: fresh.map((j) => ({
-          jobId: j.id,
-          memberId: j.memberId,
-          memberName: j.memberName || `Member ${j.memberId}`,
-          fingerprintId: j.fingerprintId,
-          // Ready-made LCD lines, longest first: the device's screen is a
-          // 20x4 character LCD, so every line must fit 20 characters.
-          // (The key is still called "oled" - older devices read that name.)
-          oled: {
-            line1: `Enroll ${String(j.memberName || j.memberId).substring(0, 13)}`,
-            line2: `ID ${j.fingerprintId}`,
-            line3: "Place finger",
-            line4: "",
-          },
-        })),
-      });
+      return NextResponse.json(
+        {
+          count: fresh.length,
+          jobs: fresh.map((j) => ({
+            jobId: j.id,
+            memberId: j.memberId,
+            memberName: j.memberName || `Member ${j.memberId}`,
+            fingerprintId: j.fingerprintId,
+            // Ready-made LCD lines, longest first: the device's screen is a
+            // 20x4 character LCD, so every line must fit 20 characters.
+            // (The key is still called "oled" - older devices read that name.)
+            oled: {
+              line1: `Enroll ${String(j.memberName || j.memberId).substring(0, 13)}`,
+              line2: `ID ${j.fingerprintId}`,
+              line3: "Place finger",
+              line4: "",
+            },
+          })),
+        },
+        { headers: NO_STORE_HEADERS }
+      );
     }
 
     if (jobId) {
@@ -89,23 +98,49 @@ export async function GET(request: Request) {
         .from(attendanceEnrollJobs)
         .where(eq(attendanceEnrollJobs.id, Number(jobId)))
         .limit(1);
-      if (jobs.length === 0) return NextResponse.json({ error: "Job not found" }, { status: 404 });
-      const job = jobs[0];
-      return NextResponse.json({
-        job: {
-          id: job.id,
-          memberId: job.memberId,
-          memberName: job.memberName,
-          fingerprintId: job.fingerprintId,
-          status: job.status,
-          // The device's own receipt or failure details. Receipt does not
-          // imply the sensor is ready; the LCD gives the placement prompt.
-          detail: job.detail,
-          startedAt: job.startedAt,
-          completedAt: job.completedAt,
+      if (jobs.length === 0) return NextResponse.json({ error: "Job not found" }, { status: 404, headers: NO_STORE_HEADERS });
+      let job = jobs[0];
+      // Self-heal: if the mapping row already exists in attendance_biometrics
+      // while the job row is still pending, mark the job done immediately so
+      // the admin screen never stays stuck waiting for a manual page refresh.
+      if (job.status === "pending") {
+        const mapped = await db
+          .select({ id: attendanceBiometrics.id })
+          .from(attendanceBiometrics)
+          .where(
+            and(
+              eq(attendanceBiometrics.memberId, job.memberId),
+              eq(attendanceBiometrics.fingerprintId, job.fingerprintId)
+            )
+          )
+          .limit(1);
+        if (mapped.length > 0) {
+          const completedAt = new Date();
+          await db
+            .update(attendanceEnrollJobs)
+            .set({ status: "done", completedAt })
+            .where(and(eq(attendanceEnrollJobs.id, job.id), eq(attendanceEnrollJobs.status, "pending")));
+          job = { ...job, status: "done", completedAt };
+        }
+      }
+      return NextResponse.json(
+        {
+          job: {
+            id: job.id,
+            memberId: job.memberId,
+            memberName: job.memberName,
+            fingerprintId: job.fingerprintId,
+            status: job.status,
+            // The device's own receipt or failure details. Receipt does not
+            // imply the sensor is ready; the LCD gives the placement prompt.
+            detail: job.detail,
+            startedAt: job.startedAt,
+            completedAt: job.completedAt,
+          },
+          done: job.status === "done",
         },
-        done: job.status === "done",
-      });
+        { headers: NO_STORE_HEADERS }
+      );
     }
 
     const bios = memberId
@@ -123,7 +158,8 @@ export async function GET(request: Request) {
         fingerName: b.fingerName,
         enrolledAt: b.enrolledAt,
         memberName: nameOf.get(b.memberId) || `Member ${b.memberId}`,
-      }))
+      })),
+      { headers: NO_STORE_HEADERS }
     );
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

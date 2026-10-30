@@ -33,6 +33,13 @@ import {
   type RoleShift,
 } from "@/lib/attendance";
 
+export const dynamic = "force-dynamic";
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+};
+const MAX_BATCH_EVENTS = 50;
+
 /**
  * ONE SCAN = ONE LINE ON THE PAPER SHEET.
  *
@@ -102,11 +109,7 @@ async function roleShiftsOf(roleId: number | null, client: Pick<typeof db, "sele
   }
 }
 
-export async function POST(request: Request) {
-  await ensureTablesExist();
-
-  try {
-    const body = await request.json();
+async function processClockItem(request: Request, body: Record<string, unknown>): Promise<NextResponse> {
     const {
       fingerprintId,
       memberId: directMemberId,
@@ -117,7 +120,17 @@ export async function POST(request: Request) {
       eventId: rawEventId,
       capturedMemberId: rawCapturedMemberId,
       requireRecordedTime,
-    } = body;
+    } = body as {
+      fingerprintId?: unknown;
+      memberId?: unknown;
+      deviceId?: unknown;
+      method?: unknown;
+      pin?: unknown;
+      scannedAt?: unknown;
+      eventId?: unknown;
+      capturedMemberId?: unknown;
+      requireRecordedTime?: unknown;
+    };
 
     if (method !== "pin" && method !== "fingerprint") {
       return NextResponse.json({ error: "Unsupported attendance method" }, { status: 400 });
@@ -258,7 +271,7 @@ export async function POST(request: Request) {
           .where(eq(attendanceMembers.id, mapping[0].memberId))
           .limit(1);
         if (rows.length === 0) {
-          return NextResponse.json({ error: "Member not found for that fingerprint", led: "red", buzzer: "error" }, { status: 404 });
+          return NextResponse.json({ error: "Member not found for that fingerprint", status: "not_found", led: "red", buzzer: "error" }, { status: 404 });
         }
         memberId = rows[0].id;
         memberName = rows[0].name;
@@ -507,13 +520,93 @@ export async function POST(request: Request) {
         led: "green",
       });
     });
+    return response;
+}
+
+export async function POST(request: Request) {
+  await ensureTablesExist();
+
+  try {
+    const body = await request.json();
+
+    // Batch offline sync: send all queued scans in one round-trip, commit each
+    // with its original capture timestamp, and broadcast a single refresh event
+    // so every employee shows up together on the paper sheet immediately.
+    if (body && typeof body === "object" && Array.isArray((body as { events?: unknown }).events)) {
+      if (!deviceAllowed(request)) {
+        return NextResponse.json(
+          { error: "Attendance device authorization required" },
+          { status: 401, headers: NO_STORE_HEADERS }
+        );
+      }
+      const rawEvents = (body as { events: unknown[] }).events;
+      if (rawEvents.length > MAX_BATCH_EVENTS) {
+        return NextResponse.json(
+          { error: `Batch exceeds maximum of ${MAX_BATCH_EVENTS} scans` },
+          { status: 400, headers: NO_STORE_HEADERS }
+        );
+      }
+      const defaultDeviceId =
+        typeof (body as { deviceId?: unknown }).deviceId === "string"
+          ? ((body as { deviceId: string }).deviceId)
+          : "entrance_offline";
+      const defaultRequireRecordedTime =
+        (body as { requireRecordedTime?: unknown }).requireRecordedTime !== undefined
+          ? Boolean((body as { requireRecordedTime?: unknown }).requireRecordedTime)
+          : true;
+
+      const results: Array<Record<string, unknown>> = [];
+      let anyAccepted = false;
+
+      for (const rawItem of rawEvents) {
+        const itemObj =
+          rawItem && typeof rawItem === "object" ? (rawItem as Record<string, unknown>) : {};
+        const merged: Record<string, unknown> = {
+          deviceId: defaultDeviceId,
+          method: "fingerprint",
+          requireRecordedTime: defaultRequireRecordedTime,
+          ...itemObj,
+        };
+        try {
+          const itemResponse = await processClockItem(request, merged);
+          const payload = (await itemResponse.json().catch(() => ({}))) as Record<string, unknown>;
+          if (itemResponse.status === 200) anyAccepted = true;
+          results.push({
+            ...payload,
+            httpStatus: itemResponse.status,
+            ...(payload.eventId === undefined && typeof merged.eventId === "string"
+              ? { eventId: merged.eventId.toLowerCase() }
+              : {}),
+          });
+        } catch (itemError) {
+          console.error("Batch attendance item error:", itemError);
+          results.push({
+            httpStatus: 500,
+            status: "error",
+            error: String(itemError),
+            ...(typeof merged.eventId === "string" ? { eventId: merged.eventId.toLowerCase() } : {}),
+          });
+        }
+      }
+
+      if (anyAccepted) publish(CHANNELS.attendance);
+      return NextResponse.json(
+        { batch: true, count: results.length, results },
+        { headers: NO_STORE_HEADERS }
+      );
+    }
+
+    const response = await processClockItem(
+      request,
+      body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    );
     if (response.status === 200) publish(CHANNELS.attendance);
     return response;
   } catch (error) {
     console.error("Attendance clock error:", error);
     return NextResponse.json(
       { error: String(error), status: "error", led: "red", buzzer: "error" },
-      { status: 500 }
+      { status: 500, headers: NO_STORE_HEADERS }
     );
   }
 }
@@ -534,9 +627,10 @@ export async function GET(request: Request) {
         staffName: l.memberId ? nameOf.get(l.memberId) || `Member ${l.memberId}` : `Staff ${l.staffId}`,
         clockInLabel: clockLabel(l.clockIn),
         clockOutLabel: clockLabel(l.clockOut),
-      }))
+      })),
+      { headers: NO_STORE_HEADERS }
     );
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return NextResponse.json({ error: String(error) }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }

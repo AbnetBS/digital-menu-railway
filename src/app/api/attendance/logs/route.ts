@@ -17,6 +17,12 @@ import {
   SHEET_RANGE_MAX_DAYS,
 } from "@/lib/attendance";
 
+export const dynamic = "force-dynamic";
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+};
+
 /**
  * THE PAPER SHEET (owner, Oct 2026).
  *
@@ -115,7 +121,7 @@ export async function GET(request: Request) {
         clockOutTime: clockLabel(l.clockOut),
         totalHours: l.clockOut ? hoursLabel(l.totalMinutes) : null,
       })),
-    });
+    }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

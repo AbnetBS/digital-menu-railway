@@ -15,7 +15,13 @@
 
 type Enqueue = (chunk: string) => void;
 
-const subscribers = new Map<string, Set<Enqueue>>();
+const globalForRealtime = globalThis as unknown as {
+  __fanaRealtimeSubscribers?: Map<string, Set<Enqueue>>;
+};
+
+const subscribers =
+  globalForRealtime.__fanaRealtimeSubscribers ??
+  (globalForRealtime.__fanaRealtimeSubscribers = new Map<string, Set<Enqueue>>());
 
 /** Channel names (single source of truth). */
 export const CHANNELS = {

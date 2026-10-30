@@ -45,26 +45,47 @@ class R307Compat {
   // earlier than matching/response handling and wraps like Arduino millis().
   uint32_t capturedImageMillis() const { return capturedImageMs_; }
 
-  // Restore the previously used light commands, in their original order.
-  // A flashing aura command was introduced in PR #70 and may interfere
-  // with capture on some readers even when it is acknowledged.
-  bool requestLightOn(uint32_t timeoutMs = 1200) {
-    uint8_t reply[32];
-    const uint8_t light[] = {FINGERPRINT_LEDON};
-    if (command(light, sizeof(light), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
-#ifdef FINGERPRINT_AURALEDCONFIG
-    // Layout used by R307/AS608 clones: func, start colour, end colour, cycles.
-    // cycles = 0 means "never stop", so the blue light keeps breathing.
-    const uint8_t aura[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_BREATHING,
-                            FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
-    if (command(aura, sizeof(aura), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
-    // A clone that refuses breathing but accepts a steady blue is still lit.
-    const uint8_t steady[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_ON,
-                              FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
-    if (command(steady, sizeof(steady), 1, timeoutMs, false, reply) && lastStatus_ == 0) return true;
-#endif
+  /* Keep the glass lit (owner, Oct 2026): "make the blue light continuous and
+   * blinking non-stop, the employees must not have to time their finger."
+   *
+   * Three layouts exist on R307/AS608 clones and they are NOT equally
+   * supported:
+   *   1. plain LEDON                     - the module's own steady light
+   *   2. aura: breathing blue, 0 cycles  - the module blinks blue forever
+   *   3. aura: steady blue,  0 cycles    - clones that refuse breathing
+   *
+   * The layout that worked last time is remembered and tried FIRST, so a normal
+   * re-assert is one short frame instead of three. The light must never damage
+   * a scan, so:
+   *   - if the reader is still sending a reply, this returns false WITHOUT
+   *     talking (a second frame on the wire garbles the reply that matters);
+   *   - it never drains the line and never marks the link dirty (recover=false
+   *     below), so a reader that refuses LED control can never stall the door;
+   *   - failure is reported, never fatal: the sketch retries later. */
+  bool requestLightOn(uint32_t timeoutMs = 200) {
+    if (stream_.available() > 0) return false;   // a reply is still arriving
+    /* Once a reader has refused every layout three times it very probably does
+     * not take host LED commands at all. From then on ONE layout is probed per
+     * call instead of three (rotating, so it still finds a late answer), because
+     * three timeouts every second is time the door spends NOT scanning. */
+    const uint8_t probes = lightMisses_ >= 3 ? 1 : LIGHT_LAYOUTS;
+    const uint8_t first = (uint8_t)((lightLayout_ + lightMisses_) % LIGHT_LAYOUTS);
+    for (uint8_t i = 0; i < probes; i++) {
+      const uint8_t layout = (uint8_t)((first + i) % LIGHT_LAYOUTS);
+      if (sendLight(layout, timeoutMs)) {
+        lightLayout_ = layout;
+        lightMisses_ = 0;
+        return true;
+      }
+    }
+    if (lightMisses_ < 250) lightMisses_++;
     return false;
   }
+
+  // Which layout is known to work (0xFF = none confirmed yet). Serial and the
+  // status page report it, so a dark glass can be diagnosed without guessing.
+  uint8_t lightLayout() const { return lightMisses_ == 0 ? lightLayout_ : 0xFF; }
+  uint8_t lightMisses() const { return lightMisses_; }
 
   // A cheap protocol handshake: proves the module is listening and re-synchronizes
   // a reader that has been silent or confused for a while. It never changes the
@@ -102,15 +123,33 @@ class R307Compat {
   uint32_t emptyGlassInLastWait() const { return emptyGlass_; }
   uint32_t unclearInLastWait() const { return unclear_; }
 
+  /* Did the reader actually SEE a finger during the last search()?
+   *
+   * This is the difference between "nobody touched the glass" and "somebody put
+   * a finger there and the reader could not verify it". The owner's report -
+   * "the sensor goes black and nothing happens" for a wrong / unregistered /
+   * unclear finger - was partly this: when a match failed with a garbled or
+   * unexpected status, the sketch had no evidence a finger had been present, so
+   * it said nothing at all, buzzed nothing and lit nothing. The counters below
+   * are that evidence, summed over both capture attempts of the search. */
+  bool searchSawFinger() const { return searchImages_ > 0 || searchUnclear_ > 0; }
+  uint32_t searchImagesSeen() const { return searchImages_; }
+  uint32_t searchUnclear() const { return searchUnclear_; }
+
   bool search(uint16_t &matchedId, uint8_t &permission, uint32_t waitMs) {
     matchedId = 0;
     permission = 0;
+    searchImages_ = 0;
+    searchUnclear_ = 0;
     if (!capacity_) { lastStatus_ = 0xFE; return false; }
     uint8_t previousQuality = 0;
     // One short retry of a poor/unmatched image reduces false rejections, but
     // success still requires the sensor itself to find a stored template.
     for (uint8_t attempt = 0; attempt < 2; attempt++) {
-      if (!waitForImage(attempt == 0 ? waitMs : 300)) {
+      const bool gotImage = waitForImage(attempt == 0 ? waitMs : 300);
+      searchImages_ += imagesSeen_;
+      searchUnclear_ += unclear_;
+      if (!gotImage) {
         if (lastStatus_ == 0x06 && attempt == 0) {
           previousQuality = lastStatus_;
           delay(250);
@@ -148,7 +187,12 @@ class R307Compat {
       // this command; NOMATCH has a different meaning during enrollment.
       if (lastStatus_ == 0x08) lastStatus_ = 0x06;
       if (lastStatus_ == 0x09) lastStatus_ = 0x05;
-      if ((lastStatus_ == 0x05 || lastStatus_ == 0x06) && attempt == 0) {
+      /* A DEFINITE no-match on a good image is a real answer, not a fluke: the
+       * finger is not enrolled (or is not the person it looks like). Retrying
+       * the whole capture costs another ~0.5-1 s and delays the red light and
+       * buzzer the employee is waiting for, so answer immediately. Only an
+       * UNCLEAR image is worth a second look. */
+      if (lastStatus_ == 0x06 && attempt == 0) {
         previousQuality = lastStatus_;
         delay(250);
         continue;
@@ -255,6 +299,29 @@ class R307Compat {
   uint8_t lastStatus_ = 0xFF;
   uint8_t lastRawStatus_ = 0xFF;
   bool needsQuiet_ = false;
+  uint32_t searchImages_ = 0;    // images captured during the last search()
+  uint32_t searchUnclear_ = 0;   // unclear presses during the last search()
+  static const uint8_t LIGHT_LAYOUTS = 3;
+  uint8_t lightLayout_ = 0;      // 0 = plain, 1 = breathing aura, 2 = steady aura
+  uint8_t lightMisses_ = 0;
+
+  // One LED frame, fire-and-forget: no retry, no drain, no dirty-line flag.
+  bool sendLight(uint8_t layout, uint32_t timeoutMs) {
+    uint8_t reply[32];
+    if (layout == 0) {
+      const uint8_t light[] = {FINGERPRINT_LEDON};
+      return command(light, sizeof(light), 1, timeoutMs, false, reply, false) && lastStatus_ == 0;
+    }
+#ifdef FINGERPRINT_AURALEDCONFIG
+    // func, start colour, end colour, cycles. 0 cycles = never stop.
+    const uint8_t func = layout == 1 ? (uint8_t)FINGERPRINT_LED_BREATHING : (uint8_t)FINGERPRINT_LED_ON;
+    const uint8_t aura[] = {FINGERPRINT_AURALEDCONFIG, func,
+                            FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
+    return command(aura, sizeof(aura), 1, timeoutMs, false, reply, false) && lastStatus_ == 0;
+#else
+    return false;
+#endif
+  }
 
   static uint8_t mapError(uint8_t r) {
     if (r == FINGERPRINT_OK) return 0x00;
@@ -322,8 +389,18 @@ class R307Compat {
     return false;
   }
 
+  /* recover = true (normal commands): a lost frame is cleaned off the wire
+   * before the next command. recover = false (the optional LED frames): a
+   * refusal must never cost the door a drain or mark the link dirty.
+   *
+   * That distinction matters: the optional light command is re-sent every
+   * fraction of a second, and a variant that answers it with a garbled frame
+   * used to make the sketch drain the line (up to ~2 s per attempt) after every
+   * single light request. The door then did nothing - no scan, no beep, no red
+   * LED, glass dark - which is one of the ways "the sensor goes black" was
+   * produced. Light frames now never set the dirty flag. */
   bool command(const uint8_t *data, uint8_t length, uint8_t expectedLength,
-               uint32_t timeoutMs, bool retrySafe, uint8_t *reply) {
+               uint32_t timeoutMs, bool retrySafe, uint8_t *reply, bool recover = true) {
     const uint8_t attempts = retrySafe ? 2 : 1;
     for (uint8_t attempt = 0; attempt < attempts; attempt++) {
       if (needsQuiet_) drain(500);
@@ -334,7 +411,7 @@ class R307Compat {
         lastStatus_ = mapError(reply[0]);
         if (lastStatus_ != 0xFE || attempt + 1 == attempts) return true;
       }
-      needsQuiet_ = true;
+      if (recover) needsQuiet_ = true;
     }
     return false;
   }

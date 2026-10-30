@@ -56,10 +56,10 @@
  *           the finger stays on the sensor. The reader is ready for the next
  *           person the instant the finger is lifted: while a MATCHED finger
  *           rests on the glass the sketch only polls "is anything there?"
- *           instead of crediting the same person twice, the light is restored
- *           after a capture, and feedback does not pause the scan (a warning
- *           is a screen with a timer, not a pause). Wi-Fi strength changes
- *           WHERE the scan is kept, never how long the door takes.
+ *           instead of crediting the same person twice, the light is forced
+ *           back on after every capture, and feedback does not pause the scan
+ *           (a warning is a screen with a timer, not a pause). Wi-Fi strength
+ *           changes WHERE the scan is kept, never how long the door takes.
  *   Add:    the admin presses Add Fingerprint on the website. The LCD guides
  *           R307's two enrollment captures: PLACE FINGER, LIFT, then place
  *           the same finger again at a slightly different angle. The R307
@@ -80,7 +80,7 @@
  *           and is not retried in a loop.
  *   Manual: Serial "enroll <id>" stores a finger even with no website (it uses
  *           the names saved in flash); map it in admin afterwards.
- *   Idle:   "Fana Cafe Attendance / Place finger / Connected -58dB #### / Time
+ *   Idle:   "Fana Cafe Attendance / Place finger - ready / Connected -58dB / Time
  *           HH:MM:SS" (owner, Oct 2026). Row 2 says whether the scan will
  *           reach the website AND, when it will not, that the scan is still
  *           kept ("Offline 34s - saved"). Row 3 is the wall clock from NTP on
@@ -95,14 +95,24 @@
  *           ("No Wi-Fi now" or "Site not replying") - because the scan is then
  *           held in the offline queue and sent by itself. Owner, Oct 2026: a
  *           scan that WAS delivered must never be called "saved on device".
- *   Wrong:  no match or an unclear image shows a red LED and a distinct
- *           two-pulse buzzer with instructions. The scanner continues looking
- *           while the warning is visible; a good scan replaces it.
+ *   Wrong:  an unregistered, wrong-side, unclear or garbled press shows a RED
+ *           LED and a distinct two-pulse buzzer with instructions (NOT
+ *           RECOGNIZED / IMAGE UNCLEAR). The scanner keeps looking the whole
+ *           time the warning is visible, and a good scan replaces it at once.
+ *           The reader's own evidence decides whether a finger was there, so a
+ *           bad press can never produce a blank, silent, dark glass. A definite
+ *           no-match is answered immediately (no second capture), which is what
+ *           makes the red light feel instant.
  *
  * READER LIGHT
- *   Uses the light command order and refresh schedule from before PR #70.
- *   This prioritizes the reader's known working scan behavior. The exact
- *   illumination and timing must be verified on the installed reader.
+ *   The blue light must never stop (owner, Oct 2026). Three layouts are tried -
+ *   plain LED-ON, then breathing blue with unlimited cycles, then steady blue -
+ *   and the one that worked is remembered and used first, so a normal re-assert
+ *   is a single short frame. It is re-sent every 0.7 s while idle and FORCED
+ *   0.3 s after every capture (matched or refused), past the miss backoff.
+ *   Light frames never drain the line and never mark the link dirty, so a
+ *   reader that refuses them cannot stall the door. `lamp` on Serial reports
+ *   which layout the installed reader accepted.
  *
  * Setup:
  *   1. Install the libraries above.
@@ -363,8 +373,20 @@ std::atomic<bool> queueNeedsReview{false};
  * first two misses are retried at the normal cadence, and only a reader that
  * keeps failing drops to this gap (it costs a timeout per try, and its glass is
  * no longer something this sketch can control). A fixed number, NOT a multiple
- * of the idle cadence - shortening the cadence must never lengthen a dark gap. */
-#define LAMP_RETRY_BACKOFF_MS   4000UL
+ * of the idle cadence - shortening the cadence must never lengthen a dark gap.
+ *
+ * This was 4 s, which the owner experienced as "the sensor goes black and comes
+ * back after about five seconds". Two missed light frames after a rejected
+ * finger (a busy or garbled line) were enough to reach it. A light re-assert
+ * right after a capture is now FORCED past this backoff, and the backoff itself
+ * is short enough that the glass can never stay dark for a whole placement. */
+#define LAMP_RETRY_BACKOFF_MS   1200UL
+/* A reader that has refused the light command this many times in a row is
+ * treated as one that controls its own illumination: the sketch keeps asking,
+ * but only every LAMP_UNSUPPORTED_REPROBE_MS, so probing can never become the
+ * thing that makes the door slow. `lamp` on Serial resets this and probes now. */
+#define LAMP_UNSUPPORTED_MISSES 6
+#define LAMP_UNSUPPORTED_REPROBE_MS 30000UL
 /* How long one optional light command may wait for its acknowledgement. A
  * reader that supports it answers in milliseconds; keeping this short means a
  * reader that does NOT support it can never eat the scan loop while somebody is
@@ -696,7 +718,7 @@ void checkLcdHealth();
 void beepSuccess();
 void beepError();
 bool detectSensor(uint8_t tries);
-void keepReaderLampOn(uint32_t minGapMs);
+void keepReaderLampOn(uint32_t minGapMs, bool force = false);
 void nudgeReaderLamp();
 void maintainReaderLight();
 void reassertReaderLight();
@@ -906,7 +928,7 @@ void networkTask(void *) {
  * really changed, and lcd.clear() runs once (in startLcd()), so the screen
  * never flickers while it is being updated.
  * Layout used by this sketch:
- *   idle        Fana Cafe Attendance / Place finger / Wifi (Not) Connected / Time HH:MM:SS
+ *   idle        Fana Cafe Attendance / Place finger - ready / Wifi (Not) Connected / Time HH:MM:SS
  *   result      name / big word / (continuation) / note
  *   enrollment  Enroll <who> / ID n [....] k/4 / instruction / hint
  * ------------------------------------------------------------------------- */
@@ -1351,7 +1373,7 @@ void showEnrollScreen(const String &who, int id, uint8_t done, const String &pro
 
 /* ── THE IDLE SCREEN (owner, Oct 2026) ───────────────────────────────────── *
  *   row 0   Fana Cafe Attendance            whose door this is
- *   row 1   Place finger                    what to do - or SENSOR OFFLINE!
+ *   row 1   Place finger - ready            what to do - or SENSOR OFFLINE!
  *                                           when the scanner itself is not
  *                                           answering, so nobody keeps
  *                                           pressing a dead glass
@@ -1855,21 +1877,25 @@ bool detectSensor(uint8_t tries) {
  * but the sketch never STOPS asking either. It used to give up for good after
  * one refusal at boot (readerLightSupported = false), which is how a reader
  * whose blue light went out stayed dark until the board was power-cycled. */
-void keepReaderLampOn(uint32_t minGapMs) {
-  // A reader that keeps refusing is asked less often (a refusal costs a
-  // timeout), but it is asked again, forever, and the moment it answers the
-  // fast cadence returns.
-  const uint32_t gap = lampMisses < 2 ? minGapMs : (uint32_t)LAMP_RETRY_BACKOFF_MS;
+void keepReaderLampOn(uint32_t minGapMs, bool force) {
+  /* force = "something was just captured, re-light the glass now". It skips the
+   * miss backoff (but not the minimum gap), because the moment the reader takes
+   * an image is exactly the moment some variants switch their own LED off. */
+  uint32_t gap = lampMisses < 2 ? minGapMs : (uint32_t)LAMP_RETRY_BACKOFF_MS;
+  if (force && minGapMs < gap) gap = minGapMs;
+  if (lampMisses >= LAMP_UNSUPPORTED_MISSES) gap = (uint32_t)LAMP_UNSUPPORTED_REPROBE_MS;
   if ((uint32_t)(millis() - lastLightRequestMs) < gap) return;
   lastLightRequestMs = millis();
   // Wi-Fi is irrelevant: the light is local to the reader. The short timeout is
-  // deliberate: a normal reader answers this in milliseconds.
+  // deliberate: a normal reader answers this in milliseconds, and the request
+  // is skipped outright while a reply is still on the wire.
   if (finger.requestLightOn(READER_LAMP_TIMEOUT_MS)) {
     lampMisses = 0;
     readerLightSupported = true;
   } else if (lampMisses < 1000) {
     lampMisses++;
-    if (lampMisses == 1) Serial.println("Reader light did not answer; still scanning, asking again in a moment");
+    if (lampMisses == 1)
+      Serial.println("Reader light did not answer; still scanning and re-asking every moment");
   }
 }
 
@@ -1904,7 +1930,9 @@ void maintainReaderLight() {
  * glass. The burst cadence makes the light come back in the same breath, before
  * the next search starts. */
 void reassertReaderLight() {
-  keepReaderLampOn(READER_LAMP_BURST_MS);
+  // Forced: this runs right after a capture, matched or refused, and that is
+  // when the reader's own illumination is most likely to have gone out.
+  keepReaderLampOn(READER_LAMP_BURST_MS, true);
 }
 
 // Answers true when the sensor replies to a COUNT command at all.
@@ -1968,6 +1996,12 @@ void dropSensorLink(const String &why) {
    * health check keeps looking for the module in the background. */
   scanFeedback.notice("SENSOR NOT", "answering. Check", "power + common GND", millis(), WARNING_SHOW_MS);
   renderScanFeedback();
+  // Make it audible too: a door that has stopped verifying must never be
+  // silent about it. Both are timer driven, so neither blocks the recovery scan.
+  digitalWrite(RED_LED, HIGH);
+  warningLedOn = true;
+  warningLedSince = millis();
+  beepError();
 }
 
 // Every 5 s while the sensor is missing, look for it again (self-healing).
@@ -2030,7 +2064,7 @@ void scanForFinger() {
       if (++emptyReplies >= 2) {
         emptyReplies = 0;
         awaitingFingerLift = false;
-        keepReaderLampOn(READER_LAMP_BURST_MS);
+        keepReaderLampOn(READER_LAMP_BURST_MS, true);
         Serial.println("Glass is clear: ready for the next finger");
         return;
       }
@@ -2057,11 +2091,10 @@ void scanForFinger() {
   const bool matched = finger.search(matchedId, permission, sensorPollMs) && matchedId > 0;
   const uint8_t st = finger.getLastStatus();
   noteSensorAnswer(st);
-  // A completed image may switch off some readers' illumination; reassert it
-  // at the next loop pass (READER_LAMP_BURST_MS later), without delaying this
-  // scan's timestamp or its feedback.
-  if (matched || st == BIOVO_ACK_NOUSER || st == BIOVO_ACK_IMAGEMESS)
-    lastLightRequestMs = millis() - READER_LAMP_IDLE_MS;
+  // A completed image may switch off some readers' illumination. A match is
+  // re-lit just before its result screen; a refusal is re-lit (forced) in the
+  // refusal branch below, together with its warning.
+  if (matched) lastLightRequestMs = millis() - READER_LAMP_IDLE_MS;
   // SENSOR_FAIL_LIMIT passes in a row with nothing back is not "no finger at
   // the door", it is no module. Say so, once, and let the health check look for
   // it. (The enrollment paths do not need this: a silent module there already
@@ -2102,32 +2135,72 @@ void scanForFinger() {
 
   /* ── A rejected placement never closes the door ────────────────────────────
    *
-   * Owner, Oct 2026: "when I put a wrong or unregistered finger the sensor goes
-   * dark for about five seconds and I have to time my finger during the dark
-   * time. Make it scan at any moment."
+   * Owner, Oct 2026, twice:
+   *   "when I put my finger wrongly or an unregistered finger the sensor goes
+   *    dark for about five seconds and I have to time my finger during the dark
+   *    time"
+   *   "when an unregistered, wrong-side or unclear finger is placed, the sensor
+   *    becomes black and even the buzzer and LED do not light up."
    *
-   * What happened: an unregistered or unclear finger set awaitingFingerLift, so
-   * from that moment the sketch stopped running full matches and only watched
-   * for a lift - the door looked (and behaved) asleep for as long as the hand
-   * stayed near the glass. There is nothing to protect against here: an
-   * unregistered fingerprint cannot be credited twice, so the latch belongs to
-   * MATCHES only. The refusal is announced, the light is re-asserted at once,
-   * and the very next loop pass searches again. A finger that lands while the
-   * warning is still on the LCD is read normally, and a good scan replaces the
-   * warning on the spot.
+   * TWO different faults produced that, and both are fixed here:
    *
-   * The announcement itself is throttled so a finger resting on the glass does
-   * not buzz in the employee's face twice a second. */
-  if (st == BIOVO_ACK_NOUSER || st == BIOVO_ACK_IMAGEMESS) {
-    const bool repeat = warningKind == st && (uint32_t)(millis() - warningShownAt) < WARNING_REPEAT_MS;
+   * 1. THE LATCH. An unregistered (NOUSER) or unclear (IMAGEMESS) placement used
+   *    to set awaitingFingerLift - the latch that means "this person has already
+   *    been clocked". The sketch then stopped running matches and only watched
+   *    for a lift, so the door was asleep for as long as a hand was near the
+   *    glass. The latch belongs to MATCHES only: a finger that was not verified
+   *    cannot be credited twice.
+   *
+   * 2. THE SILENT FAILURE. Some readers answer a bad press with a garbled frame,
+   *    an empty reply or a definite no-match, and the old code treated any
+   *    status it did not expect as "nobody touched the glass": no warning, no
+   *    red LED, no buzzer, nothing on the LCD. The reader's own evidence decides
+   *    that now - if it captured an image (or pressed an unclear one), a finger
+   *    WAS there and the door says so, whatever the status byte claims.
+   *
+   * The refusal is announced (LCD + red LED + two timer-driven buzzer pulses),
+   * the light is forced back on immediately, and the very next loop pass runs a
+   * full match again. A good scan taken while the warning is still on screen
+   * replaces it on the spot.
+   *
+   * The announcement is throttled so a finger resting on the glass is not
+   * buzzed in the employee's face twice a second; the SEARCHING is not. */
+  const bool refused = st == BIOVO_ACK_NOUSER || st == BIOVO_ACK_IMAGEMESS;
+  /* Silence (0xFF) is NOT evidence of a finger: that is a wiring/power case and
+   * the dead-link path owns it. A garbled frame (0xFE) or "command failed"
+   * (0x01) means the reader was talking but could not finish - the person at
+   * the door gets an answer instead of a blank glass. */
+  const bool fingerWasThere = refused || finger.searchSawFinger() ||
+                              st == BIOVO_ACK_COMM_ERROR || st == 0x01;
+  if (fingerWasThere) {
+    /* Two message groups, not one per status byte: a reader can report the same
+     * wrong press as NOUSER, NOMATCH, a garbled frame or "command failed", and
+     * the employee must not be buzzed again just because the byte changed. */
+    const uint8_t group = st == BIOVO_ACK_IMAGEMESS ? 1 : 2;
+    const bool repeat = warningKind == group && (uint32_t)(millis() - warningShownAt) < WARNING_REPEAT_MS;
     if (!repeat) {
-      warningKind = st;
+      warningKind = group;
       warningShownAt = millis();
-      if (st == BIOVO_ACK_NOUSER) {
-        showSensorWarning("NOT RECOGNIZED", "Retry finger flat", "Ask admin to enroll");
+      if (st == BIOVO_ACK_IMAGEMESS) {
+        showSensorWarning("IMAGE UNCLEAR", "Press flat and still", "Clean the glass");
+      } else if (refused || st == 0x09) {
+        showSensorWarning("NOT RECOGNIZED", "Finger not enrolled", "Ask admin to add it");
       } else {
-        showSensorWarning("IMAGE UNCLEAR", "Press flat and still", "Clean the sensor");
+        // A finger was seen but the reader could not finish the check (garbled
+        // or lost frame). Same visible answer: the door did not accept it.
+        showSensorWarning("NOT RECOGNIZED", "Press again, flat", "Ask admin if it repeats");
       }
+      /* One line per refusal on Serial: the raw status, which the LCD cannot
+       * show and which is the only way to tell a bad finger from a bad wire. */
+      Serial.print("Finger refused: status 0x");
+      if (st < 0x10) Serial.print("0");
+      Serial.print(st, HEX);
+      Serial.print(" (");
+      Serial.print(R307Compat::statusText(st));
+      Serial.print("), image seen: ");
+      Serial.print(finger.searchImagesSeen());
+      Serial.print(", unclear: ");
+      Serial.println(finger.searchUnclear());
     }
     reassertReaderLight();
     return;
@@ -2211,7 +2284,8 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   }
   wakeDeliveryTask();
   // Light the glass again for the next person before the buzzer is even done.
-  keepReaderLampOn(READER_LAMP_BURST_MS);
+  // Forced: the reader has just taken an image and may have killed its own LED.
+  keepReaderLampOn(READER_LAMP_BURST_MS, true);
   beepSuccess();
   /* The number the owner asked for: how long this person waited between the
    * image being taken and the green light. Under four seconds is the target;
@@ -3938,13 +4012,27 @@ void handleSerialCommand() {
     listFingerprints();
   } else if (cmd == "lamp") {
     // Is the reader's glass lit? This asks the module directly, whatever the
-    // sketch believed before, and reports what came back.
+    // sketch believed before, and reports which of the three layouts worked -
+    // the one thing nobody can see from the code when a glass stays dark.
     lastLightRequestMs = 0;
+    lampMisses = 0;   // probe all three layouts again, right now
     const bool lit = finger.requestLightOn(800);
-    if (lit) readerLightSupported = true;
-    Serial.print("Reader LED-ON: ");
-    Serial.println(lit ? "acknowledged - the glass should be lit" :
-                         "not acknowledged - this variant does not take that command");
+    if (lit) {
+      readerLightSupported = true;
+      lampMisses = 0;
+    }
+    Serial.print("Reader light: ");
+    if (!lit) {
+      Serial.println("refused all 3 layouts (plain LED-ON, breathing blue, blue ON).");
+      Serial.println("  This variant controls its own illumination - a dark glass during a");
+      Serial.println("  placement is then power, GND or the glass, not a lost command.");
+    } else {
+      const uint8_t layout = finger.lightLayout();
+      Serial.println(layout == 0 ? "layout 1/3 accepted: plain LED-ON" :
+                       layout == 1 ? "layout 2/3 accepted: breathing blue (blinks by itself)" :
+                                     "layout 3/3 accepted: steady blue");
+      Serial.println("  the door re-sends this every moment, so the glass stays lit");
+    }
   } else if (cmd == "test") {
     testSensor();
   } else if (cmd.startsWith("watch")) {
@@ -4231,6 +4319,10 @@ void handleStatus() {
   doc["sensorSilentPasses"] = sensorSilentPasses;
   doc["sensorPollMs"] = sensorPollMs;
   doc["sensorStatus"] = fingerStatusText(sensorLastStatus);
+  doc["readerLightLayout"] = finger.lightLayout() == 0 ? "plain" :
+                             finger.lightLayout() == 1 ? "breathing-blue" :
+                             finger.lightLayout() == 2 ? "steady-blue" : "unconfirmed";
+  doc["readerLightMisses"] = lampMisses;
   doc["sensorSilentMs"] = sensorLastReplyMs == 0UL ? 0UL : (unsigned long)(millis() - sensorLastReplyMs);
   if (sensorTestRounds > 0) {
     doc["linkTest"] = String(sensorTestAnswered) + "/" + String((unsigned)sensorTestRounds) +

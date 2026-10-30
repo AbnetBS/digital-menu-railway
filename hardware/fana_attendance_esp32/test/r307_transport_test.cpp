@@ -271,38 +271,150 @@ static void test_late_boot() {
   assert(reader.begin(1500) && reader.capacity() == 512);
 }
 
+/* The glass must stay lit (owner, Oct 2026: "the blue light must be continuous
+ * and blinking non-stop"). Three layouts exist and are remembered, so a normal
+ * re-assert costs ONE frame - and a light request can never damage a scan. */
 static void test_optional_led() {
+  // 1. Plain LEDON is tried first and remembered; a re-assert is one frame.
+  nowMs = 0;
+  {
+    FakeSensor s;
+    R307Compat reader(s);
+    prepare(s, reader);
+    s.ack(FINGERPRINT_LEDON);
+    assert(reader.requestLightOn());
+    assert(s.commands.back()[0] == FINGERPRINT_LEDON && reader.lightLayout() == 0);
+    const size_t before = s.commands.size();
+    s.ack(FINGERPRINT_LEDON);
+    assert(reader.requestLightOn());
+    assert(s.commands.size() == before + 1);           // no wasted probes
+    // A light request must not disturb an ordinary match afterwards.
+    s.ack(FINGERPRINT_GETIMAGE); s.ack(FINGERPRINT_IMAGE2TZ);
+    s.plan(FINGERPRINT_HISPEEDSEARCH, {0, 0, 42, 0, 55});
+    uint16_t id = 0; uint8_t permission = 0;
+    assert(reader.search(id, permission, 1500) && id == 42);
+  }
+  // 2. A clone that refuses plain LEDON is lit by breathing blue, and that
+  //    layout is then used first on every later re-assert.
+  nowMs = 0;
+  {
+    FakeSensor s;
+    R307Compat reader(s);
+    prepare(s, reader);
+    s.plan(FINGERPRINT_LEDON, {1});
+    s.ack(FINGERPRINT_AURALEDCONFIG);
+    assert(reader.requestLightOn());
+    assert(s.commands.back()[0] == FINGERPRINT_AURALEDCONFIG);
+    assert(s.commands.back()[1] == FINGERPRINT_LED_BREATHING);
+    assert(s.commands.back()[2] == FINGERPRINT_LED_BLUE);
+    assert(reader.lightLayout() == 1);
+    s.ack(FINGERPRINT_AURALEDCONFIG);
+    assert(reader.requestLightOn());
+    assert(s.commands.back()[1] == FINGERPRINT_LED_BREATHING);
+  }
+  // 3. A clone that refuses breathing but accepts steady blue is still lit.
+  nowMs = 0;
+  {
+    FakeSensor s;
+    R307Compat reader(s);
+    prepare(s, reader);
+    s.plan(FINGERPRINT_LEDON, {1});
+    s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+    s.ack(FINGERPRINT_AURALEDCONFIG);
+    assert(reader.requestLightOn());
+    assert(s.commands.back()[1] == FINGERPRINT_LED_ON);
+    assert(reader.lightLayout() == 2);
+  }
+  // 4. A reader that refuses all three is reported, never fatal: capture and
+  //    matching still work, and the failure leaves no dirty line behind.
+  nowMs = 0;
+  {
+    FakeSensor s;
+    R307Compat reader(s);
+    prepare(s, reader);
+    s.plan(FINGERPRINT_LEDON, {1});
+    s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+    s.plan(FINGERPRINT_AURALEDCONFIG, {1});
+    assert(!reader.requestLightOn());
+    assert(reader.lightMisses() == 1);
+    s.ack(FINGERPRINT_GETIMAGE);
+    s.ack(FINGERPRINT_IMAGE2TZ);
+    s.plan(FINGERPRINT_HISPEEDSEARCH, {0, 0, 7, 0, 90});
+    uint16_t id = 0; uint8_t permission = 0;
+    assert(reader.search(id, permission, 1500) && id == 7);
+    // The three refused light frames left no dirty line: the next command went
+    // out immediately and was answered (no multi-second drain).
+    assert(nowMs < 3000);
+  }
+  // 5. A reader that keeps refusing costs the door ONE short probe per call
+  //    (not three), so light handling can never be what makes scanning slow.
+  nowMs = 0;
+  {
+    FakeSensor s;
+    R307Compat reader(s);
+    prepare(s, reader);
+    // Three full rounds. The probe order rotates, so the plans follow it.
+    const uint8_t rounds[3][3] = {
+      {FINGERPRINT_LEDON, FINGERPRINT_AURALEDCONFIG, FINGERPRINT_AURALEDCONFIG},
+      {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LEDON},
+      {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LEDON, FINGERPRINT_AURALEDCONFIG},
+    };
+    for (int round = 0; round < 3; ++round) {
+      for (int probe = 0; probe < 3; ++probe) s.plan(rounds[round][probe], {1});
+      assert(!reader.requestLightOn());
+    }
+    assert(reader.lightMisses() == 3);
+    const size_t before = s.commands.size();
+    s.plan(FINGERPRINT_LEDON, {1});              // one rotating probe only
+    assert(!reader.requestLightOn());
+    assert(s.commands.size() == before + 1);
+    // It still recovers the moment the reader answers, and goes back to the
+    // fast cadence with that layout.
+    s.ack(FINGERPRINT_AURALEDCONFIG);
+    assert(reader.requestLightOn());
+    assert(reader.lightMisses() == 0 && reader.lightLayout() == 1);
+  }
+}
+
+/* A definitively unregistered finger must be reported at once, not after a
+ * second full capture, and the driver must be able to say that it SAW a finger
+ * (that is what makes the red LED and buzzer fire for a bad press). */
+static void test_refusal_is_fast_and_visible() {
   nowMs = 0;
   FakeSensor s;
   R307Compat reader(s);
   prepare(s, reader);
-  // The reader used to work with plain LEDON first. In particular, do not
-  // issue the flashing aura command merely because a reader acknowledges it.
-  size_t before = s.commands.size();
-  s.ack(FINGERPRINT_LEDON);
-  assert(reader.requestLightOn());
-  assert(s.commands.size() == before + 1 && s.commands.back()[0] == FINGERPRINT_LEDON);
-  // A successful light request must be followed by an ordinary real match.
-  s.ack(FINGERPRINT_GETIMAGE); s.ack(FINGERPRINT_IMAGE2TZ);
-  s.plan(FINGERPRINT_HISPEEDSEARCH, {0, 0, 42, 0, 55});
+  s.ack(FINGERPRINT_GETIMAGE);
+  s.ack(FINGERPRINT_IMAGE2TZ);
+  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOTFOUND});
   uint16_t id = 0; uint8_t permission = 0;
-  assert(reader.search(id, permission, 1500) && id == 42);
-  // On variants that reject the original command retain its original fallbacks.
-  s.plan(FINGERPRINT_LEDON, {1});
-  s.ack(FINGERPRINT_AURALEDCONFIG);
-  assert(reader.requestLightOn());
-  assert(s.commands.back()[1] == FINGERPRINT_LED_BREATHING);
-  s.plan(FINGERPRINT_LEDON, {1});
-  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
-  s.ack(FINGERPRINT_AURALEDCONFIG);
-  assert(reader.requestLightOn());
-  assert(s.commands.back()[1] == FINGERPRINT_LED_ON);
-  s.plan(FINGERPRINT_LEDON, {1});
-  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
-  s.plan(FINGERPRINT_AURALEDCONFIG, {1});
-  assert(!reader.requestLightOn());
-  s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
-  assert(reader.fingerPresent() == 0);
+  assert(!reader.search(id, permission, 1500));
+  assert(reader.getLastStatus() == 0x05);
+  assert(reader.searchSawFinger() && reader.searchImagesSeen() == 1);
+  size_t imageCommands = 0;
+  for (const auto &c : s.commands) if (c[0] == FINGERPRINT_GETIMAGE) imageCommands++;
+  assert(imageCommands == 1);   // no second capture for a definite no-match
+
+  // An unclear press is retried once (a second look is worth it) and still
+  // counts as a finger for the warning.
+  nowMs = 0;
+  FakeSensor s2;
+  R307Compat reader2(s2);
+  prepare(s2, reader2);
+  s2.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_IMAGEFAIL});
+  s2.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_IMAGEFAIL});
+  for (int i = 0; i < 4; ++i) s2.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(!reader2.search(id, permission, 300));
+  assert(reader2.searchSawFinger() && reader2.searchUnclear() >= 1);
+
+  // Nobody touched the glass: no image, so no warning is invented.
+  nowMs = 0;
+  FakeSensor s3;
+  R307Compat reader3(s3);
+  prepare(s3, reader3);
+  for (int i = 0; i < 30; ++i) s3.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  assert(!reader3.search(id, permission, 200));
+  assert(!reader3.searchSawFinger());
 }
 
 /* The door is between two employees of the same group. While the first finger
@@ -353,6 +465,7 @@ static void test_placement_answer_counters() {
 
 int main() {
   test_optional_led();
+  test_refusal_is_fast_and_visible();
   test_short_lift_poll();
   test_placement_answer_counters();
   test_capacity_and_full_range();

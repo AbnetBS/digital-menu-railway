@@ -368,7 +368,7 @@ export default function AttendanceTab() {
 
   const loadToday = useCallback(async () => {
     try {
-      const r = await fetch("/api/attendance/today");
+      const r = await fetch("/api/attendance/today", { cache: "no-store" });
       if (r.ok) setTodayLogs(await r.json());
     } catch {
       /* the table simply stays as it was */
@@ -701,12 +701,14 @@ export default function AttendanceTab() {
     }, 8000);
     const onVisible = () => { if (document.visibilityState !== "hidden") refresh(); };
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
     return () => {
       alive = false;
       controller?.abort();
       es?.close();
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
       if (sheetRefreshRef.current === refresh) sheetRefreshRef.current = null;
     };
   }, [activeView, fromDate, toDate]);
@@ -804,12 +806,14 @@ export default function AttendanceTab() {
     const timer = setInterval(() => { if (document.visibilityState !== "hidden") void tick(); }, 2000);
     const onVisible = () => { if (document.visibilityState !== "hidden") void tick(); };
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
     return () => {
       cancelled = true;
       controller?.abort();
       es?.close();
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(pendingIds), loadMembers]);
@@ -1621,6 +1625,39 @@ export default function AttendanceTab() {
                 capture, lifting it between placements, then lift and place it a third time to confirm. The device
                 reports Fingerprint Added ✓ only when the sensor finds that ID on the confirmation scan.
               </p>
+
+              {editingMemberId && jobs[editingMemberId] ? (
+                jobs[editingMemberId].status === "pending" ? (
+                  <div className="bg-amber-950/40 border border-amber-700 rounded-xl p-3">
+                    <p className="text-xs font-bold text-amber-200 flex items-center gap-2">
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                      {jobs[editingMemberId].startedAt
+                        ? "Scanner received the request • "
+                        : "Waiting for the scanner • "}
+                      ID {jobs[editingMemberId].fingerprintId}
+                    </p>
+                    <p className="text-[10px] text-amber-300/80 mt-1">
+                      {jobs[editingMemberId].startedAt
+                        ? "Wait for PLACE FINGER on the scanner. Place the SAME finger twice, lifting between captures; lift again and place it a third time to confirm."
+                        : "Request sent. Keep the scanner powered and wait for its screen. If it does not respond, check the connection."}
+                    </p>
+                    {jobs[editingMemberId].detail ? (
+                      <p className="text-[10px] text-amber-200/90 mt-1 font-bold">{jobs[editingMemberId].detail}</p>
+                    ) : null}
+                  </div>
+                ) : jobs[editingMemberId].status === "done" ? (
+                  <p className="text-xs font-black text-emerald-300 bg-emerald-950/40 border border-emerald-800 rounded-xl p-3">
+                    Fingerprint Added ✓ • ID {jobs[editingMemberId].fingerprintId}
+                  </p>
+                ) : jobs[editingMemberId].status === "failed" ? (
+                  <div className="bg-rose-950/40 border border-rose-800 rounded-xl p-3">
+                    <p className="text-xs font-bold text-rose-200">Fingerprint was not added</p>
+                    <p className="text-[10px] text-rose-300/80 mt-1">
+                      {jobs[editingMemberId].detail || "The scanner did not finish. Check its screen and try again."}
+                    </p>
+                  </div>
+                ) : null
+              ) : null}
             </div>
           )}
 

@@ -6,6 +6,12 @@ import { requireAdmin } from "@/lib/session";
 import { hashSecret } from "@/lib/auth";
 import { asc, eq } from "drizzle-orm";
 
+export const dynamic = "force-dynamic";
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+};
+
 /**
  * ATTENDANCE -> STAFF MEMBERS (owner, Oct 2026).
  *
@@ -44,7 +50,8 @@ export async function GET(request: Request) {
             name: m.name,
             role: m.roleId ? roleName.get(m.roleId) || "No role" : "No role",
             hasPin: Boolean(m.pin),
-          }))
+          })),
+        { headers: NO_STORE_HEADERS }
       );
     }
 
@@ -68,7 +75,8 @@ export async function GET(request: Request) {
             fingerName: b.fingerName,
             enrolledAt: b.enrolledAt,
           })),
-      }))
+      })),
+      { headers: NO_STORE_HEADERS }
     );
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

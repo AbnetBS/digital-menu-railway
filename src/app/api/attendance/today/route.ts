@@ -6,6 +6,12 @@ import { desc, eq } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
 import { clockLabel, hoursLabel, inStatusOf, outStatusOf } from "@/lib/attendance";
 
+export const dynamic = "force-dynamic";
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+};
+
 /**
  * TODAY, LIVE. One feed for both the door tablet and the admin's Today Live
  * tab: who is in, who is out, how long, late or on time, early out or overtime.
@@ -124,7 +130,7 @@ export async function GET(request: Request) {
         absent: absentMembers.length,
         totalMembers: members.filter((m) => m.active !== false).length,
       },
-    });
+    }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

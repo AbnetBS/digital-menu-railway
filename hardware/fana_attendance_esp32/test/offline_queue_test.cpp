@@ -110,5 +110,23 @@ int main() {
   assert(q.append("later-valid-event"));
   assert(q.peek(head) == OfflineQueue::READY && head.line == String("later-valid-event"));
   assert(q.acknowledge(head));
+
+  // Batch peek + batch acknowledge advance the durable cursor across N records
+  // atomically and clean up /queue.json once the final record is acknowledged.
+  assert(!q.hasPending());
+  for (int i = 0; i < 10; ++i) {
+    assert(q.append(String("{\"n\":") + String(i) + String("}")));
+  }
+  assert(q.hasPending());
+  std::vector<OfflineQueue::Head> batch;
+  assert(q.peekBatch(batch, 6) == OfflineQueue::READY && batch.size() == 6);
+  assert(batch[0].line == String("{\"n\":0}") && batch[5].line == String("{\"n\":5}"));
+  assert(q.acknowledgeBatch(batch[0], batch[5]));
+  assert(q.hasPending());
+  assert(q.peekBatch(batch, 10) == OfflineQueue::READY && batch.size() == 4);
+  assert(batch[0].line == String("{\"n\":6}") && batch[3].line == String("{\"n\":9}"));
+  assert(q.acknowledgeBatch(batch[0], batch[3]));
+  assert(!q.hasPending());
+  assert(!fs.exists("/queue.json") && !fs.exists("/queue.cursor"));
   std::cout << "Offline queue tests passed: FIFO, stalled send, reboot, torn writes, durable anchors and manual review\n";
 }

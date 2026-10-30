@@ -5,8 +5,14 @@ import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { deviceAllowed } from "@/lib/attendance-device";
 import { publish, CHANNELS } from "@/lib/realtime";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
+
+export const dynamic = "force-dynamic";
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+};
 
 /**
  * fingerprintId -> which person of the attendance list.
@@ -48,9 +54,9 @@ export async function GET(request: Request) {
     const simpleMap: Record<number, string> = {};
     for (const m of mappings) simpleMap[m.fingerprintId] = m.memberName;
 
-    return NextResponse.json({ count: mappings.length, mappings, simpleMap });
+    return NextResponse.json({ count: mappings.length, mappings, simpleMap }, { headers: NO_STORE_HEADERS });
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    return NextResponse.json({ error: String(error) }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }
 
@@ -64,23 +70,22 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object") {
-      return NextResponse.json({ error: "Send a JSON body" }, { status: 400 });
+      return NextResponse.json({ error: "Send a JSON body" }, { status: 400, headers: NO_STORE_HEADERS });
     }
 
-    // The device picked the job up. Receipt is reported before sensor
-    // preflight; the LCD will say when it is ready for finger placement.
-    if (body.action === "job_started") {
+    // The device picked the job up or updated its live LCD step prompt.
+    if (body.action === "job_started" || body.action === "job_progress") {
       const jobId = Number(body.jobId);
-      if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 });
+      if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400, headers: NO_STORE_HEADERS });
       const detail = String(body.detail ?? "Scanner received the job; follow the scanner screen").slice(0, 160);
       await db
         .update(attendanceEnrollJobs)
         // Stays "pending" on purpose: a device that dies mid-enrollment leaves
         // the job servable, and the ?pending read keeps its old meaning.
-        .set({ startedAt: new Date(), detail })
+        .set({ startedAt: sql`COALESCE(${attendanceEnrollJobs.startedAt}, NOW())`, detail })
         .where(and(eq(attendanceEnrollJobs.id, jobId), eq(attendanceEnrollJobs.status, "pending")));
       publish(CHANNELS.device);
-      return NextResponse.json({ success: true, detail });
+      return NextResponse.json({ success: true, detail }, { headers: NO_STORE_HEADERS });
     }
 
     // The device could not finish the job (no finger, sensor error, ID taken).
@@ -88,7 +93,7 @@ export async function POST(request: Request) {
     // for the job to expire. Only a pending job can be closed this way.
     if (body.action === "job_failed") {
       const jobId = Number(body.jobId);
-      if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400 });
+      if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400, headers: NO_STORE_HEADERS });
       const reason = String(body.reason ?? "Device could not finish the job").slice(0, 160);
       await db
         .update(attendanceEnrollJobs)
@@ -98,7 +103,7 @@ export async function POST(request: Request) {
       publish(CHANNELS.device);
       // Echo the job identity so the scanner can verify this report reached
       // the website, rather than treating a captive portal's HTTP 200 as an ACK.
-      return NextResponse.json({ success: true, jobId, reason });
+      return NextResponse.json({ success: true, jobId, reason }, { headers: NO_STORE_HEADERS });
     }
 
     const fingerprintId = Number(body.fingerprintId);
@@ -161,11 +166,20 @@ export async function POST(request: Request) {
           .returning()
       )[0];
 
-    // Close the job that asked for this finger, so the admin page can show
-    // "Fingerprint Added ✓".
+    // Close the job that asked for this finger (both by explicit jobId if sent
+    // and by memberId + fingerprintId), so the admin page shows
+    // "Fingerprint Added ✓" immediately without a manual page refresh.
+    const completedAt = new Date();
+    const explicitJobId = Number(body.jobId ?? 0);
+    if (explicitJobId > 0) {
+      await db
+        .update(attendanceEnrollJobs)
+        .set({ status: "done", completedAt, detail: `Fingerprint Added (ID ${fingerprintId})` })
+        .where(and(eq(attendanceEnrollJobs.id, explicitJobId), eq(attendanceEnrollJobs.status, "pending")));
+    }
     await db
       .update(attendanceEnrollJobs)
-      .set({ status: "done", completedAt: new Date() })
+      .set({ status: "done", completedAt, detail: `Fingerprint Added (ID ${fingerprintId})` })
       .where(
         and(
           eq(attendanceEnrollJobs.memberId, member.id),
@@ -178,14 +192,17 @@ export async function POST(request: Request) {
     // watching the job prints "Fingerprint Added ✓" instantly.
     publish(CHANNELS.device);
 
-    return NextResponse.json({
-      success: true,
-      id: bio.id,
-      memberId: member.id,
-      memberName: member.name,
-      fingerprintId,
-      message: `Fingerprint Added for ${member.name} (ID ${fingerprintId})`,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        id: bio.id,
+        memberId: member.id,
+        memberName: member.name,
+        fingerprintId,
+        message: `Fingerprint Added for ${member.name} (ID ${fingerprintId})`,
+      },
+      { headers: NO_STORE_HEADERS }
+    );
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

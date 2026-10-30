@@ -124,14 +124,30 @@ async function main() {
   assert.match(host.textContent || "", /ID 6/);
   assert.doesNotMatch(host.textContent || "", /old failure/);
 
-  // A completed current job is reflected without a stream event.
+  // Live LCD step progress arrives over SSE while the scanner is accepting the
+  // finger, and completion automatically refreshes the member's fingers.
   const current = jobs.get(2)!;
+  current.startedAt = "2026-10-29T12:01:00Z";
+  current.detail = "Scanner LCD accepting finger (1/3): PLACE FINGER";
+  const activeEs = FakeEventSource.instances.filter((es) => !es.closed && es.url.includes("channel=device")).at(-1)!;
+  await act(async () => activeEs.onmessage?.());
+  await flush();
+  assert.match(host.textContent || "", /Scanner LCD accepting finger \(1\/3\): PLACE FINGER/);
+
+  // A completed current job is reflected without a stream event or page reload,
+  // and reloads the member's enrolled finger list automatically.
+  (people[0] as { fingers: Array<Record<string, unknown>> }).fingers = [
+    { id: 101, fingerprintId: 6, fingerName: "Right Index", enrolledAt: "2026-10-29T12:01:15Z" },
+  ];
   current.status = "done";
+  current.detail = "Fingerprint Added (ID 6)";
   const newTimer = [...intervals.values()].find((entry) => entry.ms === 2000);
   assert.ok(newTimer);
   await act(async () => newTimer.callback());
   await flush();
   assert.match(host.textContent || "", /Fingerprint Added/);
+  assert.match(host.textContent || "", /ID 6 - Right Index/);
+  (people[0] as { fingers: Array<Record<string, unknown>> }).fingers = [];
   await act(async () => root.unmount());
   assert.equal(intervals.size, 0);
 

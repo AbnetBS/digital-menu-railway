@@ -41,11 +41,12 @@ struct Reader {
   int searches = 0;
   // What the real driver counts: an image captured / an unclear press during
   // the last search(). This is the reader's evidence that a finger was there.
-  int images = 0, unclear = 0;
+  int images = 0, unclear = 0, emptyBefore = 0;
   bool search(uint16_t &id, uint8_t &, uint32_t) {
     searches++; id = match ? 42 : 0; return match;
   }
   bool searchSawFinger() const { return images > 0 || unclear > 0; }
+  bool searchSawEmptyBeforeFinger() const { return emptyBefore > 0; }
   uint32_t searchImagesSeen() const { return images; }
   uint32_t searchUnclear() const { return unclear; }
   uint8_t getLastStatus() { return status; }
@@ -79,14 +80,22 @@ int main() {
   assert(!awaitingFingerLift && reasserts > 0);
   scanForFinger();
   assert(warnings == 1); // same held finger is not repeatedly buzzed
+  // Lift and quick re-press inside waitForImage() (emptyBefore > 0) is announced
+  // immediately without waiting for WARNING_REPEAT_MS or a full poll timeout.
+  finger.emptyBefore = 2;
+  scanForFinger();
+  assert(warnings == 2 && title == "Not registered");
+  finger.emptyBefore = 0;
+  scanForFinger();
+  assert(warnings == 2); // holding the second press still does not spam
   finger.status = BIOVO_ACK_TIMEOUT;
   scanForFinger();
   finger.status = BIOVO_ACK_NOUSER;
   scanForFinger();
-  assert(warnings == 2); // fresh placement, even within throttle interval
+  assert(warnings == 3); // fresh placement, even within throttle interval
   finger.status = BIOVO_ACK_IMAGEMESS;
   scanForFinger();
-  assert(warnings == 3 && title == "Image unclear" && line2 == "Press flat and still");
+  assert(warnings == 4 && title == "Image unclear" && line2 == "Press flat and still");
   assert(!awaitingFingerLift);
 
   /* The fault the owner reported last (Oct 2026): a wrong, unregistered or
@@ -99,7 +108,7 @@ int main() {
   nowMs += WARNING_REPEAT_MS;
   finger.images = 1; finger.unclear = 0;
   scanForFinger();
-  assert(warnings == 4 && title == "Not registered" && line2 == "Press again, flat");
+  assert(warnings == 5 && title == "Not registered" && line2 == "Press again, flat");
   assert(!awaitingFingerLift);         // still scanning, no latch
   finger.images = 0;
 
@@ -108,7 +117,7 @@ int main() {
   finger.images = 1;
   nowMs += WARNING_REPEAT_MS;
   scanForFinger();
-  assert(warnings == 5);
+  assert(warnings == 6);
   finger.status = BIOVO_ACK_TIMEOUT;
   finger.images = 0;
   nowMs += WARNING_REPEAT_MS;
@@ -119,7 +128,7 @@ int main() {
   finger.status = BIOVO_ACK_TIMEOUT;
   finger.images = 0; finger.unclear = 0;
   scanForFinger();
-  assert(warnings == 5);
+  assert(warnings == 6);
 
   // After every refusal the light is re-asserted, and the door is still live.
   const int reassertsBefore = reasserts;

@@ -133,6 +133,7 @@ class R307Compat {
    * it said nothing at all, buzzed nothing and lit nothing. The counters below
    * are that evidence, summed over both capture attempts of the search. */
   bool searchSawFinger() const { return searchImages_ > 0 || searchUnclear_ > 0; }
+  bool searchSawEmptyBeforeFinger() const { return searchEmptyBefore_ > 0; }
   uint32_t searchImagesSeen() const { return searchImages_; }
   uint32_t searchUnclear() const { return searchUnclear_; }
 
@@ -141,18 +142,20 @@ class R307Compat {
     permission = 0;
     searchImages_ = 0;
     searchUnclear_ = 0;
+    searchEmptyBefore_ = 0;
     if (!capacity_) { lastStatus_ = 0xFE; return false; }
     uint8_t previousQuality = 0;
     // One short retry of a poor/unmatched image reduces false rejections, but
     // success still requires the sensor itself to find a stored template.
     for (uint8_t attempt = 0; attempt < 2; attempt++) {
-      const bool gotImage = waitForImage(attempt == 0 ? waitMs : 300);
+      const bool gotImage = waitForImage(attempt == 0 ? waitMs : 120);
+      if (attempt == 0) searchEmptyBefore_ = emptyGlass_;
       searchImages_ += imagesSeen_;
       searchUnclear_ += unclear_;
       if (!gotImage) {
         if (lastStatus_ == 0x06 && attempt == 0) {
           previousQuality = lastStatus_;
-          delay(250);
+          delay(60);
           continue;
         }
         if (previousQuality && lastStatus_ == 0x08) lastStatus_ = previousQuality;
@@ -168,9 +171,10 @@ class R307Compat {
         // A captured image that cannot be converted (including a lost image)
         // is a bad placement, not an empty glass.
         if (lastStatus_ == 0x08) lastStatus_ = 0x06;
+        if (lastStatus_ == 0x06) searchUnclear_++;
         if (lastStatus_ == 0x06 && attempt == 0) {
           previousQuality = lastStatus_;
-          delay(250);
+          delay(60);
           continue;
         }
         return false;
@@ -192,6 +196,7 @@ class R307Compat {
       // this command; NOMATCH has a different meaning during enrollment.
       if (lastStatus_ == 0x08) lastStatus_ = 0x06;
       if (lastStatus_ == 0x09) lastStatus_ = 0x05;
+      if (lastStatus_ == 0x06) searchUnclear_++;
       /* A DEFINITE no-match on a good image is a real answer, not a fluke: the
        * finger is not enrolled (or is not the person it looks like). Retrying
        * the whole capture costs another ~0.5-1 s and delays the red light and
@@ -199,7 +204,7 @@ class R307Compat {
        * UNCLEAR image is worth a second look. */
       if (lastStatus_ == 0x06 && attempt == 0) {
         previousQuality = lastStatus_;
-        delay(250);
+        delay(60);
         continue;
       }
       return false;
@@ -314,6 +319,7 @@ class R307Compat {
   bool needsQuiet_ = false;
   uint32_t searchImages_ = 0;    // images captured during the last search()
   uint32_t searchUnclear_ = 0;   // unclear presses during the last search()
+  uint32_t searchEmptyBefore_ = 0; // empty-glass polls before the capture
   static const uint8_t LIGHT_LAYOUTS = 3;
   uint8_t lightLayout_ = 0;      // 0 = plain, 1 = breathing aura, 2 = steady aura
   uint8_t lightMisses_ = 0;
@@ -339,8 +345,10 @@ class R307Compat {
   static uint8_t mapError(uint8_t r) {
     if (r == FINGERPRINT_OK) return 0x00;
     if (r == FINGERPRINT_NOFINGER) return 0x08;
-    if (r == FINGERPRINT_IMAGEFAIL || r == FINGERPRINT_IMAGEMESS ||
-        r == FINGERPRINT_FEATUREFAIL || r == FINGERPRINT_INVALIDIMAGE) return 0x06;
+    // R307/AS608 raw 0x04 = dry/light image, 0x05 = wet/smudged image.
+    if (r == FINGERPRINT_IMAGEFAIL || r == 0x04 || r == 0x05 ||
+        r == FINGERPRINT_IMAGEMESS || r == FINGERPRINT_FEATUREFAIL ||
+        r == FINGERPRINT_INVALIDIMAGE) return 0x06;
     if (r == FINGERPRINT_ENROLLMISMATCH || r == FINGERPRINT_NOMATCH) return 0x09;
     if (r == FINGERPRINT_BADLOCATION || r == FINGERPRINT_DBRANGEFAIL) return 0x04;
     if (r == FINGERPRINT_FLASHERR) return 0x0A;
@@ -392,8 +400,14 @@ class R307Compat {
       if (header[0] != 0xFF || header[1] != 0xFF || header[2] != 0xFF || header[3] != 0xFF ||
           header[4] != FINGERPRINT_ACKPACKET || checksum != received) continue;
       const uint16_t payloadLength = length - 2;
-      if ((wire[0] == FINGERPRINT_OK && payloadLength != expectedSuccessLength) ||
-          (wire[0] != FINGERPRINT_OK && payloadLength != 1)) continue;
+      /* On R307/AS608, HISPEEDSEARCH/SEARCH return a 5-byte payload even on
+       * FINGERPRINT_NOTFOUND ([0x09, 0x00, 0x00, 0x00, 0x00]). Rejecting
+       * non-OK packets with payloadLength != 1 discarded the real no-match
+       * reply and forced two full search timeouts (6-9 s) before refusing,
+       * while 1-byte commands still reject stale multi-byte packets. */
+      if (wire[0] == FINGERPRINT_OK
+            ? payloadLength != expectedSuccessLength
+            : (payloadLength != 1 && payloadLength != expectedSuccessLength)) continue;
       for (uint16_t i = 0; i < payloadLength; i++) reply[i] = wire[i];
       return true;
     }

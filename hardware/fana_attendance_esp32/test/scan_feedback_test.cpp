@@ -116,6 +116,14 @@ int main() {
   offlineCard.saved(mulu, false, 20000);
   assert(offlineCard.phase() == ScanFeedback::SAVED && !offlineCard.linkWasUp());
   assert(offlineCard.current().scannedAt == mulu.scannedAt);   // original time
+  // When link returns and a batch is delivered together, DELIVERY_BATCH updates
+  // immediately without waiting 1.5 s per employee.
+  DeliveryNotice batchNotice{};
+  std::snprintf(batchNotice.name, sizeof(batchNotice.name), "%s", "10 scans sent");
+  batchNotice.kind = DELIVERY_BATCH;
+  assert(offlineCard.mayShow(batchNotice, 20100));
+  offlineCard.delivered(batchNotice, 20100);
+  assert(offlineCard.phase() == ScanFeedback::BATCH_SENT);
 
   // millis wrap must not leave the message stuck or lose the next status.
   feedback.saved(abebe, true, UINT32_MAX - 1000U);

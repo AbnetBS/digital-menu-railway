@@ -22,6 +22,7 @@ enum QueueStatus : uint8_t { QUEUE_OFFLINE, QUEUE_IDLE, QUEUE_SENDING, QUEUE_CLO
 #define QUEUE_OFFLINE_POLL_MS 1000
 #define QUEUE_RETRY_MS 3000
 #define WEBSITE_TIME_RETRY_MS 10000
+#define OFFLINE_BATCH_MAX 20
 #define WL_CONNECTED 3
 #define pdTRUE 1
 
@@ -92,28 +93,71 @@ static std::mutex serverMutex;
 static std::condition_variable serverCondition;
 static std::map<std::string, FakeReceipt> committed;
 static std::vector<FakeReceipt> requests;
+static size_t httpPosts = 0;
 
 class HTTPClient {
  public:
   void setTimeout(int) {}
   int POST(const String &request) {
-    DynamicJsonDocument doc(1024);
+    DynamicJsonDocument doc(16384);
     assert(!deserializeJson(doc, request));
+    const int mode = responseMode.load();
+    if (doc["events"].is<JsonArray>()) {
+      JsonArray events = doc["events"].as<JsonArray>();
+      std::vector<FakeReceipt> batchEntries;
+      for (JsonObject ev : events) {
+        batchEntries.push_back(FakeReceipt{
+            ev["eventId"] | "", ev["fingerprintId"] | 0, ev["capturedMemberId"] | 0,
+            static_cast<uint32_t>(ev["scannedAt"] | 0UL)});
+      }
+      {
+        std::lock_guard<std::mutex> lock(serverMutex);
+        ++httpPosts;
+        for (const auto &entry : batchEntries) {
+          requests.push_back(entry);
+          if ((mode == GOOD || mode == LOST_REPLY) && entry.finger != 999) {
+            committed.emplace(entry.id, entry);
+          }
+        }
+        serverCondition.notify_all();
+      }
+      if (mode == PORTAL) { body_ = "<html>Sign in to WiFi</html>"; return 200; }
+      if (mode == SERVER_DOWN || mode == LOST_REPLY) return -1;
+      std::string json = "{\"batch\":true,\"count\":" + std::to_string(batchEntries.size()) + ",\"results\":[";
+      for (size_t i = 0; i < batchEntries.size(); ++i) {
+        if (i) json += ",";
+        const auto &entry = batchEntries[i];
+        if (entry.finger == 999) {
+          json += "{\"httpStatus\":404,\"status\":\"not_found\",\"eventId\":\"" + entry.id + "\"}";
+        } else {
+          const int memberId = entry.member > 0 ? entry.member : entry.finger;
+          json += "{\"httpStatus\":200,\"eventId\":\"" + entry.id + "\",\"recordedAtEpoch\":" + std::to_string(entry.time) +
+            ",\"fingerprintId\":" + std::to_string(entry.finger) + ",\"memberId\":" + std::to_string(memberId) +
+            ",\"memberName\":\"Employee " + std::to_string(memberId) + "\",\"action\":\"clock_in\",\"success\":true}";
+        }
+      }
+      json += "]}";
+      body_ = String(json);
+      return 200;
+    }
+
     FakeReceipt entry{doc["eventId"] | "", doc["fingerprintId"] | 0, doc["capturedMemberId"] | 0,
                       static_cast<uint32_t>(doc["scannedAt"] | 0UL)};
-    const int mode = responseMode.load();
     {
       std::lock_guard<std::mutex> lock(serverMutex);
+      ++httpPosts;
       requests.push_back(entry);
-      if (mode == GOOD || mode == LOST_REPLY) committed.emplace(entry.id, entry);
+      if ((mode == GOOD || mode == LOST_REPLY) && entry.finger != 999) committed.emplace(entry.id, entry);
       serverCondition.notify_all();
     }
     if (mode == PORTAL) { body_ = "<html>Sign in to WiFi</html>"; return 200; }
     if (mode == SERVER_DOWN || mode == LOST_REPLY) return -1;
     if (mode == CONFLICT) { body_ = "{}"; return 409; }
+    if (entry.finger == 999) { body_ = "{\"status\":\"not_found\"}"; return 404; }
+    const int memberId = entry.member > 0 ? entry.member : entry.finger;
     std::string json = "{\"eventId\":\"" + entry.id + "\",\"recordedAtEpoch\":" + std::to_string(entry.time) +
-      ",\"fingerprintId\":" + std::to_string(entry.finger) + ",\"memberId\":" + std::to_string(entry.member) +
-      ",\"memberName\":\"Employee " + std::to_string(entry.member) + "\",\"action\":\"clock_in\",\"success\":true}";
+      ",\"fingerprintId\":" + std::to_string(entry.finger) + ",\"memberId\":" + std::to_string(memberId) +
+      ",\"memberName\":\"Employee " + std::to_string(memberId) + "\",\"action\":\"clock_in\",\"success\":true}";
     body_ = String(json);
     return 200;
   }
@@ -124,6 +168,8 @@ class HTTPClient {
 };
 static void beginServerRequest(HTTPClient &, const String &) {}
 static void addDeviceHeaders(HTTPClient &) {}
+static void ensureClockAnchorSaved() {}
+static void flushEnrollProgress() {}
 
 // -- INSERT REAL QUEUE SENDER AND TASK --
 
@@ -155,17 +201,23 @@ int main() {
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   { std::lock_guard<std::mutex> lock(serverMutex); assert(requests.empty()); }
   // No explicit wake: the separate sender notices Wi-Fi coming back within its
-  // one-second poll even if the other network task is blocked.
+  // one-second poll and delivers all three queued scans TOGETHER in one batch
+  // HTTP POST, showing a single batch confirmation instead of cycling names.
   wifiUp = true;
-  assert(waitForNotices(3));
+  assert(waitForNotices(1));
   {
     std::lock_guard<std::mutex> lock(serverMutex);
+    assert(httpPosts == 1);
     assert(committed.size() == 3 && requests.size() == 3);
     assert(requests[0].id == first.c_str() && requests[0].time == 1790000000U && requests[0].member == 1);
     assert(requests[1].id == second.c_str() && requests[1].time == 1790000060U && requests[1].member == 2);
     assert(requests[2].id == third.c_str() && requests[2].time == 1790000120U && requests[2].member == 3);
   }
-  { std::lock_guard<std::mutex> lock(noticeMutex); assert(delivered[0].kind == DELIVERY_IN && std::strcmp(delivered[0].name, "Employee 1") == 0); }
+  {
+    std::lock_guard<std::mutex> lock(noticeMutex);
+    assert(delivered.size() == 1);
+    assert(delivered[0].kind == DELIVERY_BATCH && std::strcmp(delivered[0].name, "3 scans sent") == 0);
+  }
 
   // Wi-Fi connected to a captive portal returns HTTP 200, but that is not an
   // attendance receipt: retain the scan and never say SENT.
@@ -175,11 +227,11 @@ int main() {
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   OfflineQueue::Head head;
   assert(queue.peek(head) == OfflineQueue::READY);
-  { std::lock_guard<std::mutex> lock(noticeMutex); assert(delivered.size() == 3); }
+  { std::lock_guard<std::mutex> lock(noticeMutex); assert(delivered.size() == 1); }
   // The next wake immediately retries a retained head, without another 10 s wait.
   responseMode = GOOD;
   wakeDeliveryTask();
-  assert(waitForNotices(4));
+  assert(waitForNotices(2));
   { std::lock_guard<std::mutex> lock(serverMutex); assert(committed.count(fourth.c_str()) == 1); }
 
   // Lost response: the server committed, but the local cursor must not advance
@@ -193,13 +245,13 @@ int main() {
   assert(queue.peek(head) == OfflineQueue::READY);
   responseMode = GOOD;
   wakeDeliveryTask();
-  assert(waitForNotices(5));
+  assert(waitForNotices(3));
   { std::lock_guard<std::mutex> lock(serverMutex); assert(committed.count(fifth.c_str()) == 1 && committed.size() == 5); }
 
   // An online scan wakes the waiting task immediately, not after its idle poll.
   const auto began = std::chrono::steady_clock::now();
   save(56, "Beti", 6, 1790000300UL);
-  assert(waitForNotices(6, 900));
+  assert(waitForNotices(4, 900));
   assert(std::chrono::steady_clock::now() - began < std::chrono::milliseconds(900));
 
   // Earlier same-boot scans wait for their real anchor, then sync on wake.
@@ -208,8 +260,8 @@ int main() {
   assert(queueStatus == QUEUE_CLOCK_WAIT);
   assert(queue.saveClockAnchor(bootId, 1790000400UL, 400));
   wakeDeliveryTask();
-  assert(waitForNotices(7));
-  { std::lock_guard<std::mutex> lock(noticeMutex); assert(delivered[6].scannedAt == 1790000100U); }
+  assert(waitForNotices(5));
+  { std::lock_guard<std::mutex> lock(noticeMutex); assert(delivered[4].scannedAt == 1790000100U); }
 
   // Associated Wi-Fi can outlive an unreachable website. Recovery must happen
   // on the retry timer even when no one performs another scan or manual wake.
@@ -221,8 +273,40 @@ int main() {
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   assert(queue.peek(head) == OfflineQueue::READY);
   responseMode = GOOD;
-  assert(waitForNotices(8, 4500)); // no wake
+  assert(waitForNotices(6, 4500)); // no wake
   { std::lock_guard<std::mutex> lock(serverMutex); assert(committed.count(eighth.c_str()) == 1); }
+
+  // 10 registered employees scan while offline (plus 1 unmapped sensor slot in
+  // the middle): when Wi-Fi returns, ONE single batch HTTP POST commits all 10
+  // employees together without head-of-line blocking or 1-by-1 LCD cycling.
+  wifiUp = false;
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  size_t postsBeforeTen = 0;
+  size_t noticesBeforeTen = 0;
+  { std::lock_guard<std::mutex> lock(serverMutex); postsBeforeTen = httpPosts; }
+  { std::lock_guard<std::mutex> lock(noticeMutex); noticesBeforeTen = delivered.size(); }
+  std::vector<String> tenIds;
+  for (int i = 0; i < 10; ++i) {
+    if (i == 4) save(999, "ID 999", 0, 1790001000UL + static_cast<unsigned long>(i) * 30UL);
+    tenIds.push_back(save(101 + i, "Staff", 101 + i, 1790001010UL + static_cast<unsigned long>(i) * 30UL));
+  }
+  wifiUp = true;
+  wakeDeliveryTask();
+  assert(waitForNotices(noticesBeforeTen + 1, 2200));
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+  assert(queue.peek(head) == OfflineQueue::EMPTY);
+  assert(queueNeedsReview.load());
+  {
+    std::lock_guard<std::mutex> lock(serverMutex);
+    assert(httpPosts == postsBeforeTen + 1);
+    for (const auto &eid : tenIds) assert(committed.count(eid.c_str()) == 1);
+  }
+  {
+    std::lock_guard<std::mutex> lock(noticeMutex);
+    assert(delivered.size() == noticesBeforeTen + 1);
+    assert(delivered.back().kind == DELIVERY_BATCH);
+    assert(std::strcmp(delivered.back().name, "10 scans sent") == 0);
+  }
 
   { std::lock_guard<std::mutex> lock(notifyMutex); stopTask = true; notifyCondition.notify_all(); }
   worker.join();

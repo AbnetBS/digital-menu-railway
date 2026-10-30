@@ -140,7 +140,7 @@ static void test_quality_and_no_finger() {
   // Unregistered stays unregistered even if the person lifts during the retry.
   s.ack(FINGERPRINT_GETIMAGE);
   s.ack(FINGERPRINT_IMAGE2TZ);
-  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOTFOUND});
+  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOTFOUND, 0, 0, 0, 0});
   for (int i = 0; i < 6; ++i) s.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
   assert(!reader.search(id, permission, 1500));
   assert(reader.getLastStatus() == 0x05);
@@ -384,22 +384,59 @@ static void test_optional_led() {
  * to sit in front of the red LED: an over-long GETIMAGE deadline, a retry of the
  * whole conversion, and a quiet-line drain with a two-second cap. */
 static void test_refusal_latency_is_bounded() {
-  // Typical reader, unregistered finger: one capture, one conversion, one search.
+  // Real R307 hardware returns a 5-byte payload [0x09, 0x00, 0x00, 0x00, 0x00]
+  // on HISPEEDSEARCH when a finger is unregistered or placed wrongly so it does
+  // not match. Rejecting non-OK packets with payloadLength != 1 previously
+  // caused two full 3-4 s timeouts (~6.2-8.4 s). It must now finish at once.
   nowMs = 0;
   FakeSensor s;
   R307Compat reader(s);
   prepare(s, reader);
   s.ack(FINGERPRINT_GETIMAGE);        // image arrives at once
   s.ack(FINGERPRINT_IMAGE2TZ);
-  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOTFOUND});
+  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOTFOUND, 0, 0, 0, 0});
   uint16_t id = 0; uint8_t permission = 0;
   const uint32_t before = nowMs;
   assert(!reader.search(id, permission, 1500));
   const uint32_t spent = nowMs - before;
   assert(reader.getLastStatus() == 0x05);
-  // No artificial wait belongs in this path at all (the old code spent 250 ms
-  // re-capturing before it would admit the finger was not enrolled).
-  assert(spent < 250);
+  assert(!reader.searchSawEmptyBeforeFinger());
+  size_t searchCommands = 0;
+  for (const auto &c : s.commands) if (c[0] == FINGERPRINT_HISPEEDSEARCH) searchCommands++;
+  assert(searchCommands == 1);        // no timeout + second search!
+  assert(spent < 200);
+
+  // Lift + quick re-press inside waitForImage() records empty-glass polls
+  // before the capture so scanForFinger() does not mute the fresh press.
+  nowMs = 0;
+  FakeSensor sLift;
+  R307Compat readerLift(sLift);
+  prepare(sLift, readerLift);
+  sLift.plan(FINGERPRINT_GETIMAGE, {FINGERPRINT_NOFINGER});
+  sLift.ack(FINGERPRINT_GETIMAGE);
+  sLift.ack(FINGERPRINT_IMAGE2TZ);
+  sLift.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOTFOUND, 0, 0, 0, 0});
+  assert(!readerLift.search(id, permission, 1500));
+  assert(readerLift.getLastStatus() == 0x05);
+  assert(readerLift.searchSawEmptyBeforeFinger());
+
+  // Wrongly placed / dry (0x04) / wet (0x05) / partial (0x07) finger during
+  // IMAGE2TZ also answers well under 300 ms with unclear status (0x06).
+  for (uint8_t rawErr : {uint8_t(0x04), uint8_t(0x05), uint8_t(FINGERPRINT_FEATUREFAIL)}) {
+    nowMs = 0;
+    FakeSensor sBad;
+    R307Compat readerBad(sBad);
+    prepare(sBad, readerBad);
+    sBad.ack(FINGERPRINT_GETIMAGE);
+    sBad.plan(FINGERPRINT_IMAGE2TZ, {rawErr});
+    sBad.ack(FINGERPRINT_GETIMAGE);
+    sBad.plan(FINGERPRINT_IMAGE2TZ, {rawErr});
+    const uint32_t t0 = nowMs;
+    assert(!readerBad.search(id, permission, 1500));
+    assert(readerBad.getLastStatus() == 0x06);
+    assert(readerBad.searchSawFinger() && readerBad.searchUnclear() >= 1);
+    assert(nowMs - t0 < 300);
+  }
 
   // Worst case: the reader says nothing at all on every frame of one search.
   // That must still be measured in about a second, not in tens of seconds.
@@ -424,7 +461,7 @@ static void test_refusal_is_fast_and_visible() {
   prepare(s, reader);
   s.ack(FINGERPRINT_GETIMAGE);
   s.ack(FINGERPRINT_IMAGE2TZ);
-  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOTFOUND});
+  s.plan(FINGERPRINT_HISPEEDSEARCH, {FINGERPRINT_NOTFOUND, 0, 0, 0, 0});
   uint16_t id = 0; uint8_t permission = 0;
   assert(!reader.search(id, permission, 1500));
   assert(reader.getLastStatus() == 0x05);

@@ -3,6 +3,7 @@
 #include <FS.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <vector>
 
 // An append-only, ordered queue. The sender copies ONE head while holding the
 // lock, releases it during HTTP, then advances a durable byte cursor after a
@@ -153,11 +154,92 @@ class OfflineQueue {
     return true;
   }
 
+  bool hasPending() {
+    Guard guard(mutex_);
+    if (!guard.locked || !fs_.exists(path_)) return false;
+    size_t cursor = 0;
+    if (!readCursor(cursor)) return true;
+    File in = fs_.open(path_, "r");
+    if (!in) return false;
+    const size_t size = in.size();
+    in.close();
+    return cursor < size;
+  }
+
+  Peek peekBatch(std::vector<Head> &items, size_t maxItems) {
+    items.clear();
+    if (maxItems == 0) return EMPTY;
+    Guard guard(mutex_);
+    if (!guard.locked) return BLOCKED;
+    if (!fs_.exists(path_)) return EMPTY;
+    size_t cursor = 0;
+    if (!readCursor(cursor)) return BLOCKED;
+    File in = fs_.open(path_, "r");
+    if (!in) return BLOCKED;
+    const size_t size = in.size();
+    if (cursor > size) { in.close(); return BLOCKED; }
+    if (cursor == size) {
+      in.close();
+      if (!fs_.remove(path_)) return BLOCKED;
+      if (fs_.exists(cursor_)) fs_.remove(cursor_);
+      return EMPTY;
+    }
+    size_t pos = cursor;
+    while (pos < size && items.size() < maxItems) {
+      if (!in.seek(pos)) {
+        in.close();
+        return items.empty() ? BLOCKED : READY;
+      }
+      String line = in.readStringUntil('\n');
+      const size_t end = in.position();
+      if (end <= pos || !in.seek(end - 1) || in.read() != '\n') {
+        in.close();
+        return items.empty() ? BLOCKED : READY;
+      }
+      line.trim();
+      if (!line.length()) {
+        in.close();
+        return items.empty() ? BLOCKED : READY;
+      }
+      Head h;
+      h.line = line;
+      h.start = pos;
+      h.end = end;
+      items.push_back(h);
+      pos = end;
+    }
+    in.close();
+    return items.empty() ? BLOCKED : READY;
+  }
+
+  bool acknowledgeBatch(const Head &first, const Head &last) {
+    Guard guard(mutex_);
+    if (!guard.locked) return false;
+    size_t cursor = 0;
+    if (!readCursor(cursor) || cursor != first.start) return false;
+    File in = fs_.open(path_, "r");
+    if (!in || last.end > in.size() || last.end <= first.start) { if (in) in.close(); return false; }
+    const size_t size = in.size();
+    in.close();
+    File temp = fs_.open(temp_, "w");
+    if (!temp) return false;
+    const String value = String((unsigned long)last.end);
+    const size_t written = temp.print(value);
+    temp.flush();
+    temp.close();
+    if (written != value.length() || !fs_.rename(temp_, cursor_)) {
+      fs_.remove(temp_);
+      return false;
+    }
+    if (last.end == size && fs_.remove(path_)) fs_.remove(cursor_);
+    return true;
+  }
+
  private:
   struct Guard {
     SemaphoreHandle_t mutex;
     bool locked;
-    explicit Guard(SemaphoreHandle_t m) : mutex(m), locked(m && xSemaphoreTake(m, pdMS_TO_TICKS(250)) == pdTRUE) {}
+    explicit Guard(SemaphoreHandle_t m) : mutex(m), locked(m && xSemaphoreTake(m, pdMS_TO_TICKS(2000)) == pdTRUE) {}
     ~Guard() { if (locked) xSemaphoreGive(mutex); }
   };
   bool validBoot(const String &boot) {

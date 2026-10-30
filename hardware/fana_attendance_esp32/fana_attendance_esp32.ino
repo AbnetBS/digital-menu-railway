@@ -218,7 +218,7 @@ struct EnrollmentGuard {
 
 // Only plain, fixed-size data crosses from the delivery task to the scanner.
 // The network task never writes the LCD or waits for a person to read it.
-enum DeliveryKind : uint8_t { DELIVERY_IN, DELIVERY_OUT, DELIVERY_ALREADY, DELIVERY_REVIEW };
+enum DeliveryKind : uint8_t { DELIVERY_IN, DELIVERY_OUT, DELIVERY_ALREADY, DELIVERY_REVIEW, DELIVERY_BATCH };
 struct DeliveryNotice {
   char eventId[33];
   char name[65];
@@ -236,7 +236,7 @@ class ScanFeedback {
    * which is exactly the "the sensor goes dark for five seconds and I have to
    * press during the dark time" report. A notice expires on its own while the
    * scan loop keeps running underneath it. */
-  enum Phase : uint8_t { IDLE, SENDING, SAVED, SENT_IN, SENT_OUT, ALREADY, REVIEW, NOTICE };
+  enum Phase : uint8_t { IDLE, SENDING, SAVED, SENT_IN, SENT_OUT, ALREADY, REVIEW, BATCH_SENT, NOTICE };
   /* How long the door may claim "SENDING TO WEBSITE" before it admits that no
    * receipt has arrived. This was 1.8 s, which is shorter than one round trip
    * to a weak router: a scan that WAS delivered a moment later had already
@@ -278,6 +278,9 @@ class ScanFeedback {
     // receipt for somebody else's earlier scan: the person at the door must be
     // able to read why it did not work. The receipt is shown right after.
     if (phase_ == NOTICE) return false;
+    // A batch summary represents all queued offline scans sent together: show
+    // it without cycling employee names one at a time.
+    if (notice.kind == DELIVERY_BATCH && phase_ != SENDING) return true;
     return phase_ == IDLE || strcmp(current_.eventId, notice.eventId) == 0 ||
            (uint32_t)(now - shownAt_) >= 1500U;
   }
@@ -297,6 +300,7 @@ class ScanFeedback {
       case DELIVERY_OUT: phase_ = SENT_OUT; break;
       case DELIVERY_ALREADY: phase_ = ALREADY; break;
       case DELIVERY_REVIEW: phase_ = REVIEW; break;
+      case DELIVERY_BATCH: phase_ = BATCH_SENT; break;
     }
     shownAt_ = now;
   }
@@ -359,6 +363,7 @@ WebServer server(80);
 SemaphoreHandle_t sensorMutex = nullptr;
 SemaphoreHandle_t mappingMutex = nullptr;
 SemaphoreHandle_t queueMutex = nullptr;
+SemaphoreHandle_t progressMutex = nullptr;
 OfflineQueue *offlineQueue = nullptr;
 TaskHandle_t deliveryTaskHandle = nullptr;
 QueueHandle_t deliveryNotices = nullptr;
@@ -366,6 +371,11 @@ ScanFeedback scanFeedback;
 std::atomic<uint8_t> queueStatus{QUEUE_OFFLINE};
 std::atomic<int> queueLastHttpCode{0};
 std::atomic<bool> websiteClockUsed{false};
+std::atomic<bool> deferredReconnectSync{false};
+std::atomic<int> activeEnrollJobId{0};
+std::atomic<int> activeEnrollFingerId{0};
+String pendingEnrollProgress = "";
+#define OFFLINE_BATCH_MAX       20    // send up to 20 offline scans together in one HTTP request
 bool scanGreenOn = false;
 uint32_t scanGreenSince = 0;
 // The red LED belongs to a warning notice and is switched off by the loop, not
@@ -640,8 +650,8 @@ bool timeReady = false;
 unsigned long epochAtSync = 0;
 uint64_t uptimeAtSyncSeconds = 0;
 portMUX_TYPE clockMux = portMUX_INITIALIZER_UNLOCKED;
-// Only the scanner task changes this flag; anchor files survive later reboots.
-bool pendingUnknownTime = false;
+// Shared between scanner and delivery tasks; anchor files survive later reboots.
+std::atomic<bool> pendingUnknownTime{false};
 
 // Throttle for noteWallClock(): reading the clock once a second is plenty.
 unsigned long lastWallClockNote = 0;
@@ -741,6 +751,9 @@ void serviceWifi();
 void networkTask(void *arg);
 void deliveryTask(void *arg);
 void wakeDeliveryTask();
+void ensureClockAnchorSaved();
+void flushEnrollProgress();
+bool queueActivelyDraining();
 void updateScanFeedback();
 void renderScanFeedback();
 bool syncTimeFromWebsite();
@@ -869,6 +882,7 @@ void setup() {
   sensorMutex = xSemaphoreCreateMutex();
   mappingMutex = xSemaphoreCreateMutex();
   queueMutex = xSemaphoreCreateMutex();
+  progressMutex = xSemaphoreCreateMutex();
   deliveryNotices = xQueueCreate(16, sizeof(DeliveryNotice));
   char id[17];
   snprintf(id, sizeof(id), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
@@ -956,6 +970,10 @@ void networkTask(void *) {
       printWifiScan();
     }
     if (networkRestReloadRequested.exchange(false)) {
+      loadRestScheduleFromServer();
+    }
+    if (!queueActivelyDraining() && deferredReconnectSync.exchange(false)) {
+      loadMappingsFromServer();
       loadRestScheduleFromServer();
     }
     retryPendingEnrollmentFailure();
@@ -1414,6 +1432,30 @@ void showEnrollScreen(const String &who, int id, uint8_t done, const String &pro
   lcdWriteRow(1, "ID " + String(id) + " [" + bar + "] " + String(done) + "/" + String(ENROLL_SCANS));
   lcdWriteRow(2, lcdCenter(prompt, LCD_COLS));
   lcdWriteRow(3, hint);
+
+  // Stream live LCD progress to the website in the background without pausing
+  // the fingerprint sensor, and skip SENDING TO WEB so uploadMappingToServer
+  // never competes with a second TLS handshake on the ESP32.
+  if (enrollingFromServer && activeEnrollJobId.load() > 0 &&
+      prompt != "PREPARING..." && prompt != "SENDING TO WEB") {
+    String webStep = "";
+    if (prompt == "PLACE FINGER" || prompt == "PLACE AGAIN" || prompt == "KEEP IT DOWN") {
+      if (done == 0) webStep = "Scanner LCD accepting finger (1/3): PLACE FINGER";
+      else if (done == 1) webStep = "Scanner LCD accepting finger (2/3): PLACE SAME FINGER";
+      else webStep = "Scanner LCD confirming finger (3/3): PLACE FINGER";
+    } else if (prompt == "LIFT YOUR FINGER") {
+      webStep = "Captured " + String(done) + "/" + String(ENROLL_SCANS) + " on scanner - LIFT YOUR FINGER";
+    } else if (prompt.length() > 0) {
+      webStep = "Scanner LCD (" + String(done) + "/" + String(ENROLL_SCANS) + "): " + prompt;
+    }
+    if (webStep.length() > 0) {
+      if (progressMutex) xSemaphoreTake(progressMutex, pdMS_TO_TICKS(50));
+      const bool changed = pendingEnrollProgress != webStep;
+      if (changed) pendingEnrollProgress = webStep;
+      if (progressMutex) xSemaphoreGive(progressMutex);
+      if (changed) wakeDeliveryTask();
+    }
+  }
 }
 
 /* ── THE IDLE SCREEN (owner, Oct 2026) ───────────────────────────────────── *
@@ -1531,6 +1573,7 @@ void renderScanFeedback() {
     case ScanFeedback::SENT_OUT: showLines(name, when, "Sent to website", "Attendance OUT"); break;
     case ScanFeedback::ALREADY: showLines(name, when, "Sent to website", "Already registered"); break;
     case ScanFeedback::REVIEW: showLines(name, when, "Needs review", "Ask the admin"); break;
+    case ScanFeedback::BATCH_SENT: showLines("Offline Queue Synced", name, "Sent to website", "Paper sheet updated"); break;
     /* A warning about the placement that just happened (Not registered / Image
      * unclear / Sensor not answering). The last row says the door is still live,
      * because it is: the scan loop never stopped. The card clears itself when
@@ -1702,12 +1745,16 @@ void serviceWifi() {
       Serial.print(downMs / 1000);
       Serial.println(" s. Repairing the stream, the clock and the names.");
       applyWifiTuning();
-      // Wake the independent delivery task immediately; mapping/schedule
-      // HTTP calls below cannot hold saved attendance behind them.
+      // Wake the independent delivery task immediately; if offline scans are
+      // waiting, let them flush in one batch first without TLS contention.
       wakeDeliveryTask();
       startTimeSync();
-      loadMappingsFromServer();
-      loadRestScheduleFromServer();
+      if (!offlineQueue || !offlineQueue->hasPending()) {
+        loadMappingsFromServer();
+        loadRestScheduleFromServer();
+      } else {
+        deferredReconnectSync = true;
+      }
     }
     wifiLastRssi = WiFi.RSSI();
     // A link that is up but weak drops again. Look for a better access point
@@ -2238,7 +2285,7 @@ void scanForFinger() {
    *
    * 2. THE SILENT FAILURE. Some readers answer a bad press with a garbled frame,
    *    an empty reply or a definite no-match, and the old code treated any
-   *    status it did not expect as "nobody touched the glass": no warning, no
+   *    status it did not expect as "nobody pressed the glass": no warning, no
    *    red LED, no buzzer, nothing on the LCD. The reader's own evidence decides
    *    that now - if it captured an image (or pressed an unclear one), a finger
    *    WAS there and the door says so, whatever the status byte claims.
@@ -2258,6 +2305,10 @@ void scanForFinger() {
   const bool fingerWasThere = refused || finger.searchSawFinger() ||
                               st == BIOVO_ACK_COMM_ERROR || st == 0x01;
   if (fingerWasThere) {
+    /* If GETIMAGE saw an empty glass before this capture inside waitForImage(),
+     * the person lifted and placed again: announce it immediately instead of
+     * throttling it behind WARNING_REPEAT_MS. */
+    if (finger.searchSawEmptyBeforeFinger()) warningKind = 0xFF;
     /* Two message groups, not one per status byte: a reader can report the same
      * wrong press as NOUSER, NOMATCH, a garbled frame or "command failed", and
      * the employee must not be buzzed again just because the byte changed. */
@@ -2546,6 +2597,16 @@ bool checkPendingEnroll() {
   Serial.println(fingerprintId);
 
   enrollingFromServer = true;
+  // Release the open SSE TLS session (~40 KB heap) while enrolling so receipt,
+  // mapping check, progress updates and final mapping upload succeed first try.
+  stopEventStream();
+  if (progressMutex) xSemaphoreTake(progressMutex, pdMS_TO_TICKS(50));
+  pendingEnrollProgress = "";
+  if (progressMutex) xSemaphoreGive(progressMutex);
+  activeEnrollJobId = jobId;
+  activeEnrollFingerId = fingerprintId;
+  mapJobId = jobId;
+
   // Show that the command reached this scanner BEFORE any network request or
   // slot checks can stall. Do not ask for a finger until preflight is complete.
   showEnrollScreen(memberName, fingerprintId, 0, "PREPARING...", "Please wait");
@@ -2624,6 +2685,12 @@ bool checkPendingEnroll() {
     delay(6000);
   }
 
+  activeEnrollJobId = 0;
+  activeEnrollFingerId = 0;
+  if (progressMutex) xSemaphoreTake(progressMutex, pdMS_TO_TICKS(50));
+  pendingEnrollProgress = "";
+  if (progressMutex) xSemaphoreGive(progressMutex);
+  if (!mappingPending) mapJobId = 0;
   enrollingFromServer = false;
   showIdleScreen();
   xSemaphoreGive(sensorMutex);
@@ -2643,6 +2710,7 @@ int postMappingToServer(int fingerprintId, int memberId, const String &memberNam
   DynamicJsonDocument doc(768);
   doc["fingerprintId"] = fingerprintId;
   doc["memberId"] = memberId;
+  if (mapJobId > 0) doc["jobId"] = mapJobId;
   doc["memberName"] = memberName;
   doc["staffName"] = memberName;
   doc["deviceId"] = deviceId;
@@ -3507,6 +3575,14 @@ void keepServerLinkAlive() {
   wifiWasConnected = wifiConnected;
   if (!wifiConnected) return;
 
+  // Attendance queue priority: while offline scans are actively flushing on the
+  // delivery task, keep the long-lived SSE TLS stream closed so the batch POST
+  // gets all contiguous TLS heap and completes in one fast round-trip.
+  if (queueActivelyDraining()) {
+    if (eventStreamActive) stopEventStream();
+    return;
+  }
+
   if (eventStreamActive) {
     pumpEventStream();
     if (eventStreamActive && millis() - lastEventStreamData > EVENT_STREAM_STALL_MS) {
@@ -3777,19 +3853,236 @@ void publishDeliveryNotice(const char *eventId, const char *name, uint32_t scann
   snprintf(notice.name, sizeof(notice.name), "%s", name && name[0] ? name : "Employee");
   notice.scannedAt = scannedAt;
   notice.kind = kind;
-  Serial.print(kind == DELIVERY_REVIEW ? "NEEDS REVIEW: " : kind == DELIVERY_ALREADY ? "ALREADY REGISTERED: " : "SENT TO WEBSITE: ");
+  Serial.print(kind == DELIVERY_REVIEW ? "NEEDS REVIEW: " :
+               kind == DELIVERY_ALREADY ? "ALREADY REGISTERED: " :
+               kind == DELIVERY_BATCH ? "BATCH SYNCED TO WEBSITE: " : "SENT TO WEBSITE: ");
   Serial.print(notice.name);
-  Serial.print(" - ");
-  Serial.println(capturedTimeText(scannedAt));
+  if (kind != DELIVERY_BATCH) {
+    Serial.print(" - ");
+    Serial.println(capturedTimeText(scannedAt));
+  } else {
+    Serial.println();
+  }
   if (deliveryNotices && xQueueSend(deliveryNotices, &notice, 0) != pdTRUE)
     Serial.println("LCD confirmation list is full; website result is still recorded above");
 }
 
-// Process ONE head. A network request never holds the flash queue lock and
-// a scan is removed only after an exact, recognizable website receipt.
+static bool deriveLegacyScanEventId(const OfflineQueue::Head &head, char outId[33]) {
+  const uint64_t chip = ESP.getEfuseMac();
+  const String key = String((unsigned long)(chip >> 32)) + ":" + String((unsigned long)chip) + ":" +
+                     String((unsigned long)head.start) + ":" + head.line;
+  unsigned char digest[32];
+  const mbedtls_md_info_t *sha = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (!sha || mbedtls_md(sha, (const unsigned char *)key.c_str(), key.length(), digest) != 0) return false;
+  for (int i = 0; i < 16; i++) snprintf(outId + 2 * i, 3, "%02x", digest[i]);
+  return true;
+}
+
+struct PreparedQueuedScan {
+  char eventId[33];
+  char savedName[65];
+  int fid;
+  int capturedMember;
+  unsigned long scannedAt;
+};
+
+// Upload all ready queued scans together in ONE HTTP POST when 2+ scans are
+// waiting, so 10 offline employees appear on the paper sheet immediately
+// without 1-by-1 LCD cycling or repeated TLS handshakes on weak Wi-Fi.
+// Returns -1 when the caller should fall through to single-item handling.
+static int trySyncOfflineBatch(const std::vector<OfflineQueue::Head> &batch, QueueSyncResult &batchResult) {
+  if (batch.size() < 2) return -1;
+  std::vector<PreparedQueuedScan> prepared;
+  prepared.reserve(batch.size());
+
+  for (size_t i = 0; i < batch.size(); ++i) {
+    DynamicJsonDocument doc(1024);
+    if (deserializeJson(doc, batch[i].line)) break;
+    const int fid = doc["fingerprintId"] | 0;
+    if (fid <= 0) break;
+    unsigned long scannedAt = doc["scannedAt"] | 0UL;
+    if (!scannedAt && doc["bootId"].is<const char *>() && doc["uptimeSeconds"].is<uint32_t>()) {
+      const String originalBoot = doc["bootId"].as<String>();
+      const uint32_t scanUptime = doc["uptimeSeconds"].as<uint32_t>();
+      unsigned long anchorEpoch = 0;
+      uint32_t anchorUptime = 0;
+      if (offlineQueue->readClockAnchor(originalBoot, anchorEpoch, anchorUptime) &&
+          anchorUptime >= scanUptime && anchorEpoch > anchorUptime - scanUptime) {
+        scannedAt = anchorEpoch - (anchorUptime - scanUptime);
+      }
+    }
+    if (!scannedAt) break;
+
+    PreparedQueuedScan item{};
+    item.fid = fid;
+    item.capturedMember = doc["memberId"] | 0;
+    item.scannedAt = scannedAt;
+    const char *rawName = doc["staffName"] | "";
+    snprintf(item.savedName, sizeof(item.savedName), "%s", rawName);
+    const char *rawEventId = doc["eventId"] | "";
+    if (rawEventId[0]) {
+      snprintf(item.eventId, sizeof(item.eventId), "%s", rawEventId);
+    } else if (!deriveLegacyScanEventId(batch[i], item.eventId)) {
+      break;
+    }
+    prepared.push_back(item);
+  }
+
+  if (prepared.size() < 2) return -1;
+
+  String batchJson;
+  {
+    DynamicJsonDocument batchDoc(12288);
+    batchDoc["deviceId"] = deviceId + "_offline";
+    batchDoc["method"] = "fingerprint";
+    batchDoc["requireRecordedTime"] = true;
+    JsonArray events = batchDoc.createNestedArray("events");
+    for (size_t i = 0; i < prepared.size(); ++i) {
+      JsonObject ev = events.createNestedObject();
+      ev["eventId"] = prepared[i].eventId;
+      ev["fingerprintId"] = prepared[i].fid;
+      if (prepared[i].capturedMember > 0) ev["capturedMemberId"] = prepared[i].capturedMember;
+      ev["scannedAt"] = prepared[i].scannedAt;
+      ev["requireRecordedTime"] = true;
+    }
+    if (batchDoc.overflowed()) return -1;
+    serializeJson(batchDoc, batchJson);
+  }
+
+  HTTPClient http;
+  http.setTimeout(SERVER_TIMEOUT_MS < 15000 ? 15000 : SERVER_TIMEOUT_MS);
+  beginServerRequest(http, "/api/attendance/clock");
+  addDeviceHeaders(http);
+  queueStatus = QUEUE_SENDING;
+  const int httpCode = http.POST(batchJson);
+  const String body = httpCode > 0 ? http.getString() : String("");
+  http.end();
+  queueLastHttpCode = httpCode;
+
+  if (httpCode != 200) {
+    queueStatus = QUEUE_ERROR;
+    Serial.print("Offline batch paused, HTTP ");
+    Serial.println(httpCode);
+    batchResult = QUEUE_WAIT;
+    return 0;
+  }
+
+  DynamicJsonDocument answer(16384);
+  if (deserializeJson(answer, body) || !(answer["batch"] | false) || !answer["results"].is<JsonArray>()) {
+    // Older website without batch support or captive portal: let single-item
+    // verification inspect/deliver safely.
+    return -1;
+  }
+
+  JsonArray results = answer["results"].as<JsonArray>();
+  size_t ackStart = 0;
+  int committedEnd = -1;
+  size_t deliveredCount = 0;
+  size_t reviewCount = 0;
+  char singleId[33] = "";
+  char singleName[65] = "";
+  uint32_t singleTime = 0;
+  DeliveryKind singleKind = DELIVERY_IN;
+
+  for (size_t i = 0; i < prepared.size() && i < results.size(); ++i) {
+    JsonObject res = results[i].as<JsonObject>();
+    const int itemHttp = res["httpStatus"] | 0;
+    const char *resStatus = res["status"] | "";
+    if (itemHttp == 200) {
+      const char *responseId = res["eventId"] | "";
+      const char *action = res["action"] | "";
+      const bool valid = receiptMatches(
+          prepared[i].eventId, (uint32_t)prepared[i].scannedAt, prepared[i].fid, prepared[i].capturedMember,
+          responseId, res["recordedAtEpoch"] | 0UL, res["fingerprintId"] | 0,
+          res["memberId"] | 0, action, res["success"] | false);
+      if (!valid) break;
+      committedEnd = (int)i;
+      deliveredCount++;
+      if (deliveredCount == 1) {
+        snprintf(singleId, sizeof(singleId), "%s", prepared[i].eventId);
+        const char *serverName = res["memberName"] | "";
+        snprintf(singleName, sizeof(singleName), "%s", serverName[0] ? serverName : prepared[i].savedName);
+        singleTime = (uint32_t)prepared[i].scannedAt;
+        singleKind = strcmp(action, "clock_in") == 0 ? DELIVERY_IN :
+                     strcmp(action, "clock_out") == 0 ? DELIVERY_OUT : DELIVERY_ALREADY;
+      }
+      continue;
+    }
+
+    if (itemHttp == 409 || (itemHttp == 404 && strcmp(resStatus, "not_found") == 0)) {
+      if (committedEnd >= (int)ackStart) {
+        if (!offlineQueue->acknowledgeBatch(batch[ackStart], batch[(size_t)committedEnd])) {
+          queueStatus = QUEUE_STORAGE_ERROR;
+          batchResult = QUEUE_WAIT;
+          return 0;
+        }
+      }
+      const char *reason = itemHttp == 409 ? "server_conflict" : "unmapped_finger";
+      if (!offlineQueue->copyToReview(batch[i], reason)) {
+        queueStatus = QUEUE_STORAGE_ERROR;
+        batchResult = QUEUE_WAIT;
+        return 0;
+      }
+      queueNeedsReview = true;
+      if (!offlineQueue->acknowledge(batch[i])) {
+        queueStatus = QUEUE_STORAGE_ERROR;
+        batchResult = QUEUE_WAIT;
+        return 0;
+      }
+      committedEnd = (int)i;
+      ackStart = i + 1;
+      reviewCount++;
+      continue;
+    }
+
+    break;
+  }
+
+  if (committedEnd < 0) {
+    queueStatus = QUEUE_ERROR;
+    Serial.println("Website batch reply did not confirm head scan; kept on device.");
+    batchResult = QUEUE_WAIT;
+    return 0;
+  }
+
+  if (committedEnd >= (int)ackStart) {
+    if (!offlineQueue->acknowledgeBatch(batch[ackStart], batch[(size_t)committedEnd])) {
+      queueStatus = QUEUE_STORAGE_ERROR;
+      Serial.println("Server accepted batch, but cursor write failed; safe retry required");
+      batchResult = QUEUE_WAIT;
+      return 0;
+    }
+  }
+
+  if (deliveredCount >= 2) {
+    char summary[32];
+    snprintf(summary, sizeof(summary), "%u scans sent", (unsigned)deliveredCount);
+    publishDeliveryNotice("", summary, 0, DELIVERY_BATCH);
+  } else if (deliveredCount == 1) {
+    publishDeliveryNotice(singleId, singleName, singleTime, singleKind);
+  } else if (reviewCount > 0) {
+    publishDeliveryNotice(prepared[0].eventId, prepared[0].savedName, (uint32_t)prepared[0].scannedAt, DELIVERY_REVIEW);
+  }
+
+  batchResult = QUEUE_PROGRESS;
+  return 0;
+}
+
+// Process ready offline scans (all together in a batch when 2+ are queued, or
+// one head for a single scan). A network request never holds the flash queue
+// lock and a scan is removed only after an exact, recognizable website receipt.
 QueueSyncResult syncOfflineQueue() {
   if (!offlineQueue) { queueStatus = QUEUE_STORAGE_ERROR; return QUEUE_WAIT; }
   if (WiFi.status() != WL_CONNECTED) { queueStatus = QUEUE_OFFLINE; return QUEUE_WAIT; }
+
+  std::vector<OfflineQueue::Head> batch;
+  const OfflineQueue::Peek batchState = offlineQueue->peekBatch(batch, OFFLINE_BATCH_MAX);
+  if (batchState == OfflineQueue::EMPTY) { queueStatus = QUEUE_IDLE; return QUEUE_EMPTY; }
+  if (batchState == OfflineQueue::READY && batch.size() >= 2) {
+    QueueSyncResult batchResult = QUEUE_WAIT;
+    if (trySyncOfflineBatch(batch, batchResult) == 0) return batchResult;
+  }
+
   OfflineQueue::Head head;
   const OfflineQueue::Peek state = offlineQueue->peek(head);
   if (state == OfflineQueue::EMPTY) { queueStatus = QUEUE_IDLE; return QUEUE_EMPTY; }
@@ -3894,6 +4187,17 @@ QueueSyncResult syncOfflineQueue() {
     Serial.println("Conflicting scan saved for manual review; type queue review on Serial");
     return QUEUE_PROGRESS;
   }
+  if (httpCode == 404 && body.length() > 0) {
+    DynamicJsonDocument errDoc(512);
+    if (!deserializeJson(errDoc, body) && strcmp(errDoc["status"] | "", "not_found") == 0) {
+      if (!offlineQueue->copyToReview(head, "unmapped_finger")) { queueStatus = QUEUE_STORAGE_ERROR; return QUEUE_WAIT; }
+      queueNeedsReview = true;
+      if (!offlineQueue->acknowledge(head)) { queueStatus = QUEUE_STORAGE_ERROR; return QUEUE_WAIT; }
+      publishDeliveryNotice(eventId, savedName, (uint32_t)scannedAt, DELIVERY_REVIEW);
+      Serial.println("Unmapped sensor template saved for manual review so later scans are not blocked");
+      return QUEUE_PROGRESS;
+    }
+  }
   if (httpCode != 200) {
     queueStatus = QUEUE_ERROR;
     Serial.print("Offline queue paused, HTTP ");
@@ -3957,6 +4261,17 @@ bool syncTimeFromWebsite() {
   tv.tv_sec = (time_t)(estimatedMs / 1000ULL);
   tv.tv_usec = (suseconds_t)((estimatedMs % 1000ULL) * 1000ULL);
   if (settimeofday(&tv, nullptr) != 0) return false;
+  const unsigned long syncedEpoch = (unsigned long)tv.tv_sec;
+  const uint64_t uptimeSec = (uint64_t)esp_timer_get_time() / 1000000ULL;
+  portENTER_CRITICAL(&clockMux);
+  epochAtSync = syncedEpoch;
+  uptimeAtSyncSeconds = uptimeSec;
+  portEXIT_CRITICAL(&clockMux);
+  if (offlineQueue && uptimeSec <= 0xFFFFFFFFULL && (pendingUnknownTime || offlineQueue->hasPending())) {
+    if (offlineQueue->saveClockAnchor(bootId, syncedEpoch, (uint32_t)uptimeSec)) {
+      pendingUnknownTime = false;
+    }
+  }
   websiteClockUsed = true;
   Serial.println("Clock set from website (estimated; NTP is preferred)");
   return true;
@@ -3979,11 +4294,13 @@ void deliveryTask(void *) {
       lastTimeTry = now;
       syncTimeFromWebsite();
     }
+    ensureClockAnchorSaved();
     const QueueSyncResult result = syncOfflineQueue();
     if (result == QUEUE_PROGRESS) {
-      vTaskDelay(pdMS_TO_TICKS(25));
+      vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
+    flushEnrollProgress();
     // New scans and clock anchors wake this immediately; 1-second offline/idle
     // polling also notices reconnection even while the other task is busy.
     const uint32_t wait = result == QUEUE_EMPTY ? QUEUE_OFFLINE_POLL_MS : QUEUE_RETRY_MS;
@@ -3994,13 +4311,63 @@ void deliveryTask(void *) {
 void periodicSync() {
   static unsigned long lastNames = 0;
   static bool mappingsLoaded = false;
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED || queueActivelyDraining()) return;
   const unsigned long now = millis();
   const uint32_t namesDelay = mappingsLoaded ? 900000UL : 10000UL;
   if ((uint32_t)(now - lastNames) >= namesDelay) {
     lastNames = now;
     mappingsLoaded = loadMappingsFromServer();
   }
+}
+
+bool queueActivelyDraining() {
+  if (!offlineQueue || !offlineQueue->hasPending()) return false;
+  const uint8_t st = queueStatus.load();
+  return st != QUEUE_ERROR && st != QUEUE_CLOCK_WAIT && st != QUEUE_STORAGE_ERROR;
+}
+
+void ensureClockAnchorSaved() {
+  if (!pendingUnknownTime.load() || !offlineQueue) return;
+  const unsigned long epoch = wallClockEpoch();
+  if (!epoch) return;
+  const uint64_t uptime = (uint64_t)esp_timer_get_time() / 1000000ULL;
+  if (uptime <= 0xFFFFFFFFULL && offlineQueue->saveClockAnchor(bootId, epoch, (uint32_t)uptime)) {
+    pendingUnknownTime = false;
+    portENTER_CRITICAL(&clockMux);
+    epochAtSync = epoch;
+    uptimeAtSyncSeconds = uptime;
+    portEXIT_CRITICAL(&clockMux);
+  }
+}
+
+void flushEnrollProgress() {
+  if (!enrollingFromServer || WiFi.status() != WL_CONNECTED) return;
+  const int jobId = activeEnrollJobId.load();
+  const int fingerprintId = activeEnrollFingerId.load();
+  if (jobId <= 0) return;
+
+  String detail = "";
+  if (progressMutex) xSemaphoreTake(progressMutex, pdMS_TO_TICKS(50));
+  detail = pendingEnrollProgress;
+  pendingEnrollProgress = "";
+  if (progressMutex) xSemaphoreGive(progressMutex);
+  if (detail.length() == 0) return;
+
+  HTTPClient http;
+  http.setTimeout(2500);
+  beginServerRequest(http, "/api/attendance/mappings");
+  addDeviceHeaders(http);
+
+  DynamicJsonDocument doc(512);
+  doc["action"] = "job_progress";
+  doc["jobId"] = jobId;
+  doc["fingerprintId"] = fingerprintId;
+  doc["deviceId"] = deviceId;
+  doc["detail"] = detail;
+  String json;
+  serializeJson(doc, json);
+  http.POST(json);
+  http.end();
 }
 
 // Supply the site's root CA to authenticate HTTPS when configured. On ESP32

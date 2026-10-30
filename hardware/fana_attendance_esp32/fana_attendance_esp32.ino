@@ -56,8 +56,8 @@
  *           the finger stays on the sensor. The reader is ready for the next
  *           person the instant the finger is lifted: while a MATCHED finger
  *           rests on the glass the sketch only polls "is anything there?"
- *           instead of crediting the same person twice, the light command is
- *           re-sent every 0.7 s, and NOTHING in the scan path blocks (a warning
+ *           instead of crediting the same person twice, the light is restored
+ *           after a capture, and feedback does not pause the scan (a warning
  *           is a screen with a timer, not a pause). Wi-Fi strength changes
  *           WHERE the scan is kept, never how long the door takes.
  *   Add:    the admin presses Add Fingerprint on the website. The LCD guides
@@ -95,23 +95,15 @@
  *           ("No Wi-Fi now" or "Site not replying") - because the scan is then
  *           held in the offline queue and sent by itself. Owner, Oct 2026: a
  *           scan that WAS delivered must never be called "saved on device".
- *   Wrong:  an unregistered or unclear finger gets its warning (NOT REGISTERED /
- *           IMAGE UNCLEAR) for 3 s, and the door KEEPS SCANNING underneath it
- *           ("Door keeps scanning"). A refused placement never sets the
- *           one-scan latch, never pauses and never switches the glass off: the
- *           very next pass searches again, so a finger is read whenever it
- *           lands - during the blinking, during the warning, at any moment.
+ *   Wrong:  no match or an unclear image shows a red LED and a distinct
+ *           two-pulse buzzer with instructions. The scanner continues looking
+ *           while the warning is visible; a good scan replaces it.
  *
- * THE BLUE LIGHT NEVER STOPS (owner, Oct 2026)
- *   "Make the blue light continuous and blinking non-stop; employees must not
- *    have to time their finger."
- *   The light command (plain LED-ON, then the aura breathing-blue layout) is
- *   re-sent every 0.7 s while the door is idle, 0.3 s after every capture, and
- *   it is never abandoned: a reader that refuses it once is asked again. Every
- *   wait in this file is either short or non-blocking - the beeps are timed by
- *   a software timer, warnings and recovery messages expire on their own, and
- *   the dead-link and recovery paths no longer sit in delay(). A finger placed
- *   at any moment of the blink is captured, matched and reported.
+ * READER LIGHT
+ *   Request the reader's autonomous unlimited blue flashing mode when it is
+ *   supported, without restarting it on every idle pass. Reassert after a
+ *   capture; use plain/steady-on fallbacks on variants without flashing. The
+ *   actual light and scanning behavior still depend on the physical reader.
  *
  * Setup:
  *   1. Install the libraries above.
@@ -366,11 +358,8 @@ std::atomic<bool> queueNeedsReview{false};
  * the reader sat dark for up to five seconds and the next person's scan looked
  * "slow" - or, during Add Fingerprint, never happened at all. */
 #define READER_LAMP_BURST_MS    300UL
-/* Resend the (optional) light command this often while the door is idle. It
- * used to be 1 s, and longer before that; the owner's rule is that the blue
- * light must never stop, so a finger landing between two commands is always on
- * a lit glass. Repeat every 0.7 s - one short command, a few milliseconds on the
- * wire - and immediately (burst above) after every capture, match or miss. */
+/* Idle refresh for readers without autonomous flashing. A supported flashing
+ * pattern is left running instead of restarting its animation on this cadence. */
 #define READER_LAMP_IDLE_MS     700UL
 /* A reader that answers the light command is never left dark for long: the
  * first two misses are retried at the normal cadence, and only a reader that
@@ -552,6 +541,7 @@ bool sensorReady = false;
 // Optional R307 LED-ON; some optical variants ignore this command.
 bool readerLightSupported = false;
 unsigned long lastLightRequestMs = 0;
+bool readerLightNeedsRefresh = false;
 uint16_t lampMisses = 0;   // LED-ON requests the reader did not acknowledge
 /* A module that is asked something and says NOTHING is a different animal from
  * one that answers "no finger". The first is a dead link (power, wiring, a
@@ -1759,6 +1749,7 @@ void refreshIdleClock() {
  * low, and the passive path uses tone(pin, freq, ms), which is already timed by
  * the core. Either way the loop keeps talking to the sensor while it sounds. */
 static TimerHandle_t buzzerTimer = nullptr;
+static TimerHandle_t rejectionTimer = nullptr;
 
 static void buzzerSilence(TimerHandle_t) {
   digitalWrite(BUZZER_PIN, LOW);
@@ -1781,9 +1772,26 @@ static void beep(uint16_t ms, uint16_t freq) {
 #endif
 }
 
-void beepSuccess() { beep(100, 2000); }
+// Two distinct pulses even with an active buzzer (which cannot change pitch).
+// The timer callback plays the second pulse without holding the scanner loop.
+static void rejectionSecondPulse(TimerHandle_t) { beep(220, 1200); }
 
-void beepError() { beep(300, 1200); }
+void beepSuccess() {
+  if (rejectionTimer) xTimerStop(rejectionTimer, 0);
+  beep(100, 2000);
+}
+
+void beepError() {
+  if (rejectionTimer) xTimerStop(rejectionTimer, 0);
+  beep(300, 1200);
+}
+
+void beepRejected() {
+  if (!rejectionTimer) rejectionTimer = xTimerCreate("reject", pdMS_TO_TICKS(180), pdFALSE, nullptr, rejectionSecondPulse);
+  if (rejectionTimer) xTimerStop(rejectionTimer, 0);
+  beep(80, 1200);
+  if (rejectionTimer) xTimerStart(rejectionTimer, 0);
+}
 
 /* ── Sensor health ────────────────────────────────────────────────────────── */
 bool detectSensor(uint8_t tries) {
@@ -1844,7 +1852,7 @@ bool detectSensor(uint8_t tries) {
  *   - immediately after every scan (minGapMs = READER_LAMP_BURST_MS), so the
  *     next employee of a group sees a ready reader,
  *   - right before and during every enrollment placement,
- *   - and every few seconds while the door is idle.
+ *   - periodically while idle only when autonomous flashing is unavailable.
  *
  * The command is optional, so nothing about scanning depends on the answer -
  * but the sketch never STOPS asking either. It used to give up for good after
@@ -1888,9 +1896,11 @@ void nudgeReaderLamp() {
 }
 
 void maintainReaderLight() {
-  // The idle cadence. A burst right after a scan uses keepReaderLampOn() with a
-  // much shorter gap, so the reader is lit again in the same second.
-  keepReaderLampOn(READER_LAMP_IDLE_MS);
+  // An acknowledged autonomous flash must not be restarted on every idle
+  // pass. Only reassert it after a capture; other variants need the old nudge.
+  if (finger.lightFlashes() && !readerLightNeedsRefresh) return;
+  keepReaderLampOn(readerLightNeedsRefresh ? 0 : READER_LAMP_IDLE_MS);
+  readerLightNeedsRefresh = false;
 }
 
 /* Called right after every capture attempt - matched, unregistered, unclear or
@@ -1899,7 +1909,9 @@ void maintainReaderLight() {
  * glass. The burst cadence makes the light come back in the same breath, before
  * the next search starts. */
 void reassertReaderLight() {
-  keepReaderLampOn(READER_LAMP_BURST_MS);
+  if (finger.lightFlashes() && !readerLightNeedsRefresh) return;
+  keepReaderLampOn(readerLightNeedsRefresh ? 0 : READER_LAMP_BURST_MS);
+  readerLightNeedsRefresh = false;
 }
 
 // Answers true when the sensor replies to a COUNT command at all.
@@ -2025,7 +2037,7 @@ void scanForFinger() {
       if (++emptyReplies >= 2) {
         emptyReplies = 0;
         awaitingFingerLift = false;
-        keepReaderLampOn(READER_LAMP_BURST_MS);
+        reassertReaderLight();
         Serial.println("Glass is clear: ready for the next finger");
         return;
       }
@@ -2056,9 +2068,7 @@ void scanForFinger() {
   // at the next loop pass (READER_LAMP_BURST_MS later), without delaying this
   // scan's timestamp or its feedback.
   if (matched || st == BIOVO_ACK_NOUSER || st == BIOVO_ACK_IMAGEMESS)
-    // Backdated by the IDLE gap, so the very next maintainReaderLight() sends the
-    // command instead of waiting out the rest of the normal cadence.
-    lastLightRequestMs = millis() - READER_LAMP_IDLE_MS;
+    readerLightNeedsRefresh = true;
   // SENSOR_FAIL_LIMIT passes in a row with nothing back is not "no finger at
   // the door", it is no module. Say so, once, and let the health check look for
   // it. (The enrollment paths do not need this: a silent module there already
@@ -2121,7 +2131,7 @@ void scanForFinger() {
       warningKind = st;
       warningShownAt = millis();
       if (st == BIOVO_ACK_NOUSER) {
-        showSensorWarning("NOT REGISTERED", "Finger not enrolled", "Ask admin to add it");
+        showSensorWarning("NOT RECOGNIZED", "Retry finger flat", "Ask admin to enroll");
       } else {
         showSensorWarning("IMAGE UNCLEAR", "Press flat and still", "Clean the sensor");
       }
@@ -2135,9 +2145,10 @@ void scanForFinger() {
   // the latch on silence could clock the same held finger a second time.
   if (st == BIOVO_ACK_TIMEOUT || st == BIOVO_ACK_GO_OUT) {
     awaitingFingerLift = false;
+    warningKind = 0xFF; // a fresh placement deserves its own warning
   }
-  // Every finished attempt ends with the light re-asserted, whatever the answer
-  // was: the next person must always find a lit, blinking glass.
+  // Refresh fallback illumination as needed without restarting an autonomous
+  // flash pattern on each empty-glass pass.
   reassertReaderLight();
 }
 
@@ -2157,10 +2168,15 @@ void scanForFinger() {
 void showSensorWarning(const String &title, const String &line2, const String &line3) {
   scanFeedback.notice(title.c_str(), line2.c_str(), line3.c_str(), millis(), WARNING_SHOW_MS);
   renderScanFeedback();
+  // Do not leave green and red lit together if the next person is rejected.
+  if (scanGreenOn) {
+    digitalWrite(GREEN_LED, LOW);
+    scanGreenOn = false;
+  }
   digitalWrite(RED_LED, HIGH);
   warningLedOn = true;
   warningLedSince = millis();
-  beepError();   // timed by a software timer: the scanner never waits for it
+  beepRejected(); // two timer-driven pulses, distinct from a successful scan
 }
 
 // Use the image-capture time, before matching, network and display delays.
@@ -2203,7 +2219,7 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   }
   wakeDeliveryTask();
   // Light the glass again for the next person before the buzzer is even done.
-  keepReaderLampOn(READER_LAMP_BURST_MS);
+  reassertReaderLight();
   beepSuccess();
   /* The number the owner asked for: how long this person waited between the
    * image being taken and the green light. Under four seconds is the target;

@@ -5,6 +5,8 @@ Run `npm run test:firmware` (Python 3 and `g++` required). These host tests:
 - Exercise the production `R307Compat.h` with a simulated serial reader: delayed and corrupt replies, timeouts, full-capacity search, image quality, capture, matching, optional LED commands and late-reader recovery.
 - Compile the **actual enrollment functions extracted from the `.ino`** with mocked hardware: fresh lifts, two captures, exact-ID confirmation, errors and protection of mapped slots.
 - Compile the actual `OfflineQueue.h` with an in-memory filesystem and mutexes: FIFO order, legacy CRLF records, a stalled sender concurrent with a new scan, retry after a failed cursor write, reboot, torn files, durable clock anchors and retention for manual review.
+- Compile the actual light policy: no repeated restarts of autonomous flashing, refresh after capture and fallback cadence.
+- Compile the actual scan loop with simulated responses: empty glass, no match, unclear image, warning throttling, success and lift re-arming.
 - Compile the actual scan-feedback state and receipt validation from the sketch: online, offline, delayed confirmation, false/mismatched HTTP 200 and manual-review outcomes.
 - Compile the actual `saveToQueue`, `syncOfflineQueue`, `wakeDeliveryTask` and `deliveryTask` with a simulated queue filesystem, Wi-Fi, HTTP, JSON and task notifications: three offline scans in order with original times, reconnect without manual intervention, immediate online wake, captive-portal 200, lost/duplicate receipts, a same-boot clock anchor and automatic retry after a website outage.
 

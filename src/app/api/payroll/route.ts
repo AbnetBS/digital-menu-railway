@@ -19,14 +19,16 @@ import {
   type PayrollSettings,
 } from "@/lib/payroll";
 import {
+  OVERTIME_TYPE_LABELS,
+  OVERTIME_TYPES,
   earlyOutMinutesFor,
   etMinutes,
   lateMinutesFor,
   pickShift,
-  workedShiftOtMinutes,
+  type OvertimeType,
   type RoleShift,
 } from "@/lib/attendance";
-import { isAnnualLeaveDate, isFreeDate, isWorkedFreeDay, type FreeScheduleRule } from "@/lib/free-schedule";
+import { isFreeDate, type FreeScheduleRule } from "@/lib/free-schedule";
 
 /**
  * PAYROLL (owner, Oct 2026).
@@ -106,7 +108,7 @@ type OtRow = {
   id: number;
   member_id: number;
   date: string;
-  type: "holiday" | "free_week" | "shift";
+  type: OvertimeType;
   minutes: number;
   shift_label: string | null;
   source: string;
@@ -117,28 +119,6 @@ type OtRow = {
 function shiftOfLog(log: any, shifts: RoleShift[]): RoleShift | null {
   if (!log?.clock_in) return shifts[0] ?? null;
   return pickShift(shifts, etMinutes(log.clock_in)) ?? shifts[0] ?? null;
-}
-
-/** Did this IN belong to a shift of another role? (owner, 2026-10-28:
- *  "if they cover another person's shift on that day ... give Shift OT
- *  instead of Free Week OT".) We only call a day a covered shift when the
- *  scan fits nobody's own shift but fits somebody else's. A person with no
- *  role times at all keeps the free-day rule, because there is nothing to
- *  compare against. */
-const COVER_MATCH_EARLY_MINUTES = 90;
-const COVER_MATCH_LATE_MINUTES = 180;
-function clockInFitsShift(clockIn: Date | string, shift: RoleShift): boolean {
-  if (!clockIn) return false;
-  const match = /^(\d{1,2}):(\d{2})/.exec(String(shift.startTime));
-  if (!match) return false;
-  const start = Number(match[1]) * 60 + Number(match[2]);
-  const inM = etMinutes(clockIn);
-  return inM >= start - COVER_MATCH_EARLY_MINUTES && inM <= start + COVER_MATCH_LATE_MINUTES;
-}
-function coveredShiftOfLog(log: any, ownShifts: RoleShift[], otherShifts: RoleShift[]): RoleShift | null {
-  if (!log?.clock_in || ownShifts.length === 0 || otherShifts.length === 0) return null;
-  if (ownShifts.some((s) => clockInFitsShift(log.clock_in, s))) return null;
-  return otherShifts.find((s) => clockInFitsShift(log.clock_in, s)) ?? null;
 }
 
 async function buildRows(periodKey: string) {
@@ -221,7 +201,7 @@ async function buildRows(periodKey: string) {
 
   const allDates = effectiveTo >= bounds.from ? dateRange(bounds.from, effectiveTo) : [];
   const periodDates = dateRange(bounds.from, bounds.to);
-  const typeLabels: Record<string, string> = { holiday: "Holiday OT", free_week: "Free week OT", shift: "Shift OT" };
+  const typeLabels: Record<string, string> = OVERTIME_TYPE_LABELS;
 
   const rows = membersQ.rows.map((member, index) => {
     const memberId = Number(member.id);
@@ -231,16 +211,7 @@ async function buildRows(periodKey: string) {
     const exceptions = exceptionsQ.rows.filter((e) => Number(e.member_id) === memberId);
     const payment = payments.get(memberId);
     const roleShifts = shiftsByRole.get(Number(member.role_id)) || [];
-    const otherRoleShifts = [...shiftsByRole.entries()]
-      .filter(([roleId]) => roleId !== Number(member.role_id))
-      .flatMap(([, list]) => list);
     const otRows = otByMember.get(memberId) || [];
-    // A row a person wrote (admin, supervisor, the tablet) is a decision: that
-    // day is taken as it is. A row the clock-out scan wrote by itself ("auto")
-    // is only a measurement, so a holiday or a free day still wins over it.
-    // "Don't give" (owner, 2026-10-28) silences a person+day+kind: its hours
-    // are not added, the day cannot fall through to another OT kind, and the
-    // row stays in the history so a mistaken gift can be seen and undone.
     const excludedOt = new Set(
       (excludedQ.rows as Array<{ member_id: number; date: string; type: string }>)
         .filter((e) => Number(e.member_id) === memberId)
@@ -248,12 +219,9 @@ async function buildRows(periodKey: string) {
     );
     const allowedOtRow = (r: OtRow) => !excludedOt.has(`${String(r.date)}|${String(r.type)}`);
     const manualOtRows = otRows.filter((r) => r.source !== "auto" && allowedOtRow(r));
-    const clockShiftRows = new Map(
-      otRows.filter((r) => r.source === "auto" && r.type === "shift" && allowedOtRow(r)).map((r) => [r.date, r])
+    const manualHolidayDates = new Set(
+      otRows.filter((r) => r.source !== "auto" && r.type === "holiday").map((r) => r.date)
     );
-    // Excluded typed rows still hold their day, so the automatic measurement
-    // cannot quietly put the same overtime back under another name.
-    const manualDates = new Set(otRows.filter((r) => r.source !== "auto").map((r) => r.date));
     const legacyOt = otEntriesQ.rows.filter((o) => Number(o.member_id) === memberId);
 
     const startedRaw = member.employment_started_at;
@@ -271,10 +239,6 @@ async function buildRows(periodKey: string) {
       }));
     // A free day is never an absence, and a late arrival on one is not lateness.
     const isFree = (date: string) => isFreeDate(freeSchedules, date);
-    // The day is paid already, so working it adds no free week overtime.
-    const isPaidLeave = (date: string) => isAnnualLeaveDate(freeSchedules, date);
-    // A repeating weekday or one named date: working it is Free Week overtime.
-    const isWorkedFree = (date: string) => isWorkedFreeDay(freeSchedules, date);
     const presentDates = new Set(memberLogs.filter((l) => l.date).map((l) => String(l.date)));
     const expectedDates = allDates.filter((d) => d >= created && (!terminated || d < terminated || presentDates.has(d)) && !isFree(d));
     // An absence now costs a whole day's wage. TODAY is not finished yet, so
@@ -316,81 +280,23 @@ async function buildRows(periodKey: string) {
     const earlyLogs = measured.filter((l) => l.early > 0);
     const deductibleEarly = earlyLogs.filter((l) => !excusedEarly.has(l.date) && !l.isFree);
 
-    /* ── the three overtime kinds, measured, not remembered ───────────────
-     * A day is one kind only: a row somebody wrote for that day wins (the
-     * supervisor saw something the stopwatch did not), then a registered
-     * holiday, then the person's own free date, then a normal shift that ran
-     * past its end. This is what keeps a holiday evening from being paid twice
-     * once as holiday OT and once as Shift OT.
+    /* ── automatic overtime ONLY on registered holiday dates ──────────────
+     * Only registered holiday fingerprint scans earn overtime automatically.
+     * Free week OT, Shift OT, and Night shift OT are added manually through
+     * the Overtime form and merged from manualOtRows / legacyOt below.
      */
     let autoHolidayMinutes = 0;
-    let autoFreeWeekMinutes = 0;
-    let autoShiftMinutes = 0;
-    const autoDays: Array<{ date: string; type: string; hours: number; why: string; excluded: boolean }> = [];
+    const autoDays: Array<{ date: string; type: OvertimeType; hours: number; why: string; excluded: boolean }> = [];
     for (const date of allDates) {
       const log = logByDate.get(date);
-      if (!log || manualDates.has(date)) continue;
-      const shift = shiftOfLog(log, roleShifts);
       const holiday = holidayByDate.get(date);
-      if (holiday) {
-        const excluded = excludedOt.has(`${date}|holiday`);
-        const minutes = recognizedOtMinutes(shift, log);
-        if (minutes > 0) {
-          // An excluded day stays in the history (marked "Not given") but its
-          // hours are not paid and the day cannot fall through to another kind.
-          if (!excluded) autoHolidayMinutes += minutes;
-          autoDays.push({ date, type: "holiday", hours: minutesToHours(minutes), why: holiday.name, excluded });
-        }
-        continue;
-      }
-      // Ye amet ereft: the salary is already safe for this day, so it does not
-      // become Free Week overtime as well. A holiday still pays its own rate
-      // above, and a supervisor can still type overtime by hand.
-      if (isPaidLeave(date)) continue;
-      if (isWorkedFree(date)) {
-        // Covering somebody else's shift on a free day is a SECOND shift, so
-        // it is Shift OT (x1.5), not Free Week OT (x2). The covered shift's
-        // own grace decides the hours. Everything else on a free day is Free
-        // Week OT. Both still need the 1 hour of work and the 1:15 tail.
-        const covered = coveredShiftOfLog(log, roleShifts, otherRoleShifts);
-        const kind = covered ? "shift" : "free_week";
-        const excluded = excludedOt.has(`${date}|${kind}`);
-        const minutes = recognizedOtMinutes(covered || shift, log);
-        if (minutes > 0) {
-          if (!excluded) {
-            if (covered) autoShiftMinutes += minutes;
-            else autoFreeWeekMinutes += minutes;
-          }
-          autoDays.push({
-            date,
-            type: kind,
-            hours: minutesToHours(minutes),
-            why: covered ? `Covered the ${covered.label} shift on his free day` : "His free day, worked anyway",
-            excluded,
-          });
-        }
-        continue;
-      }
-      // The clock-out scan may already have measured this day; its own row is
-      // the same number, so use it when it is there and measure otherwise.
-      const excluded = excludedOt.has(`${date}|shift`);
-      // The time worked beyond the normal shift length is Shift OT (owner:
-      // "the time more than 8 hour is automatically considered shift ot").
-      // An auto row written at clock-out is the same measurement; use it when
-      // it is there so the paper and the device never disagree. An excluded
-      // clock row is measured from the scans, so the history keeps the day.
-      const minutes = !excluded
-        ? (clockShiftRows.get(date)?.minutes ?? workedShiftOtMinutes(shift, log.clock_in, log.clock_out))
-        : workedShiftOtMinutes(shift, log.clock_in, log.clock_out);
+      if (!log || !holiday || manualHolidayDates.has(date)) continue;
+      const shift = shiftOfLog(log, roleShifts);
+      const excluded = excludedOt.has(`${date}|holiday`);
+      const minutes = recognizedOtMinutes(shift, log);
       if (minutes > 0) {
-        if (!excluded) autoShiftMinutes += minutes;
-        autoDays.push({
-          date,
-          type: "shift",
-          hours: minutesToHours(minutes),
-          why: `${minutes} minutes past the shift end`,
-          excluded,
-        });
+        if (!excluded) autoHolidayMinutes += minutes;
+        autoDays.push({ date, type: "holiday", hours: minutesToHours(minutes), why: holiday.name, excluded });
       }
     }
 
@@ -400,8 +306,9 @@ async function buildRows(periodKey: string) {
       money(legacyOt.filter((o) => o.overtime_type === type).reduce((s, o) => s + Number(o.hours), 0));
 
     const holidayOtHours = money(minutesToHours(autoHolidayMinutes + manualMinutes("holiday")) + legacyHours("holiday"));
-    const freeWeekOtHours = money(minutesToHours(autoFreeWeekMinutes + manualMinutes("free_week")) + legacyHours("free_week"));
-    const shiftOtHours = money(minutesToHours(autoShiftMinutes + manualMinutes("shift")) + legacyHours("shift"));
+    const freeWeekOtHours = money(minutesToHours(manualMinutes("free_week")) + legacyHours("free_week"));
+    const shiftOtHours = money(minutesToHours(manualMinutes("shift")) + legacyHours("shift"));
+    const nightShiftOtHours = money(minutesToHours(manualMinutes("night_shift")) + legacyHours("night_shift"));
 
     const attendance = {
       scheduledDays: expectedDates.length,
@@ -416,11 +323,16 @@ async function buildRows(periodKey: string) {
       holidayOtHours,
       freeWeekOtHours,
       shiftOtHours,
+      nightShiftOtHours,
       autoHolidayHours: minutesToHours(autoHolidayMinutes),
-      autoFreeWeekHours: minutesToHours(autoFreeWeekMinutes),
-      autoShiftHours: minutesToHours(autoShiftMinutes),
-      holidayDays: autoDays.filter((d) => d.type === "holiday" && !d.excluded).length,
-      freeWeekDays: autoDays.filter((d) => d.type === "free_week" && !d.excluded).length,
+      autoFreeWeekHours: 0,
+      autoShiftHours: 0,
+      holidayDays:
+        autoDays.filter((d) => d.type === "holiday" && !d.excluded).length +
+        manualOtRows.filter((r) => r.type === "holiday").length,
+      freeWeekDays: manualOtRows.filter((r) => r.type === "free_week").length,
+      shiftDays: manualOtRows.filter((r) => r.type === "shift").length,
+      nightShiftDays: manualOtRows.filter((r) => r.type === "night_shift").length,
     };
 
     const basic = positive(c.basic_salary);
@@ -440,6 +352,7 @@ async function buildRows(periodKey: string) {
         HolidayOtHours: holidayOtHours,
         FreeWeekOtHours: freeWeekOtHours,
         ShiftOtHours: shiftOtHours,
+        NightShiftOtHours: nightShiftOtHours,
         ScheduledDays: attendance.scheduledDays,
         ScheduledHours: attendance.scheduledHours,
         DaysPresent: attendance.daysPresent,
@@ -506,7 +419,8 @@ async function buildRows(periodKey: string) {
       otBreakdown: {
         holiday: { hours: holidayOtHours, pay: pay.holidayOtPay, days: attendance.holidayDays },
         freeWeek: { hours: freeWeekOtHours, pay: pay.freeWeekOtPay, days: attendance.freeWeekDays },
-        shift: { hours: shiftOtHours, pay: pay.shiftOtPay, days: autoDays.filter((d) => d.type === "shift" && !d.excluded).length },
+        shift: { hours: shiftOtHours, pay: pay.shiftOtPay, days: attendance.shiftDays },
+        nightShift: { hours: nightShiftOtHours, pay: pay.nightShiftOtPay, days: attendance.nightShiftDays },
         bufferMinutes: OT_BUFFER_MINUTES,
         arrivalGraceMinutes: OT_ARRIVAL_GRACE_MINUTES,
       },
@@ -517,6 +431,7 @@ async function buildRows(periodKey: string) {
       holidayOtPay: pay.holidayOtPay,
       freeWeekOtPay: pay.freeWeekOtPay,
       shiftOtPay: pay.shiftOtPay,
+      nightShiftOtPay: pay.nightShiftOtPay,
       grossSalary: pay.grossSalary,
       taxableSalary: pay.taxableSalary,
       // The numbers behind the Lateness and Early Departure columns, so the
@@ -701,7 +616,7 @@ export async function POST(request: Request) {
       const id = Number(body.memberId);
       const type = String(body.overtimeType);
       const hours = positive(body.hours);
-      if (!id || !["holiday", "free_week", "shift"].includes(type) || hours <= 0)
+      if (!id || !(OVERTIME_TYPES as readonly string[]).includes(type) || hours <= 0)
         throw new Error("Employee, overtime type and positive hours required");
       if (await isPaid(period, id)) throw new Error("This person is already paid for this month. Take the paid tick back first.");
       const writeOvertime = async () => {

@@ -92,8 +92,7 @@ pass("the schema version moved, so a live database self-heals", (/SCHEMA_VERSION
 
 pass("the payroll uses the shared free-day rules", payrollApi.includes('from "@/lib/free-schedule"') && payrollApi.includes("isFreeDate(freeSchedules, date)"));
 pass("no absence is taken on a free day of any kind", payrollApi.includes("!isFree(d)"));
-pass("a ye amet ereft day is paid, so it adds no free week overtime", payrollApi.includes("if (isPaidLeave(date)) continue;"));
-pass("a repeating free day or a free date still does", payrollApi.includes("if (isWorkedFree(date))"));
+pass("only registered holiday dates auto-generate overtime in payroll, so neither ye amet ereft nor free days auto-add Free Week OT", !payrollApi.includes("isWorkedFree") && payrollApi.includes("const holiday = holidayByDate.get(date)"));
 pass(
   "the old inline weekday test is gone, because it would read a leave row as Sunday",
   !payrollApi.includes('f.schedule_type === "dated" ? f.free_date === date : Number(f.weekday)')

@@ -97,11 +97,11 @@ export function evaluatePayrollFormulaExact(expression: string, context: Formula
 /** NetSalary is the optional take-home base; the shipped rule uses BasicSalary,
  *  the number the owner already types per employee. See
  *  netSalaryForMinuteRule below for exactly what NetSalary means. */
-export const PAYROLL_VARIABLES = ["BasicSalary","TransportAllowance","GrossSalary","TaxableSalary","NetSalary","OvertimeHours","HolidayOtHours","FreeWeekOtHours","ShiftOtHours","ScheduledDays","ScheduledHours","DaysPresent","ApprovedAbsences","UnapprovedAbsences","LateCount","LateMinutes","EarlyOutCount","EarlyOutMinutes"] as const;
-export type PayrollSettings={employerPensionRate:number;employeePensionRate:number;holidayOtFormula:string;freeWeekOtFormula:string;shiftOtFormula:string;incomeTaxFormula:string;absenceFormula:string;latenessFormula:string;earlyOutFormula:string;settingsApproved:boolean};
+export const PAYROLL_VARIABLES = ["BasicSalary","TransportAllowance","GrossSalary","TaxableSalary","NetSalary","OvertimeHours","HolidayOtHours","FreeWeekOtHours","ShiftOtHours","NightShiftOtHours","ScheduledDays","ScheduledHours","DaysPresent","ApprovedAbsences","UnapprovedAbsences","LateCount","LateMinutes","EarlyOutCount","EarlyOutMinutes"] as const;
+export type PayrollSettings={employerPensionRate:number;employeePensionRate:number;holidayOtFormula:string;freeWeekOtFormula:string;shiftOtFormula:string;nightShiftOtFormula:string;incomeTaxFormula:string;absenceFormula:string;latenessFormula:string;earlyOutFormula:string;settingsApproved:boolean};
 export const DEFAULT_INCOME_TAX_FORMULA="IF(TaxableSalary<=2000,0,IF(TaxableSalary<=4000,TaxableSalary*15%-300,IF(TaxableSalary<=7000,TaxableSalary*20%-500,IF(TaxableSalary<=10000,TaxableSalary*25%-850,IF(TaxableSalary<=14000,TaxableSalary*30%-1250,TaxableSalary*35%-2050)))))";
 /** The formula fields the owner may edit. Everything else is a rate or a switch. */
-export const PAYROLL_FORMULA_KEYS=["holidayOtFormula","freeWeekOtFormula","shiftOtFormula","incomeTaxFormula","absenceFormula","latenessFormula","earlyOutFormula"] as const;
+export const PAYROLL_FORMULA_KEYS=["holidayOtFormula","freeWeekOtFormula","shiftOtFormula","nightShiftOtFormula","incomeTaxFormula","absenceFormula","latenessFormula","earlyOutFormula"] as const;
 export type PayrollFormulaKey=(typeof PAYROLL_FORMULA_KEYS)[number];
 /** The three deduction boxes. An empty one is the owner's OFF switch. */
 export const DEDUCTION_FORMULA_KEYS=["absenceFormula","latenessFormula","earlyOutFormula"] as const;
@@ -161,6 +161,7 @@ export const DEFAULT_PAYROLL_FORMULAS:Record<PayrollFormulaKey,string>={
  holidayOtFormula:"BasicSalary / 30 / 8 * HolidayOtHours * 2.5",
  freeWeekOtFormula:"BasicSalary / 30 / 8 * FreeWeekOtHours * 2",
  shiftOtFormula:"BasicSalary / 30 / 8 * ShiftOtHours * 1.5",
+ nightShiftOtFormula:"BasicSalary / 30 / 8 * NightShiftOtHours * 1.75",
  incomeTaxFormula:DEFAULT_INCOME_TAX_FORMULA,
  absenceFormula:DEFAULT_ABSENCE_FORMULA,
  latenessFormula:DEFAULT_LATENESS_FORMULA,
@@ -185,11 +186,11 @@ export function withDefaultPayrollFormulas(raw:Partial<PayrollSettings>|null|und
  return out;
 }
 /**
- * The formulas a payroll cannot run without: the three overtime kinds and the
+ * The formulas a payroll cannot run without: the four overtime kinds and the
  * income tax. The deduction formulas are NOT here on purpose: they are the
  * owner's own rules, and an empty one simply deducts zero.
  */
-export function requiredPayrollSettingsMissing(s:PayrollSettings):string[]{const m:string[]=[];if(!s.holidayOtFormula)m.push("Holiday OT formula");if(!s.freeWeekOtFormula)m.push("Free Week OT formula");if(!s.shiftOtFormula)m.push("Shift OT formula");if(!s.incomeTaxFormula)m.push("Income tax formula");return m;}
+export function requiredPayrollSettingsMissing(s:PayrollSettings):string[]{const m:string[]=[];if(!s.holidayOtFormula)m.push("Holiday OT formula");if(!s.freeWeekOtFormula)m.push("Free Week OT formula");if(!s.shiftOtFormula)m.push("Shift OT formula");if(!s.nightShiftOtFormula)m.push("Night Shift OT formula");if(!s.incomeTaxFormula)m.push("Income tax formula");return m;}
 
 /**
  * OPTIONAL BASE. The "net salary" of the owner's example, in the money of
@@ -249,7 +250,7 @@ export type PayrollMoneyInputs={
 };
 export type PayrollMoneyValues={
  overtimeHours:number;
- holidayOtPay:number;freeWeekOtPay:number;shiftOtPay:number;overtimePay:number;
+ holidayOtPay:number;freeWeekOtPay:number;shiftOtPay:number;nightShiftOtPay:number;overtimePay:number;
  grossSalary:number;taxableSalary:number;
  employerPension:number;employeePension:number;totalPension:number;
  incomeTax:number;netSalary:number;
@@ -261,13 +262,13 @@ export function computePayrollMoney(input:PayrollMoneyInputs):{raw:PayrollMoneyV
  const a=input.attendance||{};
  const num=(v:unknown)=>Number(v)||0;
  const s=input.settings;
- const holidayHours=num(a.HolidayOtHours),freeWeekHours=num(a.FreeWeekOtHours),shiftHours=num(a.ShiftOtHours);
+ const holidayHours=num(a.HolidayOtHours),freeWeekHours=num(a.FreeWeekOtHours),shiftHours=num(a.ShiftOtHours),nightShiftHours=num(a.NightShiftOtHours);
  const context:FormulaContext={
   BasicSalary:num(input.basicSalary),
   TransportAllowance:num(input.transportAllowance),
   GrossSalary:0,TaxableSalary:0,NetSalary:0,
-  OvertimeHours:holidayHours+freeWeekHours+shiftHours,
-  HolidayOtHours:holidayHours,FreeWeekOtHours:freeWeekHours,ShiftOtHours:shiftHours,
+  OvertimeHours:holidayHours+freeWeekHours+shiftHours+nightShiftHours,
+  HolidayOtHours:holidayHours,FreeWeekOtHours:freeWeekHours,ShiftOtHours:shiftHours,NightShiftOtHours:nightShiftHours,
   ScheduledDays:num(a.ScheduledDays),ScheduledHours:num(a.ScheduledHours),DaysPresent:num(a.DaysPresent),
   ApprovedAbsences:num(a.ApprovedAbsences),UnapprovedAbsences:num(a.UnapprovedAbsences),
   LateCount:num(a.LateCount),LateMinutes:num(a.LateMinutes),
@@ -279,7 +280,8 @@ export function computePayrollMoney(input:PayrollMoneyInputs):{raw:PayrollMoneyV
  const holidayOtPay=calc(s.holidayOtFormula);
  const freeWeekOtPay=calc(s.freeWeekOtFormula);
  const shiftOtPay=calc(s.shiftOtFormula);
- const overtimePay=holidayOtPay+freeWeekOtPay+shiftOtPay;
+ const nightShiftOtPay=calc(s.nightShiftOtFormula);
+ const overtimePay=holidayOtPay+freeWeekOtPay+shiftOtPay+nightShiftOtPay;
  const grossSalary=context.BasicSalary+context.TransportAllowance+overtimePay;
  context.GrossSalary=grossSalary;
  const taxableSalary=grossSalary-context.TransportAllowance;
@@ -297,7 +299,7 @@ export function computePayrollMoney(input:PayrollMoneyInputs):{raw:PayrollMoneyV
  const netPay=fullMonthNetPay*num(input.prorationFactor??1);
  const raw:PayrollMoneyValues={
   overtimeHours:context.OvertimeHours,
-  holidayOtPay,freeWeekOtPay,shiftOtPay,overtimePay,grossSalary,taxableSalary,
+  holidayOtPay,freeWeekOtPay,shiftOtPay,nightShiftOtPay,overtimePay,grossSalary,taxableSalary,
   employerPension,employeePension,totalPension:employerPension+employeePension,
   incomeTax,netSalary,absenceDeduction,latenessDeduction,earlyOutDeduction,
   totalDeduction,fullMonthNetPay,netPay,

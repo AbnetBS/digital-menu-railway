@@ -19,10 +19,11 @@
 enum QueueSyncResult : uint8_t { QUEUE_EMPTY, QUEUE_PROGRESS, QUEUE_WAIT };
 enum QueueStatus : uint8_t { QUEUE_OFFLINE, QUEUE_IDLE, QUEUE_SENDING, QUEUE_CLOCK_WAIT, QUEUE_ERROR, QUEUE_STORAGE_ERROR };
 #define SERVER_TIMEOUT_MS 8000
+#define LIVE_SCAN_TIMEOUT_MS 3200
 #define QUEUE_OFFLINE_POLL_MS 1000
 #define QUEUE_RETRY_MS 3000
 #define WEBSITE_TIME_RETRY_MS 10000
-#define OFFLINE_BATCH_MAX 20
+#define OFFLINE_BATCH_MAX 30
 #define WL_CONNECTED 3
 #define pdTRUE 1
 
@@ -168,6 +169,12 @@ class HTTPClient {
 };
 static void beginServerRequest(HTTPClient &, const String &) {}
 static void addDeviceHeaders(HTTPClient &) {}
+static void acquireDeliveryNetwork() {}
+static void releaseDeliveryNetwork(bool purge) {
+  if (purge && offlineQueue) offlineQueue->purgeDeliveredStorage(bootId);
+}
+static void notifyLiveSendDeferred(const char *) {}
+static bool forceSyncTimeFromWebsite() { return false; }
 static void ensureClockAnchorSaved() {}
 static void flushEnrollProgress() {}
 
@@ -306,6 +313,39 @@ int main() {
     assert(delivered.size() == noticesBeforeTen + 1);
     assert(delivered.back().kind == DELIVERY_BATCH);
     assert(std::strcmp(delivered.back().name, "10 scans sent") == 0);
+  }
+  assert(!fs.exists("/queue.json") && !fs.exists("/queue.cursor"));
+
+  // 20 stored offline fingerprints: all 20 upload together in ONE batch POST
+  // when Wi-Fi returns, and the device queue files are deleted immediately so
+  // flash stays empty and fast for the next offline outage.
+  wifiUp = false;
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  size_t postsBeforeTwenty = 0;
+  size_t noticesBeforeTwenty = 0;
+  { std::lock_guard<std::mutex> lock(serverMutex); postsBeforeTwenty = httpPosts; }
+  { std::lock_guard<std::mutex> lock(noticeMutex); noticesBeforeTwenty = delivered.size(); }
+  std::vector<String> twentyIds;
+  for (int i = 0; i < 20; ++i) {
+    twentyIds.push_back(save(201 + i, "Employee", 201 + i, 1790002000UL + static_cast<unsigned long>(i) * 15UL));
+  }
+  assert(fs.exists("/queue.json"));
+  wifiUp = true;
+  wakeDeliveryTask();
+  assert(waitForNotices(noticesBeforeTwenty + 1, 2200));
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+  assert(queue.peek(head) == OfflineQueue::EMPTY);
+  assert(!fs.exists("/queue.json") && !fs.exists("/queue.cursor"));
+  {
+    std::lock_guard<std::mutex> lock(serverMutex);
+    assert(httpPosts == postsBeforeTwenty + 1);
+    for (const auto &eid : twentyIds) assert(committed.count(eid.c_str()) == 1);
+  }
+  {
+    std::lock_guard<std::mutex> lock(noticeMutex);
+    assert(delivered.size() == noticesBeforeTwenty + 1);
+    assert(delivered.back().kind == DELIVERY_BATCH);
+    assert(std::strcmp(delivered.back().name, "20 scans sent") == 0);
   }
 
   { std::lock_guard<std::mutex> lock(notifyMutex); stopTask = true; notifyCondition.notify_all(); }

@@ -23,112 +23,122 @@ int main() {
   const auto mulu = notice("b", "Mulu", 1790000100U, DELIVERY_OUT);
   const auto review = notice("c", "Sara", 0, DELIVERY_REVIEW);
 
-  // Wi-Fi association is not confirmation: the door says SENDING and keeps
-  // saying it for a full round-trip budget. A slow-but-working website must
-  // never be called "saved offline" after 1.8 s (owner, Oct 2026: "even though
-  // there is Wi-Fi the system says saved on device"). The original name/time
-  // must survive either way.
+  // Fast online budget (3.5 s): if no receipt arrives, switch to SAVED ("Stored
+  // offline queue") and emit the 2nd confirmation green light + buzzer cue.
   feedback.saved(abebe, true, 100);
   assert(feedback.phase() == ScanFeedback::SENDING && feedback.linkWasUp());
-  assert(!feedback.tick(1899));
-  assert(!feedback.tick(8000));
-  assert(feedback.tick(8101) && feedback.phase() == ScanFeedback::SAVED);
+  assert(!feedback.consumeDoneCue());
+  assert(!feedback.tick(3599));
+  assert(feedback.tick(3600) && feedback.phase() == ScanFeedback::SAVED);
+  assert(feedback.consumeDoneCue());          // 2nd green + buzzer fires once
+  assert(!feedback.consumeDoneCue());         // ... and never repeats
   assert(std::strcmp(feedback.current().name, "Abebe") == 0);
   assert(feedback.current().scannedAt == abebe.scannedAt);
-  // A confirmed reply for the same event can update the current result now.
-  assert(feedback.mayShow(abebe, 8102));
-  feedback.delivered(abebe, 8102);
+  // A later background receipt can still update the screen without a 3rd beep.
+  assert(feedback.mayShow(abebe, 5100));
+  feedback.delivered(abebe, 5100);
   assert(feedback.phase() == ScanFeedback::SENT_IN);
-  assert(!feedback.tick(11101));
-  assert(feedback.tick(11102) && feedback.phase() == ScanFeedback::IDLE);
+  assert(!feedback.consumeDoneCue());
+  assert(!feedback.tick(7599));
+  assert(feedback.tick(7600) && feedback.phase() == ScanFeedback::IDLE);
 
-  // Offline gives the honest stored message immediately. Later deliveries of
-  // several people can be shown in order without overwriting a fresh scan.
+  // Offline scan: brief 450 ms Verifying flash (1st green + buzzer), then right
+  // at 450 ms shows "Stored offline queue" + 2nd green light + buzzer cue.
   feedback.saved(mulu, false, 20000);
-  assert(feedback.phase() == ScanFeedback::SAVED && !feedback.linkWasUp());
+  assert(feedback.phase() == ScanFeedback::SENDING && !feedback.linkWasUp());
+  assert(!feedback.tick(20449));
+  assert(feedback.tick(20450) && feedback.phase() == ScanFeedback::SAVED);
+  assert(feedback.consumeDoneCue());
   assert(!feedback.mayShow(abebe, 21000));
-  assert(feedback.mayShow(abebe, 21500));
-  feedback.delivered(abebe, 21500);
+  assert(feedback.mayShow(abebe, 21950));
+  feedback.delivered(abebe, 21950);
   assert(feedback.phase() == ScanFeedback::SENT_IN);
+  assert(!feedback.consumeDoneCue()); // background delivery: no surprise beep
   assert(std::strcmp(feedback.current().name, "Abebe") == 0);
-  assert(feedback.mayShow(mulu, 23000));
-  feedback.delivered(mulu, 23000);
+  assert(feedback.mayShow(mulu, 23450));
+  feedback.delivered(mulu, 23450);
   assert(feedback.phase() == ScanFeedback::SENT_OUT);
   assert(feedback.current().scannedAt == mulu.scannedAt);
-  feedback.delivered(review, 24500);
+  feedback.delivered(review, 24950);
   assert(feedback.phase() == ScanFeedback::REVIEW);
   auto already = notice("d", "Sami", 1790000200U, DELIVERY_ALREADY);
-  feedback.delivered(already, 26000);
-  assert(feedback.phase() == ScanFeedback::ALREADY); // not a new IN or OUT
+  feedback.delivered(already, 26450);
+  assert(feedback.phase() == ScanFeedback::ALREADY);
 
-  /* A warning about a placement is a STATE, not a pause: it expires on its own
-   * so the door keeps scanning and a finger placed at any moment is read. */
+  // Early HTTP failure while associated to router defers immediately at 450 ms
+  // instead of waiting the full 3.5 s timeout.
+  feedback.saved(abebe, true, 10000);
+  feedback.deferIfCurrent("a");
+  assert(!feedback.tick(10449));
+  assert(feedback.tick(10450) && feedback.phase() == ScanFeedback::SAVED);
+  assert(feedback.consumeDoneCue());
+
+  // Warning notice state remains non-blocking and outranks background receipts.
   feedback.notice("NOT REGISTERED", "Finger not enrolled", "Ask admin to add it", 20000U, 2500U);
   assert(feedback.phase() == ScanFeedback::NOTICE);
+  assert(!feedback.consumeDoneCue());
   assert(std::strcmp(feedback.noticeTitle(), "NOT REGISTERED") == 0);
   assert(std::strcmp(feedback.noticeLine2(), "Finger not enrolled") == 0);
   assert(std::strcmp(feedback.noticeLine3(), "Ask admin to add it") == 0);
   assert(!feedback.tick(22499));
   assert(feedback.tick(22500) && feedback.phase() == ScanFeedback::IDLE);
-  // An older scan's receipt never cuts a warning short.
   feedback.notice("NOT REGISTERED", "Finger not enrolled", "Ask admin to add it", 50000U, 2500U);
   assert(!feedback.mayShow(abebe, 52000U));
   assert(feedback.tick(52000U) == false);
   assert(feedback.phase() == ScanFeedback::NOTICE);
   assert(feedback.tick(52500U) && feedback.phase() == ScanFeedback::IDLE);
-  // A real scan takes the screen over from a warning at once.
   feedback.notice("IMAGE UNCLEAR", "Press flat and still", "Clean the sensor", 30000U, 2500U);
   feedback.saved(abebe, true, 30100U);
   assert(feedback.phase() == ScanFeedback::SENDING);
-  // Over-long warning text is cut, never overruns the 20-character LCD line.
   feedback.notice("A VERY LONG WARNING TITLE INDEED", "x", "y", 40000U, 2500U);
   assert(std::strlen(feedback.noticeTitle()) == 20);
   assert(!feedback.tick(41000U));
   assert(feedback.tick(42500U) && feedback.phase() == ScanFeedback::IDLE);
 
-  /* THE INSTANT CARD (owner, Oct 2026): "recognise it locally and immediately
-   * show the employee's name, scan time and Verifying....", then replace it when
-   * the green indication finishes with either "Sent to website" or "Stored
-   * offline queue". verifying() is called BEFORE the flash write, so it must
-   * report the pending state and nothing else. */
+  // Fast direct-to-site flow: verifying() -> saved() -> receipt arrives; waits
+  // only the crisp 450 ms 1st-green window so 2nd green + buzzer is distinct,
+  // then shows "Sent to website" / "Already registered" and fires done cue.
   ScanFeedback card;
   DeliveryNotice pending = notice("", "Abebe", 1790000000U, DELIVERY_IN);
   card.verifying(pending, true, 1000);
+  card.saved(abebe, true, 1005);
   assert(card.phase() == ScanFeedback::SENDING);
-  assert(std::strcmp(card.current().name, "Abebe") == 0);
-  assert(card.current().scannedAt == 1790000000U);
-  assert(!card.greenPhaseOver(2499));         // green indication still running
-  assert(card.greenPhaseOver(2500));          // ... and now finished
-  // A receipt inside the green window wins: the row becomes "Sent to website".
-  card.delivered(abebe, 1500);
+  assert(!card.greenPhaseOver(1449));
+  assert(card.greenPhaseOver(1450));
+  assert(!card.mayShow(abebe, 1300)); // hold until 1st green flash has turned off
+  assert(card.mayShow(abebe, 1450));
+  card.delivered(abebe, 1450);
   assert(card.phase() == ScanFeedback::SENT_IN);
-  // A slow link keeps VERIFYING through the green window (never claims the scan
-  // was stored while the website may still be answering) and only then says
-  // "Stored offline queue".
-  ScanFeedback slow;
-  slow.saved(abebe, true, 5000);
-  assert(slow.phase() == ScanFeedback::SENDING && slow.linkWasUp());
-  assert(slow.greenPhaseOver(6500));
-  assert(!slow.tick(12999) && slow.phase() == ScanFeedback::SENDING);
-  assert(slow.tick(13000) && slow.phase() == ScanFeedback::SAVED);
-  // No link at all: the card says stored immediately, with the reason.
+  assert(card.consumeDoneCue());
+  assert(!card.consumeDoneCue());
+
+  // Already-registered direct scan also triggers the 2nd green + buzzer cue.
+  ScanFeedback dupCard;
+  dupCard.verifying(pending, true, 2000);
+  dupCard.saved(already, true, 2004);
+  assert(dupCard.mayShow(already, 2500));
+  dupCard.delivered(already, 2500);
+  assert(dupCard.phase() == ScanFeedback::ALREADY);
+  assert(dupCard.consumeDoneCue());
+
+  // Batch summary from offline queue displays immediately without cycling names.
   ScanFeedback offlineCard;
   offlineCard.saved(mulu, false, 20000);
-  assert(offlineCard.phase() == ScanFeedback::SAVED && !offlineCard.linkWasUp());
-  assert(offlineCard.current().scannedAt == mulu.scannedAt);   // original time
-  // When link returns and a batch is delivered together, DELIVERY_BATCH updates
-  // immediately without waiting 1.5 s per employee.
+  assert(offlineCard.tick(20450) && offlineCard.phase() == ScanFeedback::SAVED);
+  assert(offlineCard.consumeDoneCue());
   DeliveryNotice batchNotice{};
-  std::snprintf(batchNotice.name, sizeof(batchNotice.name), "%s", "10 scans sent");
+  std::snprintf(batchNotice.name, sizeof(batchNotice.name), "%s", "20 scans sent");
   batchNotice.kind = DELIVERY_BATCH;
-  assert(offlineCard.mayShow(batchNotice, 20100));
-  offlineCard.delivered(batchNotice, 20100);
+  assert(offlineCard.mayShow(batchNotice, 20600));
+  offlineCard.delivered(batchNotice, 20600);
   assert(offlineCard.phase() == ScanFeedback::BATCH_SENT);
+  assert(!offlineCard.consumeDoneCue());
 
-  // millis wrap must not leave the message stuck or lose the next status.
+  // millis wrap safety across 3.5 s receipt window.
   feedback.saved(abebe, true, UINT32_MAX - 1000U);
-  assert(!feedback.tick(4100U));
-  assert(feedback.tick(7100U) && feedback.phase() == ScanFeedback::SAVED);
+  assert(!feedback.tick(2000U));
+  assert(feedback.tick(2600U) && feedback.phase() == ScanFeedback::SAVED);
+  assert(feedback.consumeDoneCue());
 
   const char *id = "0123456789abcdef0123456789abcdef";
   assert(receiptMatches(id, 1790000000U, 55, 7, id, 1790000000U, 55, 7, "clock_in", true));

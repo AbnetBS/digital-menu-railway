@@ -3,6 +3,7 @@
 #include <FS.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <cstring>
 #include <vector>
 
 // An append-only, ordered queue. The sender copies ONE head while holding the
@@ -150,7 +151,11 @@ class OfflineQueue {
       fs_.remove(temp_);
       return false;
     }
-    if (head.end == size && fs_.remove(path_)) fs_.remove(cursor_);
+    if (head.end == size) {
+      if (fs_.remove(path_)) fs_.remove(cursor_);
+    } else if (head.end >= 4096) {
+      compactRemainingLocked(head.end, size);
+    }
     return true;
   }
 
@@ -231,7 +236,55 @@ class OfflineQueue {
       fs_.remove(temp_);
       return false;
     }
-    if (last.end == size && fs_.remove(path_)) fs_.remove(cursor_);
+    if (last.end == size) {
+      if (fs_.remove(path_)) fs_.remove(cursor_);
+    } else if (last.end >= 4096) {
+      compactRemainingLocked(last.end, size);
+    }
+    return true;
+  }
+
+  // Once every queued scan has been confirmed by the website, remove the
+  // exhausted queue files, temporary files, and previous-boot anchor files so
+  // flash never fills up or slows down over time.
+  bool purgeDeliveredStorage(const String &keepBoot) {
+    Guard guard(mutex_);
+    if (!guard.locked) return false;
+    if (fs_.exists(path_)) {
+      size_t cursor = 0;
+      if (!readCursor(cursor)) return false;
+      File in = fs_.open(path_, "r");
+      if (!in) return false;
+      const size_t size = in.size();
+      in.close();
+      if (cursor < size) return false;
+      if (!fs_.remove(path_)) return false;
+    }
+    if (fs_.exists(cursor_)) fs_.remove(cursor_);
+    if (fs_.exists(temp_)) fs_.remove(temp_);
+    if (fs_.exists("/queue.compact")) fs_.remove("/queue.compact");
+    if (fs_.exists("/anchor.tmp")) fs_.remove("/anchor.tmp");
+
+    const String activeAnchor = String("/anchor-") + keepBoot;
+    std::vector<String> staleAnchors;
+    File root = fs_.open("/", "r");
+    if (root) {
+      for (;;) {
+        File entry = root.openNextFile();
+        if (!entry) break;
+        String entryName = String(entry.name());
+        entry.close();
+        if (entryName.length() > 0 && entryName[0] != '/') entryName = String("/") + entryName;
+        if (std::strncmp(entryName.c_str(), "/anchor-", 8) == 0 &&
+            std::strcmp(entryName.c_str(), activeAnchor.c_str()) != 0) {
+          staleAnchors.push_back(entryName);
+        }
+      }
+      root.close();
+    }
+    for (size_t i = 0; i < staleAnchors.size(); ++i) {
+      fs_.remove(staleAnchors[i].c_str());
+    }
     return true;
   }
 
@@ -289,6 +342,27 @@ class OfflineQueue {
     }
     out = (size_t)value;
     return true;
+  }
+  void compactRemainingLocked(size_t cursor, size_t size) {
+    if (cursor == 0 || cursor >= size) return;
+    File in = fs_.open(path_, "r");
+    if (!in || !in.seek(cursor)) {
+      if (in) in.close();
+      return;
+    }
+    const String remaining = in.readString();
+    in.close();
+    if (remaining.length() != size - cursor) return;
+    File compact = fs_.open("/queue.compact", "w");
+    if (!compact) return;
+    const size_t written = compact.print(remaining);
+    compact.flush();
+    compact.close();
+    if (written != remaining.length() || !fs_.rename("/queue.compact", path_)) {
+      fs_.remove("/queue.compact");
+      return;
+    }
+    if (fs_.exists(cursor_)) fs_.remove(cursor_);
   }
   fs::FS &fs_;
   SemaphoreHandle_t mutex_;

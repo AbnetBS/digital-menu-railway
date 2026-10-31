@@ -225,6 +225,56 @@ async function main() {
       assert.ok(closedLogs[i].clock_out, "every employee clocked OUT accurately");
       assert.equal(closedLogs[i].status, "completed");
     }
+
+    // 20 stored offline fingerprints on the next day: all 20 upload together in
+    // ONE batch POST and all 20 show up accurately in attendance_logs.
+    for (let i = 10; i < 20; i++) {
+      await pglite.query(
+        "INSERT INTO attendance_members(id, name, role_id, active) VALUES ($1, $2, 1, true)",
+        [100 + i, `Employee_${i + 1}`]
+      );
+      await pglite.query(
+        "INSERT INTO attendance_biometrics(member_id, fingerprint_id, finger_name) VALUES ($1, $2, 'Right Index')",
+        [100 + i, 200 + i]
+      );
+    }
+    const twentyEpoch = Math.floor(new Date("2026-10-31T08:01:00+03:00").getTime() / 1000);
+    const twentyEvents = Array.from({ length: 20 }, (_, i) => ({
+      eventId: randomBytes(16).toString("hex"),
+      fingerprintId: i < 10 ? 51 + i : 200 + i,
+      capturedMemberId: i < 10 ? i + 1 : 100 + i,
+      scannedAt: twentyEpoch + i * 10,
+      requireRecordedTime: true,
+    }));
+    const twentyRes = await postClock(
+      new Request("https://fana.test/api/attendance/clock", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-attendance-device": "test-device-token",
+        },
+        body: JSON.stringify({
+          deviceId: "entrance_offline",
+          method: "fingerprint",
+          requireRecordedTime: true,
+          events: twentyEvents,
+        }),
+      })
+    );
+    assert.equal(twentyRes.status, 200);
+    const twentyData = await twentyRes.json();
+    assert.equal(twentyData.count, 20);
+    assert.equal(
+      (twentyData.results as Array<Record<string, unknown>>).filter((r) => r.httpStatus === 200).length,
+      20,
+      "all 20 stored offline scans commit in one batch"
+    );
+    const twentySheetLogs = (
+      await pglite.query<{ member_id: number }>(
+        "SELECT member_id FROM attendance_logs WHERE date = '2026-10-31'"
+      )
+    ).rows;
+    assert.equal(twentySheetLogs.length, 20, "all 20 employees appear on the sheet");
     unsubAtt();
 
     // ── 2. Live Enrollment Step Progress + Automatic Completion ──

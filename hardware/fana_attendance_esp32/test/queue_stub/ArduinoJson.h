@@ -49,6 +49,17 @@ class TestJsonRef {
     const auto it = fields_.find(key_);
     return it == fields_.end() ? fallback : it->second.text == "true";
   }
+  TestJsonRef operator[](int idx) {
+    static TestJsonFields empty;
+    if (!arrays_ || idx < 0) return TestJsonRef(empty, nullptr, "");
+    const size_t i = static_cast<size_t>(idx);
+    auto &vec = (*arrays_)[key_];
+    if (vec.size() <= i) vec.resize(i + 1);
+    return TestJsonRef(vec[i], nullptr, "");
+  }
+  TestJsonRef operator[](const char *subKey) {
+    return TestJsonRef(fields_, nullptr, subKey);
+  }
   template <typename T> bool is() const;
   template <typename T> T as() const;
  private:
@@ -148,6 +159,22 @@ inline DeserializationError deserializeJson(DynamicJsonDocument &doc, const Stri
   topLevel = std::regex_replace(text, arrRe, "");
   parseFlatObjectFields(topLevel, doc.fields);
   return {false};
+}
+
+template <size_t N>
+class StaticJsonDocument : public DynamicJsonDocument {
+ public:
+  StaticJsonDocument() : DynamicJsonDocument(N) {}
+};
+
+namespace DeserializationOption {
+struct Filter {
+  explicit Filter(const DynamicJsonDocument &) {}
+};
+}
+
+inline DeserializationError deserializeJson(DynamicJsonDocument &doc, const String &input, DeserializationOption::Filter) {
+  return deserializeJson(doc, input);
 }
 
 inline void serializeFieldsToStream(const TestJsonFields &fields, std::ostringstream &stream, bool &first) {

@@ -128,5 +128,25 @@ int main() {
   assert(q.acknowledgeBatch(batch[0], batch[3]));
   assert(!q.hasPending());
   assert(!fs.exists("/queue.json") && !fs.exists("/queue.cursor"));
+
+  // 20 stored offline scans sent together are deleted from device flash once
+  // acknowledged, and purgeDeliveredStorage removes stale previous-boot anchors
+  // while keeping the current boot's anchor and review file safe.
+  assert(q.saveClockAnchor("1111111111111111", 1790000500UL, 100));
+  assert(q.saveClockAnchor("2222222222222222", 1790000900UL, 120));
+  for (int i = 0; i < 20; ++i) {
+    assert(q.append(String("{\"eventId\":\"scan-") + String(i) + String("\",\"fingerprintId\":") + String(i + 1) + String("}")));
+  }
+  assert(q.peekBatch(batch, 30) == OfflineQueue::READY && batch.size() == 20);
+  // While unsent records remain, purgeDeliveredStorage refuses to delete anything.
+  assert(!q.purgeDeliveredStorage("2222222222222222"));
+  assert(fs.exists("/queue.json"));
+  assert(q.acknowledgeBatch(batch[0], batch[19]));
+  assert(q.purgeDeliveredStorage("2222222222222222"));
+  assert(!fs.exists("/queue.json") && !fs.exists("/queue.cursor"));
+  assert(!fs.exists("/anchor-0123456789abcdef"));
+  assert(!fs.exists("/anchor-1111111111111111"));
+  assert(fs.exists("/anchor-2222222222222222")); // current boot anchor kept
+  assert(fs.exists("/queue.review.jsonl"));      // admin review records kept
   std::cout << "Offline queue tests passed: FIFO, stalled send, reboot, torn writes, durable anchors and manual review\n";
 }

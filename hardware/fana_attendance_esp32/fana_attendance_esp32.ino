@@ -237,36 +237,43 @@ class ScanFeedback {
    * press during the dark time" report. A notice expires on its own while the
    * scan loop keeps running underneath it. */
   enum Phase : uint8_t { IDLE, SENDING, SAVED, SENT_IN, SENT_OUT, ALREADY, REVIEW, BATCH_SENT, NOTICE };
-  /* How long the door may claim "SENDING TO WEBSITE" before it admits that no
-   * receipt has arrived. This was 1.8 s, which is shorter than one round trip
-   * to a weak router: a scan that WAS delivered a moment later had already
-   * been shown as "SAVED OFFLINE", which is exactly the owner's report - "even
-   * though there is Wi-Fi the system says saved on device". A real SENT only
-   * ever comes from the website's own receipt; until then the honest states are
-   * SENDING (link up, waiting) and SAVED (nothing confirmed, still queued). */
-  static const uint32_t WAIT_FOR_RECEIPT_MS = 8000U;
-  /* How long the green LED + success beep last. When they end the screen stops
-   * saying "Please wait" and reports where the scan actually is (owner, Oct
-   * 2026: "once the initial green indication finishes, replace Verifying...
-   * with either Sent to website or Stored in offline queue"). */
-  static const uint32_t GREEN_SHOW_MS = 1500U;
-  /* Shown the instant the reader matches a finger and the name is known from
-   * the list saved in flash - BEFORE the LittleFS write, so the employee sees
-   * their name and "Verifying...." with no wait at all. The final state follows
-   * within milliseconds (see saved()). */
+  /* Fast verification budget before falling back to "Stored offline queue" when
+   * the link is silent, while background delivery continues automatically. */
+  static const uint32_t WAIT_FOR_RECEIPT_MS = 3500U;
+  /* Crisp 1st green flash on finger recognition, followed by a brief dark gap
+   * before the final status + 2nd green light & buzzer confirm completion. */
+  static const uint32_t FIRST_GREEN_MS = 320U;
+  static const uint32_t GREEN_SHOW_MS = 450U;
+  static const uint32_t DONE_GREEN_MS = 550U;
   void verifying(const DeliveryNotice &notice, bool connected, uint32_t now) {
     current_ = notice;
     linkUpAtSave_ = connected;
     phase_ = SENDING;
     shownAt_ = now;
+    awaitingDoneCue_ = true;
+    doneCuePending_ = false;
+    deferCurrent_ = !connected;
   }
   void saved(const DeliveryNotice &notice, bool connected, uint32_t now) {
+    const bool keepStart = phase_ == SENDING && current_.eventId[0] == '\0';
     current_ = notice;
     linkUpAtSave_ = connected;
-    phase_ = connected ? SENDING : SAVED;
-    shownAt_ = now;
+    phase_ = SENDING;
+    if (!keepStart) shownAt_ = now;
+    awaitingDoneCue_ = true;
+    deferCurrent_ = !connected;
   }
-  // True once the green indication has finished for the scan on screen.
+  void deferIfCurrent(const char *eventId) {
+    if (phase_ == SENDING && eventId && eventId[0] && strcmp(current_.eventId, eventId) == 0) {
+      deferCurrent_ = true;
+    }
+  }
+  bool consumeDoneCue() {
+    if (!doneCuePending_) return false;
+    doneCuePending_ = false;
+    return true;
+  }
+  // True once the initial 1st green flash + gap has finished for the scan on screen.
   bool greenPhaseOver(uint32_t now) const {
     return phase_ == SENDING && (uint32_t)(now - shownAt_) >= GREEN_SHOW_MS;
   }
@@ -281,8 +288,10 @@ class ScanFeedback {
     // A batch summary represents all queued offline scans sent together: show
     // it without cycling employee names one at a time.
     if (notice.kind == DELIVERY_BATCH && phase_ != SENDING) return true;
-    return phase_ == IDLE || strcmp(current_.eventId, notice.eventId) == 0 ||
-           (uint32_t)(now - shownAt_) >= 1500U;
+    if (phase_ == SENDING && strcmp(current_.eventId, notice.eventId) == 0) {
+      return (uint32_t)(now - shownAt_) >= GREEN_SHOW_MS;
+    }
+    return phase_ == IDLE || (uint32_t)(now - shownAt_) >= 1500U;
   }
   // Show a short warning without stopping the scanner.
   void notice(const char *title, const char *line2, const char *line3, uint32_t now, uint32_t ms) {
@@ -291,9 +300,15 @@ class ScanFeedback {
     putLine(noticeLine3_, sizeof(noticeLine3_), line3);
     noticeMs_ = ms;
     phase_ = NOTICE;
+    awaitingDoneCue_ = false;
+    doneCuePending_ = false;
+    deferCurrent_ = false;
     shownAt_ = now;
   }
   void delivered(const DeliveryNotice &notice, uint32_t now) {
+    const bool matchesActive =
+        phase_ == SENDING && awaitingDoneCue_ && notice.eventId[0] &&
+        strcmp(current_.eventId, notice.eventId) == 0;
     current_ = notice;
     switch (notice.kind) {
       case DELIVERY_IN: phase_ = SENT_IN; break;
@@ -302,6 +317,11 @@ class ScanFeedback {
       case DELIVERY_REVIEW: phase_ = REVIEW; break;
       case DELIVERY_BATCH: phase_ = BATCH_SENT; break;
     }
+    if (matchesActive) {
+      doneCuePending_ = true;
+      awaitingDoneCue_ = false;
+    }
+    deferCurrent_ = false;
     shownAt_ = now;
   }
   bool tick(uint32_t now) {
@@ -312,15 +332,25 @@ class ScanFeedback {
       }
       return false;
     }
-    if (phase_ == SENDING && (uint32_t)(now - shownAt_) >= WAIT_FOR_RECEIPT_MS) {
-      // No confirmed reply after a full round-trip budget: the scan is safe on
-      // the device and will go by itself, but nobody may call it "sent".
-      phase_ = SAVED;
-      shownAt_ = now;
-      return true;
+    if (phase_ == SENDING) {
+      const uint32_t budget = deferCurrent_ ? GREEN_SHOW_MS : WAIT_FOR_RECEIPT_MS;
+      if ((uint32_t)(now - shownAt_) >= budget) {
+        // Offline or no reply within the fast live window: show Stored offline
+        // queue right away and trigger the 2nd confirmation light + buzzer.
+        phase_ = SAVED;
+        deferCurrent_ = false;
+        if (awaitingDoneCue_) {
+          doneCuePending_ = true;
+          awaitingDoneCue_ = false;
+        }
+        shownAt_ = now;
+        return true;
+      }
+      return false;
     }
-    if (phase_ != IDLE && phase_ != SENDING && (uint32_t)(now - shownAt_) >= 3000U) {
+    if (phase_ != IDLE && (uint32_t)(now - shownAt_) >= 2500U) {
       phase_ = IDLE;
+      awaitingDoneCue_ = false;
       return true;
     }
     return false;
@@ -346,6 +376,9 @@ class ScanFeedback {
   char noticeLine3_[21] = "";
   uint32_t noticeMs_ = 2500;
   bool linkUpAtSave_ = false;
+  bool awaitingDoneCue_ = false;
+  bool doneCuePending_ = false;
+  bool deferCurrent_ = false;
   Phase phase_ = IDLE;
   uint32_t shownAt_ = 0;
 };
@@ -364,6 +397,7 @@ SemaphoreHandle_t sensorMutex = nullptr;
 SemaphoreHandle_t mappingMutex = nullptr;
 SemaphoreHandle_t queueMutex = nullptr;
 SemaphoreHandle_t progressMutex = nullptr;
+SemaphoreHandle_t eventStreamMutex = nullptr;
 OfflineQueue *offlineQueue = nullptr;
 TaskHandle_t deliveryTaskHandle = nullptr;
 QueueHandle_t deliveryNotices = nullptr;
@@ -372,12 +406,17 @@ std::atomic<uint8_t> queueStatus{QUEUE_OFFLINE};
 std::atomic<int> queueLastHttpCode{0};
 std::atomic<bool> websiteClockUsed{false};
 std::atomic<bool> deferredReconnectSync{false};
+std::atomic<bool> deliveryUsingNetwork{false};
 std::atomic<int> activeEnrollJobId{0};
 std::atomic<int> activeEnrollFingerId{0};
 String pendingEnrollProgress = "";
-#define OFFLINE_BATCH_MAX       20    // send up to 20 offline scans together in one HTTP request
+char deferredLiveEventId[33] = "";
+#define OFFLINE_BATCH_MAX       30    // send 20-30 stored offline scans together in one HTTP request
+#define LIVE_SCAN_TIMEOUT_MS    3200  // fast direct-to-site timeout so feedback never drags
 bool scanGreenOn = false;
 uint32_t scanGreenSince = 0;
+bool doneGreenOn = false;
+uint32_t doneGreenSince = 0;
 // The red LED belongs to a warning notice and is switched off by the loop, not
 // by a blocking delay (see showSensorWarning()).
 bool warningLedOn = false;
@@ -751,6 +790,10 @@ void serviceWifi();
 void networkTask(void *arg);
 void deliveryTask(void *arg);
 void wakeDeliveryTask();
+void acquireDeliveryNetwork();
+void releaseDeliveryNetwork(bool purgeCompletedQueue);
+void notifyLiveSendDeferred(const char *eventId);
+bool forceSyncTimeFromWebsite();
 void ensureClockAnchorSaved();
 void flushEnrollProgress();
 bool queueActivelyDraining();
@@ -883,11 +926,13 @@ void setup() {
   mappingMutex = xSemaphoreCreateMutex();
   queueMutex = xSemaphoreCreateMutex();
   progressMutex = xSemaphoreCreateMutex();
+  eventStreamMutex = xSemaphoreCreateRecursiveMutex();
   deliveryNotices = xQueueCreate(16, sizeof(DeliveryNotice));
   char id[17];
   snprintf(id, sizeof(id), "%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
   bootId = String(id);
   if (queueMutex) offlineQueue = new OfflineQueue(LittleFS, queueMutex);
+  if (offlineQueue && !offlineQueue->hasPending()) offlineQueue->purgeDeliveredStorage(bootId);
   queueNeedsReview = LittleFS.exists("/queue.review.jsonl");
   loadCachedMappings();
   loadRestCache();
@@ -898,7 +943,7 @@ void setup() {
     return; // never run two tasks against an unprotected reader/queue
   }
   if (!deliveryNotices) Serial.println("Could not create delivery display queue; confirmations will be logged on Serial");
-  const BaseType_t deliveryStarted = xTaskCreatePinnedToCore(deliveryTask, "attendance-delivery", 12288, nullptr, 1, &deliveryTaskHandle, 0);
+  const BaseType_t deliveryStarted = xTaskCreatePinnedToCore(deliveryTask, "attendance-delivery", 16384, nullptr, 1, &deliveryTaskHandle, 0);
   if (deliveryStarted != pdPASS) {
     queueStatus = QUEUE_ERROR;
     Serial.println("Delivery task could not start; scans remain local. Inspect memory.");
@@ -939,8 +984,16 @@ void networkTask(void *) {
   startTimeSync(); // certificate validation may need the correct clock
   if (connected) {
     applyWifiTuning();
-    loadMappingsFromServer();
-    loadRestScheduleFromServer();
+    const uint32_t waitStart = millis();
+    while (!wallClockEpoch() && (uint32_t)(millis() - waitStart) < 1200UL) delay(50);
+    if (!wallClockEpoch()) syncTimeFromWebsite();
+    wakeDeliveryTask();
+    if (!offlineQueue || !offlineQueue->hasPending()) {
+      loadMappingsFromServer();
+      loadRestScheduleFromServer();
+    } else {
+      deferredReconnectSync = true;
+    }
   } else Serial.println("WiFi not connected yet. Still scanning and retrying in the background.");
   server.on("/status", handleStatus);
   server.on("/", handleRoot);
@@ -1560,7 +1613,7 @@ void renderScanFeedback() {
      * "even with Wi-Fi it says saved on device"). */
     case ScanFeedback::SENDING:
       showLines(name, when, "Verifying....",
-                scanFeedback.greenPhaseOver(millis()) ? String("Sending to site") : String("Please wait"));
+                scanFeedback.linkWasUp() ? String("Sending to site") : String("Saving scan"));
       break;
     /* OFFLINE: the queue already holds the scan with its ORIGINAL scan time, so
      * the card says exactly that and row 3 explains why. The delivery task
@@ -1589,19 +1642,26 @@ void renderScanFeedback() {
 // background; a different person's fresh result gets time to be read first.
 void updateScanFeedback() {
   const uint32_t now = millis();
-  if (scanGreenOn && (uint32_t)(now - scanGreenSince) >= ScanFeedback::GREEN_SHOW_MS) {
+  if (scanGreenOn && (uint32_t)(now - scanGreenSince) >= ScanFeedback::FIRST_GREEN_MS) {
     digitalWrite(GREEN_LED, LOW);
     scanGreenOn = false;
-    /* The green indication is over: redraw at once so "Please wait" becomes the
-     * real state ("Sending to site" / "Sent to website" / "Stored offline
-     * queue") without waiting for the next event. */
-    renderScanFeedback();
+  }
+  if (doneGreenOn && (uint32_t)(now - doneGreenSince) >= ScanFeedback::DONE_GREEN_MS) {
+    digitalWrite(GREEN_LED, LOW);
+    doneGreenOn = false;
   }
   // The red light belongs to the warning message: both end together, and
   // neither one delays the next scan.
   if (warningLedOn && (uint32_t)(now - warningLedSince) >= WARNING_SHOW_MS) {
     digitalWrite(RED_LED, LOW);
     warningLedOn = false;
+  }
+  if (progressMutex && xSemaphoreTake(progressMutex, 0) == pdTRUE) {
+    if (deferredLiveEventId[0]) {
+      scanFeedback.deferIfCurrent(deferredLiveEventId);
+      deferredLiveEventId[0] = '\0';
+    }
+    xSemaphoreGive(progressMutex);
   }
   if (scanFeedback.tick(now)) renderScanFeedback();
   DeliveryNotice notice;
@@ -1610,6 +1670,19 @@ void updateScanFeedback() {
       scanFeedback.delivered(notice, now);
       renderScanFeedback();
     }
+  }
+  // 2nd green light + buzzer sound when the final result ("Sent to website",
+  // "Already registered", or "Stored offline queue") appears on screen.
+  if (scanFeedback.consumeDoneCue()) {
+    if (warningLedOn) {
+      digitalWrite(RED_LED, LOW);
+      warningLedOn = false;
+    }
+    scanGreenOn = false;
+    digitalWrite(GREEN_LED, HIGH);
+    doneGreenOn = true;
+    doneGreenSince = now;
+    beepSuccess();
   }
 }
 
@@ -1822,8 +1895,12 @@ String wallClockText() {
 /* The real time as seconds since 1970, or 0 while NTP has not answered since
  * boot. Same source as the LCD row and the same rule: never block the loop. */
 unsigned long wallClockEpoch() {
-  struct tm t;
+  struct tm t = {};
   if (!getLocalTime(&t, 0) || t.tm_year < (2020 - 1900)) return 0;
+  // Read kernel UTC seconds directly so TZ/mktime differences across ESP32 core
+  // versions can never shift scan timestamps by UTC+3.
+  const time_t nowUtc = time(nullptr);
+  if (nowUtc >= 1577836800) return (unsigned long)nowUtc;
   const time_t epoch = mktime(&t);
   if (epoch <= 0) return 0;
   return (unsigned long)epoch;
@@ -2440,6 +2517,9 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   if (warningLedOn) {
     digitalWrite(RED_LED, LOW);
     warningLedOn = false;
+  }
+  if (doneGreenOn) {
+    doneGreenOn = false;
   }
   wakeDeliveryTask();
   // Light the glass again for the next person before the buzzer is even done.
@@ -3575,10 +3655,10 @@ void keepServerLinkAlive() {
   wifiWasConnected = wifiConnected;
   if (!wifiConnected) return;
 
-  // Attendance queue priority: while offline scans are actively flushing on the
-  // delivery task, keep the long-lived SSE TLS stream closed so the batch POST
-  // gets all contiguous TLS heap and completes in one fast round-trip.
-  if (queueActivelyDraining()) {
+  // Attendance queue priority: while scans are waiting or actively uploading on
+  // the delivery task, keep the long-lived SSE TLS stream closed so HTTPS POST
+  // gets all contiguous TLS heap and finishes immediately.
+  if (deliveryUsingNetwork.load() || queueActivelyDraining()) {
     if (eventStreamActive) stopEventStream();
     return;
   }
@@ -3605,17 +3685,24 @@ void keepServerLinkAlive() {
 }
 
 void stopEventStream() {
+  if (eventStreamMutex) xSemaphoreTakeRecursive(eventStreamMutex, portMAX_DELAY);
   if (eventStreamActive) Serial.println("Event stream disconnected");
   eventStreamActive = false;
   eventStream = nullptr;
   eventLine = "";
   eventHttp.end();
   lastEventStreamTry = millis();
+  if (eventStreamMutex) xSemaphoreGiveRecursive(eventStreamMutex);
 }
 
 void startEventStream() {
+  if (deliveryUsingNetwork.load() || queueActivelyDraining()) return;
+  if (eventStreamMutex) xSemaphoreTakeRecursive(eventStreamMutex, portMAX_DELAY);
   stopEventStream();
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED || deliveryUsingNetwork.load()) {
+    if (eventStreamMutex) xSemaphoreGiveRecursive(eventStreamMutex);
+    return;
+  }
   Serial.println("Connecting real-time event stream...");
   beginServerRequest(eventHttp, "/api/attendance/events?channel=device");
   eventHttp.addHeader("Accept", "text/event-stream");
@@ -3636,17 +3723,23 @@ void startEventStream() {
     eventStreamRetryMs = min(eventStreamRetryMs * 2, 30000UL);
   }
   lastEventStreamTry = millis();
+  if (eventStreamMutex) xSemaphoreGiveRecursive(eventStreamMutex);
 }
 
 // Reads what is available without blocking. A "data:" line means something
 // changed: refresh the names and look for a pending job.
 void pumpEventStream() {
-  if (!eventStreamActive || eventStream == nullptr) return;
-  if (!eventStream->connected()) {
-    stopEventStream();
+  bool gotRefresh = false;
+  if (eventStreamMutex) xSemaphoreTakeRecursive(eventStreamMutex, portMAX_DELAY);
+  if (!eventStreamActive || eventStream == nullptr) {
+    if (eventStreamMutex) xSemaphoreGiveRecursive(eventStreamMutex);
     return;
   }
-  bool gotRefresh = false;
+  if (!eventStream->connected()) {
+    stopEventStream();
+    if (eventStreamMutex) xSemaphoreGiveRecursive(eventStreamMutex);
+    return;
+  }
   while (eventStream->available() > 0) {
     const char c = (char)eventStream->read();
     lastEventStreamData = millis();
@@ -3657,6 +3750,7 @@ void pumpEventStream() {
       eventLine += c;
     }
   }
+  if (eventStreamMutex) xSemaphoreGiveRecursive(eventStreamMutex);
   if (gotRefresh && !enrollingFromServer) {
     Serial.println("Real-time event: checking enrollment, then names and open hours");
     // An enrollment should not wait behind two unrelated HTTP requests, which
@@ -3967,8 +4061,21 @@ static int trySyncOfflineBatch(const std::vector<OfflineQueue::Head> &batch, Que
     return 0;
   }
 
+  StaticJsonDocument<256> resFilter;
+  resFilter["batch"] = true;
+  resFilter["results"][0]["httpStatus"] = true;
+  resFilter["results"][0]["status"] = true;
+  resFilter["results"][0]["eventId"] = true;
+  resFilter["results"][0]["action"] = true;
+  resFilter["results"][0]["recordedAtEpoch"] = true;
+  resFilter["results"][0]["fingerprintId"] = true;
+  resFilter["results"][0]["memberId"] = true;
+  resFilter["results"][0]["memberName"] = true;
+  resFilter["results"][0]["success"] = true;
+
   DynamicJsonDocument answer(16384);
-  if (deserializeJson(answer, body) || !(answer["batch"] | false) || !answer["results"].is<JsonArray>()) {
+  if (deserializeJson(answer, body, DeserializationOption::Filter(resFilter)) ||
+      !(answer["batch"] | false) || !answer["results"].is<JsonArray>()) {
     // Older website without batch support or captive portal: let single-item
     // verification inspect/deliver safely.
     return -1;
@@ -4009,7 +4116,10 @@ static int trySyncOfflineBatch(const std::vector<OfflineQueue::Head> &batch, Que
       continue;
     }
 
-    if (itemHttp == 409 || (itemHttp == 404 && strcmp(resStatus, "not_found") == 0)) {
+    if (itemHttp == 409 ||
+        (itemHttp == 404 && strcmp(resStatus, "not_found") == 0) ||
+        (itemHttp == 422 && strcmp(resStatus, "invalid_scan_time") == 0)) {
+      if (itemHttp == 422) forceSyncTimeFromWebsite();
       if (committedEnd >= (int)ackStart) {
         if (!offlineQueue->acknowledgeBatch(batch[ackStart], batch[(size_t)committedEnd])) {
           queueStatus = QUEUE_STORAGE_ERROR;
@@ -4017,7 +4127,8 @@ static int trySyncOfflineBatch(const std::vector<OfflineQueue::Head> &batch, Que
           return 0;
         }
       }
-      const char *reason = itemHttp == 409 ? "server_conflict" : "unmapped_finger";
+      const char *reason = itemHttp == 409 ? "server_conflict" :
+                           itemHttp == 422 ? "invalid_scan_time" : "unmapped_finger";
       if (!offlineQueue->copyToReview(batch[i], reason)) {
         queueStatus = QUEUE_STORAGE_ERROR;
         batchResult = QUEUE_WAIT;
@@ -4119,6 +4230,7 @@ QueueSyncResult syncOfflineQueue() {
     const String originalBoot = doc["bootId"] | "";
     if (originalBoot == bootId) {
       queueStatus = QUEUE_CLOCK_WAIT;
+      notifyLiveSendDeferred(eventId);
       Serial.println("Offline queue waiting for the first clock anchor (NTP or website time)");
       return QUEUE_WAIT;
     }
@@ -4137,7 +4249,7 @@ QueueSyncResult syncOfflineQueue() {
   }
 
   HTTPClient http;
-  http.setTimeout(SERVER_TIMEOUT_MS);
+  http.setTimeout(LIVE_SCAN_TIMEOUT_MS);
   beginServerRequest(http, "/api/attendance/clock");
   addDeviceHeaders(http);
   DynamicJsonDocument postDoc(512);
@@ -4198,8 +4310,21 @@ QueueSyncResult syncOfflineQueue() {
       return QUEUE_PROGRESS;
     }
   }
+  if (httpCode == 422 && body.length() > 0) {
+    DynamicJsonDocument errDoc(512);
+    if (!deserializeJson(errDoc, body) && strcmp(errDoc["status"] | "", "invalid_scan_time") == 0) {
+      forceSyncTimeFromWebsite();
+      if (!offlineQueue->copyToReview(head, "invalid_scan_time")) { queueStatus = QUEUE_STORAGE_ERROR; return QUEUE_WAIT; }
+      queueNeedsReview = true;
+      if (!offlineQueue->acknowledge(head)) { queueStatus = QUEUE_STORAGE_ERROR; return QUEUE_WAIT; }
+      publishDeliveryNotice(eventId, savedName, (uint32_t)scannedAt, DELIVERY_REVIEW);
+      Serial.println("Invalid-time scan saved for manual review after re-syncing clock");
+      return QUEUE_PROGRESS;
+    }
+  }
   if (httpCode != 200) {
     queueStatus = QUEUE_ERROR;
+    notifyLiveSendDeferred(eventId);
     Serial.print("Offline queue paused, HTTP ");
     Serial.println(httpCode);
     return QUEUE_WAIT;
@@ -4216,6 +4341,7 @@ QueueSyncResult syncOfflineQueue() {
       answer["memberId"] | 0, action, answer["success"] | false);
   if (!valid) {
     queueStatus = QUEUE_ERROR;
+    notifyLiveSendDeferred(eventId);
     Serial.println("Website reply did not confirm this scan; kept on device. Check website deployment or captive portal.");
     return QUEUE_WAIT;
   }
@@ -4282,24 +4408,36 @@ bool syncTimeFromWebsite() {
 void deliveryTask(void *) {
   uint32_t lastTimeTry = 0;
   bool triedTime = false;
+  bool hadWork = false;
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) {
       queueStatus = QUEUE_OFFLINE;
+      releaseDeliveryNetwork(false);
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(QUEUE_OFFLINE_POLL_MS));
       continue;
     }
+    const bool pendingNow = offlineQueue && offlineQueue->hasPending();
     const uint32_t now = millis();
-    if (!wallClockEpoch() && (!triedTime || (uint32_t)(now - lastTimeTry) >= WEBSITE_TIME_RETRY_MS)) {
+    const bool needsClock = !wallClockEpoch() &&
+                            (pendingNow || !triedTime || (uint32_t)(now - lastTimeTry) >= WEBSITE_TIME_RETRY_MS);
+    if (pendingNow || needsClock) {
+      acquireDeliveryNetwork();
+    }
+    if (needsClock) {
       triedTime = true;
       lastTimeTry = now;
       syncTimeFromWebsite();
     }
     ensureClockAnchorSaved();
+    if (pendingNow) hadWork = true;
     const QueueSyncResult result = syncOfflineQueue();
     if (result == QUEUE_PROGRESS) {
+      hadWork = true;
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
+    releaseDeliveryNetwork(result == QUEUE_EMPTY && hadWork);
+    if (result == QUEUE_EMPTY) hadWork = false;
     flushEnrollProgress();
     // New scans and clock anchors wake this immediately; 1-second offline/idle
     // polling also notices reconnection even while the other task is busy.
@@ -4322,8 +4460,63 @@ void periodicSync() {
 
 bool queueActivelyDraining() {
   if (!offlineQueue || !offlineQueue->hasPending()) return false;
-  const uint8_t st = queueStatus.load();
-  return st != QUEUE_ERROR && st != QUEUE_CLOCK_WAIT && st != QUEUE_STORAGE_ERROR;
+  return queueStatus.load() != QUEUE_STORAGE_ERROR;
+}
+
+void acquireDeliveryNetwork() {
+  deliveryUsingNetwork = true;
+  if (eventStreamActive) stopEventStream();
+}
+
+void releaseDeliveryNetwork(bool purgeCompletedQueue) {
+  if (purgeCompletedQueue && offlineQueue) {
+    if (offlineQueue->purgeDeliveredStorage(bootId)) {
+      Serial.println("Offline queue cleared from device flash; ready for next scans");
+    }
+  }
+  deliveryUsingNetwork = false;
+}
+
+void notifyLiveSendDeferred(const char *eventId) {
+  if (!eventId || !eventId[0] || !progressMutex) return;
+  if (xSemaphoreTake(progressMutex, pdMS_TO_TICKS(25)) == pdTRUE) {
+    snprintf(deferredLiveEventId, sizeof(deferredLiveEventId), "%s", eventId);
+    xSemaphoreGive(progressMutex);
+  }
+}
+
+bool forceSyncTimeFromWebsite() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  const uint64_t started = (uint64_t)esp_timer_get_time() / 1000ULL;
+  HTTPClient http;
+  http.setTimeout(LIVE_SCAN_TIMEOUT_MS);
+  beginServerRequest(http, "/api/attendance/device-time");
+  http.addHeader("Cache-Control", "no-cache");
+  if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
+  const int code = http.GET();
+  const String body = code == 200 ? http.getString() : String("");
+  http.end();
+  const uint64_t ended = (uint64_t)esp_timer_get_time() / 1000ULL;
+  if (code != 200 || ended < started || ended - started > 10000ULL) return false;
+  DynamicJsonDocument answer(256);
+  if (deserializeJson(answer, body) || strcmp(answer["service"] | "", "fana-attendance-time-v1") != 0) return false;
+  const uint32_t epoch = answer["epochSeconds"] | 0UL;
+  const uint32_t subsecond = answer["millisecond"] | 1000U;
+  if (epoch < 1577836800UL || epoch >= 4102444800UL || subsecond > 999) return false;
+  const uint64_t estimatedMs = (uint64_t)epoch * 1000ULL + subsecond + (ended - started) / 2ULL;
+  struct timeval tv;
+  tv.tv_sec = (time_t)(estimatedMs / 1000ULL);
+  tv.tv_usec = (suseconds_t)((estimatedMs % 1000ULL) * 1000ULL);
+  if (settimeofday(&tv, nullptr) != 0) return false;
+  const unsigned long syncedEpoch = (unsigned long)tv.tv_sec;
+  const uint64_t uptimeSec = (uint64_t)esp_timer_get_time() / 1000000ULL;
+  portENTER_CRITICAL(&clockMux);
+  epochAtSync = syncedEpoch;
+  uptimeAtSyncSeconds = uptimeSec;
+  portEXIT_CRITICAL(&clockMux);
+  websiteClockUsed = true;
+  Serial.println("Clock re-synchronized from website");
+  return true;
 }
 
 void ensureClockAnchorSaved() {

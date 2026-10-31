@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, AlertCircle, Clock, Fingerprint, Lock, ShieldCheck, Timer } from "lucide-react";
 import { ATTENDANCE_SUPERVISOR_ROLE } from "@/lib/attendance-supervisor";
-import { OVERTIME_TYPE_HINTS, OVERTIME_TYPE_LABELS, type OvertimeType } from "@/lib/attendance";
+import { OVERTIME_TYPE_LABELS, type OvertimeType } from "@/lib/attendance";
 
 /**
  * THE DOOR TABLET (/attendance).
@@ -558,11 +558,6 @@ export default function AttendanceKiosk() {
                       }`}
                     >
                       <span className="block text-xs font-black uppercase">{OVERTIME_TYPE_LABELS[t]}</span>
-                      <span
-                        className={`block text-[10px] mt-0.5 ${otType === t ? "text-[#2C1B17]/80" : "text-violet-300/70"}`}
-                      >
-                        {OVERTIME_TYPE_HINTS[t]}
-                      </span>
                     </button>
                   ))}
                 </div>

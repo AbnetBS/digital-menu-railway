@@ -150,6 +150,36 @@ pass(
   lateMinutesFor(pickShift(shifts, parseHHMM("13:30")!), parseHHMM("13:30")!) === 30 &&
     lateMinutesFor(pickShift(shifts, parseHHMM("12:45")!), parseHHMM("12:45")!) === 0
 );
+pass(
+  "arriving 20 minutes before the Afternoon shift (17:40 -> 18:00) belongs to Afternoon and is on time",
+  pickShift(shifts, parseHHMM("17:40")!) === afternoon &&
+    lateMinutesFor(pickShift(shifts, parseHHMM("17:40")!), parseHHMM("17:40")!) === 0
+);
+{
+  const twoShifts = [
+    { label: "Shift 1", startTime: "00:00", endTime: "08:00", lateGraceMinutes: 30 },
+    { label: "Shift 2", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 30 },
+  ];
+  const backToBack = [
+    { label: "Morning", startTime: "06:00", endTime: "14:00", lateGraceMinutes: 30 },
+    { label: "Afternoon", startTime: "14:00", endTime: "22:00", lateGraceMinutes: 30 },
+  ];
+  pass(
+    "owner's ID 53 case: first scan at 13:50 (or 13:40, 20m before 14:00 / Ethiopian 8:00) picks Shift 2 with 0m late instead of Late 800m",
+    pickShift(twoShifts, parseHHMM("13:50")!) === twoShifts[1] &&
+      lateMinutesFor(pickShift(twoShifts, parseHHMM("13:50")!), parseHHMM("13:50")!) === 0 &&
+      pickShift(twoShifts, parseHHMM("13:40")!) === twoShifts[1] &&
+      lateMinutesFor(pickShift(twoShifts, parseHHMM("13:40")!), parseHHMM("13:40")!) === 0
+  );
+  pass(
+    "back-to-back 06:00-14:00 and 14:00-22:00 shifts match 13:40/13:50 to Afternoon and 07:10 to Morning (40m late)",
+    pickShift(backToBack, parseHHMM("13:40")!) === backToBack[1] &&
+      pickShift(backToBack, parseHHMM("13:50")!) === backToBack[1] &&
+      lateMinutesFor(pickShift(backToBack, parseHHMM("13:50")!), parseHHMM("13:50")!) === 0 &&
+      pickShift(backToBack, parseHHMM("07:10")!) === backToBack[0] &&
+      lateMinutesFor(pickShift(backToBack, parseHHMM("07:10")!), parseHHMM("07:10")!) === 40
+  );
+}
 
 pass("leaving before the time out is an early out", isEarlyOut(morning, parseHHMM("16:00")!) === true);
 pass("leaving at the time out or after is not", isEarlyOut(morning, parseHHMM("18:00")!) === false);
@@ -594,9 +624,9 @@ pass("the fingerprint scanner and the Overtime button never need a supervisor",
   !kiosk.includes("locked ? unlockKeypad : openOvertime") && kiosk.includes("onClick={openOvertime}"));
 {
   const overtimeLib = read("src/lib/attendance.ts");
-  pass("the Overtime button on the door tablet asks WHICH kind, and the three kinds are the admin's three",
+  pass("the Overtime button on the door tablet asks WHICH kind, and all four kinds are offered",
     kiosk.includes("Which kind of overtime?") &&
-      /export const OVERTIME_TYPES = \["holiday", "free_week", "shift"\]/.test(overtimeLib));
+      /export const OVERTIME_TYPES = \["free_week", "holiday", "shift", "night_shift"\]/.test(overtimeLib));
 }
 
 /* ── 10. the leaderboard: the hours of every role, ranked ────────────────── */

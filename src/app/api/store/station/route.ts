@@ -11,9 +11,8 @@ import { isDimension, toBase, type Dimension } from '@/lib/store/units';
 import { publish, CHANNELS } from '@/lib/realtime';
 
 const roles = ['kitchen', 'barista', 'juice'];
-async function session() {
-  const s = await readStaffSession();
-  if (!s || !roles.includes(s.role)) return null;
+async function session(s: NonNullable<Awaited<ReturnType<typeof readStaffSession>>>) {
+  if (!roles.includes(s.role)) return null;
   const user = await pool.query(
     'SELECT name,role FROM staff_users WHERE id=$1',
     [s.staffId],
@@ -61,21 +60,21 @@ export async function GET() {
     );
   try {
     await ready();
-    const who = await session();
-    if (!who) throw new Invalid('Station session expired', 401);
-    const [items, history] = await Promise.all([
+    const [who, items, history] = await Promise.all([
+      session(guard.session),
       pool.query(
         `SELECT i.id,i.name,i.dimension,
-          CASE WHEN i.image LIKE 'data:image/%' THEN '/api/store/images/' || i.id ELSE i.image END AS image,
+          CASE WHEN left(i.image, 11) = 'data:image/' THEN '/api/store/images/' || i.id ELSE i.image END AS image,
           COALESCE(b.balance,0) AS station_balance
          FROM store_items i LEFT JOIN store_station_balances b ON b.item_id=i.id AND b.station=$1 ORDER BY i.name`,
-        [who.station],
+        [guard.session.role],
       ),
       pool.query(
         "SELECT m.id,m.kind,m.amount,m.reason,m.actor,m.created_at,i.name,i.dimension FROM store_movements m JOIN store_items i ON i.id=m.item_id WHERE m.station=$1 AND (m.kind='waste' OR (m.kind='purchase' AND m.reason='Direct station import')) ORDER BY m.created_at DESC LIMIT 100",
-        [who.station],
+        [guard.session.role],
       ),
     ]);
+    if (!who) throw new Invalid('Station session expired', 401);
     return refreshStoreSession(
       NextResponse.json(
         { who, items: items.rows, history: history.rows },
@@ -96,10 +95,9 @@ export async function POST(request: Request) {
       { status: 403 },
     );
   try {
-    await ready();
-    const who = await session();
+    const [, b] = await Promise.all([ready(), request.json()]);
+    const who = await session(guard.session);
     if (!who) throw new Invalid('Station session expired', 401);
-    const b = await request.json();
     const client = await pool.connect();
     try {
       await client.query('BEGIN');

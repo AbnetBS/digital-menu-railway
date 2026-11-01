@@ -6,8 +6,10 @@ import { ensureStoreSchema } from '@/lib/store/schema';
 /** Reports are independently grouped in SQL so busy months are never truncated. */
 export async function GET(request: Request) {
   try {
-    const staff = await readStaffSession();
-    const admin = await readAdminSession();
+    const [staff, admin] = await Promise.all([
+      readStaffSession(),
+      readAdminSession(),
+    ]);
     if (
       staff?.role === 'stock_accepter' ||
       (!admin && staff?.role !== 'store_manager')
@@ -16,18 +18,6 @@ export async function GET(request: Request) {
         { error: 'Manager access required' },
         { status: 403 },
       );
-    await ensureStoreSchema();
-    if (staff?.role === 'store_manager') {
-      const account = await pool.query(
-        "SELECT 1 FROM store_accounts a JOIN staff_users s ON s.id=a.staff_id WHERE s.id=$1 AND s.role='store_manager' AND extract(epoch from a.session_valid_after)*1000 <= $2",
-        [staff.staffId, staff.iat],
-      );
-      if (!account.rowCount)
-        return NextResponse.json(
-          { error: 'Manager access required' },
-          { status: 403 },
-        );
-    }
     const url = new URL(request.url),
       from = url.searchParams.get('from') || '',
       to = url.searchParams.get('to') || '';
@@ -45,8 +35,15 @@ export async function GET(request: Request) {
         { error: 'Choose a valid period of up to 32 days' },
         { status: 400 },
       );
+    await ensureStoreSchema();
     const bounds = [`${from}T00:00:00+03:00`, `${to}T00:00:00+03:00`];
-    const [done, movements, waste] = await Promise.all([
+    const [account, done, movements, waste] = await Promise.all([
+      staff?.role === 'store_manager'
+        ? pool.query(
+            "SELECT 1 FROM store_accounts a JOIN staff_users s ON s.id=a.staff_id WHERE s.id=$1 AND s.role='store_manager' AND extract(epoch from a.session_valid_after)*1000 <= $2",
+            [staff.staffId, staff.iat],
+          )
+        : Promise.resolve({ rowCount: 1 }),
       pool.query(
         `SELECT station, COALESCE(category,'Other') AS category,item_name, SUM(quantity)::int AS quantity, bool_or(missing_recipe) AS missing_recipe
         FROM store_done_events WHERE done_at >= $1::timestamptz AND done_at < $2::timestamptz + interval '1 day'
@@ -68,6 +65,11 @@ export async function GET(request: Request) {
         bounds,
       ),
     ]);
+    if (!account.rowCount)
+      return NextResponse.json(
+        { error: 'Manager access required' },
+        { status: 403 },
+      );
     return NextResponse.json(
       { done: done.rows, movements: movements.rows, waste: waste.rows },
       { headers: { 'Cache-Control': 'no-store' } },

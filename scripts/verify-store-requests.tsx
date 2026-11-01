@@ -28,6 +28,17 @@ async function main() {
   assert.match(html, /Egg/);
   assert.match(html, /Available: 60 pcs/);
   assert.match(html, /Add to request/);
+  const brownHtml = renderToStaticMarkup(
+    <StoreRequestBuilder
+      items={items}
+      busy={false}
+      serverError=""
+      theme="brown"
+      onSend={async () => true}
+    />,
+  );
+  assert.match(brownHtml, /#261814/);
+  assert.match(brownHtml, /#E5BE42/);
   const ui = readFileSync('src/components/rms/StoreRequestBuilder.tsx', 'utf8');
   for (const text of [
     'Review and send',
@@ -45,6 +56,10 @@ async function main() {
     'Edit request',
     'Enable background alerts',
     'Test request alarm',
+    'fana-store-theme',
+    'Switch store theme',
+    'White theme',
+    'Brown & yellow',
   ])
     assert.ok(page.includes(text), text);
   assert.ok(!page.includes('Find employee'));

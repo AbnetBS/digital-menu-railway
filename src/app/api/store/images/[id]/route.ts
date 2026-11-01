@@ -6,8 +6,10 @@ import { readAdminSession, readStaffSession } from '@/lib/session';
 // or been rewritten: this endpoint reads the existing row only when the browser
 // needs the image, and lets that browser reuse it between Store refreshes.
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const admin = await readAdminSession();
-  const staff = await readStaffSession();
+  const [admin, staff] = await Promise.all([
+    readAdminSession(),
+    readStaffSession(),
+  ]);
   if (!admin && !staff) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const id = Number((await params).id);
@@ -15,23 +17,26 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Invalid image' }, { status: 400 });
 
   try {
+    let authQuery: Promise<{ rowCount: number | null }> = Promise.resolve({ rowCount: 1 });
     if (!admin && staff) {
       if (staff.role === 'store_manager' || staff.role === 'stock_accepter') {
-        const account = await pool.query(
+        authQuery = pool.query(
           `SELECT 1 FROM store_accounts a JOIN staff_users s ON s.id=a.staff_id
            WHERE s.id=$1 AND s.role=$2 AND extract(epoch from a.session_valid_after)*1000 <= $3`,
           [staff.staffId, staff.role, staff.iat],
         );
-        if (!account.rowCount) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       } else if (['kitchen', 'barista', 'juice'].includes(staff.role)) {
-        const account = await pool.query('SELECT 1 FROM staff_users WHERE id=$1 AND role=$2', [staff.staffId, staff.role]);
-        if (!account.rowCount) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        authQuery = pool.query('SELECT 1 FROM staff_users WHERE id=$1 AND role=$2', [staff.staffId, staff.role]);
       } else {
         return NextResponse.json({ error: 'Store access required' }, { status: 403 });
       }
     }
 
-    const result = await pool.query('SELECT image FROM store_items WHERE id=$1', [id]);
+    const [account, result] = await Promise.all([
+      authQuery,
+      pool.query('SELECT image FROM store_items WHERE id=$1', [id]),
+    ]);
+    if (!account.rowCount) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const image = String(result.rows[0]?.image || '');
     const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(image);
     if (!match) return NextResponse.json({ error: 'Image not found' }, { status: 404 });

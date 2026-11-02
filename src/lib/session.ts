@@ -25,9 +25,17 @@ import { SUPERVISOR_COOKIE_MAX_AGE_SECONDS } from "@/lib/attendance-supervisor";
 export const ADMIN_COOKIE = "fana_admin_auth";
 export const STAFF_COOKIE = "fana_staff_auth";
 export const SUPERVISOR_COOKIE = "fana_attendance_supervisor";
+export const STATION_STOCK_COOKIE = "fana_station_stock_auth";
 
 export type AdminSession = { kind: "admin"; iat: number };
 export type StaffSession = { kind: "staff"; staffId: number; name: string; role: string; iat: number };
+export type StationStockSession = {
+  kind: "station_stock";
+  staffId: number;
+  name: string;
+  station: string;
+  iat: number;
+};
 /** Who unlocked the door tablet, and when. An unlock stops when the
  *  supervisor locks the keypad again - it does not time out (owner, Oct 2026:
  *  the two-minute window "doesn't have benefit"). */
@@ -129,6 +137,23 @@ export async function readSupervisorSession(): Promise<SupervisorSession | null>
   return obj as unknown as SupervisorSession;
 }
 
+export async function readStationStockSession(): Promise<StationStockSession | null> {
+  const secret = getSessionSecret();
+  if (!secret) return null;
+  const store = await cookies();
+  const value = store.get(STATION_STOCK_COOKIE)?.value;
+  if (!value) return null;
+  const obj = verifyToken(value, secret);
+  if (
+    obj?.kind !== "station_stock" ||
+    typeof obj.staffId !== "number" ||
+    typeof obj.station !== "string"
+  ) {
+    return null;
+  }
+  return obj as unknown as StationStockSession;
+}
+
 
 type GuardResult<T> =
   | { ok: true; session: T }
@@ -171,6 +196,21 @@ export async function requireSupervisor(): Promise<GuardResult<SupervisorSession
   return { ok: true, session };
 }
 
+/** Require a Stock Accepter session for /station-stock (/api/store/station). */
+export async function requireStationStock(): Promise<GuardResult<StationStockSession>> {
+  const session = await readStationStockSession();
+  if (!session) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Sign in with your Stock Accepter account", needsLogin: true },
+        { status: 401 }
+      ),
+    };
+  }
+  return { ok: true, session };
+}
+
 /** Require a staff session OR an admin session (admin may perform staff ops). */
 export async function requireStaffOrAdmin(): Promise<
   GuardResult<{ kind: "staff" | "admin" }>
@@ -183,11 +223,25 @@ export async function requireStaffOrAdmin(): Promise<
 }
 
 /** Refresh long-lived store/station cookies without changing iat (PIN resets still revoke them). */
-export function refreshStoreSession(response: NextResponse, session: StaffSession | AdminSession | null): NextResponse {
+export function refreshStoreSession(
+  response: NextResponse,
+  session: StaffSession | AdminSession | StationStockSession | null
+): NextResponse {
   const secret = getSessionSecret();
   if (!session || !secret) return response;
-  if (session.kind === 'staff' && !['store_manager', 'stock_accepter', 'kitchen', 'barista', 'juice'].includes(session.role)) return response;
-  response.cookies.set(session.kind === 'admin' ? ADMIN_COOKIE : STAFF_COOKIE, signToken(session, secret), {
+  if (
+    session.kind === 'staff' &&
+    !['store_manager', 'stock_accepter', 'kitchen', 'barista', 'juice'].includes(session.role)
+  ) {
+    return response;
+  }
+  const cookieName =
+    session.kind === 'admin'
+      ? ADMIN_COOKIE
+      : session.kind === 'station_stock'
+        ? STATION_STOCK_COOKIE
+        : STAFF_COOKIE;
+  response.cookies.set(cookieName, signToken(session, secret), {
     httpOnly: true, path: '/', maxAge: 60 * 60 * 24 * 400,
     sameSite: 'lax', secure: process.env.NODE_ENV === 'production',
   });

@@ -5,8 +5,6 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
-  Clock,
-  Info,
   Loader2,
   Pencil,
   Plus,
@@ -29,7 +27,7 @@ import {
   gregorianDateToEthiopian,
   type PayrollSettings,
 } from "@/lib/payroll";
-import { weekdayName } from "@/lib/attendance";
+import { OVERTIME_TYPE_LABELS, weekdayName, type OvertimeType } from "@/lib/attendance";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
 
 const birr = (n: number) => new Intl.NumberFormat("en-ET", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
@@ -46,6 +44,7 @@ const FORMULAS: Array<[keyof PayrollSettings, string, string]> = [
   ["holidayOtFormula", "Holiday OT (x2.5)", "BasicSalary / 30 / 8 * HolidayOtHours * 2.5"],
   ["freeWeekOtFormula", "Free week OT (x2)", "BasicSalary / 30 / 8 * FreeWeekOtHours * 2"],
   ["shiftOtFormula", "Shift OT (x1.5)", "BasicSalary / 30 / 8 * ShiftOtHours * 1.5"],
+  ["nightShiftOtFormula", "Night shift OT (x1.75)", "BasicSalary / 30 / 8 * NightShiftOtHours * 1.75"],
   ["incomeTaxFormula", "Income tax", "Editable approved tax brackets from the supplied Excel sheet"],
   ["absenceFormula", "Absence deduction", "BasicSalary / 30 * UnapprovedAbsences"],
   ["latenessFormula", "Lateness deduction", "BasicSalary / 30 / 8 / 60 * MAX(0, LateMinutes)"],
@@ -53,8 +52,8 @@ const FORMULAS: Array<[keyof PayrollSettings, string, string]> = [
 ];
 
 const EDITABLE: Record<string, { label: string; hint: string }> = {
-  basicSalary: { label: "Basic salary", hint: "The monthly salary before transport or overtime." },
-  transportAllowance: { label: "Transport allowance", hint: "Added to the gross pay, and not taxed." },
+  basicSalary: { label: "Basic salary", hint: "" },
+  transportAllowance: { label: "Transport allowance", hint: "" },
 };
 
 /** What the row would pay if one of the two editable cells changed.
@@ -71,6 +70,7 @@ function previewNet(row: any, values: { basicSalary: number; transportAllowance:
       HolidayOtHours: a.holidayOtHours || 0,
       FreeWeekOtHours: a.freeWeekOtHours || 0,
       ShiftOtHours: a.shiftOtHours || 0,
+      NightShiftOtHours: a.nightShiftOtHours || 0,
       ScheduledDays: a.scheduledDays || 0,
       ScheduledHours: a.scheduledHours || 0,
       DaysPresent: a.daysPresent || 0,
@@ -359,14 +359,7 @@ export default function PayrollTab() {
         <ExceptionPanel data={data} act={act} />
       ) : view === "settings" ? (
         <div className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-3xl p-5 space-y-5">
-          <div>
-            <h3 className="font-bold text-amber-100">Payroll formula settings</h3>
-            <p className="text-xs text-stone-400">
-              Only arithmetic, IF(), MAX(), MIN() and the named fields below are accepted. No Excel cell references and no
-              code can run. The overtime formulas start at the rates the owner gave: holiday 2.5, free week 2, shift 1.5.
-              Lateness and early departure start with his per-minute rule; absence costs one day of Basic Salary / 30.
-            </p>
-          </div>
+          <h3 className="font-bold text-amber-100">Payroll formula settings</h3>
           <div className="grid md:grid-cols-2 gap-3">
             <label className="text-xs">
               Employer pension %
@@ -399,51 +392,14 @@ export default function PayrollTab() {
                   placeholder={hint}
                   className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-3 font-mono text-white"
                 />
-                <span className="font-normal text-stone-500">{hint}</span>
               </label>
             ))}
           </div>
-          <div className="rounded-xl bg-black/20 p-3 text-[11px] text-stone-300 space-y-2">
-            <p>
-              <b>The per-minute rule.</b> One chargeable minute costs{" "}
-              <code className="font-mono text-amber-200">BasicSalary / 30 / 8 / 60</code>. Type 6,000 ETB in the Basic
-              Salary box and the rate is 0.4167 ETB a minute, so 5 chargeable minutes cost 2.08 ETB. This is the same
-              hourly rate the three overtime formulas pay, so a missed hour and an extra hour cost the same. There is no
-              second salary to enter: the system still calculates tax, pension and Net Pay by itself. If you would rather
-              divide by take-home pay, change <code className="font-mono text-amber-200">BasicSalary</code> to{" "}
-              <code className="font-mono text-amber-200">NetSalary</code> in the box (gross minus tax and the employee
-              pension, before these deductions). Net Pay itself would be circular.
-            </p>
-            <p>
-              <b>The grace is not a fixed 20 or 30.</b> It is the <b className="text-amber-200">Maximum Late Time (min)</b>{" "}
-              and <b className="text-amber-200">Leaving Grace (min)</b> of each person&apos;s own role in Attendance, Role &amp;
-              Time. A role with 20 minutes of Leaving Grace whose member left 25 minutes early is charged for 5 minutes.
-              Only the minutes past the grace reach the formula, and one day can never cost more than one day&apos;s wage. Free
-              days and approved exceptions are never charged.
-            </p>
-            <p>
-              <b>Absence costs one full day.</b> One unapproved absent day loses <code className="font-mono text-amber-200">BasicSalary / 30</code>,
-              which is the whole 8 hour day: 6,000 ETB a month costs 200 ETB for that day. Approved leave, free days and
-              unfinished days (today) are never counted. A day with no scan cannot also be late, so the three rules never
-              charge the same day twice.
-            </p>
-            <p>
-              <b>Every box is still yours.</b> Emptying any of the three boxes switches that deduction off (nothing is
-              deducted), and typing your own formula replaces the rule. The money chain keeps Excel&apos;s precision behind the
-              two displayed decimals, so the paper matches the spreadsheet you used before.
-            </p>
-          </div>
           <div className="rounded-xl bg-black/20 p-3 text-[11px] text-stone-300">
-            <b>Available fields:</b> {PAYROLL_VARIABLES.join(", ")}
+            <b>Fields:</b> {PAYROLL_VARIABLES.join(", ")}
           </div>
           <div className="rounded-xl bg-black/20 p-3 text-[11px] text-stone-300 space-y-3">
-            <div>
-              <b className="text-amber-100">Printed sheet header (government form)</b>
-              <p className="mt-1">
-                These two lines print only on paper, above the payroll sheet. The month and the Gregorian date range are
-                added automatically from the payroll month you selected.
-              </p>
-            </div>
+            <b className="text-amber-100 block">Printed sheet header (government form)</b>
             <div className="grid md:grid-cols-2 gap-3">
               <label className="text-xs">
                 Company name
@@ -662,23 +618,6 @@ export default function PayrollTab() {
               <b>These formulas are empty:</b> {data.missingSettings.join(", ")}
             </div>
           )}
-
-          <div className="rounded-xl bg-[#241512] border border-[#C9A227]/25 p-3 text-[11px] text-stone-300 flex gap-2 items-start no-print">
-            <Info className="w-4 h-4 text-[#C9A227] shrink-0 mt-0.5" />
-            <p>
-              Tap <b className="text-amber-200">Basic Salary</b> or <b className="text-amber-200">Transport</b> to type the number, then press Enter. Breakage and shortage come from Store records. Nothing is saved
-              until you confirm, and the whole row recalculates by itself. The OT cell opens the three overtime kinds and what
-              was measured from the scans. The last column is the only action: Pay.
-              <span className="block mt-1.5">
-                Lateness and early departure are deducted <b className="text-amber-200">only after</b> the Maximum Late Time and
-                the Leaving Grace you set in Attendance, Role &amp; Time. Inside them nothing is deducted, and past them only
-                the minutes above the grace, at BasicSalary / 30 / 8 / 60 per minute (6,000 ETB a month gives 0.42 ETB a
-                minute). One day never costs more than one day&apos;s wage. An unapproved absence costs one full day of
-                Basic Salary / 30 (the 8 hours of that day). Click Print for the formal government sheet with the
-                month, TIN number, Signature column and Prepared / Checked / Approved lines.
-              </span>
-            </p>
-          </div>
 
           <div className="overflow-x-auto bg-white text-black rounded-xl">
             <table className="w-full text-[11px] border-collapse whitespace-nowrap">
@@ -1097,7 +1036,7 @@ function OvertimeDialog({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const [type, setType] = useState<"holiday" | "free_week" | "shift">("holiday");
+  const [type, setType] = useState<OvertimeType | "">("");
   const [dateEc, setDateEc] = useState(todayEc);
   const [hours, setHours] = useState("");
   const [note, setNote] = useState("");
@@ -1108,6 +1047,10 @@ function OvertimeDialog({
   const add = async () => {
     setErr("");
     setMsg("");
+    if (!type) {
+      setErr("Choose overtime type first.");
+      return;
+    }
     const n = Number(hours);
     if (!hours.trim() || !Number.isFinite(n) || n <= 0) {
       setErr("Type how many hours.");
@@ -1122,7 +1065,7 @@ function OvertimeDialog({
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "Could not save the overtime");
-      setMsg(`${d.replaced ? "Corrected" : "Saved"}: ${n} h of ${type === "free_week" ? "free week" : type} OT on ${dateEc} E.C.`);
+      setMsg(`${d.replaced ? "Corrected" : "Saved"}: ${n} h of ${OVERTIME_TYPE_LABELS[type]} on ${dateEc} E.C.`);
       setHours("");
       setNote("");
       onChanged();
@@ -1133,9 +1076,6 @@ function OvertimeDialog({
     }
   };
 
-  /** "Don't give" (owner, 2026-10-28): the row stays in the history so the
-   *  record is not lost, but the hours are no longer paid. Clicking again
-   *  gives the overtime back. It works for measured rows too. */
   const decide = async (entry: any) => {
     setErr("");
     setMsg("");
@@ -1163,20 +1103,24 @@ function OvertimeDialog({
     }
   };
 
+  const breakdown = row.otBreakdown || {};
+  const breakdownCards = [
+    ["free_week", "Free week OT", breakdown.freeWeek || { hours: 0, pay: 0, days: 0 }],
+    ["holiday", "Holiday OT", breakdown.holiday || { hours: 0, pay: 0, days: 0 }],
+    ["shift", "Shift OT", breakdown.shift || { hours: 0, pay: 0, days: 0 }],
+    ["night_shift", "Night shift OT", breakdown.nightShift || { hours: 0, pay: 0, days: 0 }],
+  ] as const;
+
   return (
     <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4 no-print">
       <div className="w-full max-w-3xl bg-[#2C1B17] border border-[#C9A227] rounded-3xl p-5 space-y-4 max-h-[92vh] overflow-y-auto text-white">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="font-serif font-black text-lg text-amber-100">Overtime • {row.employeeName}</h3>
-            <p className="text-[11px] text-stone-400">
-              {period} E.C. The system measured the three kinds from the scans. Type a row only when a supervisor decides
-              something the scans cannot see.
-            </p>
+            <p className="text-[11px] text-stone-400">{period} E.C.</p>
             {row.paid && (
               <p className="text-[11px] text-emerald-200 mt-1">
-                This month is paid. The numbers below are exactly what was paid; take the green tick back in the payroll
-                row to change them.
+                Paid for this month. Take the green tick back in the payroll row to edit.
               </p>
             )}
           </div>
@@ -1185,108 +1129,86 @@ function OvertimeDialog({
           </button>
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
-          {[
-            ["holiday", "Holiday OT", row.otBreakdown.holiday, "Registered holiday days, x2.5"],
-            ["free_week", "Free week OT", row.otBreakdown.freeWeek, "His own free day, worked, x2"],
-            ["shift", "Shift OT", row.otBreakdown.shift, "A second shift he covered, or past his own end, x1.5"],
-          ].map(([key, label, data, hint]: any) => (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {breakdownCards.map(([key, label, data]) => (
             <div key={key} className="bg-black/20 rounded-2xl p-3">
               <p className="text-[10px] uppercase font-black text-amber-200">{label}</p>
               <p className="text-xl font-black">{hrs(data.hours)}</p>
               <p className="text-[11px] text-emerald-300 font-bold">{birr(data.pay)} ETB</p>
-              <p className="text-[9px] text-stone-500 mt-1">
-                {hint}
-                {data.days ? ` • ${data.days} day${data.days === 1 ? "" : "s"}` : ""}
-              </p>
             </div>
           ))}
-        </div>
-
-        <div className="rounded-xl bg-black/20 p-3 text-[10px] text-stone-300 flex gap-2">
-          <Clock className="w-4 h-4 text-[#C9A227] shrink-0" />
-          <span>
-            A 1 hour 15 minute buffer after the shift is for transport and changing clothes: leaving inside it earns no
-            overtime. Past it, the whole time past the shift end is paid. A holiday or free-day visit must be longer than
-            one hour to count; the hours use the late and leaving grace of the person&apos;s own role.
-          </span>
         </div>
 
         {msg && <div className="p-2.5 rounded-xl bg-emerald-950 border border-emerald-600 text-emerald-100 text-xs">{msg}</div>}
         {err && <div className="p-2.5 rounded-xl bg-rose-950 border border-rose-600 text-rose-100 text-xs">{err}</div>}
 
-        <div className="grid sm:grid-cols-2 gap-3">
-          <label className="text-[11px] font-bold text-amber-200 sm:col-span-2">
-            Kind
-            <div className="grid grid-cols-3 gap-2 mt-1">
-              {[
-                ["holiday", "Holiday OT"],
-                ["free_week", "Free week OT"],
-                ["shift", "Shift OT"],
-              ].map(([key, label]) => (
-                <button
-                  key={key}
-                  onClick={() => setType(key as any)}
-                  className={`px-3 py-2 rounded-xl text-xs font-black border ${
-                    type === key ? "bg-[#C9A227] text-[#21130f] border-[#C9A227]" : "bg-[#3D2314] text-stone-200 border-stone-700"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+        <div className="space-y-3">
+          <label className="block text-[11px] font-bold text-amber-200">
+            Choose overtime type
+            <select
+              value={type}
+              onChange={(e) => setType((e.target.value || "") as OvertimeType | "")}
+              className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-2.5 text-white"
+            >
+              <option value="">Choose one</option>
+              <option value="free_week">FREE WEEK OT</option>
+              <option value="holiday">Holiday OT</option>
+              <option value="shift">Shift OT</option>
+              <option value="night_shift">Night shift</option>
+            </select>
+          </label>
+          {type !== "" && (
+            <div className="grid sm:grid-cols-2 gap-3">
+              <label className="text-[11px] font-bold text-amber-200">
+                Date (E.C.)
+                <input
+                  value={dateEc}
+                  onChange={(e) => setDateEc(e.target.value)}
+                  placeholder="2019-02-15"
+                  inputMode="numeric"
+                  className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-2.5 text-white"
+                />
+              </label>
+              <label className="text-[11px] font-bold text-amber-200">
+                Total hours
+                <input
+                  value={hours}
+                  onChange={(e) => setHours(e.target.value)}
+                  type="number"
+                  min="0"
+                  step="0.25"
+                  inputMode="decimal"
+                  placeholder="e.g. 2"
+                  className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-2.5 text-white"
+                />
+              </label>
+              <label className="text-[11px] font-bold text-amber-200 sm:col-span-2">
+                Note (optional)
+                <input
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="Optional note"
+                  className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-2.5 text-white"
+                />
+              </label>
+              <button
+                onClick={add}
+                disabled={saving || row.paid}
+                title={row.paid ? "Take the paid tick back first" : "Save this overtime row"}
+                className="sm:col-span-2 bg-[#C9A227] text-[#21130f] rounded-xl py-3 text-xs font-black disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="w-4 h-4 inline animate-spin" /> : <Plus className="w-4 h-4 inline" />} Save overtime
+              </button>
             </div>
-          </label>
-          <label className="text-[11px] font-bold text-amber-200">
-            Date (E.C.)
-            <input
-              value={dateEc}
-              onChange={(e) => setDateEc(e.target.value)}
-              placeholder="2019-02-15"
-              inputMode="numeric"
-              className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-2.5 text-white"
-            />
-          </label>
-          <label className="text-[11px] font-bold text-amber-200">
-            Total hours
-            <input
-              value={hours}
-              onChange={(e) => setHours(e.target.value)}
-              type="number"
-              min="0"
-              step="0.25"
-              inputMode="decimal"
-              placeholder="e.g. 2"
-              className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-2.5 text-white"
-            />
-          </label>
-          <label className="text-[11px] font-bold text-amber-200 sm:col-span-2">
-            Note (optional)
-            <input
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder="Closing, the party, the delivery that came late..."
-              className="block mt-1 w-full bg-[#1C120F] border border-stone-700 rounded-xl p-2.5 text-white"
-            />
-          </label>
-          <button
-            onClick={add}
-            disabled={saving || row.paid}
-            title={row.paid ? "Take the paid tick back first" : "Save this overtime row"}
-            className="sm:col-span-2 bg-[#C9A227] text-[#21130f] rounded-xl py-3 text-xs font-black disabled:opacity-50"
-          >
-            {saving ? <Loader2 className="w-4 h-4 inline animate-spin" /> : <Plus className="w-4 h-4 inline" />} Save overtime
-          </button>
+          )}
         </div>
 
         <div className="space-y-2">
           <p className="text-[10px] uppercase font-black tracking-wide text-stone-400">
-            Overtime of this month ({row.overtimeEntries.length})
+            Overtime history ({row.overtimeEntries.length})
           </p>
           {row.overtimeEntries.length === 0 && (
-            <p className="text-xs text-stone-500">
-              Nothing yet. When he works a registered holiday, a free date of his own file, or past the end of his shift,
-              the row appears here by itself.
-            </p>
+            <p className="text-xs text-stone-500">No overtime recorded for this month.</p>
           )}
           {row.overtimeEntries.map((entry: any) => (
             <div
@@ -1304,13 +1226,13 @@ function OvertimeDialog({
                 <p className="text-[11px] text-stone-400">
                   <span className="text-amber-200/80">{entry.date ? weekdayName(entry.date) : ""}</span>{" "}
                   {entry.dateEc} E.C. {entry.holidayName ? ` • ${entry.holidayName}` : ""}
-                  {entry.automatic ? " • measured from the scan" : ` • written by ${entry.enteredBy || entry.source}`}
-                  {entry.note ? ` • ${entry.note}` : ""}
+                  {entry.automatic ? " • Holiday scan" : ""}
+                  {entry.note && entry.note !== entry.holidayName ? ` • ${entry.note}` : ""}
                 </p>
               </div>
               {entry.automatic && !entry.excluded && (
                 <span className="text-[9px] font-black uppercase text-violet-300 bg-violet-950/60 border border-violet-700 rounded-full px-2 py-1 shrink-0">
-                  Measured
+                  Holiday scan
                 </span>
               )}
               <button
@@ -1355,12 +1277,7 @@ function ExceptionPanel({ data, act }: { data: any; act: (body: any, success: st
   return (
     <div className="space-y-4">
       <div className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-5">
-        <h3 className="font-bold text-amber-100">Absence, lateness and early departure exceptions</h3>
-        <p className="text-xs text-stone-400 mb-3">
-          Select an employee. The minutes shown are CHARGEABLE minutes, already past the Maximum Late Time or Leaving
-          Grace of that role, at BasicSalary / 30 / 8 / 60 each. Approving one keeps the deduction off his pay, and the
-          authorizer and reason stay in the record.
-        </p>
+        <h3 className="font-bold text-amber-100 mb-3">Absence, lateness and early departure exceptions</h3>
         <select
           value={memberId}
           onChange={(e) => setMemberId(Number(e.target.value))}

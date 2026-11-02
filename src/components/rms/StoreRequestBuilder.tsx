@@ -13,10 +13,6 @@ type Item = {
   image: string;
 };
 type Line = { itemId: number; amount: string; unit: string; station: string };
-const fields =
-  'w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-stone-900';
-const button =
-  'rounded-xl bg-amber-600 px-4 py-3 font-bold text-white disabled:opacity-50';
 const stations = ['kitchen', 'barista', 'juice', 'buna'];
 function available(i: Item) {
   const n = Number(i.balance);
@@ -31,12 +27,24 @@ export default function StoreRequestBuilder({
   busy,
   onSend,
   serverError,
+  theme = 'white',
 }: {
   items: Item[];
   busy: boolean;
   serverError: string;
   onSend: (lines: Line[], key: string) => Promise<boolean>;
+  theme?: 'brown' | 'white';
 }) {
+  const isBrown = theme === 'brown';
+  const fields = isBrown
+    ? 'w-full rounded-xl border border-[#C9A227]/35 bg-[#150D0B] px-3 py-2 text-amber-50 placeholder:text-amber-200/40 outline-none focus:border-[#C9A227]'
+    : 'w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-stone-900';
+  const button = isBrown
+    ? 'rounded-xl bg-[#C9A227] px-4 py-3 font-bold text-[#2C1B17] hover:bg-[#DFB735] disabled:opacity-50'
+    : 'rounded-xl bg-amber-600 px-4 py-3 font-bold text-white disabled:opacity-50';
+  const secondaryBtn = isBrown
+    ? 'rounded-xl border border-[#C9A227]/35 bg-[#2C1B17] px-4 py-3 font-semibold text-amber-100 hover:bg-[#3A241E]'
+    : 'rounded-xl border px-4 py-3';
   const [search, setSearch] = useState('');
   const [draft, setDraft] = useState<Line[]>([]);
   const [editing, setEditing] = useState<Line | null>(null);
@@ -111,11 +119,24 @@ export default function StoreRequestBuilder({
   return (
     <section>
       <h2 className="text-2xl font-black">Store stock</h2>
-      <p className="mt-1 text-sm text-stone-500">
+      <p
+        className={
+          isBrown
+            ? 'mt-1 text-sm text-amber-200/70'
+            : 'mt-1 text-sm text-stone-500'
+        }
+      >
         Tap an item to choose an amount, unit and destination.
       </p>
       <div className="relative my-4">
-        <Search className="absolute left-3 top-3 text-stone-400" size={18} />
+        <Search
+          className={
+            isBrown
+              ? 'absolute left-3 top-3 text-[#C9A227]/70'
+              : 'absolute left-3 top-3 text-stone-400'
+          }
+          size={18}
+        />
         <input
           className={fields + ' pl-10'}
           value={search}
@@ -131,25 +152,54 @@ export default function StoreRequestBuilder({
               type="button"
               key={i.id}
               onClick={() => startNew(i)}
-              className="overflow-hidden rounded-2xl border border-stone-200 bg-white text-left hover:border-amber-500 focus:outline-2 focus:outline-amber-600"
+              className={
+                isBrown
+                  ? 'overflow-hidden rounded-2xl border border-[#C9A227]/25 bg-[#261814] text-left hover:border-[#C9A227] focus:outline-2 focus:outline-[#C9A227]'
+                  : 'overflow-hidden rounded-2xl border border-stone-200 bg-white text-left hover:border-amber-500 focus:outline-2 focus:outline-amber-600'
+              }
             >
-              <div className="flex h-36 items-center justify-center bg-stone-100">
+              <div
+                className={
+                  isBrown
+                    ? 'flex h-36 items-center justify-center bg-[#160E0B]'
+                    : 'flex h-36 items-center justify-center bg-stone-100'
+                }
+              >
                 {i.image ? (
                   <img
                     src={i.image}
                     alt=""
+                    loading="lazy"
+                    decoding="async"
                     className="h-full w-full object-cover"
                   />
                 ) : (
-                  <Boxes size={44} className="text-stone-300" />
+                  <Boxes
+                    size={44}
+                    className={
+                      isBrown ? 'text-[#C9A227]/35' : 'text-stone-300'
+                    }
+                  />
                 )}
               </div>
               <div className="p-4">
                 <h3 className="font-black">{i.name}</h3>
-                <p className="mt-1 text-sm text-stone-500">
+                <p
+                  className={
+                    isBrown
+                      ? 'mt-1 text-sm text-amber-200/70'
+                      : 'mt-1 text-sm text-stone-500'
+                  }
+                >
                   Available: {available(i)}
                 </p>
-                <p className="mt-2 text-xs font-bold text-amber-700">
+                <p
+                  className={
+                    isBrown
+                      ? 'mt-2 text-xs font-bold text-[#E5BE42]'
+                      : 'mt-2 text-xs font-bold text-amber-700'
+                  }
+                >
                   + Add to request
                 </p>
               </div>
@@ -157,12 +207,24 @@ export default function StoreRequestBuilder({
           ))}
       </div>
       {!items.length && (
-        <p className="rounded-xl bg-white p-6 text-stone-500">
+        <p
+          className={
+            isBrown
+              ? 'rounded-xl border border-[#C9A227]/25 bg-[#261814] p-6 text-amber-200/70'
+              : 'rounded-xl bg-white p-6 text-stone-500'
+          }
+        >
           No store items yet. Ask the manager to add stock.
         </p>
       )}
       {draft.length > 0 && (
-        <div className="sticky bottom-3 mt-5 rounded-2xl bg-white p-3 shadow-lg">
+        <div
+          className={
+            isBrown
+              ? 'sticky bottom-3 mt-5 rounded-2xl border border-[#C9A227]/40 bg-[#261814] p-3 shadow-xl'
+              : 'sticky bottom-3 mt-5 rounded-2xl bg-white p-3 shadow-lg'
+          }
+        >
           <button
             type="button"
             className={button + ' w-full'}
@@ -174,17 +236,27 @@ export default function StoreRequestBuilder({
       )}
       {editing && selected && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
           role="dialog"
           aria-modal="true"
           aria-label={`Request ${selected.name}`}
         >
           <form
             onSubmit={save}
-            className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-xl"
+            className={
+              isBrown
+                ? 'w-full max-w-md space-y-4 rounded-2xl border border-[#C9A227]/35 bg-[#261814] p-6 text-amber-50 shadow-xl'
+                : 'w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-xl'
+            }
           >
             <h3 className="text-xl font-black">{selected.name}</h3>
-            <p className="text-sm text-stone-500">
+            <p
+              className={
+                isBrown
+                  ? 'text-sm text-amber-200/70'
+                  : 'text-sm text-stone-500'
+              }
+            >
               Available in store: {available(selected)}
             </p>
             <label className="block text-sm font-bold">
@@ -232,7 +304,12 @@ export default function StoreRequestBuilder({
               </select>
             </label>
             {error && (
-              <p role="alert" className="text-sm text-red-700">
+              <p
+                role="alert"
+                className={
+                  isBrown ? 'text-sm text-red-300' : 'text-sm text-red-700'
+                }
+              >
                 {error}
               </p>
             )}
@@ -240,7 +317,7 @@ export default function StoreRequestBuilder({
               <button className={button}>Done</button>
               <button
                 type="button"
-                className="rounded-xl border px-4 py-3"
+                className={secondaryBtn}
                 onClick={() => {
                   setEditing(null);
                   if (editIndex >= 0) setReview(true);
@@ -254,14 +331,26 @@ export default function StoreRequestBuilder({
       )}
       {review && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4"
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4"
           role="dialog"
           aria-modal="true"
           aria-label="Review request"
         >
-          <div className="max-h-[85vh] w-full max-w-lg overflow-auto rounded-2xl bg-white p-6 shadow-xl">
+          <div
+            className={
+              isBrown
+                ? 'max-h-[85vh] w-full max-w-lg overflow-auto rounded-2xl border border-[#C9A227]/35 bg-[#261814] p-6 text-amber-50 shadow-xl'
+                : 'max-h-[85vh] w-full max-w-lg overflow-auto rounded-2xl bg-white p-6 shadow-xl'
+            }
+          >
             <h3 className="text-xl font-black">Review and send</h3>
-            <p className="mt-1 text-sm text-stone-500">
+            <p
+              className={
+                isBrown
+                  ? 'mt-1 text-sm text-amber-200/70'
+                  : 'mt-1 text-sm text-stone-500'
+              }
+            >
               Check each amount and destination. Different destinations are sent
               as separate station requests.
             </p>
@@ -271,7 +360,11 @@ export default function StoreRequestBuilder({
                 return (
                   <div
                     key={`${l.itemId}-${l.station}-${index}`}
-                    className="flex items-center gap-2 rounded-xl bg-stone-50 p-3"
+                    className={
+                      isBrown
+                        ? 'flex items-center gap-2 rounded-xl border border-[#C9A227]/20 bg-[#1B110E] p-3'
+                        : 'flex items-center gap-2 rounded-xl bg-stone-50 p-3'
+                    }
                   >
                     <div className="flex-1">
                       <b>{item?.name || 'Item unavailable'}</b>
@@ -282,7 +375,11 @@ export default function StoreRequestBuilder({
                     <button
                       type="button"
                       aria-label={`Edit ${item?.name || 'item'}`}
-                      className="rounded-lg border bg-white p-2"
+                      className={
+                        isBrown
+                          ? 'rounded-lg border border-[#C9A227]/35 bg-[#2C1B17] p-2 text-amber-100 hover:bg-[#3A241E]'
+                          : 'rounded-lg border bg-white p-2'
+                      }
                       onClick={() => editLine(index)}
                     >
                       <Pencil size={18} />
@@ -290,7 +387,11 @@ export default function StoreRequestBuilder({
                     <button
                       type="button"
                       aria-label={`Remove ${item?.name || 'item'}`}
-                      className="rounded-lg border bg-white p-2"
+                      className={
+                        isBrown
+                          ? 'rounded-lg border border-[#C9A227]/35 bg-[#2C1B17] p-2 text-red-300 hover:bg-[#3A241E]'
+                          : 'rounded-lg border bg-white p-2'
+                      }
                       onClick={() => {
                         if (resetKeyBeforeChange())
                           setDraft((old) => old.filter((_, i) => i !== index));
@@ -305,7 +406,11 @@ export default function StoreRequestBuilder({
             {serverError && (
               <p
                 role="alert"
-                className="mb-3 rounded-xl bg-red-50 p-3 text-sm text-red-800"
+                className={
+                  isBrown
+                    ? 'mb-3 rounded-xl border border-red-500/40 bg-red-950/60 p-3 text-sm text-red-200'
+                    : 'mb-3 rounded-xl bg-red-50 p-3 text-sm text-red-800'
+                }
               >
                 {serverError}
               </p>
@@ -329,7 +434,7 @@ export default function StoreRequestBuilder({
               </button>
               <button
                 type="button"
-                className="rounded-xl border px-4 py-3"
+                className={secondaryBtn}
                 onClick={() => setReview(false)}
               >
                 Add more items

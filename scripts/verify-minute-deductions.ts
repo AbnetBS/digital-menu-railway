@@ -178,7 +178,7 @@ pass("free days and approved exceptions are still never charged", payrollApi.inc
 pass("the API row uses the Excel-precision money chain", payrollApi.includes("computePayrollMoney({") && payrollApi.includes("pay.incomeTax"));
 pass("the live preview uses the very same money chain", payrollTab.includes("computePayrollMoney({") && payrollTab.includes("pay.display.netPay"));
 pass("settings validates MAX(), MIN() and NetSalary with a sample row", settingsApi.includes("PAYROLL_VARIABLES.map") && settingsApi.includes("evaluatePayrollFormula(formula, example)"));
-pass("the screen explains the role grace and the per-minute rate", payrollTab.includes("BasicSalary / 30 / 8 / 60") && payrollTab.includes("Maximum Late Time (min)") && payrollTab.includes("Leaving Grace (min)"));
+pass("Formula Settings keeps the per-minute formulas editable with clean titles", payrollTab.includes("BasicSalary / 30 / 8 / 60 * MAX(0, LateMinutes)") && payrollTab.includes("Payroll formula settings") && !payrollTab.includes("The per-minute rule."));
 pass(
   "old databases are seeded with the BasicSalary rules exactly once",
   migrate.includes("payroll_minute_rule_2026_10_27") &&

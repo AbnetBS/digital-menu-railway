@@ -74,18 +74,18 @@ const store = read("src/lib/attendance-overtime.ts");
 const adminTab = read("src/components/rms/AttendanceTab.tsx");
 const kiosk = read("src/app/(internal)/attendance/page.tsx");
 
-/* ── 1. the three kinds ──────────────────────────────────────────────────── */
+/* ── 1. the four kinds ───────────────────────────────────────────────────── */
 
-pass("the three kinds the owner named, in his order", OVERTIME_TYPES.join(",") === "holiday,free_week,shift");
+pass("the four kinds (including Night shift), in dropdown order", OVERTIME_TYPES.join(",") === "free_week,holiday,shift,night_shift");
 pass(
-  "each button reads the way he asked",
-  OVERTIME_TYPES.map((t) => OVERTIME_TYPE_LABELS[t]).join(" | ") === "Holiday OT | Free week OT | Shift OT"
+  "each kind carries its clear label",
+  OVERTIME_TYPES.map((t) => OVERTIME_TYPE_LABELS[t]).join(" | ") === "Free week OT | Holiday OT | Shift OT | Night shift OT"
 );
 pass(
-  "each kind explains itself in one line on the button",
-  OVERTIME_TYPES.every((t) => (OVERTIME_TYPE_HINTS[t] || "").length > 20)
+  "each kind has a concise description",
+  OVERTIME_TYPES.every((t) => (OVERTIME_TYPE_HINTS[t] || "").length > 10)
 );
-pass("a kind nobody asked for is refused", !isOvertimeType("sick_day") && !isOvertimeType("") && isOvertimeType("shift"));
+pass("a kind nobody asked for is refused, and night_shift is accepted", !isOvertimeType("sick_day") && !isOvertimeType("") && isOvertimeType("shift") && isOvertimeType("night_shift"));
 pass("the four sources of a row are named", OVERTIME_SOURCES.join(",") === "admin,supervisor,self,auto");
 pass("and an unknown source is refused too", !isOvertimeSource("manager") && isOvertimeSource("auto"));
 
@@ -195,51 +195,59 @@ pass("the old plain switch still works for the device",
 pass("a day with no overtime left loses its violet mark too",
   /export async function DELETE[\s\S]*isOvertime: false/.test(overtimeApi));
 
-/* ── 7. the clock-out scan writes the automatic row ─────────────────────── */
+/* ── 7. clock-out only auto-grants overtime on registered holidays ──────── */
 
-pass("the OUT of a shift measures the overtime on the same tap",
-  clockApi.includes("recordShiftOvertimeAtClockOut({"));
-pass("the OUT measures IN to OUT beyond the shift length, not only the tail",
-  clockApi.includes("workedShiftOtMinutes(inShift, existing.clockIn, now)") &&
-    clockApi.includes("clockInAt: existing.clockIn,"));
-pass("the shared writer uses the same worked-time rule",
-  store.includes("workedShiftOtMinutes(args.shift, args.clockInAt, args.clockOutAt)"));
-pass("and the day is marked overtime by the same rule, not only by a button",
-  /isOvertime: Boolean\(existing\.isOvertime\) \|\| shiftOtMinutes > 0/.test(clockApi));
-pass("the device is told the hours so its screen can show them",
+pass("clock-out does NOT auto-record shift overtime rows on ordinary days",
+  !clockApi.includes("recordShiftOvertimeAtClockOut") && !clockApi.includes("workedShiftOtMinutes"));
+pass("clock-out checks registered payrollHolidays for automatic holiday overtime",
+  clockApi.includes("payrollHolidays") && clockApi.includes("recognizedOtMinutes(inShift"));
+pass("the day is marked overtime on registered holiday scans or manual OT",
+  /isOvertime: Boolean\(existing\.isOvertime\) \|\| overtimeMinutes > 0/.test(clockApi));
+pass("the device is told the holiday OT hours so its screen can show them",
   clockApi.includes("overtimeLabel: otLabel || null") && clockApi.includes("OT ${otLabel}"));
-pass("a database hiccup rolls back clock-out and overtime together so the queued scan can retry",
-  clockApi.includes("db.transaction(async (tx)") && /recordShiftOvertimeAtClockOut\(\{[\s\S]*?\}, tx\)/.test(clockApi) && store.includes('client: OvertimeDb = db'));
+pass("clock-out runs inside a database transaction",
+  clockApi.includes("db.transaction(async (tx)"));
 
-/* ── 8. the admin tab: the button beside the Leaderboard and his table ──── */
+/* ── 8. the admin tab: Choose overtime type dropdown + Overtime history ─── */
 
-// One bounded slice: from where the overtime view starts to where the next
-// view starts. Every claim below is about that block, so a string living in
-// another tab can never make it pass by accident.
 const otStart = adminTab.indexOf('{activeView === "overtime" && (');
 const activityStart = adminTab.indexOf('{activeView === "activity" && (', otStart);
 const printsStart = adminTab.indexOf('{activeView === "prints" && (', otStart);
-const otEnd = activityStart >= 0 ? activityStart : printsStart;
-const otView = otStart >= 0 && otEnd > otStart ? adminTab.slice(otStart, otEnd) : "";
+const otView = otStart >= 0 && otEndOf(otStart, activityStart, printsStart) > otStart ? adminTab.slice(otStart, otEndOf(otStart, activityStart, printsStart)) : "";
+function otEndOf(s: number, a: number, p: number) { return a >= 0 ? a : p >= 0 ? p : s; }
 
 pass("the Overtime view exists as its own block", otStart >= 0);
 pass("the Overtime view sits beside the Leaderboard in the switcher",
   /{ key: "leaderboard", label: "Leaderboard"[\s\S]{0,200}{ key: "overtime", label: "Overtime"/.test(adminTab));
-pass("the three type buttons are the first thing the tab offers",
-  otView.indexOf("Object.keys(OVERTIME_TYPE_LABELS)") < otView.indexOf("<select"));
-pass("the form picks the employee, the date, the shift and the hours",
-  ["Employee", "Date", "Shift", "Total hours"].every((label) => otView.includes(`>${label}</label>`)));
-pass("the table has his four columns in his order",
-  [">Employee Name</th>", ">Date</th>", ">Type of overtime</th>", ">Total Hour</th>"].every(
-    (h, i, all) => otView.includes(h) && (i === 0 || otView.indexOf(all[i - 1]) < otView.indexOf(h))
-  ));
-pass("the other info is below, in the row: the times, the worked hours, who wrote it",
-  otView.includes("worked ${row.workedLabel}") && otView.includes("from his clock-out scan"));
+pass("Add overtime starts with 'Choose overtime type' dropdown defaulting to 'Choose one' with all 4 types",
+  otView.includes(">Choose overtime type</label>") &&
+    otView.includes('<option value="">Choose one</option>') &&
+    otView.includes('<option value="free_week">FREE WEEK OT</option>') &&
+    otView.includes('<option value="holiday">Holiday OT</option>') &&
+    otView.includes('<option value="shift">Shift OT</option>') &&
+    otView.includes('<option value="night_shift">Night shift</option>') &&
+    adminTab.includes('useState<OvertimeType | "">("")'));
+pass("once a type is selected, fields appear in order: Employee, Date, Shift, Total hours, Note (optional), Save overtime",
+  otView.includes('otType !== "" && (') &&
+    [">Employee</label>", ">Date</label>", ">Shift</label>", ">Total hours</label>", ">Note (optional)</label>", "Save overtime"].every(
+      (item, i, all) => otView.includes(item) && (i === 0 || otView.indexOf(all[i - 1]) < otView.indexOf(item))
+    ));
+pass("the history table has Employee Name, Date, Type of overtime, Total Hour, Decision in order, and removes the 'No overtime yet' grid",
+  !otView.includes("No overtime yet") &&
+    otView.includes(">Overtime history</h3>") &&
+    [">Employee Name</th>", ">Date</th>", ">Type of overtime</th>", ">Total Hour</th>"].every(
+      (h, i, all) => otView.includes(h) && (i === 0 || otView.indexOf(all[i - 1]) < otView.indexOf(h))
+    ));
+pass("Overtime history shows scan times, holiday scan badge, and calculated ETB pay",
+  otView.includes("worked ${row.workedLabel}") &&
+    otView.includes("Holiday scan") &&
+    otView.includes("row.estimatedPay") &&
+    overtimeApi.includes("payrollHolidays") &&
+    overtimeApi.includes("calculateEntryPay"));
 pass("the shift of the picked person comes from his own role's times",
   adminTab.includes("const otShifts = otRole?.shifts ?? [];"));
-pass("the hours box defaults to the day's worked hours and says so",
-  otView.includes('placeholder={otWorkedNow ? otWorkedNow.label : "e.g. 2"}') &&
-    adminTab.includes("worked ${otWorkedNow.label} on"));
+pass("the hours box defaults to the day's worked hours placeholder",
+  otView.includes('placeholder={otWorkedNow ? otWorkedNow.label : "e.g. 2"}'));
 pass("a row is saved with a named type, and the list is reloaded after",
   /body: JSON\.stringify\(\{\s*memberId: Number\(otMemberId\),\s*date: otDate,\s*type: otType/.test(adminTab) &&
     adminTab.includes("await loadOvertime();"));
@@ -249,10 +257,8 @@ pass("a mistaken row is NOT deleted: 'Don't give' keeps it in the history",
   otView.includes("toggleOvertimeDecision(row)") && otView.includes("Don't give") && !otView.includes("removeOvertime(row.id)"));
 pass("and 'Give again' puts the hours back on pay",
   /action: excluded \? "give_again" : "dont_give"/.test(adminTab) && otView.includes("Give again"));
-pass("the category buttons filter the history: who got which OT, with name, type, date",
-  otView.includes("otVisibleRows") && otView.includes("Who got ") && otView.includes("weekdayName(row.date)"));
-pass("clicking a person prefills the manual form so a missing OT can be given",
-  adminTab.includes("const giveOvertimeTo =") && otView.includes("giveOvertimeTo(m.id"));
+pass("the Type filter filters Overtime history by kind or All kinds",
+  otView.includes("otVisibleRows") && otView.includes("All kinds") && otView.includes("weekdayName(row.date)"));
 pass("the API keeps the exclusion in its own table and never erases the overtime row",
   overtimeApi.includes('decision === "dont_give" || decision === "give_again"') &&
     overtimeApi.includes("Only an admin can decide not to give overtime") &&

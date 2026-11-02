@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
+import { db, pool } from "@/db";
 import { staffUsers } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
+import { ensureStoreSchema } from "@/lib/store/schema";
 import { and, eq } from "drizzle-orm";
 import { verifySecret, hashSecret, isHashed } from "@/lib/auth";
 import { checkRateLimit, getClientIp } from "@/lib/rate-limit";
-import { signToken, getSessionSecret, STAFF_COOKIE } from "@/lib/session";
+import { signToken, getSessionSecret, STAFF_COOKIE, STATION_STOCK_COOKIE } from "@/lib/session";
 
 // Brute-force protection for 4-digit PINs. Higher than admin because many
 // staff share the cafe's single IP; still far below what an attacker needs to
@@ -25,12 +26,13 @@ export async function POST(request: Request) {
 
   await ensureTablesExist();
   try {
-    const { name, pin, role } = await request.json();
+    const { name, pin, role, stationStock, expectedStation } = await request.json();
+    const targetRole = stationStock ? "stock_accepter" : String(role || "waiter");
 
     const matches = await db
       .select()
       .from(staffUsers)
-      .where(and(eq(staffUsers.name, String(name || "")), eq(staffUsers.role, String(role || "waiter"))));
+      .where(and(eq(staffUsers.name, String(name || "")), eq(staffUsers.role, targetRole)));
 
     const staff = matches[0];
     const input = String(pin ?? "");
@@ -54,6 +56,52 @@ export async function POST(request: Request) {
           { success: false, error: "Staff login is not configured. The site owner must set SESSION_SECRET." },
           { status: 503 }
         );
+      }
+
+      // Dedicated Stock Accepter login on /station-stock: verifies store_accounts
+      // and sets STATION_STOCK_COOKIE so the station KDS (STAFF_COOKIE) stays signed in.
+      if (stationStock) {
+        await ensureStoreSchema();
+        const acc = await pool.query<{ station: string }>(
+          "SELECT station FROM store_accounts WHERE staff_id = $1",
+          [staff.id]
+        );
+        const assignedStation = acc.rows[0]?.station;
+        if (!assignedStation) {
+          return NextResponse.json({ success: false, error: "Invalid name or PIN" }, { status: 401 });
+        }
+        const wanted = String(expectedStation || "").trim();
+        if (wanted && assignedStation !== wanted) {
+          return NextResponse.json(
+            { success: false, error: `This Stock Accepter account is for ${assignedStation}, not ${wanted}.` },
+            { status: 403 }
+          );
+        }
+        const response = NextResponse.json({
+          success: true,
+          staff: { id: staff.id, name: staff.name, role: staff.role, station: assignedStation },
+        });
+        response.cookies.set(
+          STATION_STOCK_COOKIE,
+          signToken(
+            {
+              kind: "station_stock",
+              staffId: staff.id,
+              name: staff.name,
+              station: assignedStation,
+              iat: Date.now(),
+            },
+            secret
+          ),
+          {
+            httpOnly: true,
+            path: "/",
+            maxAge: 60 * 60 * 24 * 400,
+            sameSite: "lax",
+            secure: process.env.NODE_ENV === "production",
+          }
+        );
+        return response;
       }
 
       // POCKET OFF-DUTY SWITCH: signing in IS starting a shift. If this
@@ -97,9 +145,10 @@ export async function POST(request: Request) {
   }
 }
 
-// Logout: clear the staff session cookie (called by the staff apps' logout button).
-export async function DELETE() {
+// Logout: clear the staff session cookie (or only station_stock cookie when scope=station_stock).
+export async function DELETE(request: Request) {
+  const scope = new URL(request.url).searchParams.get("scope");
   const response = NextResponse.json({ success: true, message: "Logged out" });
-  response.cookies.delete(STAFF_COOKIE);
+  response.cookies.delete(scope === "station_stock" ? STATION_STOCK_COOKIE : STAFF_COOKIE);
   return response;
 }

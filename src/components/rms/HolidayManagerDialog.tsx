@@ -103,15 +103,9 @@ export default function HolidayManagerDialog({
     <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4 no-print">
       <div className="w-full max-w-2xl bg-[#2C1B17] border border-[#C9A227] rounded-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto text-white">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="font-serif font-black text-lg text-amber-100 flex items-center gap-2">
-              <CalendarDays className="w-5 h-5 text-[#C9A227]" /> Holiday dates
-            </h3>
-            <p className="text-[11px] text-stone-400 mt-1 leading-relaxed">
-              A day registered here is a holiday for the whole cafe. Anybody with a completed scan on it earns Holiday OT
-              at the holiday rate without typing hours. The date is the Ethiopian one the sheet shows.
-            </p>
-          </div>
+          <h3 className="font-serif font-black text-lg text-amber-100 flex items-center gap-2">
+            <CalendarDays className="w-5 h-5 text-[#C9A227]" /> Holiday dates
+          </h3>
           <button onClick={onClose} className="p-1 rounded-lg hover:bg-white/10" aria-label="Close holiday dates">
             <X className="w-5 h-5" />
           </button>
@@ -157,10 +151,7 @@ export default function HolidayManagerDialog({
               <Loader2 className="w-4 h-4 animate-spin" /> Loading the holidays...
             </p>
           ) : rows.length === 0 ? (
-            <p className="text-xs text-stone-500">
-              No holiday yet. Add Meskel, Eid, Genna or any day the cafe closes and pays, and the payroll finds it by
-              itself. The open payroll month is {period} E.C.
-            </p>
+            <p className="text-xs text-stone-500">No holiday dates saved yet ({period} E.C.).</p>
           ) : (
             rows.map((row) => (
               <div key={row.id} className="flex items-center gap-3 bg-black/20 rounded-xl p-3">
@@ -186,11 +177,6 @@ export default function HolidayManagerDialog({
             ))
           )}
         </div>
-
-        <p className="text-[10px] text-stone-500 leading-relaxed">
-          Holiday OT formula: BasicSalary / 30 / 8 × HolidayOtHours × 2.5. The one hour buffer after the shift end still
-          applies: leaving within an hour of the end is not overtime, staying two hours past it pays two hours.
-        </p>
       </div>
     </div>
   );

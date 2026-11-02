@@ -63,7 +63,7 @@ function walk(dir) {
   return out;
 }
 
-const guardRe = /requireAdmin\(|requireStaff\(|requireStaffOrAdmin\(/;
+const guardRe = /requireAdmin\(|requireStaff\(|requireStaffOrAdmin\(|requireStationStock\(/;
 const mutationRe = /export async function (POST|PUT|DELETE|PATCH)/;
 
 // ── 1 & 2: mutation routes must be guarded ──────────────────────────────────
@@ -139,6 +139,21 @@ for (const file of walk(API)) {
   pass("locking the keypad from the tablet tells the server to drop the cookie",
     kiosk.includes('fetch("/api/attendance/supervisor", { method: "DELETE" })'));
   pass("the supervisor role can be handed out in Staff Accounts", staffTab.includes("ATTENDANCE_SUPERVISOR_ROLE") && stations.includes("ATTENDANCE_SUPERVISOR_ROLE"));
+}
+
+// ── 4c: station import (/station-stock) requires a Store Stock Accepter ──────
+{
+  const login = readFileSync(join(API, "staff", "login", "route.ts"), "utf8");
+  const stationRoute = readFileSync(join(API, "store", "station", "route.ts"), "utf8");
+  const session = readFileSync(join(root, "src", "lib", "session.ts"), "utf8");
+  pass(
+    "station-stock login signs a dedicated STATION_STOCK_COOKIE so station KDS stays signed in",
+    login.includes("STATION_STOCK_COOKIE") && session.includes('kind: "station_stock"')
+  );
+  pass(
+    "station-stock route requires requireStationStock() and checks store_accounts.session_valid_after",
+    stationRoute.includes("requireStationStock()") && stationRoute.includes("session_valid_after")
+  );
 }
 
 // ── 5: customer order path public, staff path guarded ───────────────────────

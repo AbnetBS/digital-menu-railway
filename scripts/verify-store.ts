@@ -140,7 +140,107 @@ async function main() {
     );
     assert.ok(
       stationApi.includes('pg_advisory_xact_lock') &&
-        stationApi.includes('different details'),
+        stationApi.includes('different details') &&
+        stationApi.includes('requireStationStock') &&
+        stationApi.includes('store_station_transfers'),
+    );
+    const stationPage = readFileSync(
+      'src/app/(internal)/station-stock/page.tsx',
+      'utf8',
+    );
+    for (const label of [
+      'Stock Accepter Login',
+      'To -',
+      'Add another stock',
+      'Transfer',
+      'scope=station_stock',
+    ]) {
+      assert.ok(stationPage.includes(label), `station-stock page missing: ${label}`);
+    }
+
+    // Real PostgreSQL check for multi-item station-to-station transfer (e.g. Barista -> Kitchen)
+    await db.exec(`INSERT INTO store_items(name,dimension,balance) VALUES('Honey','mass',0);
+      INSERT INTO store_station_balances(station,item_id,balance) VALUES('barista',1,3000),('barista',4,1500)
+      ON CONFLICT(station,item_id) DO UPDATE SET balance=EXCLUDED.balance;`);
+    const transferIds = [1, 4];
+    const transferAmounts = [1000, 500];
+    await db.query(
+      'INSERT INTO store_station_balances(station,item_id,balance) SELECT s.st, i.item_id, 0 FROM unnest($1::text[]) AS s(st) CROSS JOIN unnest($2::int[]) AS i(item_id) ON CONFLICT DO NOTHING',
+      [['barista', 'kitchen'], transferIds],
+    );
+    await db.query(
+      'INSERT INTO store_station_transfers(idempotency_key,from_station,to_station,payload_hash,actor) VALUES($1,$2,$3,$4,$5)',
+      ['transfer-key-1', 'barista', 'kitchen', 'hash-1', 'Dawit'],
+    );
+    await assert.rejects(
+      db.query(
+        'INSERT INTO store_station_transfers(idempotency_key,from_station,to_station,payload_hash,actor) VALUES($1,$2,$3,$4,$5)',
+        ['transfer-key-1', 'barista', 'kitchen', 'hash-1', 'Dawit'],
+      ),
+    );
+    await db.query(
+      'UPDATE store_station_balances AS b SET balance=b.balance-v.amount FROM unnest($2::int[],$3::numeric[]) AS v(item_id,amount) WHERE b.station=$1 AND b.item_id=v.item_id',
+      ['barista', transferIds, transferAmounts],
+    );
+    await db.query(
+      'UPDATE store_station_balances AS b SET balance=b.balance+v.amount FROM unnest($2::int[],$3::numeric[]) AS v(item_id,amount) WHERE b.station=$1 AND b.item_id=v.item_id',
+      ['kitchen', transferIds, transferAmounts],
+    );
+    await db.query(
+      "INSERT INTO store_movements(item_id,station,kind,amount,actor,reason) SELECT v.item_id,$1,'transfer_out',v.amount,$2,$3 FROM unnest($4::int[],$5::numeric[]) AS v(item_id,amount)",
+      ['barista', 'Dawit', 'kitchen', transferIds, transferAmounts],
+    );
+    await db.query(
+      "INSERT INTO store_movements(item_id,station,kind,amount,actor,reason) SELECT v.item_id,$1,'transfer_in',v.amount,$2,$3 FROM unnest($4::int[],$5::numeric[]) AS v(item_id,amount)",
+      ['kitchen', 'Dawit', 'barista', transferIds, transferAmounts],
+    );
+    assert.equal(
+      Number(
+        (
+          await db.query<{ balance: string }>(
+            "SELECT balance FROM store_station_balances WHERE station='barista' AND item_id=1",
+          )
+        ).rows[0].balance,
+      ),
+      2000,
+    );
+    assert.equal(
+      Number(
+        (
+          await db.query<{ balance: string }>(
+            "SELECT balance FROM store_station_balances WHERE station='barista' AND item_id=4",
+          )
+        ).rows[0].balance,
+      ),
+      1000,
+    );
+    assert.equal(
+      Number(
+        (
+          await db.query<{ balance: string }>(
+            "SELECT balance FROM store_station_balances WHERE station='kitchen' AND item_id=1",
+          )
+        ).rows[0].balance,
+      ),
+      5800,
+    );
+    assert.equal(
+      Number(
+        (
+          await db.query<{ balance: string }>(
+            "SELECT balance FROM store_station_balances WHERE station='kitchen' AND item_id=4",
+          )
+        ).rows[0].balance,
+      ),
+      500,
+    );
+    assert.equal(
+      (
+        await db.query(
+          "SELECT * FROM store_movements WHERE kind IN ('transfer_out','transfer_in')",
+        )
+      ).rows.length,
+      4,
     );
     const ticketsApi = readFileSync('src/app/api/tickets/route.ts', 'utf8');
     assert.ok(

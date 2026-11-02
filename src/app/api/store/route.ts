@@ -5,6 +5,8 @@ import { NextResponse } from 'next/server';
 import { pool } from '@/db';
 import { ensureTablesExist } from '@/db/migrate';
 import {
+  type AdminSession,
+  type StaffSession,
   readAdminSession,
   readStaffSession,
   refreshStoreSession,
@@ -29,13 +31,16 @@ const text = (v: unknown, max = 120) =>
   String(v ?? '')
     .trim()
     .slice(0, max);
-async function identity() {
-  const staff = await readStaffSession();
+async function identity(
+  staff: StaffSession | null,
+  admin: AdminSession | null,
+  dbClient: { query: typeof pool.query } = pool,
+) {
   if (
     staff &&
     (staff.role === 'stock_accepter' || staff.role === 'store_manager')
   ) {
-    const r = await pool.query(
+    const r = await dbClient.query(
       'SELECT a.station, s.name, s.role, extract(epoch from a.session_valid_after)*1000 AS valid_after FROM store_accounts a JOIN staff_users s ON s.id=a.staff_id WHERE s.id=$1',
       [staff.staffId],
     );
@@ -54,7 +59,7 @@ async function identity() {
       };
     throw new UserError('Store session expired. Please sign in again.', 401);
   }
-  if (await readAdminSession())
+  if (admin)
     return {
       id: 0,
       name: 'Admin',
@@ -108,29 +113,44 @@ export async function GET() {
     // Authenticate before initialising privileged schema.
     const sessionGuard = await requireStaffOrAdmin();
     if (!sessionGuard.ok) return sessionGuard.response;
-    const staffSession = await readStaffSession();
-    if (
-      staffSession?.role !== 'store_manager' &&
-      staffSession?.role !== 'stock_accepter' &&
-      !(await readAdminSession())
-    )
+    const [staffSession, adminSession] = await Promise.all([
+      readStaffSession(),
+      readAdminSession(),
+    ]);
+    const isStoreStaff =
+      staffSession?.role === 'store_manager' ||
+      staffSession?.role === 'stock_accepter';
+    if (!isStoreStaff && !adminSession)
       throw new UserError('Store access required', 403);
     await prepare();
-    const who = await identity();
-    // Store photos can be 1.5 MB each. Return a cacheable, authenticated URL
-    // instead of resending every inline photo on every refresh. Existing image
-    // data stays untouched in the database.
+    const isManager = isStoreStaff
+      ? staffSession.role === 'store_manager'
+      : true;
+    const requesterId = isStoreStaff ? staffSession.staffId : 0;
+    // Store photos can be 1.5 MB each. Use left(image, 11) so PostgreSQL slices
+    // only the TOAST header instead of decompressing every photo on each read,
+    // and return a cacheable authenticated URL. Existing DB data stays untouched.
     const itemsQuery = pool.query(`SELECT id,name,dimension,balance,low_at,created_at,
-      CASE WHEN image LIKE 'data:image/%' THEN '/api/store/images/' || id ELSE image END AS image
+      CASE WHEN left(image, 11) = 'data:image/' THEN '/api/store/images/' || id ELSE image END AS image
       FROM store_items ORDER BY name`);
     const requestsQuery = pool.query(
-      `SELECT r.*, COALESCE(json_agg(json_build_object('item_id',l.item_id,'name',i.name,'dimension',i.dimension,'amount',l.amount) ORDER BY i.name) FILTER (WHERE l.item_id IS NOT NULL),'[]') AS lines
-      FROM store_requests r LEFT JOIN store_request_lines l ON l.request_id=r.id LEFT JOIN store_items i ON i.id=l.item_id
-      WHERE ($1::boolean OR r.requester_id=$2) GROUP BY r.id ORDER BY r.created_at DESC`,
-      [who.manager, who.id],
+      `WITH recent_requests AS (
+        (SELECT * FROM store_requests WHERE status='pending' AND ($1::boolean OR requester_id=$2) ORDER BY created_at DESC)
+        UNION ALL
+        (SELECT * FROM store_requests WHERE status='accepted' AND ($1::boolean OR requester_id=$2) ORDER BY created_at DESC LIMIT 150)
+      )
+      SELECT r.*, COALESCE(json_agg(json_build_object('item_id',l.item_id,'name',i.name,'dimension',i.dimension,'amount',l.amount) ORDER BY i.name) FILTER (WHERE l.item_id IS NOT NULL),'[]') AS lines
+      FROM recent_requests r LEFT JOIN store_request_lines l ON l.request_id=r.id LEFT JOIN store_items i ON i.id=l.item_id
+      GROUP BY r.id,r.requester_id,r.requester_name,r.station,r.status,r.created_at,r.accepted_at,r.accepted_by
+      ORDER BY r.created_at DESC`,
+      [isManager, requesterId],
     );
-    if (!who.manager) {
-      const [items, requests] = await Promise.all([itemsQuery, requestsQuery]);
+    if (!isManager) {
+      const [who, items, requests] = await Promise.all([
+        identity(staffSession, adminSession),
+        itemsQuery,
+        requestsQuery,
+      ]);
       return refreshStoreSession(
         NextResponse.json(
           { who, items: items.rows, requests: requests.rows },
@@ -139,15 +159,16 @@ export async function GET() {
         staffSession,
       );
     }
-    const [items, requests, balances, menu, recipes, accounts, members, breakages] =
+    const [who, items, requests, balances, menu, recipes, accounts, members, breakages] =
       await Promise.all([
+        identity(staffSession, adminSession),
         itemsQuery,
         requestsQuery,
         pool.query(
           'SELECT b.station,b.item_id,b.balance,i.name,i.dimension FROM store_station_balances b JOIN store_items i ON i.id=b.item_id ORDER BY b.station,i.name',
         ),
         pool.query(
-          'SELECT id,name,category,image_url FROM menu_items ORDER BY category,name',
+          "SELECT id,name,category,CASE WHEN left(image_url, 11) = 'data:image/' THEN '' ELSE image_url END AS image_url FROM menu_items ORDER BY category,name",
         ),
         pool.query('SELECT * FROM store_recipes'),
         pool.query(
@@ -157,7 +178,7 @@ export async function GET() {
           'SELECT id,name,active FROM attendance_members ORDER BY name,id',
         ),
         pool.query(
-          'SELECT b.*,m.name AS member_name FROM payroll_breakages b LEFT JOIN attendance_members m ON m.id=b.member_id ORDER BY b.created_at DESC,b.id DESC',
+          'SELECT b.*,m.name AS member_name FROM payroll_breakages b LEFT JOIN attendance_members m ON m.id=b.member_id ORDER BY b.created_at DESC,b.id DESC LIMIT 200',
         ),
       ]);
     return refreshStoreSession(
@@ -175,7 +196,7 @@ export async function GET() {
         },
         { headers: { 'Cache-Control': 'no-store', 'Server-Timing': `app;dur=${(performance.now() - started).toFixed(1)}` } },
       ),
-      who.admin ? await readAdminSession() : staffSession,
+      who.admin ? adminSession : staffSession,
     );
   } catch (e) {
     return failure(e);
@@ -186,21 +207,24 @@ export async function POST(request: Request) {
   try {
     const sessionGuard = await requireStaffOrAdmin();
     if (!sessionGuard.ok) return sessionGuard.response;
-    const staffSession = await readStaffSession();
+    const [staffSession, adminSession, body] = await Promise.all([
+      readStaffSession(),
+      readAdminSession(),
+      request.json(),
+    ]);
     if (
       staffSession?.role !== 'store_manager' &&
       staffSession?.role !== 'stock_accepter' &&
-      !(await readAdminSession())
+      !adminSession
     )
       throw new UserError('Store access required', 403);
     await prepare();
-    const who = await identity();
-    const body = await request.json();
     const action = text(body.action, 40);
     const client = await pool.connect();
     let newRequestCreated = false;
     try {
       await client.query('BEGIN');
+      const who = await identity(staffSession, adminSession, client);
       if (action === 'account') {
         managerOnly(who);
         const role =
@@ -590,8 +614,24 @@ export async function POST(request: Request) {
           )
         ).rows;
         if (!list.length) throw new UserError('Request has no items');
+        const itemIds = list.map((l) => Number(l.item_id));
+        const amounts = list.map((l) => Number(l.amount));
+        const lockedItems = await client.query<{
+          id: number;
+          name: string;
+          dimension: Dimension;
+          balance: string;
+          low_at: string;
+        }>(
+          'SELECT id,name,dimension,balance,low_at FROM store_items WHERE id=ANY($1::int[]) ORDER BY id FOR UPDATE',
+          [itemIds],
+        );
+        const lockedById = new Map(
+          lockedItems.rows.map((row) => [Number(row.id), row]),
+        );
         for (const l of list) {
-          const i = await item(client, l.item_id, true);
+          const i = lockedById.get(Number(l.item_id));
+          if (!i) throw new UserError('Stock item not found', 404);
           if (Number(i.balance) < Number(l.amount))
             throw new UserError(
               `${i.name}: no longer enough in the store. Ask the requester to edit.`,
@@ -599,14 +639,13 @@ export async function POST(request: Request) {
             );
         }
         // Explicit acknowledgement is required if a station already has stock.
-        for (const l of list)
-          await client.query(
-            'INSERT INTO store_station_balances(station,item_id,balance) VALUES($1,$2,0) ON CONFLICT DO NOTHING',
-            [req.station, l.item_id],
-          );
+        await client.query(
+          'INSERT INTO store_station_balances(station,item_id,balance) SELECT $1, unnest($2::int[]), 0 ON CONFLICT DO NOTHING',
+          [req.station, itemIds],
+        );
         const available = await client.query(
           'SELECT b.item_id,i.name,i.dimension,b.balance FROM store_station_balances b JOIN store_items i ON i.id=b.item_id WHERE b.station=$1 AND b.item_id=ANY($2::int[]) ORDER BY b.item_id FOR UPDATE OF b',
-          [req.station, list.map((l) => l.item_id)],
+          [req.station, itemIds],
         );
         const existing = available.rows.filter((x) => Number(x.balance) > 0);
         const checked = Array.isArray(body.checkedBalances)
@@ -629,20 +668,18 @@ export async function POST(request: Request) {
             `Check existing ${req.station} stock first: ${existing.map((x) => `${x.name}: ${x.balance} ${x.dimension === 'mass' ? 'g' : x.dimension === 'volume' ? 'ml' : 'pcs'}`).join(', ')}`,
             409,
           );
-        for (const l of list) {
-          await client.query(
-            'UPDATE store_items SET balance=balance-$1 WHERE id=$2',
-            [l.amount, l.item_id],
-          );
-          await client.query(
-            'INSERT INTO store_station_balances(station,item_id,balance) VALUES($1,$2,$3) ON CONFLICT(station,item_id) DO UPDATE SET balance=store_station_balances.balance+EXCLUDED.balance',
-            [req.station, l.item_id, l.amount],
-          );
-          await client.query(
-            "INSERT INTO store_movements(item_id,station,kind,amount,actor,request_id) VALUES($1,$2,'issue',$3,$4,$5)",
-            [l.item_id, req.station, l.amount, who.name, id],
-          );
-        }
+        await client.query(
+          'UPDATE store_items AS s SET balance=s.balance-v.amount FROM unnest($1::int[],$2::numeric[]) AS v(item_id,amount) WHERE s.id=v.item_id',
+          [itemIds, amounts],
+        );
+        await client.query(
+          'INSERT INTO store_station_balances(station,item_id,balance) SELECT $1,v.item_id,v.amount FROM unnest($2::int[],$3::numeric[]) AS v(item_id,amount) ON CONFLICT(station,item_id) DO UPDATE SET balance=store_station_balances.balance+EXCLUDED.balance',
+          [req.station, itemIds, amounts],
+        );
+        await client.query(
+          "INSERT INTO store_movements(item_id,station,kind,amount,actor,request_id) SELECT v.item_id,$1,'issue',v.amount,$2,$3 FROM unnest($4::int[],$5::numeric[]) AS v(item_id,amount)",
+          [req.station, who.name, id, itemIds, amounts],
+        );
         await client.query(
           "UPDATE store_requests SET status='accepted',accepted_at=now(),accepted_by=$2 WHERE id=$1",
           [id, who.name],
@@ -658,10 +695,30 @@ export async function POST(request: Request) {
           throw new UserError('Menu item not found', 404);
         if (!Array.isArray(body.lines) || body.lines.length > 100)
           throw new UserError('Invalid recipe');
+        const requestedIds = body.lines.map((line: { itemId?: unknown }) =>
+          requiredId(line?.itemId),
+        );
+        const catalogRows = requestedIds.length
+          ? (
+              await client.query<{
+                id: number;
+                name: string;
+                dimension: Dimension;
+              }>(
+                'SELECT id,name,dimension FROM store_items WHERE id=ANY($1::int[])',
+                [Array.from(new Set(requestedIds))],
+              )
+            ).rows
+          : [];
+        const catalogById = new Map(
+          catalogRows.map((row) => [Number(row.id), row]),
+        );
         const seen = new Set<number>();
         const recipe: Array<{ id: number; amount: number }> = [];
-        for (const line of body.lines) {
-          const i = await item(client, line.itemId);
+        for (let idx = 0; idx < body.lines.length; idx++) {
+          const line = body.lines[idx];
+          const i = catalogById.get(requestedIds[idx]);
+          if (!i) throw new UserError('Stock item not found', 404);
           if (seen.has(i.id))
             throw new UserError('Each ingredient may appear only once');
           seen.add(i.id);
@@ -673,10 +730,14 @@ export async function POST(request: Request) {
         await client.query('DELETE FROM store_recipes WHERE menu_item_id=$1', [
           menuId,
         ]);
-        for (const l of recipe)
+        if (recipe.length)
           await client.query(
-            'INSERT INTO store_recipes(menu_item_id,item_id,amount) VALUES($1,$2,$3)',
-            [menuId, l.id, l.amount],
+            'INSERT INTO store_recipes(menu_item_id,item_id,amount) SELECT $1,v.item_id,v.amount FROM unnest($2::int[],$3::numeric[]) AS v(item_id,amount)',
+            [
+              menuId,
+              recipe.map((l) => l.id),
+              recipe.map((l) => l.amount),
+            ],
           );
       } else if (action === 'waste') {
         managerOnly(who);

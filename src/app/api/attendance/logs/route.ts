@@ -1,20 +1,25 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { attendanceLogs, attendanceMembers, attendanceRoles } from "@/db/schema";
+import { attendanceLogs, attendanceMembers, attendanceRoleShifts, attendanceRoles } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { etDayKey } from "@/lib/timezone";
-import { and, eq, gte, lte } from "drizzle-orm";
+import { and, asc, eq, gte, lte } from "drizzle-orm";
 import {
   clockLabel,
   daysBetween,
+  etMinutes,
   hoursLabel,
   inStatusOf,
+  isEarlyOut,
+  lateMinutesFor,
   outStatusOf,
+  pickShift,
   sheetDates,
   sheetPages,
   SHEET_MAX_DAYS,
   SHEET_RANGE_MAX_DAYS,
+  type RoleShift,
 } from "@/lib/attendance";
 
 export const dynamic = "force-dynamic";
@@ -58,6 +63,22 @@ export async function GET(request: Request) {
 
     const members = await db.select().from(attendanceMembers);
     const roles = await db.select().from(attendanceRoles);
+    const shiftRows = await db
+      .select()
+      .from(attendanceRoleShifts)
+      .orderBy(asc(attendanceRoleShifts.sortOrder), asc(attendanceRoleShifts.id));
+    const shiftsByRole = new Map<number, RoleShift[]>();
+    for (const s of shiftRows) {
+      const list = shiftsByRole.get(s.roleId) || [];
+      list.push({
+        label: s.label,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        lateGraceMinutes: s.lateGraceMinutes ?? 30,
+        earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0,
+      });
+      shiftsByRole.set(s.roleId, list);
+    }
     const roleName = new Map(roles.map((r) => [r.id, r.name]));
 
     const rows = members
@@ -92,7 +113,9 @@ export async function GET(request: Request) {
       matrix[r.id] = {};
       for (const d of dates) {
         const log = logs.find((l) => l.memberId === r.id && l.date === d) || null;
-        matrix[r.id][d] = cellOf(log);
+        const roleId = log?.roleId ?? r.roleId;
+        const shifts = roleId ? shiftsByRole.get(roleId) || [] : [];
+        matrix[r.id][d] = cellOf(log, shifts);
       }
     }
 
@@ -128,20 +151,24 @@ export async function GET(request: Request) {
 }
 
 /** One box of the sheet: the times plus the colour it must be printed in. */
-function cellOf(log: typeof attendanceLogs.$inferSelect | null) {
+function cellOf(log: typeof attendanceLogs.$inferSelect | null, shifts: RoleShift[] = []) {
   if (!log) return null;
+  const shift = log.clockIn && shifts.length > 0 ? pickShift(shifts, etMinutes(log.clockIn)) : null;
+  const lateMinutes = shift && log.clockIn ? lateMinutesFor(shift, etMinutes(log.clockIn)) : log.lateMinutes || 0;
+  const earlyOut = shift && log.clockOut ? isEarlyOut(shift, etMinutes(log.clockOut)) : Boolean(log.earlyOut);
+  const measured = { ...log, lateMinutes, earlyOut };
   return {
     logId: log.id,
     memberId: log.memberId,
     clockInTime: clockLabel(log.clockIn),
     clockOutTime: clockLabel(log.clockOut),
     totalHours: log.clockOut ? hoursLabel(log.totalMinutes) : null,
-    lateMinutes: log.lateMinutes || 0,
+    lateMinutes,
     isOvertime: Boolean(log.isOvertime),
-    earlyOut: Boolean(log.earlyOut),
-    status: log.status,
-    inStatus: inStatusOf(log),
-    outStatus: outStatusOf(log),
+    earlyOut,
+    status: log.clockOut ? (earlyOut ? "early_out" : "completed") : lateMinutes > 0 ? "late" : "on_time",
+    inStatus: inStatusOf(measured),
+    outStatus: outStatusOf(measured),
     fingerprintId: log.fingerprintId,
     clockInMethod: log.clockInMethod,
   };

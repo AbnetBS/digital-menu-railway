@@ -1,10 +1,20 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { attendanceLogs, attendanceMembers, attendanceRoles } from "@/db/schema";
+import { attendanceLogs, attendanceMembers, attendanceRoleShifts, attendanceRoles } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
-import { clockLabel, hoursLabel, inStatusOf, outStatusOf } from "@/lib/attendance";
+import {
+  clockLabel,
+  etMinutes,
+  hoursLabel,
+  inStatusOf,
+  isEarlyOut,
+  lateMinutesFor,
+  outStatusOf,
+  pickShift,
+  type RoleShift,
+} from "@/lib/attendance";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +53,22 @@ export async function GET(request: Request) {
 
     const members = await db.select().from(attendanceMembers);
     const roles = await db.select().from(attendanceRoles);
+    const shiftRows = await db
+      .select()
+      .from(attendanceRoleShifts)
+      .orderBy(asc(attendanceRoleShifts.sortOrder), asc(attendanceRoleShifts.id));
+    const shiftsByRole = new Map<number, RoleShift[]>();
+    for (const s of shiftRows) {
+      const list = shiftsByRole.get(s.roleId) || [];
+      list.push({
+        label: s.label,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        lateGraceMinutes: s.lateGraceMinutes ?? 30,
+        earlyLeaveGraceMinutes: s.earlyLeaveGraceMinutes ?? 0,
+      });
+      shiftsByRole.set(s.roleId, list);
+    }
     const roleName = new Map(roles.map((r) => [r.id, r.name]));
     const memberById = new Map(members.map((m) => [m.id, m]));
 
@@ -52,29 +78,38 @@ export async function GET(request: Request) {
       return `Member ${memberId ?? staffId ?? 0}`;
     };
 
-    const enriched = logs.map((l) => ({
-      id: l.id,
-      memberId: l.memberId,
-      memberName: nameOf(l.memberId, l.staffId),
-      roleName: l.roleId ? roleName.get(l.roleId) || "No role" : "No role",
-      date: l.date,
-      clockIn: l.clockIn,
-      clockOut: l.clockOut,
-      clockInTime: clockLabel(l.clockIn),
-      clockOutTime: clockLabel(l.clockOut),
-      totalMinutes: l.totalMinutes,
-      totalHours: l.clockOut ? hoursLabel(l.totalMinutes) : null,
-      lateMinutes: l.lateMinutes || 0,
-      status: l.status,
-      isOvertime: Boolean(l.isOvertime),
-      earlyOut: Boolean(l.earlyOut),
-      fingerprintId: l.fingerprintId,
-      clockInMethod: l.clockInMethod,
-      clockOutMethod: l.clockOutMethod,
-      inStatus: inStatusOf(l),
-      outStatus: outStatusOf(l),
-      updatedAt: l.updatedAt,
-    }));
+    const enriched = logs.map((l) => {
+      const member = l.memberId ? memberById.get(l.memberId) : undefined;
+      const roleId = l.roleId ?? member?.roleId ?? null;
+      const shifts = roleId ? shiftsByRole.get(roleId) || [] : [];
+      const shift = l.clockIn && shifts.length > 0 ? pickShift(shifts, etMinutes(l.clockIn)) : null;
+      const lateMinutes = shift && l.clockIn ? lateMinutesFor(shift, etMinutes(l.clockIn)) : l.lateMinutes || 0;
+      const earlyOut = shift && l.clockOut ? isEarlyOut(shift, etMinutes(l.clockOut)) : Boolean(l.earlyOut);
+      const measured = { ...l, lateMinutes, earlyOut };
+      return {
+        id: l.id,
+        memberId: l.memberId,
+        memberName: nameOf(l.memberId, l.staffId),
+        roleName: roleId ? roleName.get(roleId) || "No role" : "No role",
+        date: l.date,
+        clockIn: l.clockIn,
+        clockOut: l.clockOut,
+        clockInTime: clockLabel(l.clockIn),
+        clockOutTime: clockLabel(l.clockOut),
+        totalMinutes: l.totalMinutes,
+        totalHours: l.clockOut ? hoursLabel(l.totalMinutes) : null,
+        lateMinutes,
+        status: l.clockOut ? (earlyOut ? "early_out" : "completed") : lateMinutes > 0 ? "late" : "on_time",
+        isOvertime: Boolean(l.isOvertime),
+        earlyOut,
+        fingerprintId: l.fingerprintId,
+        clockInMethod: l.clockInMethod,
+        clockOutMethod: l.clockOutMethod,
+        inStatus: inStatusOf(measured),
+        outStatus: outStatusOf(measured),
+        updatedAt: l.updatedAt,
+      };
+    });
 
     // Who is standing at the door: the freshest scan of the last 5 minutes. The
     // Overtime button on the tablet needs a person to press it for.

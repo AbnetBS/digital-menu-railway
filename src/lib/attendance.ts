@@ -101,22 +101,47 @@ export function clockLabel(d: Date | string | null | undefined): string | null {
 }
 
 /**
- * The shift of the role a clock-in belongs to: the period whose start has
- * already passed and is the closest to the scan. A scan before every start
- * (a 05:00 baker on an 06:00 morning shift) belongs to the earliest period.
+ * Pre-shift arrival window for multi-shift roles (up to 2+ shifts per role):
+ * when an employee's first scan (IN) arrives near an upcoming shift's entrance
+ * time (e.g. from 20-60 minutes before Shift 2 begins, such as 13:40/13:50 for
+ * a 14:00 shift, or up to 120 minutes early once the earlier shift has ended),
+ * recognize them on that upcoming shift instead of marking them late on Shift 1.
  */
+export const SHIFT_EARLY_ARRIVAL_MINUTES = 60;
+export const SHIFT_POST_PREV_ARRIVAL_MINUTES = 120;
+
 export function pickShift(shifts: RoleShift[] | null | undefined, minutes: number): RoleShift | null {
   const list = (shifts || [])
-    .map((s) => ({ shift: s, start: parseHHMM(s.startTime) }))
-    .filter((s): s is { shift: RoleShift; start: number } => s.start !== null)
+    .map((s) => ({ shift: s, start: parseHHMM(s.startTime), end: parseHHMM(s.endTime) }))
+    .filter((s): s is { shift: RoleShift; start: number; end: number | null } => s.start !== null)
     .sort((a, b) => a.start - b.start);
   if (list.length === 0) return null;
+  if (list.length === 1) return list[0].shift;
 
-  let best = list[0];
-  for (const item of list) {
-    if (item.start <= minutes && item.start >= best.start) best = item;
+  let prevIndex = -1;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].start <= minutes) prevIndex = i;
   }
-  return best.shift;
+
+  // Before every shift's start time today (e.g. 05:30 before an 06:00 shift):
+  // assign to the earliest shift of the day.
+  if (prevIndex === -1) {
+    return list[0].shift;
+  }
+
+  const prev = list[prevIndex];
+  const sincePrev = minutes - prev.start;
+  const hasLaterToday = prevIndex + 1 < list.length;
+  const next = hasLaterToday ? list[prevIndex + 1] : list[0];
+  const untilNext = hasLaterToday ? next.start - minutes : next.start + 24 * 60 - minutes;
+
+  const prevEnded = prev.end !== null && prev.end > prev.start && minutes >= prev.end;
+  const earlyWindow = prevEnded ? SHIFT_POST_PREV_ARRIVAL_MINUTES : SHIFT_EARLY_ARRIVAL_MINUTES;
+
+  if (untilNext <= earlyWindow && untilNext < sincePrev) {
+    return next.shift;
+  }
+  return prev.shift;
 }
 
 /**
@@ -128,6 +153,9 @@ export function pickShift(shifts: RoleShift[] | null | undefined, minutes: numbe
 export function lateMinutesFor(shift: RoleShift | null | undefined, clockInMinutes: number): number {
   const start = parseHHMM(shift?.startTime ?? null);
   if (start === null) return 0;
+  if (clockInMinutes > start && start + 24 * 60 - clockInMinutes <= SHIFT_POST_PREV_ARRIVAL_MINUTES) {
+    return 0;
+  }
   const grace = Math.max(0, Number(shift?.lateGraceMinutes ?? LATE_GRACE_MINUTES));
   return Math.max(0, clockInMinutes - (start + grace));
 }
@@ -543,21 +571,23 @@ export function restOverrideAllowsSleep(override: RestOverride, now: Date = new 
  * beside it so the two views can never disagree about that day.
  */
 
-export const OVERTIME_TYPES = ["holiday", "free_week", "shift"] as const;
+export const OVERTIME_TYPES = ["free_week", "holiday", "shift", "night_shift"] as const;
 export type OvertimeType = (typeof OVERTIME_TYPES)[number];
 
-/** The three buttons the owner asked for, in the order they are offered. */
+/** The four overtime types offered in the dropdown and payroll settings. */
 export const OVERTIME_TYPE_LABELS: Record<OvertimeType, string> = {
-  holiday: "Holiday OT",
   free_week: "Free week OT",
+  holiday: "Holiday OT",
   shift: "Shift OT",
+  night_shift: "Night shift OT",
 };
 
-/** What each kind means, for the small print under the buttons. */
+/** Short descriptions for each overtime kind. */
 export const OVERTIME_TYPE_HINTS: Record<OvertimeType, string> = {
-  holiday: "A public holiday or a rest day that was worked.",
-  free_week: "The person's own free week that was given up. A full shift is paid.",
-  shift: "Past the shift end by more than one hour, on a normal working day.",
+  free_week: "A scheduled free day worked.",
+  holiday: "A registered holiday worked.",
+  shift: "Extra hours worked on a shift.",
+  night_shift: "Extra hours worked on a night shift.",
 };
 
 export const OVERTIME_SOURCES = ["admin", "supervisor", "self", "auto"] as const;

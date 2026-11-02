@@ -43,6 +43,7 @@ import {
   OT_ARRIVAL_GRACE_MINUTES,
   OT_BUFFER_MINUTES,
   OT_MIN_WORK_MINUTES,
+  computePayrollMoney,
   evaluatePayrollFormula,
   ethiopianDateToGregorian,
   ethiopianMonthBounds,
@@ -198,33 +199,51 @@ pass(
     !migrate.includes('["absenceFormula", "BasicSalary / 30 * UnapprovedAbsences"]')
 );
 pass(
-  "the settings screen explains the rule and still says an empty box means no deduction",
-  payrollTab.includes("BasicSalary / 30 / 8 / 60") &&
-    payrollTab.includes("Emptying any of the three boxes switches that deduction off") &&
-    payrollTab.includes("BasicSalary / 30 * UnapprovedAbsences")
+  "Formula Settings includes all 4 overtime formulas (including Night shift) and deduction formulas without verbose prose walls",
+  payrollTab.includes("nightShiftOtFormula") &&
+    payrollTab.includes("BasicSalary / 30 / 8 * NightShiftOtHours * 1.75") &&
+    payrollTab.includes("BasicSalary / 30 / 8 / 60 * MAX(0, LateMinutes)") &&
+    payrollTab.includes("BasicSalary / 30 * UnapprovedAbsences") &&
+    !payrollTab.includes("The per-minute rule.")
 );
+{
+  const nightMoney = computePayrollMoney({
+    basicSalary: 6000,
+    transportAllowance: 0,
+    breakageShortage: 0,
+    settings: DEFAULT_PAYROLL_SETTINGS,
+    attendance: { NightShiftOtHours: 4 },
+  }).display;
+  // 6000 / 30 / 8 = 25 ETB/hr * 4 hr * 1.75 = 175.00 ETB
+  pass("Night shift OT formula calculates 25 * 4 * 1.75 = 175.00 ETB and is editable", nightMoney.nightShiftOtPay === 175 && nightMoney.overtimePay === 175);
+}
 
 
 pass("payroll measures lateness and early departure from the role's own times", payrollApi.includes("lateMinutesFor(shift, etMinutes(l.clock_in))") && payrollApi.includes("earlyOutMinutesFor(shift, etMinutes(l.clock_out))"));
 pass("the scans are re-measured so a changed role grace really changes the month", payrollApi.includes("chargeableDayMinutes(rawLate, rawEarly)"));
 pass("an older row with a flag but no clock time keeps its stored minutes", payrollApi.includes("l.early_out"));
-pass("the screen says the deduction starts after the grace", payrollTab.includes("only after") && payrollTab.includes("Maximum Late Time"));
 pass(
-  "the API row and the live preview use the same Excel-precision money chain",
+  "the API row and the live preview use the same Excel-precision money chain including NightShiftOtHours",
   payrollApi.includes("computePayrollMoney({") && payrollTab.includes("computePayrollMoney({") &&
+    payrollApi.includes("NightShiftOtHours: nightShiftOtHours") && payrollTab.includes("NightShiftOtHours: a.nightShiftOtHours || 0") &&
     payrollLib.includes("evaluatePayrollFormulaExact") && payrollLib.includes("const money2=roundMoney")
 );
 
-pass("the payroll reads the overtime rows the tablet and the clock already wrote", payrollApi.includes("FROM attendance_overtime"));
-pass("it measures holiday and free week hours with the buffer rule", payrollApi.includes("recognizedOtMinutes(shift, log)"));
-pass("it measures an extra shift from IN + OUT beyond the shift's own length too", payrollApi.includes("workedShiftOtMinutes(shift, log.clock_in, log.clock_out)"));
-pass("covering another person's shift on a free day becomes Shift OT, not Free Week OT", payrollApi.includes("const covered = coveredShiftOfLog(log, roleShifts, otherRoleShifts)") && payrollApi.includes('const kind = covered ? "shift" : "free_week"') && payrollApi.includes("Covered the ${covered.label} shift on his free day"));
-pass("and the covered shift's own grace decides the hours", payrollApi.includes("recognizedOtMinutes(covered || shift, log)"));
-pass("a day that fits the person's own shift stays Free Week OT", payrollApi.includes("if (ownShifts.some((s) => clockInFitsShift(log.clock_in, s))) return null"));
-pass("a 'Don't give' decision is read for the month and filters every kind", payrollApi.includes("FROM attendance_ot_exclusions") && payrollApi.includes("excludedOt.has(`${date}|holiday`)") && payrollApi.includes("excludedOt.has(`${date}|${kind}`)") && payrollApi.includes("excludedOt.has(`${date}|shift`)"));
+pass("the payroll reads the overtime rows from attendance_overtime", payrollApi.includes("FROM attendance_overtime"));
+pass("automatic overtime in payroll is granted ONLY for registered holiday dates",
+  payrollApi.includes("recognizedOtMinutes(shift, log)") &&
+    payrollApi.includes("const holiday = holidayByDate.get(date)") &&
+    !payrollApi.includes("workedShiftOtMinutes") &&
+    !payrollApi.includes("isWorkedFree"));
+pass("all four manual overtime kinds (holiday, free_week, shift, night_shift) feed payroll",
+  payrollApi.includes('manualMinutes("night_shift")') && payrollApi.includes("nightShiftOtPay: pay.nightShiftOtPay"));
+pass("a 'Don't give' decision is read for the month and filters manual and holiday OT",
+  payrollApi.includes("FROM attendance_ot_exclusions") &&
+    payrollApi.includes("excludedOt.has(`${date}|holiday`)") &&
+    payrollApi.includes("allowedOtRow"));
 pass("excluded rows stay in the overtime history, marked as not given", payrollApi.includes("excluded: excludedOt.has(") && payrollApi.includes("otExclusions: excludedQ.rows") && payrollApi.includes("const writtenEntries = otRows.filter((r) => r.source !== \"auto\")") && payrollApi.includes("excluded: d.excluded"));
 pass("and their hours are never added to pay, nor counted as paid OT days", payrollApi.includes("if (!excluded) autoHolidayMinutes += minutes") && payrollApi.includes('autoDays.filter((d) => d.type === "holiday" && !d.excluded)'));
-pass("a day is one overtime kind: a person's row wins, and the clock's own row never beats a holiday or a free day", payrollApi.includes("manualDates.has(date)") && payrollApi.includes("holidayByDate.get(date)") && payrollApi.includes("!isFree(d)"));
+pass("manual holiday OT overrides auto holiday scan on the same day, and free days are never absences", payrollApi.includes("manualHolidayDates.has(date)") && payrollApi.includes("holidayByDate.get(date)") && payrollApi.includes("!isFree(d)"));
 pass("the No. column is the position in this list, never the database id", payrollApi.includes("employeeNumber: index + 1") && !payrollApi.includes("employeeNumber: memberId"));
 pass("breakage comes from Store records while salary and transport are typed", payrollApi.includes("payroll_breakages") && payrollApi.includes("Breakage is recorded in Store"));
 pass("a paid person is locked against edits", payrollApi.includes("already paid for this month"));
@@ -285,11 +304,10 @@ pass("the old action buttons are gone and one Paid button is in their place", !p
 pass("the paid button becomes a green tick", payrollTab.includes("bg-emerald-600") && payrollTab.includes("CheckCircle2"));
 pass("the holiday dates open from the payroll page", payrollTab.includes("HolidayManagerDialog") && payrollTab.includes("Holiday dates ("));
 pass("the Holiday OT label itself opens the holiday dates on the Attendance page", attendanceTab.includes("HolidayManagerDialog") && attendanceTab.includes("Holiday dates"));
-pass("the row's OT number opens the three kinds and the measured rows", payrollTab.includes("OvertimeDialog") && payrollTab.includes("otBreakdown"));
-pass("the 1:15 buffer is explained on both screens", payrollTab.includes("1 hour 15 minute buffer") && attendanceTab.includes("The first 1 hour 15 minutes after the shift end"));
+pass("the row's OT number opens all four kinds and the overtime history", payrollTab.includes("OvertimeDialog") && payrollTab.includes("otBreakdown") && payrollTab.includes("Night shift OT"));
 pass("the printed sheet's date and month come from the selected payroll month", payrollApi.includes("dateEc: gregorianDateToEthiopian(bounds.to)") && payrollTab.includes("data?.letterhead?.monthLabel") && payrollTab.includes("data?.letterhead?.dateEc"));
 pass("'Don't give' keeps the row in the history and can be given again", payrollTab.includes('action: entry.excluded ? "give_again" : "dont_give"') && attendanceTab.includes('action: excluded ? "give_again" : "dont_give"') && payrollTab.includes("Give again") && attendanceTab.includes("Don't give"));
-pass("a category button shows who got that overtime, with name, type and date", attendanceTab.includes("otVisibleRows") && attendanceTab.includes("Who got ") && attendanceTab.includes("weekdayName(row.date)"));
+pass("Attendance Overtime view shows Overtime history with type filter and weekday", attendanceTab.includes("otVisibleRows") && attendanceTab.includes("Overtime history") && attendanceTab.includes("weekdayName(row.date)"));
 const overtimeApi = read("src/app/api/attendance/overtime/route.ts");
 pass("the overtime API refuses a non-admin 'Don't give' decision", overtimeApi.includes('decision === "dont_give" || decision === "give_again"') && overtimeApi.includes('if (!isAdmin) return NextResponse.json({ error: "Only an admin can decide not to give overtime" }, { status: 403 })'));
 pass("the decision is one row per person + day + kind, in its own table", schema.includes('pgTable("attendance_ot_exclusions"') && migrate.includes("CREATE TABLE IF NOT EXISTS attendance_ot_exclusions") && overtimeApi.includes("onConflictDoNothing()"));

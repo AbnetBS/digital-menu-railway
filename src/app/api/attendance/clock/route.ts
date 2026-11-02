@@ -6,15 +6,16 @@ import {
   attendanceMembers,
   attendanceRoleShifts,
   attendanceScanEvents,
+  payrollHolidays,
 } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { recordShiftOvertimeAtClockOut } from "@/lib/attendance-overtime";
 import { verifySecret } from "@/lib/auth";
 import { deviceAllowed } from "@/lib/attendance-device";
 import { requireSupervisor } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { and, eq, sql } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
+import { recognizedOtMinutes } from "@/lib/payroll";
 import {
   LATE_GRACE_MINUTES,
   OFFLINE_SCAN_MAX_AGE_DAYS,
@@ -25,7 +26,6 @@ import {
   earlyOutMinutesFor,
   isEarlyOut,
   lateMinutesFor,
-  workedShiftOtMinutes,
   offlineScanNote,
   pickShift,
   rescanAction,
@@ -424,13 +424,17 @@ async function processClockItem(request: Request, body: Record<string, unknown>)
         const earlyMinutes = earlyOutMinutesFor(inShift, nowMinutes);
         const status = early ? "early_out" : "completed";
 
-        // THE AUTOMATIC SHIFT OT (owner, 2026-10-28: "the time more than 8 hour
-        // is automatically considered shift ot"). The closing tap measures the
-        // worked time BEYOND the person's own shift length, so covering a second
-        // shift is paid even when the first IN was inside its late grace. The
-        // first 1:15 past the shift is transfer / changing clothes, not work.
-        // 0 means "he went home inside the 1:15 buffer".
-        const shiftOtMinutes = workedShiftOtMinutes(inShift, existing.clockIn, now);
+        // Automatic overtime is granted ONLY on registered holiday dates. All
+        // other overtime (free week, shift, night shift) is entered manually.
+        const holidayRow = (
+          await tx
+            .select({ id: payrollHolidays.id })
+            .from(payrollHolidays)
+            .where(eq(payrollHolidays.holidayDate, existing.date))
+        )[0];
+        const overtimeMinutes = holidayRow
+          ? recognizedOtMinutes(inShift, { clockIn: existing.clockIn, clockOut: now, totalMinutes })
+          : 0;
 
         const row = (
           await tx
@@ -442,9 +446,7 @@ async function processClockItem(request: Request, body: Record<string, unknown>)
               status,
               earlyOut: early,
               earlyOutMinutes: earlyMinutes,
-              // Staying past the shift is overtime whether or not anybody pressed
-              // the button, and the sheet's violet box follows the row.
-              isOvertime: Boolean(existing.isOvertime) || shiftOtMinutes > 0,
+              isOvertime: Boolean(existing.isOvertime) || overtimeMinutes > 0,
               updatedAt: arrivedAt,
               // Same audit as the IN: an OUT typed on the keypad names the
               // supervisor, and keeps whatever the IN already recorded.
@@ -456,17 +458,6 @@ async function processClockItem(request: Request, body: Record<string, unknown>)
 
         const outTime = clockLabel(now) || "";
         const hours = hoursLabel(totalMinutes) || "";
-
-        // The row itself is written after the line, and a number somebody typed
-        // for that day is never overwritten by the stopwatch.
-        const overtimeMinutes = await recordShiftOvertimeAtClockOut({
-          memberId: row.memberId ?? 0,
-          date: row.date,
-          logId: row.id,
-          shift: inShift,
-          clockInAt: existing.clockIn,
-          clockOutAt: now,
-        }, tx);
         const otLabel = overtimeMinutes > 0 ? hoursLabel(overtimeMinutes) || "" : "";
 
         return respond({

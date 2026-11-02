@@ -93,6 +93,16 @@ type Waste = {
   actor: string;
   created_at: string;
 };
+type StationTransfer = {
+  id: number;
+  name: string;
+  from_station: string;
+  to_station: string;
+  amount: string;
+  dimension: Dimension;
+  actor: string;
+  created_at: string;
+};
 type Done = {
   item_name: string;
   category: string;
@@ -285,6 +295,7 @@ export default function StorePage() {
       done: Done[];
       movements: Movement[];
       waste: Waste[];
+      transfers?: StationTransfer[];
     } | null>(null),
     [reportError, setReportError] = useState('');
   const pendingSeen = useRef<Set<number> | null>(null);
@@ -2267,6 +2278,34 @@ export default function StorePage() {
               {!reportMoves.some((m) => m.kind === 'purchase') && (
                 <p className={`py-3 text-sm ${subtle}`}>
                   No direct imports in this period.
+                </p>
+              )}
+            </article>
+            <article className={`mt-5 rounded-2xl p-5 ${card}`}>
+              <h3 className="font-black">Station transfers</h3>
+              <p className={`mt-1 text-xs ${muted}`}>
+                Stock transferred directly from one station to another.
+              </p>
+              {(report?.transfers || []).map((t) => (
+                <div
+                  key={t.id}
+                  className={`flex flex-wrap items-center justify-between gap-2 border-b py-3 text-sm ${borderLine}`}
+                >
+                  <div>
+                    <b>
+                      {t.name} · {display(t.amount, t.dimension)}
+                    </b>
+                    <p className={muted}>
+                      <span className="capitalize">{t.from_station}</span> →{' '}
+                      <span className="capitalize">{t.to_station}</span> ·{' '}
+                      {t.actor} · {day(t.created_at)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              {report && !(report.transfers || []).length && (
+                <p className={`py-3 text-sm ${subtle}`}>
+                  No station transfers in this period.
                 </p>
               )}
             </article>

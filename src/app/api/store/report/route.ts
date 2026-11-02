@@ -37,7 +37,7 @@ export async function GET(request: Request) {
       );
     await ensureStoreSchema();
     const bounds = [`${from}T00:00:00+03:00`, `${to}T00:00:00+03:00`];
-    const [account, done, movements, waste] = await Promise.all([
+    const [account, done, movements, waste, transfers] = await Promise.all([
       staff?.role === 'store_manager'
         ? pool.query(
             "SELECT 1 FROM store_accounts a JOIN staff_users s ON s.id=a.staff_id WHERE s.id=$1 AND s.role='store_manager' AND extract(epoch from a.session_valid_after)*1000 <= $2",
@@ -64,6 +64,13 @@ export async function GET(request: Request) {
         ORDER BY m.created_at DESC`,
         bounds,
       ),
+      pool.query(
+        `SELECT m.id,m.station AS from_station,m.reason AS to_station,m.amount,m.actor,m.created_at,i.name,i.dimension
+        FROM store_movements m JOIN store_items i ON i.id=m.item_id
+        WHERE m.created_at >= $1::timestamptz AND m.created_at < $2::timestamptz + interval '1 day' AND m.kind='transfer_out'
+        ORDER BY m.created_at DESC, m.id DESC`,
+        bounds,
+      ),
     ]);
     if (!account.rowCount)
       return NextResponse.json(
@@ -71,7 +78,12 @@ export async function GET(request: Request) {
         { status: 403 },
       );
     return NextResponse.json(
-      { done: done.rows, movements: movements.rows, waste: waste.rows },
+      {
+        done: done.rows,
+        movements: movements.rows,
+        waste: waste.rows,
+        transfers: transfers.rows,
+      },
       { headers: { 'Cache-Control': 'no-store' } },
     );
   } catch (e) {

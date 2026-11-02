@@ -54,11 +54,17 @@ CREATE TABLE IF NOT EXISTS store_done_events (
 CREATE INDEX IF NOT EXISTS store_done_events_date_idx ON store_done_events(done_at);
 CREATE INDEX IF NOT EXISTS store_requests_requester_date_idx ON store_requests(requester_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS store_requests_date_idx ON store_requests(created_at DESC);
+CREATE TABLE IF NOT EXISTS store_station_transfers (
+ idempotency_key text PRIMARY KEY, from_station text NOT NULL, to_station text NOT NULL,
+ payload_hash text NOT NULL, actor text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS store_movements (
  id bigserial PRIMARY KEY, item_id integer NOT NULL REFERENCES store_items(id), station text,
- kind text NOT NULL CHECK(kind IN ('purchase','issue','usage','waste')), amount numeric(18,3) NOT NULL CHECK(amount > 0),
+ kind text NOT NULL CHECK(kind IN ('purchase','issue','usage','waste','transfer_out','transfer_in')), amount numeric(18,3) NOT NULL CHECK(amount > 0),
  actor text, reason text, request_id integer, ticket_item_id integer, created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE store_movements DROP CONSTRAINT IF EXISTS store_movements_kind_check;
+ALTER TABLE store_movements ADD CONSTRAINT store_movements_kind_check CHECK(kind IN ('purchase','issue','usage','waste','transfer_out','transfer_in'));
 CREATE INDEX IF NOT EXISTS store_movements_date_idx ON store_movements(created_at);
 CREATE OR REPLACE FUNCTION store_record_done() RETURNS trigger AS $$
 DECLARE r record; dest text; event_id integer;
@@ -88,7 +94,7 @@ CREATE TRIGGER store_done_trigger AFTER INSERT OR UPDATE OF station_status ON ti
 // Bump this when STORE_SCHEMA_SQL changes. A durable version prevents each
 // route bundle or app restart from dropping/recreating the ticket_items trigger
 // (which takes an exclusive table lock). No inventory/history is backfilled.
-export const STORE_SCHEMA_VERSION = '2026-10-29-1';
+export const STORE_SCHEMA_VERSION = '2026-11-02-1';
 
 /** Apply a schema version once across processes; exported for integration tests. */
 export async function installStoreSchema(client: import('pg').PoolClient): Promise<void> {

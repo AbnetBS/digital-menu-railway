@@ -149,7 +149,20 @@ export async function POST(request: Request) {
         // "Deduct" on an overtime row means ADD it: the row's own wording is
         // Add overtime. The minutes travel from the client, which read them
         // from the report; the server clamps them to a sane day.
-        const minutes = Math.max(0, Math.min(24 * 60, Math.round(Number(body?.minutes) || 0)));
+        //
+        // A row the system MEASURED (a scan on a free day, a holiday at the
+        // door) may arrive without minutes, because the report only has the
+        // event. In that case the server re-measures it from the scan instead
+        // of refusing: the supervisor is confirming a measurement he can see,
+        // he is not expected to retype the hours the clock already wrote.
+        let minutes = Math.max(0, Math.min(24 * 60, Math.round(Number(body?.minutes) || 0)));
+        if (minutes <= 0) {
+          const measured = await pool.query<{ minutes: number }>(
+            "SELECT minutes FROM attendance_overtime WHERE member_id=$1 AND date=$2 AND type=$3 ORDER BY id LIMIT 1",
+            [memberId, date, kind]
+          );
+          minutes = Math.max(0, Math.min(24 * 60, Math.round(Number(measured.rows[0]?.minutes) || 0)));
+        }
         if (minutes <= 0) return NextResponse.json({ error: "Positive overtime minutes required" }, { status: 400 });
         const shiftLabel = body?.shiftLabel ? String(body.shiftLabel).slice(0, 40) : null;
         // The ledger keeps the exact hours that were approved, which is what
@@ -167,11 +180,17 @@ export async function POST(request: Request) {
          * so it takes that row over: the same minutes, source 'supervisor' and
          * the name of the person who approved it. Nothing is duplicated, and a
          * holiday row is never doubled by a shift row of the same day. */
-        const taken = await pool.query<{ id: number }>(
-          "SELECT id FROM attendance_overtime WHERE member_id=$1 AND date=$2 AND type=$3 ORDER BY id LIMIT 1",
+        // A row that came from the CLOCK (source 'auto': a holiday scan or a
+        // visit on a free day) is the measurement itself and is left alone, so
+        // a later Add overtime cannot replace the hours the clock wrote. The
+        // ledger above is what pays; this table is the history of the entry.
+        const taken = await pool.query<{ id: number; source: string }>(
+          "SELECT id, source FROM attendance_overtime WHERE member_id=$1 AND date=$2 AND type=$3 ORDER BY id LIMIT 1",
           [memberId, date, kind]
         );
-        if (taken.rows[0]) {
+        if (taken.rows[0] && taken.rows[0].source === "auto") {
+          // keep the measured row exactly as it is
+        } else if (taken.rows[0]) {
           await pool.query(
             `UPDATE attendance_overtime
                 SET minutes=$2, shift_label=COALESCE($3, shift_label), source='supervisor', entered_by=$4,

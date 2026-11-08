@@ -212,6 +212,56 @@ whole month paid at 20% (1,096.00 instead of 5,480.00 on a 6,000 salary). It is
 now prorated only when the owner typed an employment start inside the month, or
 the person was terminated. A full month is a full month.
 
+## 7b. A free day, and a person added mid-month
+
+### Free days
+
+A day in the person's free schedule (weekly, one named date, or a ye amet
+ereft run) is never red "Absent", and a late arrival on it is never "Late". The
+box keeps its own colour and wording: violet "Free day", and sky blue "Worked
+free day" when he came anyway.
+
+What was missing: the visit itself. A scan on a free day reached the Overtime
+tab only, where hours are typed, and a scan is not typing. Now the scan is a row
+on the report like everything else, so the supervisor sees the name, the date
+and the hours, and gets the **same two buttons**. The hours pay by the Free week
+formula in Formula Settings, and only after **Add overtime**. A ye amet ereft
+day is skipped on purpose: those days are paid already, and paying the visit
+again would pay twice.
+
+### A person added in the middle of a month
+
+Two things were wrong, both found on the live database while proving the above:
+
+1. **A typed start date zeroed the salary.** `pg` hands back a timestamp as a
+   JS `Date`, and `String(date).slice(0, 10)` is `"Sat Oct 11"`, not
+   `"2026-10-11"`. Compared against a real day key it is always greater, so the
+   proration factor collapsed to 0 and the whole month paid **0.00**. Every read
+   of a typed employment start or a termination now goes through `etDayKey`.
+2. **A new person was scheduled from zero days.** The month started at the
+   first scan, and a person with no scan yet had no days at all. It now starts
+   at the earliest honest signal: the typed start, the first scan, or the day
+   the row was created.
+
+With those fixed, a person added with a start of the 1st is a whole month
+(`scheduledDays` 28 for Tikimt, proration 1.000), exactly what the owner asked
+for: "for now the employess i registerd will start as all that is why i told
+you the net pay must mach with the excel".
+
+### New person, from the payroll itself
+
+The payroll toolbar has a **New person** button. Name, role and the Ethiopian
+month he is counted from. He is on the sheet on the next load, and the Basic
+Salary is typed in his row, where the net pay moves as the owner types.
+
+### The printed month is the Ethiopian month
+
+The sheet said "October 2019 E.C" because it printed the Gregorian month in
+which the Ethiopian month starts. It now prints the month he reads:
+**"For The Month of Tikimt 2019 E.C"**, taken from `payrollPeriodLabel`, so
+Hidar, Tahsas and the rest follow by themselves. The Gregorian span
+(`2026-10-11 to 2026-11-09`) stays on the small line underneath.
+
 ## 8. Guards
 
 `npx tsx scripts/verify-attendance-decisions.ts` (in `npm test`) pins:

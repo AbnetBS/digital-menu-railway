@@ -1559,6 +1559,15 @@ export const STAFF_AM = {
     "የዚህ ወር ደመወዝ ተከፍሏል፤ ስለዚህ እነዚህ ውሳኔዎች ተቆልፈዋል።",
   "This month's payroll is approved, so these decisions are locked.":
     "የዚህ ወር ደመወዝ ጸድቋል፤ ስለዚህ እነዚህ ውሳኔዎች ተቆልፈዋል።",
+  // NEW PERSON FROM THE PAYROLL SHEET (owner, 2026-11-08).
+  "New person": "አዲስ ሰው",
+  "Add person": "ሰው ጨምር",
+  "Type the name first": "መጀመሪያ ስሙን ይጻፉ",
+  "He appears on the payroll sheet straight away. Type his Basic Salary in the cell after saving.":
+    "ወዲያውኑ በደመወዝ ሰነዱ ላይ ይታያል። ካስቀመጡ በኋላ መሠረታዊ ደመወዙን በሳጥኑ ውስጥ ይጻፉ።",
+  "Select role": "ሚና ይምረጡ",
+  "Counted from this month": "ከዚህ ወር ጀምሮ ይቆጠራል",
+  "Ethiopian month, for example 2019-02 is Tikimt 2019": "የኢትዮጵያ ወር፤ ለምሳሌ 2019-02 ጥቅምት 2019 ነው",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

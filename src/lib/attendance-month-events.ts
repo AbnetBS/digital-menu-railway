@@ -8,7 +8,9 @@ import {
   type OvertimeType,
   type RoleShift,
 } from "@/lib/attendance";
-import { isFreeDate, type FreeScheduleRule } from "@/lib/free-schedule";
+import { isAnnualLeaveDate, isFreeDate, isWorkedFreeDay, type FreeScheduleRule } from "@/lib/free-schedule";
+import { OT_MIN_WORK_MINUTES, recognizedOtMinutes } from "@/lib/payroll";
+import { etDayKey } from "@/lib/timezone";
 import {
   decisionKey,
   sortDecisionEvents,
@@ -55,6 +57,8 @@ type LogRow = {
   late_minutes: number | null;
   early_out: number | null;
   early_out_minutes: number | null;
+  /** Only needed for a visit on a free day, where the hours worked are the pay. */
+  total_minutes: number | null;
 };
 
 type MemberRow = {
@@ -99,7 +103,7 @@ export async function monthAttendanceEvents(
         ORDER BY m.name`
     ),
     pool.query<LogRow>(
-      `SELECT member_id, date, clock_in, clock_out, late_minutes, early_out, early_out_minutes
+      `SELECT member_id, date, clock_in, clock_out, late_minutes, early_out, early_out_minutes, total_minutes
          FROM attendance_logs
         WHERE date BETWEEN $1 AND $2 AND member_id IS NOT NULL`,
       [bounds.from, bounds.to]
@@ -247,13 +251,16 @@ export async function monthAttendanceEvents(
      * the row was created.
      */
     const startsOn = [
-      member.employment_started_at ? String(member.employment_started_at).slice(0, 10) : null,
+      // etDayKey, not .slice(0, 10): a pg timestamp is a Date, and
+      // String(new Date(...)).slice(0, 10) is "Sat Oct 11". Same bug the
+      // payroll route had; both now share the one correct converter.
+      etDayKey(member.employment_started_at),
       member.first_date ? String(member.first_date) : null,
       member.created_at ? dayKey(new Date(member.created_at)) : null,
     ]
       .filter((d): d is string => Boolean(d))
       .sort()[0] || bounds.from;
-    const terminated = member.terminated_at ? String(member.terminated_at).slice(0, 10) : null;
+    const terminated = etDayKey(member.terminated_at);
     const freeRules = freeByMember.get(memberId) || [];
     const isFree = (date: string) => isFreeDate(freeRules, date);
 
@@ -322,6 +329,34 @@ export async function monthAttendanceEvents(
         shift && log.clock_out ? earlyOutMinutesFor(shift, etMinutes(log.clock_out)) : log.early_out ? storedEarly : 0;
       if (rawLate > 0) push(date, "lateness", Math.min(rawLate, 8 * 60), shift?.label || null);
       if (rawEarly > 0) push(date, "early_out", Math.min(rawEarly, 8 * 60), shift?.label || null);
+    }
+
+    /* ── HE CAME ON HIS FREE DAY (owner, 2026-11-08) ──────────────────────
+     * "i entered free date with hour so that person doesnt come this mean no
+     * scanning so the box will not be red /absent just the colour you chose
+     * with free day text but if that person come and put his finger in report
+     * it can be see the person name date ot because come in free day". The
+     * sheet already paints that day the free colour and blue "Worked"; the
+     * REPORT did not list it at all, so the only place the day showed up was
+     * the Overtime tab, where hours are typed, and a scan is not typing.
+     * Now the scan itself is an overtime row on the report, with the ordinary
+     * two buttons. Ye amet ereft is left out on purpose: those days are paid
+     * already (see free-schedule.ts), so paying the visit again would pay twice.
+     */
+    for (const log of memberLogs) {
+      const date = String(log.date);
+      if (date < startsOn) continue;
+      if (!isWorkedFreeDay(freeRules, date) || isAnnualLeaveDate(freeRules, date)) continue;
+      if (!log.clock_in) continue;
+      const shift = pickShift(roleShifts, etMinutes(log.clock_in || "")) ?? roleShifts[0] ?? null;
+      const minutes = recognizedOtMinutes(shift, {
+        clock_in: log.clock_in,
+        clock_out: log.clock_out,
+        total_minutes: log.total_minutes,
+      });
+      // A visit under an hour is not a worked free day (the owner's barrier).
+      if (minutes < OT_MIN_WORK_MINUTES) continue;
+      push(date, "overtime", minutes, shift?.label || null, "free_week");
     }
 
     // A day without a scan is an absence only once the day is over.

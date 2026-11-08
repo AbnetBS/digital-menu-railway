@@ -28,7 +28,8 @@ import {
   type OvertimeType,
   type RoleShift,
 } from "@/lib/attendance";
-import { isFreeDate, type FreeScheduleRule } from "@/lib/free-schedule";
+import { isAnnualLeaveDate, isFreeDate, isWorkedFreeDay, type FreeScheduleRule } from "@/lib/free-schedule";
+import { etDayKey } from "@/lib/timezone";
 
 /**
  * PAYROLL (owner, Oct 2026).
@@ -313,9 +314,21 @@ async function buildRows(periodKey: string) {
     );
     const legacyOt = otEntriesQ.rows.filter((o) => Number(o.member_id) === memberId);
 
-    const startedRaw = member.employment_started_at;
-    const created = member.first_attendance_date || (startedRaw ? new Date(startedRaw).toISOString().slice(0, 10) : bounds.from);
-    const terminated = member.terminated_at ? new Date(member.terminated_at).toISOString().slice(0, 10) : null;
+    /* WHERE THIS PERSON'S MONTH STARTS. Three honest signals, earliest wins:
+     * the date the owner typed when he added him, the first scan ever, or the
+     * moment the row was created. A person added today with a typed start of
+     * the 1st is scheduled for the whole month, which is what the owner does:
+     * "for now the employess i registerd will start as all that is why i told
+     * you the net pay must mach with the excel". Without the typed start the
+     * first scan wins - and if he has not scanned at all, months before he was
+     * added are not his. */
+    const startedOn = etDayKey(member.employment_started_at);
+    const rowCreatedOn = etDayKey(member.created_at);
+    const created =
+      [startedOn, member.first_attendance_date ? String(member.first_attendance_date) : null, rowCreatedOn]
+        .filter((d): d is string => Boolean(d))
+        .sort()[0] || bounds.from;
+    const terminated = etDayKey(member.terminated_at);
     // Three kinds of free day: a repeating weekday, one named date, and a
     // ye amet ereft run of paid days (from free_date to free_until).
     const freeSchedules: FreeScheduleRule[] = freeQ.rows
@@ -373,21 +386,46 @@ async function buildRows(periodKey: string) {
      * the Overtime form and merged from manualOtRows / legacyOt below.
      */
     let autoHolidayMinutes = 0;
+    /** A scan on the person's own free day: the hours he worked, paid only on Add overtime. */
+    let autoFreeWeekMinutes = 0;
     const autoDays: Array<{ date: string; type: OvertimeType; hours: number; why: string; excluded: boolean }> = [];
     for (const date of allDates) {
       const log = logByDate.get(date);
-      const holiday = holidayByDate.get(date);
-      if (!log || !holiday || manualHolidayDates.has(date)) continue;
+      if (!log) continue;
       const shift = shiftOfLog(log, roleShifts);
-      // A holiday scan is a measurement like any other: it waits for Add
-      // overtime. `excluded` is "do not add" or "still waiting", so the paper
-      // shows the row greyed until somebody decides it.
-      const approvedMinutes = approvedOtMinutes(date, "holiday");
-      const excluded = excludedOt.has(`${date}|holiday`) || approvedMinutes === 0;
-      const minutes = recognizedOtMinutes(shift, log);
-      if (minutes > 0) {
-        if (!excluded) autoHolidayMinutes += Math.min(minutes, approvedMinutes);
-        autoDays.push({ date, type: "holiday", hours: minutesToHours(minutes), why: holiday.name, excluded });
+      const holiday = holidayByDate.get(date);
+      if (holiday && !manualHolidayDates.has(date)) {
+        // A holiday scan is a measurement like any other: it waits for Add
+        // overtime. `excluded` is "do not add" or "still waiting", so the paper
+        // shows the row greyed until somebody decides it.
+        const approvedMinutes = approvedOtMinutes(date, "holiday");
+        const excluded = excludedOt.has(`${date}|holiday`) || approvedMinutes === 0;
+        const minutes = recognizedOtMinutes(shift, log);
+        if (minutes > 0) {
+          if (!excluded) autoHolidayMinutes += Math.min(minutes, approvedMinutes);
+          autoDays.push({ date, type: "holiday", hours: minutesToHours(minutes), why: holiday.name, excluded });
+        }
+      }
+      /* HE CAME ON HIS FREE DAY (owner, 2026-11-08). The free colour on the
+       * sheet stays; the visit is measured from the scan and, exactly like a
+       * holiday, it pays nothing until the supervisor presses Add overtime on
+       * the report. Ye amet ereft is skipped: those days are paid already. */
+      if (isWorkedFreeDay(freeSchedules, date) && !isAnnualLeaveDate(freeSchedules, date)) {
+        const approvedMinutes = approvedOtMinutes(date, "free_week");
+        const excluded = excludedOt.has(`${date}|free_week`) || approvedMinutes === 0;
+        const minutes = recognizedOtMinutes(shift, log);
+        if (minutes > 0) {
+          const alreadyTyped = manualOtRows.some((r) => r.type === "free_week" && String(r.date) === date);
+          if (alreadyTyped) continue; // the typed hours are the record; never count the scan twice
+          if (!excluded) autoFreeWeekMinutes += Math.min(minutes, approvedMinutes);
+          autoDays.push({
+            date,
+            type: "free_week",
+            hours: minutesToHours(minutes),
+            why: "Came on his free day",
+            excluded,
+          });
+        }
       }
     }
 
@@ -406,7 +444,11 @@ async function buildRows(periodKey: string) {
       );
 
     const holidayOtHours = money(minutesToHours(autoHolidayMinutes + manualMinutes("holiday")) + legacyHours("holiday"));
-    const freeWeekOtHours = money(minutesToHours(manualMinutes("free_week")) + legacyHours("free_week"));
+    // A free-day visit is measured from the scan (autoFreeWeekMinutes) OR typed
+    // by hand; whichever exists, and never both for one day.
+    const freeWeekOtHours = money(
+      minutesToHours(autoFreeWeekMinutes + manualMinutes("free_week")) + legacyHours("free_week")
+    );
     const shiftOtHours = money(minutesToHours(manualMinutes("shift")) + legacyHours("shift"));
     const nightShiftOtHours = money(minutesToHours(manualMinutes("night_shift")) + legacyHours("night_shift"));
 
@@ -427,12 +469,14 @@ async function buildRows(periodKey: string) {
       shiftOtHours,
       nightShiftOtHours,
       autoHolidayHours: minutesToHours(autoHolidayMinutes),
-      autoFreeWeekHours: 0,
+      autoFreeWeekHours: minutesToHours(autoFreeWeekMinutes),
       autoShiftHours: 0,
       holidayDays:
         autoDays.filter((d) => d.type === "holiday" && !d.excluded).length +
         manualOtRows.filter((r) => r.type === "holiday").length,
-      freeWeekDays: manualOtRows.filter((r) => r.type === "free_week").length,
+      freeWeekDays:
+        autoDays.filter((d) => d.type === "free_week" && !d.excluded).length +
+        manualOtRows.filter((r) => r.type === "free_week").length,
       shiftDays: manualOtRows.filter((r) => r.type === "shift").length,
       nightShiftDays: manualOtRows.filter((r) => r.type === "night_shift").length,
     };
@@ -452,9 +496,12 @@ async function buildRows(periodKey: string) {
      * So the only source that may shorten a month is the employment start the
      * owner actually typed (or a termination). No scan is not a resignation.
      */
-    const employmentStart = member.employment_started_at
-      ? String(member.employment_started_at).slice(0, 10)
-      : null;
+    /* WHY etDayKey AND NOT .slice(0, 10): `pg` returns a timestamp as a JS
+     * Date, and String(date).slice(0, 10) is "Sat Oct 11", not "2026-10-11".
+     * Compared to a real day key, "S" > "2", so a typed employment start made
+     * the factor 0 and the whole salary came out as 0.00. Found on the live
+     * database, 2026-11-08, on the first person added with a start date. */
+    const employmentStart = etDayKey(member.employment_started_at) || null;
     const prorated = Boolean(employmentStart && employmentStart > bounds.from) || Boolean(terminated);
     const employmentDays = periodDates.filter(
       (d) => (!employmentStart || d >= employmentStart) && (!terminated || d < terminated || presentDates.has(d))
@@ -613,13 +660,17 @@ async function buildRows(periodKey: string) {
   return {
     periodKey,
     bounds,
-    // The printed government sheet's header: company, month and TIN. His
-    // Excel writes "For The Month of JuLY 2018 E.C": the Gregorian month in
-    // which the Ethiopian month starts, with the Ethiopian year. The exact
-    // Ethiopian month and the Gregorian date range go on the small line.
+    // The printed government sheet's header: company, month and TIN. It carries
+    // the ETHIOPIAN month name (owner, 2026-11-08: "when i click print it say
+    // octuber 2019 but that would be greate if it writes it in ethopian
+    // calander like tikimt,hidar"). His own Excel said "October 2019 E.C" for
+    // the month that is really Tikimt 2019, and he reads his calendar, not the
+    // Gregorian one: Tikimt 2019, not October 2019. The Gregorian span stays on
+    // the small line, and the columns are narrow enough that the longer name
+    // still fits on one line.
     letterhead: {
       ...letterhead,
-      monthLabel: `${new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" }).format(new Date(`${bounds.from}T12:00:00Z`))} ${periodKey.split("-")[0]} E.C`,
+      monthLabel: payrollPeriodLabel(periodKey),
       periodLabel: payrollPeriodLabel(periodKey),
       gregorianRange: `${bounds.from} to ${bounds.to}`,
       // Formal sheets carry a date. It comes from the selected payroll month,

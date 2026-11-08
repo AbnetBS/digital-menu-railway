@@ -222,7 +222,8 @@ pass(
 );
 pass(
   "Add overtime confirms the existing row instead of duplicating the same hours",
-  decisionsApi.includes("SELECT id FROM attendance_overtime WHERE member_id=$1 AND date=$2 AND type=$3")
+  decisionsApi.includes("SELECT id, source FROM attendance_overtime WHERE member_id=$1 AND date=$2 AND type=$3") &&
+    decisionsApi.includes("else if (taken.rows[0])")
 );
 
 /* ── 5. the screen ────────────────────────────────────────────────────── */
@@ -374,9 +375,77 @@ pass(
   DEFAULT_LATENESS_FORMULA.includes("LateMinutes") && DEFAULT_ABSENCE_FORMULA.includes("UnapprovedAbsences")
 );
 
+/* ── HE CAME ON HIS FREE DAY (owner, 2026-11-08) ───────────────────────────
+ * "i entered free date with hour so that person doesnt come this mean no
+ * scanning so the box will not be red /absent just the colour you chose with
+ * free day text but if that person come and put his finger in report it can be
+ * see the person name date ot because come in free day to show the reason adn
+ * the same 2 button we add"
+ */
+const monthEventsSrc = read("src/lib/attendance-month-events.ts");
+const payrollApiSrc = read("src/app/api/payroll/route.ts");
+const attendanceTabSrc = read("src/components/rms/AttendanceTab.tsx");
+const decisionsApiSrc = read("src/app/api/attendance/decisions/route.ts");
+
+pass(
+  "a scan on a free day is a row on the report, measured from the scan",
+  monthEventsSrc.includes("isWorkedFreeDay(freeRules, date)") &&
+    monthEventsSrc.includes('push(date, "overtime", minutes, shift?.label || null, "free_week")') &&
+    monthEventsSrc.includes("recognizedOtMinutes(shift, {")
+);
+pass(
+  "a ye amet ereft day is never that row (it is paid already)",
+  monthEventsSrc.includes("isAnnualLeaveDate(freeRules, date)") &&
+    payrollApiSrc.includes("isWorkedFreeDay(freeSchedules, date) && !isAnnualLeaveDate(freeSchedules, date)")
+);
+pass(
+  "a free day is never an absence and never lateness",
+  monthEventsSrc.includes("if (isFree(date)) continue;") && payrollApiSrc.includes("&& !isFree(d))")
+);
+pass(
+  "the free day keeps its own colour and wording, never red absent, never early out",
+  attendanceTabSrc.includes('free: "bg-violet-200 text-violet-950"') &&
+    attendanceTabSrc.includes('free_worked: "bg-sky-200 text-sky-950"') &&
+    attendanceTabSrc.includes("{cell.freeDay && (") &&
+    attendanceTabSrc.includes("Worked free day") &&
+    attendanceTabSrc.includes("{!cell.freeDay && !cell.isOvertime && !cell.stayedNextShift && cell.earlyOut && (")
+);
+pass(
+  "the free-day hours pay only after Add overtime, clamped like a holiday",
+  payrollApiSrc.includes("autoFreeWeekMinutes") &&
+    payrollApiSrc.includes("if (!excluded) autoFreeWeekMinutes += Math.min(minutes, approvedMinutes)") &&
+    decisionsApiSrc.includes('if (taken.rows[0] && taken.rows[0].source === "auto")')
+);
+// The bug this turn found on the live database: a pg timestamp is a Date, and
+// String(date).slice(0,10) is "Sat Oct 11", which made the proration 0.
+pass(
+  "a typed employment start is read with etDayKey, never String(Date).slice",
+  payrollApiSrc.includes("etDayKey(member.employment_started_at)") &&
+    monthEventsSrc.includes("etDayKey(member.employment_started_at)") &&
+    !/String\(member\.employment_started_at\)\.slice/.test(payrollApiSrc) &&
+    !/String\(member\.employment_started_at\)\.slice/.test(monthEventsSrc)
+);
+pass(
+  "a person is scheduled from the earliest honest signal, so a typed start of the 1st is a whole month",
+  payrollApiSrc.includes("const rowCreatedOn = etDayKey(member.created_at)") &&
+    payrollApiSrc.includes(".sort()[0] || bounds.from")
+);
+pass(
+  "a new person can be added from the payroll sheet itself",
+  read("src/components/rms/PayrollTab.tsx").includes("<NewPersonDialog") &&
+    read("src/components/rms/PayrollTab.tsx").includes("New person") &&
+    read("src/components/rms/NewPersonDialog.tsx").includes("/api/attendance/members") &&
+    read("src/app/api/attendance/members/route.ts").includes("employmentStartedAt: startedOn")
+);
+pass(
+  "the printed month is the Ethiopian one, Tikimt and Hidar, not October",
+  payrollApiSrc.includes("monthLabel: payrollPeriodLabel(periodKey)") &&
+    !/monthLabel: `\$\{new Intl\.DateTimeFormat\("en-US"/.test(payrollApiSrc)
+);
+
 console.log(
   failures === 0
-    ? "\n✅ attendance decisions guard PASSED\n   • pending costs nothing, pays nothing; only Deduct / Add overtime moves money\n   • overtime waits like lateness, absence and early leave\n   • the kiosk button is gone, the report is in its place\n   • 20 groups by default"
+    ? "\n✅ attendance decisions guard PASSED\n   • pending costs nothing, pays nothing; only Deduct / Add overtime moves money\n   • overtime waits like lateness, absence and early leave\n   • the kiosk button is gone, the report is in its place\n   • 20 groups by default\n   • a free day is never red, and a visit on it waits for the same two buttons\n   • a typed start date is read correctly, so the whole month is a whole month"
     : `\n❌ ${failures} check(s) failed`
 );
 process.exit(failures === 0 ? 0 : 1);

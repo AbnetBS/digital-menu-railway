@@ -2055,12 +2055,22 @@ export default function AttendanceTab() {
                                       <>
                                         <div>{cell.clockOutTime}</div>
                                         <div className="text-[11px] font-bold">{cell.totalHours}</div>
-                                        {cell.isOvertime && <div className="text-[11px] font-black">Overtime</div>}
-                                        {!cell.isOvertime && cell.stayedNextShift && (
+                                        {/* OWNER, 2026-11-08: on a registered free day the
+                                            box carries the free day wording, never "Absent"
+                                            and never "Early out". Coming in is already said
+                                            in the IN box (blue "Worked free day"), and the
+                                            money question is on the report. */}
+                                        {cell.freeDay && (
+                                          <div className="text-[11px] font-black">Worked free day</div>
+                                        )}
+                                        {!cell.freeDay && !cell.isOvertime && cell.stayedNextShift && (
                                           <div className="text-[11px] font-black">Stayed next shift</div>
                                         )}
-                                        {!cell.isOvertime && !cell.stayedNextShift && cell.earlyOut && (
+                                        {!cell.freeDay && !cell.isOvertime && !cell.stayedNextShift && cell.earlyOut && (
                                           <div className="text-[11px] font-black">Early out</div>
+                                        )}
+                                        {!cell.freeDay && cell.isOvertime && (
+                                          <div className="text-[11px] font-black">Overtime</div>
                                         )}
                                       </>
                                     ) : cell?.freeDay && cell.clockInTime ? (

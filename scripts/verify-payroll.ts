@@ -230,11 +230,25 @@ pass(
 );
 
 pass("the payroll reads the overtime rows from attendance_overtime", payrollApi.includes("FROM attendance_overtime"));
-pass("automatic overtime in payroll is granted ONLY for registered holiday dates",
+// Owner, 2026-11-08: "if that person come and put his finger in report it can
+// be see the person name date ot because come in free day". So there are now
+// TWO measured kinds, and both still wait for Add overtime: a registered
+// holiday, and a visit on the person's own free day. A ye amet ereft run is
+// never one of them, and no measured kind ever pays by itself.
+pass(
+  "automatic overtime in payroll is only the two measured kinds, holiday and a worked free day",
   payrollApi.includes("recognizedOtMinutes(shift, log)") &&
     payrollApi.includes("const holiday = holidayByDate.get(date)") &&
-    !payrollApi.includes("workedShiftOtMinutes") &&
-    !payrollApi.includes("isWorkedFree"));
+    payrollApi.includes("isWorkedFreeDay(freeSchedules, date) && !isAnnualLeaveDate(freeSchedules, date)") &&
+    payrollApi.includes("autoFreeWeekMinutes") &&
+    !payrollApi.includes("workedShiftOtMinutes")
+);
+pass(
+  "a measured free day pays only what the supervisor approved, clamped like a holiday",
+  payrollApi.includes('const approvedMinutes = approvedOtMinutes(date, "free_week")') &&
+    payrollApi.includes("if (!excluded) autoFreeWeekMinutes += Math.min(minutes, approvedMinutes)") &&
+    payrollApi.includes("excludedOt.has(`${date}|free_week`) || approvedMinutes === 0")
+);
 pass("all four manual overtime kinds (holiday, free_week, shift, night_shift) feed payroll",
   payrollApi.includes('manualMinutes("night_shift")') && payrollApi.includes("nightShiftOtPay: pay.nightShiftOtPay"));
 pass("a 'Don't give' decision is read for the month and filters manual and holiday OT",

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Calculator,
   CalendarDays,
+  UserPlus,
   Check,
   CheckCircle2,
   Columns3,
@@ -26,10 +27,12 @@ import {
   computePayrollMoney,
   currentEthiopianPeriod,
   gregorianDateToEthiopian,
+  payrollPeriodLabel,
   type PayrollSettings,
 } from "@/lib/payroll";
 import { OVERTIME_TYPE_LABELS, weekdayName, type OvertimeType } from "@/lib/attendance";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
+import NewPersonDialog from "@/components/rms/NewPersonDialog";
 import TableScroll from "@/components/rms/TableScroll";
 import CashPayrollPanel from "@/components/rms/CashPayrollPanel";
 
@@ -113,6 +116,8 @@ export default function PayrollTab() {
   // The supervisor still sees them when he wants the proof of a deduction.
   const [showAttendanceColumns, setShowAttendanceColumns] = useState(false);
   const [holidayOpen, setHolidayOpen] = useState(false);
+  // The new name added from this screen: name, role and the month he counts from.
+  const [newPersonOpen, setNewPersonOpen] = useState(false);
   // The company name and TIN printed on the government sheet. Stored in
   // site_settings, edited here, read by the payroll API for the letterhead.
   const [headerDraft, setHeaderDraft] = useState({ ...DEFAULT_PAYROLL_LETTERHEAD });
@@ -512,7 +517,10 @@ export default function PayrollTab() {
               <div className="company">{data?.letterhead?.companyName || headerDraft.companyName}</div>
               <div className="sheet-name">Payroll Sheet</div>
               <div className="month-row">
-                <div>For The Month of <b>{data?.letterhead?.monthLabel || period}</b></div>
+                {/* The Ethiopian month, always: Tikimt 2019 E.C, not October
+                    2019 (owner, 2026-11-08). The fallback is the same label,
+                    so the paper never prints a raw 2019-02 on a slow load. */}
+                <div>For The Month of <b>{data?.letterhead?.monthLabel || payrollPeriodLabel(period)}</b></div>
                 <div>TIN NO&nbsp; <b>{data?.letterhead?.tin || headerDraft.tin}</b></div>
               </div>
               <div className="gregorian-range">
@@ -669,6 +677,17 @@ export default function PayrollTab() {
               className="px-4 py-2.5 rounded-xl bg-violet-800/70 border border-violet-500/40 text-xs font-bold"
             >
               <CalendarDays className="w-4 h-4 inline" /> Holiday dates ({data?.holidays?.length || 0})
+            </button>
+            {/* OWNER, 2026-11-08: "also add these button for the New person From
+                attendance main payroll too okay so they can add when they
+                want". Same list as Attendance - Staff Members, added from the
+                sheet he is looking at, so a new name is on the payroll without
+                changing tab. */}
+            <button
+              onClick={() => setNewPersonOpen(true)}
+              className="px-4 py-2.5 rounded-xl bg-emerald-800/70 border border-emerald-500/40 text-xs font-bold"
+            >
+              <UserPlus className="w-4 h-4 inline" /> New person
             </button>
             <button
               onClick={() => {
@@ -958,6 +977,17 @@ export default function PayrollTab() {
           period={period}
           onClose={() => setHolidayOpen(false)}
           onChanged={() => load(true)}
+        />
+      )}
+
+      {newPersonOpen && (
+        <NewPersonDialog
+          period={period}
+          onClose={() => setNewPersonOpen(false)}
+          onAdded={async (name) => {
+            setMessage(`${name} is on the attendance list. Type the Basic Salary in his row.`);
+            await load(true);
+          }}
         />
       )}
 

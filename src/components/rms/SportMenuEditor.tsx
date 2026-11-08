@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Check, Flag, Plus, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { Check, Flag, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import {
   fetchSportCatalog,
@@ -10,49 +10,33 @@ import {
 } from "@/lib/sport-menu-client";
 
 /**
- * THE SPORT MENU (owner, 2026-11-07).
+ * THE SPORT MENU EDITOR — OWNER/ADMIN ONLY (owner, 2026-11-08).
  *
- * "The easiest way to add this is to use that group button, rename the groups
- * to sport, then when they click it there will be increased price and they will
- * click and send it like normal order."
+ * "the one who is responsible to edit the items is the admin not the waiters".
  *
- * So this sheet is opened from the waiter app's top corner (the button that
- * used to say Groups) and from the owner dashboard. It does two jobs:
+ * So this is the ONLY place a match-day price can be typed, and it lives on the
+ * dashboard's Sport menu tab. The waiter has no editor: when he taps Sport on his
+ * phone he gets the ordinary ordering screen with these numbers on the items the
+ * admin re-priced. Nothing here is visible to a guest either.
  *
- *   THE OWNER adds a whole category at a time (cold drinks, hot drinks,
- *   pastry), and each item inside it is listed as `from <menu price> to
- *   <the price he types>`. Nothing is saved until he saves, and the ordinary
- *   menu is never touched: these numbers live in their own table.
- *
- *   THE WAITER taps "Use sport prices" and his ordering screen charges the
- *   match-day numbers for exactly those items. Everything the owner did not
- *   add keeps the normal price, and a guest scanning the table QR never sees
- *   any of it.
+ * The owner adds a whole category at a time (cold drinks, hot drinks, pastry) and
+ * each item inside it reads `from <menu price> to <the price he types>`. Nothing
+ * is saved until he saves, and the ordinary menu is never touched: these numbers
+ * live in their own table.
  */
 
 type Props = {
-  open: boolean;
-  onClose: () => void;
-  /** Called when the waiter switches sport prices on/off for his ordering screen. */
-  onUsePrices?: (catalog: SportCatalogResponse | null) => void;
-  /** The waiter already has sport prices switched on (drives the button label). */
-  sportMode?: boolean;
   /**
-   * GROUP BILLS live here too (owner, 2026-11-07: "use that group button,
-   * rename the groups to sport"). The sheet keeps the auto-numbered group
-   * composer one tap away instead of taking its button off the screen.
-   */
-  onOpenGroups?: () => void;
-  /**
-   * Rendered as a dashboard tab instead of a phone overlay: no backdrop, no
-   * close button, the list scrolls with the page. Same editor either way.
+   * Rendered as a dashboard tab rather than a phone overlay: the list scrolls
+   * with the page. Kept as a prop so the component stays usable in a modal if a
+   * future screen needs one, but the waiter never mounts it.
    */
   embedded?: boolean;
 };
 
 const money = (n: number) => (Math.round(Number(n) * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 });
 
-export default function SportMenuSheet({ open, onClose, onUsePrices, sportMode = false, onOpenGroups, embedded = false }: Props) {
+export default function SportMenuEditor({ embedded = true }: Props) {
   const { t: L } = useStaffT();
   const [catalog, setCatalog] = useState<SportCatalogResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -79,9 +63,8 @@ export default function SportMenuSheet({ open, onClose, onUsePrices, sportMode =
   }, []);
 
   useEffect(() => {
-    if (!open) return;
-    // `canEdit` comes from the server (the owner's cookie), so a waiter's phone
-    // shows the read-only price list without ever attempting a write.
+    // `canEdit` comes from the server (the owner's cookie). A plain user who
+    // somehow reaches this tab sees the list read-only and no input at all.
     void (async () => {
       setLoading(true);
       const next = await fetchSportCatalog("admin");
@@ -93,7 +76,7 @@ export default function SportMenuSheet({ open, onClose, onUsePrices, sportMode =
       setCatalog(next);
       setCanEdit(Boolean(next.canEdit));
     })();
-  }, [open]);
+  }, []);
 
   const menu = catalog?.menu || null;
   const added = useMemo(() => menu?.categories || [], [menu]);
@@ -182,42 +165,24 @@ export default function SportMenuSheet({ open, onClose, onUsePrices, sportMode =
     await post({ action: "set_active", active: !(menu && menu.active !== false) });
   };
 
-  if (!open) return null;
-
   const active = Boolean(menu && menu.active !== false);
   const pricedCount = menu?.prices.filter((price) => added.includes(price.category)).length || 0;
 
   return (
-    <div
-      className={embedded ? "w-full" : "fixed inset-0 z-50 bg-black/85 backdrop-blur-sm p-3 sm:p-4 overflow-y-auto"}
-      onClick={embedded ? undefined : onClose}
-    >
-      <div
-        className={`max-w-4xl mx-auto bg-[#1C120F] border border-violet-500/40 rounded-3xl ${embedded ? "" : "overflow-hidden"}`}
-        onClick={embedded ? undefined : (event) => event.stopPropagation()}
-      >
-        <div className={`${embedded ? "" : "sticky top-0"} z-10 bg-[#2C1B17]/95 backdrop-blur border-b border-violet-500/30 px-4 py-3 flex items-center justify-between gap-3`}>
+    <div className="w-full">
+      <div className="max-w-4xl mx-auto bg-[#1C120F] border border-violet-500/40 rounded-3xl">
+        <div className="z-10 bg-[#2C1B17]/95 backdrop-blur border-b border-violet-500/30 px-4 py-3 flex items-center justify-between gap-3 rounded-t-3xl">
           <div className="flex items-center gap-3 min-w-0">
-            {!embedded && (
-              <button onClick={onClose} className="p-2 rounded-xl bg-white/10 text-stone-200 hover:bg-white/20" aria-label={L("Back")}>
-                <ArrowLeft className="w-4 h-4" />
-              </button>
-            )}
             <div className="min-w-0">
               <h2 className="font-serif font-black text-xl text-amber-100 flex items-center gap-2">
                 <Flag className="w-5 h-5 text-violet-300" />
                 {L("Sport menu")}
               </h2>
               <p className="text-[11px] text-stone-400">
-                {L("Match-day prices for the waiter only. The customer menu never shows them.")}
+                {L("Only the owner sets these prices. The waiter sees them on the normal menu and a customer never does.")}
               </p>
             </div>
           </div>
-          {!embedded && (
-            <button onClick={onClose} className="p-2 rounded-xl bg-rose-900/40 text-rose-300 hover:bg-rose-700 hover:text-white" aria-label={L("Close")}>
-              <XCircle className="w-4 h-4" />
-            </button>
-          )}
         </div>
 
         <div className="p-4 space-y-4">
@@ -259,32 +224,6 @@ export default function SportMenuSheet({ open, onClose, onUsePrices, sportMode =
                     }`}
                   >
                     {active ? L("Switch off for today") : L("Switch on for today")}
-                  </button>
-                )}
-                {onOpenGroups && (
-                  <button
-                    onClick={() => {
-                      onClose();
-                      onOpenGroups();
-                    }}
-                    className="px-3 py-2 rounded-xl text-[11px] font-black border border-emerald-500/50 bg-emerald-900/40 text-emerald-200"
-                  >
-                    {L("Groups")}
-                  </button>
-                )}
-                {onUsePrices && (
-                  <button
-                    onClick={() => {
-                      onUsePrices(sportMode ? null : catalog);
-                      onClose();
-                    }}
-                    className={`px-3 py-2 rounded-xl text-[11px] font-black border transition ${
-                      sportMode
-                        ? "bg-emerald-500/20 border-emerald-400 text-emerald-100"
-                        : "bg-[#C9A227] border-[#C9A227] text-[#2C1B17]"
-                    }`}
-                  >
-                    {sportMode ? L("Stop using sport prices") : L("Use sport prices")}
                   </button>
                 )}
               </div>

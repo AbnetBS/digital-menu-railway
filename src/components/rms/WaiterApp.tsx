@@ -9,8 +9,14 @@ import { MenuItem, Ticket, TicketItem, CafeTable, TableStatus } from "@/types";
 
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import GroupComposer from "@/components/rms/GroupComposer";
-import SportMenuSheet from "@/components/rms/SportMenuSheet";
-import { fetchSportCatalog, chargePrice, isSportCategory, type SportCatalogResponse } from "@/lib/sport-menu-client";
+import {
+  chargePrice,
+  eventPriceByItem,
+  fetchSportCatalog,
+  sportPricedCount,
+  sportPricesLive,
+  type SportCatalogResponse,
+} from "@/lib/sport-menu-client";
 import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
@@ -178,19 +184,22 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   // bill. Always available, from the top corner of the tables view.
   const [groupComposerOpen, setGroupComposerOpen] = useState(false);
   /**
-   * THE SPORT MENU (owner, 2026-11-07). The top-corner button that used to say
-   * "Groups" now says "Sport menu": on a match day the waiter opens it, sees the
-   * temporary prices the owner typed (from <normal> to <match-day>), and taps
-   * "Use sport prices". From then on this phone charges those numbers while the
-   * ordinary menu, the QR page and the cashier stay on the normal price.
-   * A category the owner never added keeps its normal price, so nothing can be
-   * charged a match-day number by mistake.
+   * THE SPORT MENU (owner, 2026-11-08 — his correction of the first design).
+   *
+   * "when waiters click sport menu they see prices for that event only but same
+   * design as the normal menu ... the one who is responsible to edit the items
+   * is the admin not the waiters".
+   *
+   * So there is NO sport mode to switch on and NO second screen. On a match day
+   * the waiter taps Sport in the top corner and the SAME ordering screen opens
+   * with the SAME menu; the only difference is that the items the admin gave an
+   * event price show that price instead of the normal one. Everything else, the
+   * cards, the categories, the cart, the send, is untouched. On any other day he
+   * taps a table and gets the normal prices.
    */
-  const [sportSheetOpen, setSportSheetOpen] = useState(false);
   const [sportCatalog, setSportCatalog] = useState<SportCatalogResponse | null>(null);
-  const [sportMode, setSportMode] = useState(false);
-  /** Remembers which list was switched on, so a reload keeps the same numbers. */
-  const sportModeKey = `${sessionKey}_sport_menu`;
+  /** This ordering screen was opened from the Sport button (event prices). */
+  const [sportEventMode, setSportEventMode] = useState(false);
   const [outdoorComposerOpen, setOutdoorComposerOpen] = useState(false);
   /** Which open outdoor bill "+ Add to an outdoor order" is adding to. */
   const [outdoorPickerOpen, setOutdoorPickerOpen] = useState(false);
@@ -382,51 +391,25 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   }, [tables]);
 
   /**
-   * SPORT MODE SURVIVES A RELOAD (owner, 2026-11-07). A waiter refreshes his
-   * phone mid-service; dropping back to normal prices without telling him would
-   * quietly under-charge every cold drink for the rest of the match. The choice
-   * is stored per role on this device (the same way the language choice is), and
-   * the list is re-read so a switched-off list cannot come back to life.
+   * READ THE EVENT PRICES ONCE PER LOGIN (owner, 2026-11-08).
+   *
+   * There is nothing for the waiter to switch on any more: when he taps Sport he
+   * gets the normal screen, and the items the admin re-priced simply show the
+   * event price. So the screen needs the list once, and re-reads it every time
+   * the Sport button is tapped so a price the admin typed a minute ago is never
+   * missed.
    */
   useEffect(() => {
     if (view === "login") return;
-    let wanted = false;
-    try {
-      wanted = sessionStorage.getItem(sportModeKey) === "1";
-    } catch {
-      /* private mode: no memory, sport mode simply starts off */
-    }
-    if (!wanted) return;
     let alive = true;
     void fetchSportCatalog("waiter").then((next) => {
-      if (!alive || !next) return;
-      if (!next.menu || next.menu.active === false) {
-        try {
-          sessionStorage.removeItem(sportModeKey);
-        } catch {
-          /* ignore */
-        }
-        return;
-      }
-      setSportCatalog(next);
-      setSportMode(true);
+      if (alive && next) setSportCatalog(next);
     });
     return () => {
       alive = false;
     };
-    // Only when the signed-in waiter changes: re-reading on every view change
-    // would fight the waiter's own switch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view === "login"]);
-
-  useEffect(() => {
-    try {
-      if (sportMode) sessionStorage.setItem(sportModeKey, "1");
-      else sessionStorage.removeItem(sportModeKey);
-    } catch {
-      /* ignore */
-    }
-  }, [sportMode, sportModeKey]);
 
   useEffect(() => {
     const saved = sessionStorage.getItem(sessionKey);
@@ -1057,6 +1040,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     // of the hold, and leaving the cart starts no new order over it.
     const queuedForTable = pendingSendsRef.current.find((send) => send.tableId === t.id && !send.groupRound);
     if (queuedForTable) return openQueuedSend(queuedForTable);
+    // Tapping a table on the grid is the NORMAL order: the ordinary prices, even
+    // if the last screen he looked at was the sport one.
+    setSportEventMode(false);
     setSelectedTable(t);
     setCart([]);
     if (t.activeTicketId) {
@@ -1137,13 +1123,22 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       : L("Occupied");
 
   /**
-   * The price this phone charges for one item right now. In sport mode the
-   * owner's match-day number wins for the items he priced; everything he did
-   * not add keeps the ordinary price, exactly as he asked. The server has the
-   * final word on the bill (see applySportPrices in /api/tickets), so this is
-   * only the number the waiter reads before he sends.
+   * The price this phone shows and charges for one item right now.
+   *
+   * On a match day the waiter opened this screen from the Sport button, so the
+   * items the ADMIN gave an event price show that price; every other item shows
+   * its normal price. On any other day `sportEventMode` is false and nothing
+   * changes. The waiter never sets a price: the server re-reads the list and
+   * stamps it on the bill (applySportPrices in /api/tickets).
    */
-  const priceFor = (item: MenuItem) => chargePrice(item, effectivePrice(item).price, sportMode, sportCatalog);
+  const priceFor = (item: MenuItem) => chargePrice(item, effectivePrice(item).price, sportEventMode, sportCatalog);
+
+  /** The event price of one item, or null when the admin gave it none. */
+  const eventPriceFor = (item: MenuItem): number | null => {
+    if (!sportEventMode || !sportPricesLive(sportCatalog)) return null;
+    const typed = eventPriceByItem(sportCatalog).get(item.id);
+    return typed === undefined ? null : typed;
+  };
 
   const addToCart = (item: MenuItem) => {
     if (!item.isAvailable) return;
@@ -1164,7 +1159,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           price: unitPrice,
           quantity: 1,
           notes: "",
-          ...(sportMode && unitPrice !== effectivePrice(item).price ? { sportLine: true } : {}),
+          ...(sportEventMode && eventPriceFor(item) !== null ? { sportLine: true } : {}),
         },
       ];
     });
@@ -1256,6 +1251,38 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
    * runs out, and pressing Back still takes her to the tables with the
    * countdown alive — the violet tile brings her back into it.
    */
+  /**
+   * THE SPORT BUTTON ON THE TABLES SCREEN (owner, 2026-11-08).
+   *
+   * It does not open a second menu and it does not put the phone into a mode.
+   * It opens the SAME ordering screen at the event prices: a table is picked for
+   * him when one is free (a normal day's order), or a group bill when every
+   * table is busy (a match day, guest groups standing). From there everything is
+   * exactly the normal flow: same cards, same categories, same cart, same send.
+   * Only the admin can change a price, and only the items he re-priced differ.
+   */
+  const openSportOrdering = () => {
+    // Re-read first: the admin may have typed a price a minute ago.
+    void fetchSportCatalog("waiter").then((next) => {
+      if (next) setSportCatalog(next);
+    });
+    setSportEventMode(true);
+    setCart([]);
+    setActiveTicket(null);
+    setCategory("all");
+    setSearch("");
+    const free = tables.find((table) => table.status === "available");
+    if (free) {
+      setSelectedTable(free);
+      setActiveHold(null);
+      setView("order");
+      return;
+    }
+    // No free table: a group bill takes the order, and the guest group is asked
+    // for nothing extra (the number IS the identity).
+    setGroupComposerOpen(true);
+  };
+
   const startSendHold = () => {
     if (cart.length === 0 || !selectedTable || sending || activeHoldKeyRef.current) return;
     const hold = Math.max(1, holdSeconds);
@@ -1274,7 +1301,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       // The list is named when ANY line was added in sport mode; each such line
       // says so itself, so a mixed cart (a normal Cola and a match-day Cola on
       // one table) is charged 50 and 150 exactly as the waiter keyed it.
-      ...(sportMode && sportCatalog?.menu?.id && cart.some((line) => line.sportLine)
+      // The list is named when this cart holds event-priced lines; each such
+      // line says so itself, so a mixed cart is charged exactly as displayed.
+      ...(sportCatalog?.menu?.id && cart.some((line) => line.sportLine)
         ? { sportMenuId: sportCatalog.menu.id }
         : {}),
     };
@@ -1364,6 +1393,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     setSelectedTable(null);
     setActiveTicket(null);
     setCart([]);
+    // Back to the tables screen = back to the ordinary menu. The event prices
+    // belong to the screen the Sport button opened, never to the next table, so
+    // a waiter can never carry a match-day price onto a normal order by accident.
+    setSportEventMode(false);
     setView("tables");
   };
 
@@ -1384,7 +1417,6 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       { at: () => outdoorPickerOpen, close: () => setOutdoorPickerOpen(false) },
       { at: () => outdoorComposerOpen, close: () => setOutdoorComposerOpen(false) },
       { at: () => groupComposerOpen, close: () => setGroupComposerOpen(false) },
-      { at: () => sportSheetOpen, close: () => setSportSheetOpen(false) },
       { at: () => view === "payment", close: () => setView("bill") },
       { at: () => view === "order" || view === "bill", close: onGoBack },
       // "…it take them to the all tables then again to login page": the grid
@@ -1985,34 +2017,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
         }}
         // SPORT MENU: a group order placed in sport mode is charged the
         // owner's match-day prices, shown here and stamped server-side.
-        sportMenuId={sportMode ? sportCatalog?.menu?.id : undefined}
+        sportMenuId={sportEventMode ? sportCatalog?.menu?.id : undefined}
         sportPriceFor={
-          sportMode && sportCatalog
-            ? (menuItemId, regularPrice) => {
-                const typed = sportCatalog.menu?.prices.find((price) => price.menuItemId === menuItemId);
-                return typed ? typed.sportPrice : regularPrice;
-              }
+          sportEventMode && sportCatalog
+            ? (menuItemId, regularPrice) => eventPriceByItem(sportCatalog).get(menuItemId) ?? regularPrice
             : undefined
         }
-      />
-
-      {/* SPORT MENU (owner, 2026-11-07): the match-day price list. The owner
-          adds a category and types the price; the waiter switches his ordering
-          screen onto those numbers. Never shown to a guest. */}
-      <SportMenuSheet
-        open={sportSheetOpen}
-        onClose={() => setSportSheetOpen(false)}
-        sportMode={sportMode}
-        onOpenGroups={() => setGroupComposerOpen(true)}
-        onUsePrices={(catalog) => {
-          setSportCatalog(catalog);
-          setSportMode(Boolean(catalog));
-          showToast(
-            catalog
-              ? tNow("⚡ Sport prices ON • the marked items are charged the match-day price")
-              : tNow("Normal menu prices are back")
-          );
-        }}
       />
 
       {isBuna && <OutdoorOrderComposer
@@ -2245,32 +2255,27 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           <div>
             <div className="flex items-center justify-between gap-2">
               <h1 className="font-serif text-xl font-bold text-amber-100">{L("Select Table")}</h1>
-              {/* THE SPORT MENU (owner, 2026-11-07): this is the top-corner
-                  button he pointed at. On a match day the waiter opens it, sees
-                  the owner's temporary prices and taps "Use sport prices"; the
-                  very next order is charged those numbers and sent like any
-                  normal order. Group bills live inside the same sheet, so the
-                  auto-numbered group composer is one tap away and unchanged. */}
+              {/* THE SPORT MENU (owner, 2026-11-08 — his correction).
+                  "when they click sport menu they see prices for that event
+                  only but same design as the normal menu".
+                  So this button does NOT open a price editor and does NOT put
+                  the phone into a mode he has to remember to leave. It simply
+                  says "let me order at the event prices", picks the table for
+                  him on a normal day (a group bill on a match day) and opens the
+                  SAME menu screen. The admin is the only one who can change a
+                  price; the waiter just sees it. */}
               <div className="shrink-0 flex items-center gap-1.5">
                 <button
-                  onClick={() => {
-                    setSportSheetOpen(true);
-                    // Refresh the prices quietly: the owner may have typed a new
-                    // one minutes ago, and a stale list must never be charged.
-                    void fetchSportCatalog("waiter").then((next) => {
-                      if (!next) return;
-                      setSportCatalog(next);
-                      if (!next.menu || next.menu.active === false) setSportMode(false);
-                    });
-                  }}
+                  onClick={() => openSportOrdering()}
                   className={`flex items-center gap-1.5 border-2 rounded-xl px-3 py-2 text-[11px] font-black active:scale-95 transition ${
-                    sportMode
+                    sportPricesLive(sportCatalog)
                       ? "bg-violet-700/80 border-violet-400 text-violet-50"
                       : "bg-emerald-800/80 border-emerald-400/60 hover:bg-emerald-700 text-emerald-100"
                   }`}
+                  title={L("Sport menu")}
                 >
                   <Flag className="w-4 h-4" />
-                  {sportMode ? L("Sport ON") : L("Sport menu")}
+                  {L("Sport menu")}
                 </button>
                 <button
                   onClick={() => setGroupComposerOpen(true)}
@@ -2523,6 +2528,27 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             )}
           </div>
 
+          {/* The one visible difference from an ordinary order: a thin bar that
+              says the prices on this exact screen came from the admin's sport
+              list. Same screen, same cards, same cart; nothing to switch. */}
+          {sportEventMode && (
+            <div className="px-4 pt-3">
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-violet-500/40 bg-violet-950/30 px-3 py-2">
+                <p className="text-[11px] font-black text-violet-200 min-w-0">
+                  {sportPricesLive(sportCatalog)
+                    ? <>⚡ {L("Event prices: {n} item(s) were changed by the admin.", { n: sportPricedCount(sportCatalog) })}</>
+                    : L("No sport prices today. These are the normal menu prices.")}
+                </p>
+                <button
+                  onClick={() => setSportEventMode(false)}
+                  className="shrink-0 text-[10px] font-black text-stone-300 bg-white/10 rounded-lg px-2 py-1"
+                >
+                  {L("Normal prices")}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* search + categories */}
           <div className="p-4 space-y-3 sticky top-[57px] bg-[#1C120F] z-20">
             <div className="relative">
@@ -2544,33 +2570,31 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   }`}
                 >
                   {c.name}
-                  {isSportCategory(sportCatalog, c.slug) && (
-                    <span className={`ml-1 text-[10px] font-black ${category === c.slug ? "text-[#7B1FA2]" : "text-violet-300"}`}>
-                      ⚡
-                    </span>
-                  )}
                 </button>
               ))}
-              {/* SPORT MENU chip (owner, 2026-11-07): sits beside the normal
-                  categories, exactly as he asked. Tapping it opens the price
-                  list, it is not a filter: the menu below already shows the
-                  match-day prices when sport mode is on. */}
-              <button
-                onClick={() => {
-                  setSportSheetOpen(true);
-                  void fetchSportCatalog("waiter").then((next) => {
-                    if (!next) return;
-                    setSportCatalog(next);
-                    if (!next.menu || next.menu.active === false) setSportMode(false);
-                  });
-                }}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-black whitespace-nowrap border ${
-                  sportMode ? "bg-violet-600 border-violet-300 text-white" : "bg-[#2C1B17] border-violet-500/50 text-violet-200"
-                }`}
-              >
-                ⚡ {sportMode ? L("Sport ON") : L("Sport menu")}
-              </button>
             </div>
+            {/* THE EVENT PRICE, SAID ONCE (owner, 2026-11-08). The menu is the
+                normal menu: no second screen, no chip that switches anything on.
+                This line only tells the waiter he is looking at event prices and
+                which items changed, because the admin is the one who set them. */}
+            {sportEventMode && sportPricesLive(sportCatalog) && (
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-violet-500/40 bg-violet-950/30 px-3 py-2">
+                <p className="text-[11px] font-black text-violet-200 min-w-0">
+                  ⚡ {L("Event prices: {n} item(s) were changed by the admin.", { n: sportPricedCount(sportCatalog) })}
+                </p>
+                <button
+                  onClick={() => setSportEventMode(false)}
+                  className="shrink-0 text-[10px] font-black text-stone-300 bg-white/10 rounded-lg px-2 py-1"
+                >
+                  {L("Normal prices")}
+                </button>
+              </div>
+            )}
+            {sportEventMode && !sportPricesLive(sportCatalog) && (
+              <p className="text-[11px] font-bold text-stone-400">
+                {L("No sport prices today. These are the normal menu prices.")}
+              </p>
+            )}
           </div>
 
           {/* menu grid */}
@@ -2607,25 +2631,24 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                     <p className="text-xs font-bold text-amber-100 leading-tight line-clamp-2">{m.name}</p>
                     <p className="text-[11px] text-[#C9A227] font-extrabold">
                       {(() => {
-                        // In sport mode the card reads from <normal> to
-                        // <match-day>, the owner's own wording, and shows the
-                        // normal price struck through so nobody charges the old
-                        // number by habit. Items he did not price keep the plain
-                        // normal price, struck through nothing.
+                        // The event price REPLACES the normal one (owner,
+                        // 2026-11-08: "same design as the normal menu ... the
+                        // difference is there are items with different price
+                        // from the normal"). So a re-priced item simply reads its
+                        // event price, drawn in the event colour, with a small ⚡
+                        // so the waiter can see which items the admin changed.
+                        // Nothing is struck through: this is the price today.
                         const live = effectivePrice(m);
-                        const charged = priceFor(m);
-                        if (sportMode && charged !== live.price) {
-                          return (
-                            <span className="text-violet-200">
-                              <span className="line-through text-stone-500 text-[10px]">{live.price} </span>
-                              {charged} ETB
-                            </span>
-                          );
+                        const event = eventPriceFor(m);
+                        if (event !== null) {
+                          // Same card, same colour, same place: only the number
+                          // is the admin's event price. No badge, no lightning.
+                          return <>{event} ETB</>;
                         }
                         return (
                           <>
                             {live.onSale ? <span className="line-through text-stone-500 text-[10px]">{m.price} </span> : null}
-                            {charged} ETB
+                            {live.price} ETB
                           </>
                         );
                       })()}

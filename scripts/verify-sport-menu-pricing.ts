@@ -14,7 +14,10 @@
  *   6. the category views count what is priced (the waiter's ⚡ badges and the
  *      owner's "3 of 12 items priced");
  *   7. switching the whole list off restores normal prices without deleting
- *      the owner's work.
+ *      the owner's work;
+ *   8. the waiter's screen applies exactly that rule (the shared client helper):
+ *      the admin's event price where he typed one, the menu price everywhere
+ *      else, and nothing at all before the waiter taps Sport.
  *
  * Run with: npx tsx scripts/verify-sport-menu-pricing.ts   (wired into `npm test`)
  */
@@ -25,6 +28,13 @@ import {
   sportLineNote,
   stripSportMarker,
 } from "../src/lib/order-lines";
+import {
+  chargePrice,
+  eventPriceByItem,
+  sportPriceMap,
+  sportPricedCount,
+  type SportCatalogResponse,
+} from "../src/lib/sport-menu-client";
 import {
   parseSportCategories,
   parseSportPrices,
@@ -166,6 +176,42 @@ pass("a priced category with unpriced dishes shows the gap (pastry 1 of 1, hot 0
   };
   pass("the owner's example: Cola 70 normally, 150 with sport", sportPriceFor(colaMenu, 3, 70) === 150);
   pass("and the ordinary Cola ordered from the normal menu stays 70", sportPriceFor(null, 3, 70) === null);
+}
+
+/* ── 7. the waiter's screen: SAME menu, only prices differ (owner, 2026-11-08) ── */
+{
+  // Exactly what /api/sport-menu?scope=waiter sends: the price rows live in
+  // `menu.prices`, the whole catalogue in `items`.
+  const catalog: SportCatalogResponse = {
+    menu: {
+      ...menu,
+      categories: [COLD],
+      prices: [{ menuItemId: 3, regularPrice: 50, sportPrice: 70, category: COLD }],
+    },
+    categories: [
+      { id: 1, name: "Hot Drinks", slug: HOT },
+      { id: 2, name: "Cold Drinks", slug: COLD },
+    ],
+    items: [],
+  };
+  const cola = { id: 3 };
+  const tea = { id: 2 };
+
+  pass("on the normal menu the event price is ignored (Cola still 50)", chargePrice(cola, 50, false, catalog) === 50);
+  pass("after tapping Sport the item the admin priced reads his price (70)", chargePrice(cola, 50, true, catalog) === 70);
+  pass("an item he did not price keeps the menu price (tea still 40)", chargePrice(tea, 40, true, catalog) === 40);
+  pass("the map holds only the priced items", sportPriceMap(catalog).size === 1 && sportPriceMap(catalog).get(3) === 70);
+  pass("the card helper returns the same numbers as the cart", eventPriceByItem(catalog).get(3) === 70 && eventPriceByItem(catalog).get(2) === undefined);
+  pass("the banner counts what the admin changed", sportPricedCount(catalog) === 1);
+
+  // A price left in a category the admin later removed must never be charged.
+  const removed: SportCatalogResponse = { ...catalog, menu: { ...catalog.menu!, categories: [], prices: catalog.menu!.prices } };
+  pass("a price whose category was removed is not charged", chargePrice(cola, 50, true, removed) === 50);
+
+  // Switched off / no list at all: the ordinary menu, no special case needed.
+  const off: SportCatalogResponse = { ...catalog, menu: { ...catalog.menu!, active: false } };
+  pass("a list switched off charges the ordinary price", chargePrice(cola, 50, true, off) === 50);
+  pass("with no list at all every item is its menu price", chargePrice(cola, 50, true, null) === 50);
 }
 
 /* the last line, so a green run is unmistakable */

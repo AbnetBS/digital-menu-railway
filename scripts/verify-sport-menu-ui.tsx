@@ -1,22 +1,22 @@
 /**
- * UI smoke test — THE SPORT MENU sheet (owner, 2026-11-07).
+ * UI smoke test — THE SPORT MENU EDITOR (owner, 2026-11-08).
  *
  * The static guard (verify-sport-menu.mjs) proves the wiring and the pricing
- * guard proves the money rules. This file MOUNTS the real SportMenuSheet in
- * jsdom with a mocked server and clicks through what the owner and the waiter
- * actually do:
+ * guard proves the money rules. This file MOUNTS the real admin editor in jsdom
+ * with a mocked server and clicks through what the owner actually does:
  *
- *   1. The sheet lists every menu category to add and reports the state
+ *   1. The editor lists every menu category to add and reports the state
  *      ("Sport prices are ON", "2 categories added • 3 items priced").
  *   2. The owner adds a category -> POST add_category, and the category's items
  *      appear as "from <menu price> to <typed price>" with a price box.
  *   3. He types a match-day price and saves -> POST set_category_prices carries
  *      { menuItemId, regularPrice, sportPrice } for each typed item.
  *   4. Switching off -> POST set_active false (and the list is not deleted).
- *   5. A waiter's phone (canEdit false) sees NO editor and NO switch, only the
- *      read-only list and "Ask the owner…".
- *   6. "Use sport prices" calls onUsePrices with the catalogue (the ordering
- *      screen's switch), and never writes anything to the server.
+ *   5. A non-editor (canEdit false) sees NO editor and NO switch, only the
+ *      read-only list: the waiter can never change a price.
+ *   6. There is no "Use sport prices" switch anywhere: the waiter's ordering
+ *      screen reads the same list without a mode he has to turn on (owner,
+ *      2026-11-08 — the sheet is not on the waiter's phone at all).
  *
  * Mocked fetch, jsdom, no database. Run: npx tsx scripts/verify-sport-menu-ui.tsx
  * (wired into `npm test`)
@@ -89,7 +89,7 @@ function makeCatalog(categories: string[], prices: Record<number, number>, editi
 async function main() {
   const { createElement, act } = await import("react");
   const { createRoot } = await import("react-dom/client");
-  const { default: SportMenuSheet } = await import("../src/components/rms/SportMenuSheet");
+  const { default: SportMenuEditor } = await import("../src/components/rms/SportMenuEditor");
 
   const posts: any[] = [];
   let state = { categories: [] as string[], prices: {} as Record<number, number>, canEdit: true };
@@ -145,18 +145,8 @@ async function main() {
     });
   };
 
-  let usedCatalog: unknown = null;
   await act(async () => {
-    root.render(
-      createElement(SportMenuSheet, {
-        open: true,
-        onClose: () => {},
-        sportMode: false,
-        onUsePrices: (catalog: unknown) => {
-          usedCatalog = catalog;
-        },
-      })
-    );
+    root.render(createElement(SportMenuEditor, {}));
   });
   await act(async () => {
     await new Promise((r) => setTimeout(r, 30));
@@ -164,7 +154,8 @@ async function main() {
 
   /* ── 1. the sheet loads and speaks plainly ── */
   ok(/Sport menu/.test(text()), "the title renders");
-  ok(/Match-day prices for the waiter only/.test(text()), "it says the customer never sees these");
+  ok(/Only the owner sets these prices/.test(text()), "it says the owner is the only one who prices");
+  ok(/a customer never does/.test(text()), "and that a customer never sees them");
   ok(/Sport prices are ON/.test(text()), "the switch state is stated");
   ok(/No category added yet/.test(text()), "an empty list explains what to do");
   ok(/Add a category/.test(text()), "the owner's add-category row exists");
@@ -201,34 +192,32 @@ async function main() {
   ok(toggle, "the switch POST went out");
   strictEqual(toggle.active, false, "it asks for OFF, not for a delete");
 
-  /* ── 5. the waiter uses the list (no write) ── */
-  const before = posts.length;
-  await click((b) => /Use sport prices/.test(b.textContent || ""));
-  strictEqual(posts.length, before, "switching the ordering screen writes nothing");
-  ok(usedCatalog && (usedCatalog as any).menu, "the catalogue is handed to the ordering screen");
+  /* ── 5. no mode switch for the waiter anywhere in this editor ── */
+  ok(!/Use sport prices/.test(text()), "no 'Use sport prices' switch exists (the waiter reads the list directly)");
+  ok(!/Sport ON/.test(text()), "no mode chip that the waiter has to remember to leave");
 
   root.unmount();
 
-  /* ── 6. a waiter's phone: read-only ── */
+  /* ── 6. a user who is not the owner: read-only ── */
   state = { categories: ["cold-drinks"], prices: { 3: 70 }, canEdit: false };
   const root2 = createRoot(document.getElementById("app")!);
   await act(async () => {
-    root2.render(createElement(SportMenuSheet, { open: true, onClose: () => {} }));
+    root2.render(createElement(SportMenuEditor, {}));
   });
   await act(async () => {
     await new Promise((r) => setTimeout(r, 30));
   });
-  ok(!/Add a category/.test(text()), "a waiter never sees the add-category row");
-  ok(!/Switch off for today/.test(text()), "a waiter cannot switch the list");
-  ok(!/Use sport prices/.test(text()), "no ordering switch when the sheet was opened without that role");
+  ok(!/Add a category/.test(text()), "a non-owner never sees the add-category row");
+  ok(!/Switch off for today/.test(text()), "a non-owner cannot switch the list");
+  ok(!/Use sport prices/.test(text()), "still no ordering switch");
   ok(/Cold Drinks/.test(text()), "but he does read the match-day prices");
   root2.unmount();
 
-  console.log("✅ Sport menu sheet UI smoke PASSED");
+  console.log("✅ Sport menu editor UI smoke PASSED");
 }
 
 main().catch((error) => {
   console.error(error);
-  console.error("❌ Sport menu sheet UI smoke FAILED");
+  console.error("❌ Sport menu editor UI smoke FAILED");
   process.exit(1);
 });

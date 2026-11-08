@@ -3,12 +3,22 @@
 import type { SportMenu } from "@/lib/sport-menu";
 
 /**
- * The waiter's and the owner's side of the Sport menu: one fetch of
- * GET /api/sport-menu and one price map the ordering screens can ask.
+ * THE SPORT MENU, from the waiter's side (owner, 2026-11-08).
  *
- * The price the waiter shows is only a DISPLAY value. The ticket API re-reads
- * the sport row when the order is saved, so a stale screen (or a phone whose
- * clock/price cache is wrong) can never decide what a guest pays.
+ * The owner corrected the first design: there is no "sport mode" the waiter
+ * switches on, and no separate sport screen. On a match day the waiter taps
+ * Sport and the NORMAL ordering screen opens, same cards, same categories, same
+ * cart. The only difference is that some items already carry the event price the
+ * ADMIN typed in his dashboard. Nobody but the admin edits a price.
+ *
+ * So a price on the waiter's screen is the EVENT price when the admin gave that
+ * item one, and the ordinary menu price otherwise. There is nothing for the
+ * waiter to choose, and nothing he can change.
+ *
+ * The server still decides the money: the ticket API re-reads the sport list and
+ * stamps the event price on the lines itself (see applySportPrices in
+ * /api/tickets), so a stale screen can never charge a price the admin did not
+ * set.
  */
 
 export type SportCatalogItem = {
@@ -18,9 +28,9 @@ export type SportCatalogItem = {
   isAvailable: boolean;
   /** What the item costs on a normal day (sale price already applied). */
   regularPrice: number;
-  /** The match-day price the owner typed, or null when he did not. */
+  /** The event price the admin typed, or null when he did not. */
   sportPrice: number | null;
-  /** True when the owner added this item's category to the sport menu. */
+  /** True when the admin added this item's category to the sport menu. */
   categoryAdded: boolean;
 };
 
@@ -28,7 +38,7 @@ export type SportCatalogResponse = {
   menu: SportMenu | null;
   categories: Array<{ id: number; name: string; slug: string }>;
   items: SportCatalogItem[];
-  /** True on the owner's device only: the editor is his, the waiter just reads. */
+  /** True on the admin's device only: the editor is his, the waiter just reads. */
   canEdit?: boolean;
   serverTime?: string;
 };
@@ -44,36 +54,56 @@ export async function fetchSportCatalog(scope: "waiter" | "admin" = "waiter"): P
   }
 }
 
-/** menuItemId → match-day price, for the items the owner actually priced. */
+/** Is the event price list live? (the admin can switch it off after the match) */
+export function sportPricesLive(catalog: SportCatalogResponse | null): boolean {
+  return Boolean(catalog?.menu && catalog.menu.active !== false);
+}
+
+/**
+ * menuItemId → event price, for the items the admin actually priced. Empty when
+ * the list is switched off or no item was priced, which is exactly when the
+ * waiter should see the ordinary menu.
+ */
 export function sportPriceMap(catalog: SportCatalogResponse | null): Map<number, number> {
   const map = new Map<number, number>();
-  if (!catalog?.menu || catalog.menu.active === false) return map;
-  for (const price of catalog.menu.prices) {
-    if (catalog.menu.categories.includes(price.category)) map.set(price.menuItemId, price.sportPrice);
+  if (!sportPricesLive(catalog)) return map;
+  for (const price of catalog!.menu!.prices) {
+    if (catalog!.menu!.categories.includes(price.category)) map.set(price.menuItemId, price.sportPrice);
   }
   return map;
 }
 
 /**
  * The price a waiter must charge for one item:
- *   • sport mode ON and the item has a match-day price  → the match-day price
- *   • sport mode ON and the item's category was added   → the normal price
- *   • sport mode OFF (or the category was never added)  → the normal price
+ *   • the admin gave this item an event price and the list is live -> that price
+ *   • everything else                                              -> the menu price
+ *
+ * `eventPrices` is false on the ordinary menu screen before the waiter taps
+ * Sport, so nothing changes on a normal day.
  */
-export function chargePrice(item: { id: number; category: string }, regularPrice: number, sportMode: boolean, catalog: SportCatalogResponse | null): number {
-  if (!sportMode || !catalog?.menu || catalog.menu.active === false) return regularPrice;
+export function chargePrice(
+  item: { id: number },
+  regularPrice: number,
+  eventPrices: boolean,
+  catalog: SportCatalogResponse | null
+): number {
+  if (!eventPrices) return regularPrice;
   const typed = sportPriceMap(catalog).get(item.id);
-  if (typed !== undefined) return typed;
-  return regularPrice;
+  return typed !== undefined ? typed : regularPrice;
 }
 
-/** True when this item's category was added by the owner (so it shows a sport badge). */
+/** True when this item's category was added by the admin (for the ⚡ mark). */
 export function isSportCategory(catalog: SportCatalogResponse | null, slug: string): boolean {
   return Boolean(catalog?.menu && catalog.menu.categories.includes(slug));
 }
 
-/** How many priced items, for the waiter's chip label ("Sport menu · 12"). */
+/** How many items carry an event price, for the waiter's screen header. */
 export function sportPricedCount(catalog: SportCatalogResponse | null): number {
   if (!catalog?.menu) return 0;
   return catalog.menu.prices.filter((price) => catalog.menu!.categories.includes(price.category)).length;
+}
+
+/** Which items carry an event price (id → price), for the ⚡ marks on the cards. */
+export function eventPriceByItem(catalog: SportCatalogResponse | null): Map<number, number> {
+  return sportPriceMap(catalog);
 }

@@ -232,10 +232,16 @@ pass(
   "the Open Kiosk button is gone from the admin attendance tab",
   !adminTab.includes('href="/attendance"') && !adminTab.includes("Open Kiosk /attendance")
 );
+// The report has exactly ONE door (owner, 2026-11-08: "there is 2 deduction
+// report buttons can you pleasae remove the 1st one and stay the last button").
+// The chip in the switcher list is gone; the rose button at the end of the row,
+// the one that carries the count, is the only way in.
 pass(
-  "its place is the Deduction Report",
-  adminTab.includes('{ key: "decisions"') &&
-    adminTab.includes("Deduction Report") &&
+  "the report has exactly one button, the last one with the count",
+  !adminTab.includes('{ key: "decisions", label: "Deduction Report"') &&
+    (adminTab.match(/setActiveView\("decisions"\)/g) || []).length === 1 &&
+    adminTab.includes('L("Decide deductions")') &&
+    adminTab.includes("pendingDecisions > 0") &&
     adminTab.includes("<DeductionReportPanel")
 );
 pass(

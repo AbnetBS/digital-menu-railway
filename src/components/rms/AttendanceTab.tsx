@@ -1238,7 +1238,11 @@ export default function AttendanceTab() {
         {(
           [
             { key: "today", label: "Today Live", icon: <Clock className="w-4 h-4" /> },
-            { key: "decisions", label: "Deduction Report", icon: <ClipboardCheck className="w-4 h-4" /> },
+            // ONE DOOR TO THE REPORT (owner, 2026-11-08: "there is 2 deduction
+            // report buttons can you pleasae remove the 1st one and stay the
+            // last button"). The chip that used to sit here was a second way in;
+            // the rose button at the end of this row is the one that also carries
+            // the count of people still waiting, so that is the one that stays.
             { key: "roles", label: "Role & Time", icon: <Timer className="w-4 h-4" /> },
             { key: "members", label: "Staff Members", icon: <Users className="w-4 h-4" /> },
             { key: "sheet", label: "Paper Sheet View", icon: <Calendar className="w-4 h-4" /> },

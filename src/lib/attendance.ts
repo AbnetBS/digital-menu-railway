@@ -101,15 +101,38 @@ export function clockLabel(d: Date | string | null | undefined): string | null {
 }
 
 /**
- * Pre-shift arrival window for multi-shift roles (up to 2+ shifts per role):
- * when an employee's first scan (IN) arrives near an upcoming shift's entrance
- * time (e.g. from 20-60 minutes before Shift 2 begins, such as 13:40/13:50 for
- * a 14:00 shift, or up to 120 minutes early once the earlier shift has ended),
- * recognize them on that upcoming shift instead of marking them late on Shift 1.
+ * Pre-shift arrival window for multi-shift roles (up to 2+ shifts per role).
+ * It is kept only as the answer to "how early is still the same shift" for the
+ * screens that report it; the shift a scan belongs to is now decided by
+ * pickShift's CLOSEST START rule below (owner, 2026-11-07).
  */
 export const SHIFT_EARLY_ARRIVAL_MINUTES = 60;
 export const SHIFT_POST_PREV_ARRIVAL_MINUTES = 120;
 
+/**
+ * THE CLOSEST START DECIDES THE SHIFT (owner, 2026-11-07).
+ *
+ * His words: "the system currently identifies someone's shift when they enter
+ * in 30 min interval but today I saw that it isn't enough, because the waiter
+ * shift is at 8:00 and the supervisor makes him enter at 6:00 ... the system
+ * thought it is the morning shift so it said he is late ... now I want to
+ * modify it by the system deciding the shift by which one it is closer to; for
+ * example if the role shifts start morning at 12:00 and afternoon at 8:00, so
+ * if someone enters at 6 it is closer to 8 so decide by that".
+ *
+ * The old rule looked at the previous shift and moved a scan to the next shift
+ * only inside a 60/120 minute window. A worker sent in two hours before the
+ * afternoon shift therefore stayed on the morning shift and was written down
+ * as hours late. Now every scan is compared with EVERY shift's start on the
+ * 24 hour clock, and the nearest start wins, whatever the distance. A scan at
+ * 18:00 with a 12:00 and a 20:00 shift belongs to the 20:00 shift (2 h away)
+ * and is on time and early, not six hours late on the morning shift.
+ *
+ * The distance is measured around the clock, so a night role whose first shift
+ * starts at 22:00 still wins for a scan at 02:00 (4 h away) over a 12:00 start
+ * (10 h away). A tie goes to the shift that starts earlier, so the answer never
+ * depends on the order the rows were saved in.
+ */
 export function pickShift(shifts: RoleShift[] | null | undefined, minutes: number): RoleShift | null {
   const list = (shifts || [])
     .map((s) => ({ shift: s, start: parseHHMM(s.startTime), end: parseHHMM(s.endTime) }))
@@ -118,30 +141,19 @@ export function pickShift(shifts: RoleShift[] | null | undefined, minutes: numbe
   if (list.length === 0) return null;
   if (list.length === 1) return list[0].shift;
 
-  let prevIndex = -1;
-  for (let i = 0; i < list.length; i++) {
-    if (list[i].start <= minutes) prevIndex = i;
+  const at = ((Math.round(minutes) % (24 * 60)) + 24 * 60) % (24 * 60);
+  let best = list[0];
+  let bestDistance = 24 * 60;
+  for (const candidate of list) {
+    const raw = Math.abs(at - candidate.start);
+    const distance = Math.min(raw, 24 * 60 - raw);
+    // Strictly closer wins; on a tie the earlier start stays the answer.
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
   }
-
-  // Before every shift's start time today (e.g. 05:30 before an 06:00 shift):
-  // assign to the earliest shift of the day.
-  if (prevIndex === -1) {
-    return list[0].shift;
-  }
-
-  const prev = list[prevIndex];
-  const sincePrev = minutes - prev.start;
-  const hasLaterToday = prevIndex + 1 < list.length;
-  const next = hasLaterToday ? list[prevIndex + 1] : list[0];
-  const untilNext = hasLaterToday ? next.start - minutes : next.start + 24 * 60 - minutes;
-
-  const prevEnded = prev.end !== null && prev.end > prev.start && minutes >= prev.end;
-  const earlyWindow = prevEnded ? SHIFT_POST_PREV_ARRIVAL_MINUTES : SHIFT_EARLY_ARRIVAL_MINUTES;
-
-  if (untilNext <= earlyWindow && untilNext < sincePrev) {
-    return next.shift;
-  }
-  return prev.shift;
+  return best.shift;
 }
 
 /**
@@ -182,6 +194,107 @@ export function earlyOutMinutesFor(shift: RoleShift | null | undefined, clockOut
 
 export function isEarlyOut(shift: RoleShift | null | undefined, clockOutMinutes: number): boolean {
   return earlyOutMinutesFor(shift, clockOutMinutes) > 0;
+}
+
+/** Any moment reduced to a minute on the 24 hour dial. */
+function dialNormalize(minutes: number): number {
+  return ((Math.round(minutes) % (24 * 60)) + 24 * 60) % (24 * 60);
+}
+
+/** Minutes between two wall-clock times, the short way round the 24 hour dial. */
+function dialDistance(a: number, b: number): number {
+  const raw = Math.abs(dialNormalize(a) - dialNormalize(b)) % (24 * 60);
+  return Math.min(raw, 24 * 60 - raw);
+}
+
+/**
+ * SENT IN EARLY: THE MISSING HOURS ARE MARKED, NOT PAID (owner, 2026-11-07).
+ *
+ * "the waiter shift is at 8:00 and the supervisor makes him to enter 6:00 ...
+ * that 2 hour is overtime so now the system identifies with which it is closer
+ * ... also i dont want the system to add overtime but ... the system will make
+ * it ot status which is purple just to identify".
+ *
+ * With the closest-start rule the 6:00 scan now belongs to the 8:00 shift and
+ * is NOT late. The two hours he was here before his own shift are shown on the
+ * paper sheet as the same violet OT mark, so the owner can see that the person
+ * worked early - and the money is still only what he enters by hand.
+ *
+ * The 75 minute buffer matches the shift OT buffer: arriving an hour early to
+ * change clothes is normal and is not marked.
+ */
+export const EARLY_ARRIVAL_MARK_MINUTES = 75;
+
+export function earlyArrivalMinutesFor(
+  shift: RoleShift | null | undefined,
+  clockInMinutes: number
+): number {
+  const start = parseHHMM(shift?.startTime ?? null);
+  if (start === null) return 0;
+  const inAt = dialNormalize(clockInMinutes);
+  let before = dialNormalize(start) - inAt;
+  if (before < 0) before += 24 * 60;
+  // Zero when he is on time or late; only a real early arrival counts.
+  return before > EARLY_ARRIVAL_MARK_MINUTES ? before : 0;
+}
+
+/**
+ * STAYED UNTIL THE NEXT SHIFT (owner, 2026-11-07).
+ *
+ * "i dont want the system to add overtime but the paper sheet when someone
+ * works and goes out at a certain time and that time is closer to the
+ * afternoon leaving time the system will make it current ot status which is
+ * purple just to identify that person stayed up to the next shift".
+ *
+ * So this is a MARK, not money. When a person's OUT is nearer to the leaving
+ * time of the shift AFTER his own than to his own leaving time, he stayed to
+ * cover that next shift, and the OUT box turns violet exactly like overtime.
+ * Nothing is added to the salary: the owner enters the paid overtime himself.
+ *
+ * Example: shifts 12:00-18:00 and 18:00-23:00. An OUT at 21:30 is 3h 30m past
+ * his own end (18:00) but only 1h 30m before the next end (23:00), so he
+ * covered the afternoon and the box is violet rather than "Early out".
+ */
+export type NextShiftStay = {
+  /** The shift whose leaving time he stayed up to. */
+  shift: RoleShift;
+  /** Minutes from his own shift end to the OUT (always > 0). */
+  extraMinutes: number;
+};
+
+export function stayedIntoNextShift(
+  shifts: RoleShift[] | null | undefined,
+  ownShift: RoleShift | null | undefined,
+  clockOutMinutes: number
+): NextShiftStay | null {
+  const list = (shifts || []).filter((s) => parseHHMM(s.startTime) !== null && parseHHMM(s.endTime) !== null);
+  if (!ownShift || list.length < 2) return null;
+  const ownStart = parseHHMM(ownShift.startTime);
+  const ownEnd = parseHHMM(ownShift.endTime);
+  if (ownStart === null || ownEnd === null) return null;
+
+  const ownEndWrapped = ownEnd <= ownStart ? ownEnd + 24 * 60 : ownEnd;
+  const out = dialNormalize(clockOutMinutes);
+  const outShifted = ownEnd <= ownStart && out < ownStart ? out + 24 * 60 : out;
+  const extra = outShifted - ownEndWrapped;
+  if (extra <= 0) return null;
+
+  let best: NextShiftStay | null = null;
+  let bestDistance = dialDistance(out, ownEnd);
+  for (const other of list) {
+    if (other === ownShift) continue;
+    const otherStart = parseHHMM(other.startTime)!;
+    const otherEnd = parseHHMM(other.endTime)!;
+    // Only a shift that starts after this one ends can be "the next shift".
+    if (otherStart === ownStart) continue;
+    const otherEndWrapped = otherEnd <= otherStart ? otherEnd + 24 * 60 : otherEnd;
+    const distance = dialDistance(out, otherEndWrapped);
+    if (distance < bestDistance) {
+      best = { shift: other, extraMinutes: Math.round(extra) };
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 /**
@@ -818,11 +931,23 @@ export function pageIndexOfDate(dates: string[], date: string | null | undefined
 
 /* ─── the colours of one box on the paper sheet ──────────────────────────── */
 
-/** The IN box: nobody came (red), he came late (yellow), on time (green). */
-export type InStatus = "absent" | "late" | "on_time";
+/**
+ * The IN box. Owner, 2026-11-07: a registered FREE day is never red, and a
+ * person who comes in on his own free day is shown as BLUE "Worked", never as
+ * overtime on its own: "i add free days for each person so when that person
+ * isn't put his finger at that time there will not be absent label which is
+ * red ... when that person come that day the box label will be like the
+ * overtime" - the worked free day is marked, and only a manually entered
+ * overtime turns the box violet.
+ */
+export type InStatus = "absent" | "late" | "on_time" | "overtime" | "free" | "free_worked";
 
-/** The OUT box: still inside, done, left early, or overtime. */
-export type OutStatus = "none" | "still_in" | "completed" | "early_out" | "overtime";
+/**
+ * The OUT box. "next_shift" is the violet mark for a person whose OUT time is
+ * closer to the NEXT shift's leaving time than to his own: he stayed and
+ * covered it. It is a mark only; the money, if any, is entered by hand.
+ */
+export type OutStatus = "none" | "still_in" | "completed" | "early_out" | "overtime" | "next_shift" | "free" | "free_worked";
 
 type SheetLog = {
   clockIn?: Date | string | null;
@@ -833,23 +958,47 @@ type SheetLog = {
   status?: string | null;
 };
 
-/** Colour of the IN box for one person on one day. */
-export function inStatusOf(log: SheetLog | null | undefined): InStatus {
+/** What the sheet knows about one cell besides the scans. */
+export type SheetCellContext = {
+  /** The day is in the person's free schedule (weekly, dated or ye amet ereft). */
+  freeDay?: boolean;
+  /** The OUT is nearer the next shift's leaving time than his own. */
+  stayedNextShift?: boolean;
+  /** He was sent in before his own shift start (marked, never paid). */
+  earlyArrival?: boolean;
+};
+
+/**
+ * Colour of the IN box for one person on one day.
+ *   free day, nobody came   -> "free"        (violet, never the red absent)
+ *   free day, he came       -> "free_worked" (blue "Worked", marked, unpaid
+ *                              unless the owner enters the overtime himself)
+ *   a normal day, no scan   -> "absent"      (red)
+ */
+export function inStatusOf(log: SheetLog | null | undefined, context: SheetCellContext = {}): InStatus {
+  if (context.freeDay) return log && log.clockIn ? "free_worked" : "free";
   if (!log || !log.clockIn) return "absent";
-  return (log.lateMinutes || 0) > 0 || log.status === "late" ? "late" : "on_time";
+  // Sent in early: the violet OT mark, because those hours are beyond his own
+  // shift. A late arrival is still late - it is the stronger fact.
+  const late = (log.lateMinutes || 0) > 0 || log.status === "late";
+  if (late) return "late";
+  return context.earlyArrival ? "overtime" : "on_time";
 }
 
 /**
  * Colour of the OUT box for one person on one day. Overtime wins over an
  * early out: the person himself pressed the overtime button, so that is the
- * stronger statement about the day.
+ * stronger statement about the day. Then comes the "stayed for the next
+ * shift" violet mark, then early out.
  */
-export function outStatusOf(log: SheetLog | null | undefined): OutStatus {
-  if (!log || !log.clockIn) return "none";
-  if (!log.clockOut) return "still_in";
+export function outStatusOf(log: SheetLog | null | undefined, context: SheetCellContext = {}): OutStatus {
+  if (context.freeDay && !(log && log.clockIn)) return "free";
+  if (!log || !log.clockIn) return context.freeDay ? "free" : "none";
+  if (!log.clockOut) return context.freeDay ? "free_worked" : "still_in";
   if (log.isOvertime) return "overtime";
-  if (log.earlyOut || log.status === "early_out") return "early_out";
-  return "completed";
+  if (context.stayedNextShift) return "next_shift";
+  if (log.earlyOut || log.status === "early_out") return context.freeDay ? "free_worked" : "early_out";
+  return context.freeDay ? "free_worked" : "completed";
 }
 
 /* ─── the leaderboard: who spent the most time at work ───────────────────── */

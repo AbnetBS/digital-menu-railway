@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   Settings, Utensils, Star, Lock, Plus, Trash2, Edit3, CheckCircle2, Save, LogOut, RefreshCw,
-  Eye, EyeOff, Upload, Image as ImageIcon, Camera, TrendingUp, Users, QrCode, CreditCard, Monitor, Wallet,
+  Eye, EyeOff, Upload, Image as ImageIcon, Camera, TrendingUp, Users, QrCode, CreditCard, Monitor, Wallet, Flag,
 } from "lucide-react";
 import { MenuItem, SiteSettings, Review, Category, GalleryItem } from "@/types";
 import { compressImage } from "@/lib/image-utils";
@@ -16,6 +16,7 @@ import DailyBoardTab from "@/components/rms/DailyBoardTab";
 import StationsTab from "@/components/rms/StationsTab";
 import AttendanceTab from "@/components/rms/AttendanceTab";
 import PayrollTab from "@/components/rms/PayrollTab";
+import SportMenuTab from "@/components/rms/SportMenuTab";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
 import { armAudioOnFirstGesture, playAlarm } from "@/lib/sound";
@@ -30,9 +31,9 @@ interface AdminPanelProps {
   onLogout: () => void;
 }
 
-type Tab = "reports" | "sales" | "attendance" | "payroll" | "menu" | "board" | "stations" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
+type Tab = "reports" | "sales" | "attendance" | "payroll" | "menu" | "sport" | "board" | "stations" | "tables" | "staff" | "gallery" | "reviews" | "history" | "settings" | "security";
 
-const TAB_KEYS: Tab[] = ["reports", "sales", "attendance", "payroll", "menu", "board", "stations", "tables", "staff", "gallery", "reviews", "history", "settings", "security"];
+const TAB_KEYS: Tab[] = ["reports", "sales", "attendance", "payroll", "menu", "sport", "board", "stations", "tables", "staff", "gallery", "reviews", "history", "settings", "security"];
 
 /**
  * ?tab=sales is the URL the day-close notification opens. Reading it here is
@@ -313,6 +314,7 @@ export default function AdminPanel({
     { key: "attendance", label: L("Attendance"), icon: <Users className="w-4 h-4" /> },
     { key: "payroll", label: "Payroll", icon: <CreditCard className="w-4 h-4" /> },
     { key: "menu", label: L("Menu ({length})", { length: menuItems.length }), icon: <Utensils className="w-4 h-4" /> },
+    { key: "sport", label: L("Sport menu"), icon: <Flag className="w-4 h-4" /> },
     { key: "board", label: L("Daily Board"), icon: <TrendingUp className="w-4 h-4" /> },
     { key: "stations", label: L("Stations"), icon: <Users className="w-4 h-4" /> },
     { key: "tables", label: L("Tables & QR"), icon: <QrCode className="w-4 h-4" /> },
@@ -384,6 +386,9 @@ export default function AdminPanel({
         {activeTab === "payroll" && <PayrollTab />}
 
         {/* DAILY BOARD */}
+        {/* SPORT MENU (owner, 2026-11-07): the match-day price list. */}
+        {activeTab === "sport" && <SportMenuTab />}
+
         {activeTab === "board" && <DailyBoardTab />}
 
         {/* STATIONS */}

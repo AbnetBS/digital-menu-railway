@@ -33,6 +33,7 @@ import {
 } from "@/lib/attendance";
 import { useStaffT } from "@/lib/staff-i18n";
 import FreeScheduleDialog from "@/components/rms/FreeScheduleDialog";
+import TableScroll from "@/components/rms/TableScroll";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
 import { currentEthiopianPeriod } from "@/lib/payroll";
 import { etDayKeyDaysAgo } from "@/lib/timezone";
@@ -168,6 +169,10 @@ const IN_STYLE: Record<string, string> = {
   on_time: "bg-emerald-200 text-emerald-950",
   late: "bg-amber-200 text-amber-950",
   absent: "bg-rose-200 text-rose-950",
+  // FREE DAYS (owner, 2026-11-07): a registered free day is never the red
+  // absent box, and coming in on it is marked blue "Worked".
+  free: "bg-violet-200 text-violet-950",
+  free_worked: "bg-sky-200 text-sky-950",
 };
 const OUT_STYLE: Record<string, string> = {
   none: "bg-rose-200 text-rose-950",
@@ -175,6 +180,11 @@ const OUT_STYLE: Record<string, string> = {
   completed: "bg-emerald-100 text-emerald-950",
   early_out: "bg-sky-200 text-sky-950",
   overtime: "bg-violet-200 text-violet-950",
+  // Stayed up to the next shift's leaving time: the same violet as overtime,
+  // because it says the same thing. It carries no money by itself.
+  next_shift: "bg-violet-200 text-violet-950",
+  free: "bg-violet-100 text-violet-950",
+  free_worked: "bg-sky-100 text-sky-950",
 };
 
 const LEGEND = [
@@ -183,7 +193,9 @@ const LEGEND = [
   { label: "Absent", className: "bg-rose-200 text-rose-950 border-rose-500" },
   { label: "Still in", className: "bg-amber-100 text-amber-950 border-amber-400" },
   { label: "Early out", className: "bg-sky-200 text-sky-950 border-sky-500" },
-  { label: "Overtime", className: "bg-violet-200 text-violet-950 border-violet-500" },
+  { label: "Overtime / stayed next shift", className: "bg-violet-200 text-violet-950 border-violet-500" },
+  { label: "Free day", className: "bg-violet-100 text-violet-950 border-violet-400" },
+  { label: "Worked his free day", className: "bg-sky-100 text-sky-950 border-sky-400" },
 ];
 
 /** One ranked person of the leaderboard, as the API returns him. */
@@ -1881,11 +1893,11 @@ export default function AttendanceTab() {
                       </p>
                     )}
                   </div>
-                  <div className="overflow-x-auto">
+                  <TableScroll label="Attendance paper sheet" maxHeight="70vh">
                     <table className="w-full text-left border-collapse text-sm">
                       <thead>
                         <tr className="bg-stone-100 border-b-2 border-black">
-                          <th className="p-2 border border-black font-black text-[15px]">Employee Name</th>
+                          <th className="fana-freeze-cell fana-freeze-head p-2 border border-black font-black text-[15px] bg-stone-100">Employee Name</th>
                           {pageDates.map((d: string) => (
                             <th
                               key={d}
@@ -1901,7 +1913,7 @@ export default function AttendanceTab() {
                           ))}
                         </tr>
                         <tr className="bg-stone-50 border-b border-black">
-                          <th className="p-2 border border-black" />
+                          <th className="fana-freeze-cell fana-freeze-head p-2 border border-black bg-stone-50" />
                           {pageDates.map((d: string) => (
                             <Fragment key={`${d}-sub`}>
                               <th className="p-1 border border-black text-[12px] font-black text-center">
@@ -1917,7 +1929,7 @@ export default function AttendanceTab() {
                       <tbody>
                         {sheetData.staffList.map((s: any) => (
                           <tr key={s.id} className="border-b border-black">
-                            <td className="p-2 border border-black font-black text-[15px] whitespace-nowrap">
+                            <td className="fana-freeze-cell p-2 border border-black font-black text-[15px] whitespace-nowrap bg-white">
                               {s.name}
                               <span className="block text-[11px] font-bold text-stone-600">{s.role}</span>
                             </td>
@@ -1948,7 +1960,17 @@ export default function AttendanceTab() {
                                         {cell.lateMinutes > 0 && (
                                           <div className="text-[11px] font-black">Late {cell.lateMinutes}m</div>
                                         )}
+                                        {cell.earlyArrivalMinutes > 0 && (
+                                          <div className="text-[11px] font-black">
+                                            Early {Math.round(cell.earlyArrivalMinutes / 60 * 10) / 10}h
+                                          </div>
+                                        )}
+                                        {cell.freeDay && cell.clockInTime && (
+                                          <div className="text-[11px] font-black">Worked free day</div>
+                                        )}
                                       </>
+                                    ) : cell?.freeDay ? (
+                                      <span className="text-[12px] font-black">Free day</span>
                                     ) : attendanceExpected ? (
                                       <span className="text-[12px] font-black">Absent</span>
                                     ) : null}
@@ -1961,12 +1983,19 @@ export default function AttendanceTab() {
                                         <div>{cell.clockOutTime}</div>
                                         <div className="text-[11px] font-bold">{cell.totalHours}</div>
                                         {cell.isOvertime && <div className="text-[11px] font-black">Overtime</div>}
-                                        {!cell.isOvertime && cell.earlyOut && (
+                                        {!cell.isOvertime && cell.stayedNextShift && (
+                                          <div className="text-[11px] font-black">Stayed next shift</div>
+                                        )}
+                                        {!cell.isOvertime && !cell.stayedNextShift && cell.earlyOut && (
                                           <div className="text-[11px] font-black">Early out</div>
                                         )}
                                       </>
+                                    ) : cell?.freeDay && cell.clockInTime ? (
+                                      <span className="text-[12px] font-black">Still In</span>
                                     ) : attendanceExpected && cell?.clockInTime ? (
                                       <span className="text-[12px] font-black">Still In</span>
+                                    ) : cell?.freeDay ? (
+                                      <span className="text-[12px] font-black">-</span>
                                     ) : attendanceExpected ? (
                                       <span className="text-[12px] font-black">-</span>
                                     ) : null}
@@ -1985,11 +2014,12 @@ export default function AttendanceTab() {
                         )}
                       </tbody>
                     </table>
-                  </div>
+                  </TableScroll>
                   <div className="p-3 bg-stone-100 text-[11px] text-stone-700 text-center font-bold">
                     Digital signature = fingerprint scan • Green = on time • Yellow = late (30 minutes after his role
-                    starts) • Red = absent from registration through today • Blank = before registration or future •
-                    Blue = early out • Violet = overtime • Total hours = OUT - IN
+                    starts) • Red = absent from registration through today • Violet = overtime, free day, or stayed up
+                    to the next shift • Blue = early out or worked on his free day • Blank = before registration or
+                    future • Total hours = OUT - IN
                   </div>
                 </section>
               ))}

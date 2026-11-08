@@ -373,6 +373,18 @@ export interface ReportData {
   averageOrderValue: number;
   orderHistory?: Ticket[];
   popularItems: Array<{ name: string; quantity: number; revenue: number }>;
+  /**
+   * THE SPORT MENU on the report (owner, 2026-11-07). A match-day line is stored
+   * at its match-day price, so it is ALREADY inside every revenue total above.
+   * This is the breakdown that names it: which items sold at sport prices, how
+   * many units, and the ETB those lines brought in.
+   */
+  sportSales?: {
+    tickets: number;
+    quantity: number;
+    revenue: number;
+    items: Array<{ name: string; quantity: number; revenue: number }>;
+  };
   categorySales: Array<{ category: string; quantity: number; revenue: number }>;
   paymentStats: Array<{ method: string; count: number; revenue: number }>;
   receipts: Array<{ id: number; tableName: string; method: string; receiptImage?: string; totalAmount: number; closedAt?: string | null }>;

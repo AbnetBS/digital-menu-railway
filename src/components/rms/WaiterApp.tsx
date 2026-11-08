@@ -3,12 +3,14 @@
 import { useState, useEffect, useMemo } from "react";
 import {
   Coffee, Plus, Minus, Send, ArrowLeft, RefreshCw, CreditCard,
-  Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing, Receipt, PencilLine,
+  Camera, CheckCircle2, ClipboardList, Search, X, Users, LogOut, BellRing, Receipt, PencilLine, Flag,
 } from "lucide-react";
 import { MenuItem, Ticket, TicketItem, CafeTable, TableStatus } from "@/types";
 
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import GroupComposer from "@/components/rms/GroupComposer";
+import SportMenuSheet from "@/components/rms/SportMenuSheet";
+import { fetchSportCatalog, chargePrice, isSportCategory, type SportCatalogResponse } from "@/lib/sport-menu-client";
 import OutdoorOrderComposer from "@/components/rms/OutdoorOrderComposer";
 import { formatClock, formatDateTime, waitingLabel } from "@/lib/order-lines";
 import { compressImage, optimizeImageUrl, FALLBACK_FOOD_IMAGE } from "@/lib/image-utils";
@@ -40,6 +42,14 @@ interface CartEntry {
   price: number;
   quantity: number;
   notes: string;
+  /**
+   * This line was added while the match-day prices were switched on, so the
+   * server charges it the sport price (owner, 2026-11-07). A line added on the
+   * normal menu stays at the normal price even inside the same send, which is
+   * what stops a 50 Cola being charged 150 because the table also bought one
+   * at the match-day price.
+   */
+  sportLine?: boolean;
 }
 
 /** A send-hold is a saved submission, not a timer owned by the open table view. */
@@ -52,6 +62,12 @@ interface PendingWaiterSend {
   targetTicketId?: number;
   waiterName: string;
   items: CartEntry[];
+  /**
+   * THE SPORT MENU this order was priced from (owner, 2026-11-07). The server
+   * re-reads that list and stamps its prices on the lines, so the number on
+   * the bill is never the phone's word. Absent = ordinary menu prices.
+   */
+  sportMenuId?: number;
   serverScheduled?: boolean;
   /** Allows a retry after an edit to use a fresh idempotency key. */
   lastSubmittedSignature?: string;
@@ -161,6 +177,20 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   // from their tables, so each group of people gets its own auto-numbered
   // bill. Always available, from the top corner of the tables view.
   const [groupComposerOpen, setGroupComposerOpen] = useState(false);
+  /**
+   * THE SPORT MENU (owner, 2026-11-07). The top-corner button that used to say
+   * "Groups" now says "Sport menu": on a match day the waiter opens it, sees the
+   * temporary prices the owner typed (from <normal> to <match-day>), and taps
+   * "Use sport prices". From then on this phone charges those numbers while the
+   * ordinary menu, the QR page and the cashier stay on the normal price.
+   * A category the owner never added keeps its normal price, so nothing can be
+   * charged a match-day number by mistake.
+   */
+  const [sportSheetOpen, setSportSheetOpen] = useState(false);
+  const [sportCatalog, setSportCatalog] = useState<SportCatalogResponse | null>(null);
+  const [sportMode, setSportMode] = useState(false);
+  /** Remembers which list was switched on, so a reload keeps the same numbers. */
+  const sportModeKey = `${sessionKey}_sport_menu`;
   const [outdoorComposerOpen, setOutdoorComposerOpen] = useState(false);
   /** Which open outdoor bill "+ Add to an outdoor order" is adding to. */
   const [outdoorPickerOpen, setOutdoorPickerOpen] = useState(false);
@@ -350,6 +380,53 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   useEffect(() => {
     tablesRef.current = tables;
   }, [tables]);
+
+  /**
+   * SPORT MODE SURVIVES A RELOAD (owner, 2026-11-07). A waiter refreshes his
+   * phone mid-service; dropping back to normal prices without telling him would
+   * quietly under-charge every cold drink for the rest of the match. The choice
+   * is stored per role on this device (the same way the language choice is), and
+   * the list is re-read so a switched-off list cannot come back to life.
+   */
+  useEffect(() => {
+    if (view === "login") return;
+    let wanted = false;
+    try {
+      wanted = sessionStorage.getItem(sportModeKey) === "1";
+    } catch {
+      /* private mode: no memory, sport mode simply starts off */
+    }
+    if (!wanted) return;
+    let alive = true;
+    void fetchSportCatalog("waiter").then((next) => {
+      if (!alive || !next) return;
+      if (!next.menu || next.menu.active === false) {
+        try {
+          sessionStorage.removeItem(sportModeKey);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      setSportCatalog(next);
+      setSportMode(true);
+    });
+    return () => {
+      alive = false;
+    };
+    // Only when the signed-in waiter changes: re-reading on every view change
+    // would fight the waiter's own switch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view === "login"]);
+
+  useEffect(() => {
+    try {
+      if (sportMode) sessionStorage.setItem(sportModeKey, "1");
+      else sessionStorage.removeItem(sportModeKey);
+    } catch {
+      /* ignore */
+    }
+  }, [sportMode, sportModeKey]);
 
   useEffect(() => {
     const saved = sessionStorage.getItem(sessionKey);
@@ -1059,14 +1136,37 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       ? L("Preparing")
       : L("Occupied");
 
+  /**
+   * The price this phone charges for one item right now. In sport mode the
+   * owner's match-day number wins for the items he priced; everything he did
+   * not add keeps the ordinary price, exactly as he asked. The server has the
+   * final word on the bill (see applySportPrices in /api/tickets), so this is
+   * only the number the waiter reads before he sends.
+   */
+  const priceFor = (item: MenuItem) => chargePrice(item, effectivePrice(item).price, sportMode, sportCatalog);
+
   const addToCart = (item: MenuItem) => {
     if (!item.isAvailable) return;
+    const unitPrice = priceFor(item);
     setCart((prev) => {
-      const existing = prev.find((c) => c.menuItemId === item.id);
+      // A line keeps the price it was added at: switching sport on or off must
+      // not silently rewrite the money already sitting in the cart.
+      const existing = prev.find((c) => c.menuItemId === item.id && c.price === unitPrice);
       if (existing) {
-        return prev.map((c) => (c.menuItemId === item.id ? { ...c, quantity: c.quantity + 1 } : c));
+        return prev.map((c) => (c.menuItemId === item.id && c.price === unitPrice ? { ...c, quantity: c.quantity + 1 } : c));
       }
-      return [...prev, { menuItemId: item.id, name: item.name, category: item.category, price: effectivePrice(item).price, quantity: 1, notes: "" }];
+      return [
+        ...prev,
+        {
+          menuItemId: item.id,
+          name: item.name,
+          category: item.category,
+          price: unitPrice,
+          quantity: 1,
+          notes: "",
+          ...(sportMode && unitPrice !== effectivePrice(item).price ? { sportLine: true } : {}),
+        },
+      ];
     });
   };
 
@@ -1080,6 +1180,8 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       : { tableId: send.tableId }),
     waiterName: send.waiterName,
     idempotencyKey: send.idempotencyKey,
+    // SPORT MENU: the id only. The prices themselves are read server-side.
+    ...(send.sportMenuId ? { sportMenuId: send.sportMenuId } : {}),
     items: send.items.map((item) => ({
       menuItemId: item.menuItemId,
       name: item.name,
@@ -1087,6 +1189,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       price: item.price,
       quantity: item.quantity,
       notes: item.notes,
+      // The server re-reads the sport list and charges THIS line its sport price
+      // only when the waiter really added it in sport mode.
+      ...(item.sportLine ? { sportLine: true } : {}),
     })),
   });
 
@@ -1166,6 +1271,12 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       ...(groupRound ? { targetTicketId: selectedTable.activeTicketId ?? undefined } : {}),
       waiterName: staffName,
       items: cart.map((item) => ({ ...item })),
+      // The list is named when ANY line was added in sport mode; each such line
+      // says so itself, so a mixed cart (a normal Cola and a match-day Cola on
+      // one table) is charged 50 and 150 exactly as the waiter keyed it.
+      ...(sportMode && sportCatalog?.menu?.id && cart.some((line) => line.sportLine)
+        ? { sportMenuId: sportCatalog.menu.id }
+        : {}),
     };
     replacePendingSends([...pendingSendsRef.current, queued]);
     void registerDeferredSend(queued);
@@ -1273,6 +1384,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       { at: () => outdoorPickerOpen, close: () => setOutdoorPickerOpen(false) },
       { at: () => outdoorComposerOpen, close: () => setOutdoorComposerOpen(false) },
       { at: () => groupComposerOpen, close: () => setGroupComposerOpen(false) },
+      { at: () => sportSheetOpen, close: () => setSportSheetOpen(false) },
       { at: () => view === "payment", close: () => setView("bill") },
       { at: () => view === "order" || view === "bill", close: onGoBack },
       // "…it take them to the all tables then again to login page": the grid
@@ -1871,6 +1983,36 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           showToast(message);
           loadTables();
         }}
+        // SPORT MENU: a group order placed in sport mode is charged the
+        // owner's match-day prices, shown here and stamped server-side.
+        sportMenuId={sportMode ? sportCatalog?.menu?.id : undefined}
+        sportPriceFor={
+          sportMode && sportCatalog
+            ? (menuItemId, regularPrice) => {
+                const typed = sportCatalog.menu?.prices.find((price) => price.menuItemId === menuItemId);
+                return typed ? typed.sportPrice : regularPrice;
+              }
+            : undefined
+        }
+      />
+
+      {/* SPORT MENU (owner, 2026-11-07): the match-day price list. The owner
+          adds a category and types the price; the waiter switches his ordering
+          screen onto those numbers. Never shown to a guest. */}
+      <SportMenuSheet
+        open={sportSheetOpen}
+        onClose={() => setSportSheetOpen(false)}
+        sportMode={sportMode}
+        onOpenGroups={() => setGroupComposerOpen(true)}
+        onUsePrices={(catalog) => {
+          setSportCatalog(catalog);
+          setSportMode(Boolean(catalog));
+          showToast(
+            catalog
+              ? tNow("⚡ Sport prices ON • the marked items are charged the match-day price")
+              : tNow("Normal menu prices are back")
+          );
+        }}
       />
 
       {isBuna && <OutdoorOrderComposer
@@ -2103,15 +2245,42 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           <div>
             <div className="flex items-center justify-between gap-2">
               <h1 className="font-serif text-xl font-bold text-amber-100">{L("Select Table")}</h1>
-              {/* GROUP ORDERS: always available, top corner of the tables
-                  view. One tap opens the auto-numbered group composer. */}
-              <button
-                onClick={() => setGroupComposerOpen(true)}
-                className="shrink-0 flex items-center gap-1.5 bg-emerald-800/80 border-2 border-emerald-400/60 hover:bg-emerald-700 rounded-xl px-3 py-2 text-[11px] font-black text-emerald-100 active:scale-95 transition"
-              >
-                <Users className="w-4 h-4" />
-                {L("Groups")}
-              </button>
+              {/* THE SPORT MENU (owner, 2026-11-07): this is the top-corner
+                  button he pointed at. On a match day the waiter opens it, sees
+                  the owner's temporary prices and taps "Use sport prices"; the
+                  very next order is charged those numbers and sent like any
+                  normal order. Group bills live inside the same sheet, so the
+                  auto-numbered group composer is one tap away and unchanged. */}
+              <div className="shrink-0 flex items-center gap-1.5">
+                <button
+                  onClick={() => {
+                    setSportSheetOpen(true);
+                    // Refresh the prices quietly: the owner may have typed a new
+                    // one minutes ago, and a stale list must never be charged.
+                    void fetchSportCatalog("waiter").then((next) => {
+                      if (!next) return;
+                      setSportCatalog(next);
+                      if (!next.menu || next.menu.active === false) setSportMode(false);
+                    });
+                  }}
+                  className={`flex items-center gap-1.5 border-2 rounded-xl px-3 py-2 text-[11px] font-black active:scale-95 transition ${
+                    sportMode
+                      ? "bg-violet-700/80 border-violet-400 text-violet-50"
+                      : "bg-emerald-800/80 border-emerald-400/60 hover:bg-emerald-700 text-emerald-100"
+                  }`}
+                >
+                  <Flag className="w-4 h-4" />
+                  {sportMode ? L("Sport ON") : L("Sport menu")}
+                </button>
+                <button
+                  onClick={() => setGroupComposerOpen(true)}
+                  className="flex items-center gap-1.5 bg-emerald-900/60 border-2 border-emerald-500/40 hover:bg-emerald-800/70 rounded-xl p-2 text-emerald-100 active:scale-95 transition"
+                  title={L("Groups")}
+                  aria-label={L("Groups")}
+                >
+                  <Users className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <div className="flex gap-3 text-[10px] mt-1.5">
               <span className="flex items-center gap-1"><i className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />{L("Free")}</span>
@@ -2375,8 +2544,32 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   }`}
                 >
                   {c.name}
+                  {isSportCategory(sportCatalog, c.slug) && (
+                    <span className={`ml-1 text-[10px] font-black ${category === c.slug ? "text-[#7B1FA2]" : "text-violet-300"}`}>
+                      ⚡
+                    </span>
+                  )}
                 </button>
               ))}
+              {/* SPORT MENU chip (owner, 2026-11-07): sits beside the normal
+                  categories, exactly as he asked. Tapping it opens the price
+                  list, it is not a filter: the menu below already shows the
+                  match-day prices when sport mode is on. */}
+              <button
+                onClick={() => {
+                  setSportSheetOpen(true);
+                  void fetchSportCatalog("waiter").then((next) => {
+                    if (!next) return;
+                    setSportCatalog(next);
+                    if (!next.menu || next.menu.active === false) setSportMode(false);
+                  });
+                }}
+                className={`px-3.5 py-1.5 rounded-full text-xs font-black whitespace-nowrap border ${
+                  sportMode ? "bg-violet-600 border-violet-300 text-white" : "bg-[#2C1B17] border-violet-500/50 text-violet-200"
+                }`}
+              >
+                ⚡ {sportMode ? L("Sport ON") : L("Sport menu")}
+              </button>
             </div>
           </div>
 
@@ -2412,7 +2605,31 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                   </div>
                   <div className="p-2.5 space-y-1">
                     <p className="text-xs font-bold text-amber-100 leading-tight line-clamp-2">{m.name}</p>
-                    <p className="text-[11px] text-[#C9A227] font-extrabold">{effectivePrice(m).onSale ? <span><span className="line-through text-stone-500 text-[10px]">{m.price} </span>{effectivePrice(m).price}</span> : m.price} ETB</p>
+                    <p className="text-[11px] text-[#C9A227] font-extrabold">
+                      {(() => {
+                        // In sport mode the card reads from <normal> to
+                        // <match-day>, the owner's own wording, and shows the
+                        // normal price struck through so nobody charges the old
+                        // number by habit. Items he did not price keep the plain
+                        // normal price, struck through nothing.
+                        const live = effectivePrice(m);
+                        const charged = priceFor(m);
+                        if (sportMode && charged !== live.price) {
+                          return (
+                            <span className="text-violet-200">
+                              <span className="line-through text-stone-500 text-[10px]">{live.price} </span>
+                              {charged} ETB
+                            </span>
+                          );
+                        }
+                        return (
+                          <>
+                            {live.onSale ? <span className="line-through text-stone-500 text-[10px]">{m.price} </span> : null}
+                            {charged} ETB
+                          </>
+                        );
+                      })()}
+                    </p>
                     {out ? (
                       <span className="text-[10px] font-bold text-rose-400 bg-rose-900/40 px-2 py-0.5 rounded">{L("Unavailable")}</span>
                     ) : (

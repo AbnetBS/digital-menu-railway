@@ -119,16 +119,27 @@ export async function saveOvertimeRow(
 }
 
 /**
- * THE AUTOMATIC SHIFT OT (owner, 2026-10-28: "the time more than 8 hour is
- * automatically considered shift ot"). Called with the IN and OUT the clock
- * route just wrote: the overtime is the worked time beyond the length of the
- * person's shift, credited only when it passes the 1:15 changing-clothes
- * buffer. A person covering a second shift therefore gets that extra time
- * even if he arrived a little late for the first one. Rows with no IN still
- * fall back to the old end-of-shift measurement.
+ * THE AUTOMATIC SHIFT OT (owner, 2026-10-28, TURNED OFF 2026-11-07).
  *
- * Returns the minutes it recorded, so the device's answer can say
- * "Overtime 2h 10m" on the same tap.
+ * It used to write a paid Shift OT row by itself at clock-out. The owner
+ * changed that rule: "i dont want the system to add overtime but the paper
+ * sheet ... when someone works and goes out at a certain time and that time is
+ * closer to the afternoon leaving time the system will make it current ot
+ * status which is purple just to identify that person stayed up to the next
+ * shift ... only made the box ot color only, it is given by manually ot".
+ *
+ * So the function stays as the one place a caller could still record it, but
+ * it writes NOTHING unless AUTO_SHIFT_OT is switched on again. The violet mark
+ * on the paper sheet is produced by stayedIntoNextShift() in lib/attendance.ts
+ * and costs no money. Overtime that is paid is the overtime the owner (or a
+ * supervisor on the keypad) types in Attendance > Overtime or in the payroll.
+ */
+export const AUTO_SHIFT_OT_ENABLED = false;
+
+/**
+ * Called with the IN and OUT the clock route just wrote. With
+ * AUTO_SHIFT_OT_ENABLED false it records nothing and returns 0, so the scans
+ * and the salary can never be changed behind the owner's back.
  */
 export async function recordShiftOvertimeAtClockOut(args: {
   memberId: number;
@@ -138,6 +149,7 @@ export async function recordShiftOvertimeAtClockOut(args: {
   clockInAt?: Date | null;
   clockOutAt: Date;
 }, client: OvertimeDb = db): Promise<number> {
+  if (!AUTO_SHIFT_OT_ENABLED) return 0;
   const minutes = args.clockInAt
     ? workedShiftOtMinutes(args.shift, args.clockInAt, args.clockOutAt)
     : shiftOtMinutesFor(args.shift, args.clockOutAt);

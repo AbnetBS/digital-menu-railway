@@ -161,7 +161,14 @@ const pass = (name, ok) => {
   pass("the open state exists", /setGroupComposerOpen/.test(waiter));
   pass(
     "the Groups button sits in the top corner of the tables view (header row)",
-    /Select Table[\s\S]{0,600}setGroupComposerOpen\(true\)[\s\S]{0,400}Groups/.test(waiter),
+    // Nov 2026: the sport menu took the wide top-corner slot (the owner's own
+    // request: "use that group button, rename the groups to sport"), so the
+    // Groups button is now the compact users icon beside it, same header row.
+    /Select Table[\s\S]{0,2600}setGroupComposerOpen\(true\)[\s\S]{0,400}title=\{L\("Groups"\)\}/.test(waiter),
+  );
+  pass(
+    "the Groups button never left the screen (it is reachable from the header and from the sport sheet)",
+    (waiter.match(/setGroupComposerOpen\(true\)/g) || []).length >= 2,
   );
   pass(
     "the composer is rendered with the signed-in waiter's name",

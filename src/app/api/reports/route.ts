@@ -6,6 +6,7 @@ import { and, inArray, or, gt, eq } from "drizzle-orm";
 import { requireAdmin } from "@/lib/session";
 import { isLegacyAuditNote } from "@/lib/shift-report";
 import { stationOf, STATION_NAMES, type StationName } from "@/lib/stations";
+import { isSportNote } from "@/lib/order-lines";
 import { receiptPrintTimes, saleLinesForTicket, sumSaleItems, type SalesItemEventLike } from "@/lib/printed-sales";
 import {
   isTodayET,
@@ -598,6 +599,44 @@ export async function GET(request: Request) {
       .map(([category, v]) => ({ category, quantity: v.quantity, revenue: v.revenue }))
       .sort((a, b) => b.revenue - a.revenue);
 
+    // ── THE SPORT MENU ON THE REPORT (owner, 2026-11-07) ──
+    // A match-day line is stored at the match-day price, so it was already
+    // counted in every total above (revenue, popular items, categories, the
+    // four station stacks). This block answers the owner's next question out
+    // loud: how much of that money came from the sport menu, and how much of it
+    // is the EXTRA he charged because of the match. Without it a match Saturday
+    // looks like an ordinary Saturday that happened to sell more Cola.
+    //
+    // The flag is read from the line's own note (SPORT PRICE, written by the
+    // ticket route at the moment of the sale), never from the current sport
+    // list: the owner may edit or switch that off the next morning, and last
+    // week's report must not change when he does.
+    const sportAgg = new Map<string, { quantity: number; revenue: number }>();
+    let sportRevenue = 0;
+    let sportQuantity = 0;
+    const sportTicketIds = new Set<number>();
+    for (const it of todayItems) {
+      if (!isSportNote(it.notes)) continue;
+      sportTicketIds.add(it.ticketId);
+      sportQuantity += it.quantity;
+      sportRevenue += it.price * it.quantity;
+      const cur = sportAgg.get(it.name) || { quantity: 0, revenue: 0 };
+      cur.quantity += it.quantity;
+      cur.revenue += it.price * it.quantity;
+      sportAgg.set(it.name, cur);
+    }
+    const sportItems = Array.from(sportAgg.entries())
+      .map(([name, value]) => ({ name, quantity: value.quantity, revenue: value.revenue }))
+      .sort((a, b) => b.revenue - a.revenue);
+    const sportSales = {
+      /** Bills on which at least one match-day line was sold. */
+      tickets: sportTicketIds.size,
+      quantity: sportQuantity,
+      /** ETB charged for sport lines: already inside the period revenue. */
+      revenue: sportRevenue,
+      items: sportItems,
+    };
+
     // ── CROSS-CHECK BY STATION (the paper world's four stacks) ──
     // Before this system, the cross-checker collected the kitchen's, the
     // barista's, the buna makers' and the juice maker's order papers, added each
@@ -827,6 +866,8 @@ export async function GET(request: Request) {
       monthOrders: monthTickets.length,
       averageOrderValue,
       popularItems,
+      // Match-day money, named: which sport lines sold and what they brought in.
+      sportSales,
       categorySales,
       paymentStats,
       receipts,

@@ -8,6 +8,14 @@ import ShiftReport from "@/components/rms/ShiftReport";
 import PrintLetterhead from "@/components/rms/PrintLetterhead";
 import type { StaffPhrase } from "@/lib/staff-dictionary";
 import { useStaffT } from "@/lib/staff-i18n";
+import { stripSportMarker } from "@/lib/order-lines";
+
+/**
+ * A line note as a person should read it: the sport-menu marker (written by
+ * the ticket API on match-day lines) is stripped so nobody sees a machine tag.
+ */
+const cleanNote = (notes?: string | null) => stripSportMarker(notes);
+
 
 type Period = ReportPeriod;
 
@@ -549,6 +557,39 @@ export default function ReportsTab() {
               )}
             </div>
 
+            {/* THE SPORT MENU (owner, 2026-11-07): match-day money, named.
+                A sport line is already inside every total above, so this card
+                never adds anything: it explains how much of the period's money
+                came from the match-day list and which items it was. */}
+            {data.sportSales && data.sportSales.quantity > 0 && (
+              <div className="bg-[#2C1B17] rounded-2xl border border-violet-500/40 p-5">
+                <h3 className="text-sm font-bold text-violet-200 uppercase tracking-wider mb-1">
+                  {L("⚡ Sport menu ({label})", { label })}
+                </h3>
+                <p className="text-[11px] font-bold text-stone-400 mb-4">
+                  {L("Match-day prices. Already counted in the totals above.")}
+                </p>
+                <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-4">
+                  <span className="text-2xl font-black text-violet-200">{fmt(data.sportSales.revenue)}</span>
+                  <span className="text-[11px] font-bold text-stone-400">
+                    {L("{n} item(s) on {bills} bill(s)", { n: data.sportSales.quantity, bills: data.sportSales.tickets })}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {data.sportSales.items.map((it) => (
+                    <div key={it.name} className="flex items-center gap-3 text-xs">
+                      <span className="flex-1 font-bold text-amber-100 truncate">{it.name}</span>
+                      <span className="text-stone-400">x{it.quantity}</span>
+                      <span className="font-extrabold text-violet-200">{fmt(it.revenue)}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] font-bold text-stone-500 mt-3">
+                  {L("A match-day line keeps its match-day price on the bill and in this report, even after the sport list is switched off.")}
+                </p>
+              </div>
+            )}
+
             {/* Category sales */}
             <div className="bg-[#2C1B17] rounded-2xl border border-stone-800 p-5">
               <h3 className="text-sm font-bold text-amber-200 uppercase tracking-wider mb-4">{L("Sales by Category ({label})", { label })}</h3>
@@ -833,7 +874,7 @@ export default function ReportsTab() {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-bold text-amber-100 truncate">{i.name}</p>
                         <p className="text-xs font-semibold text-stone-300">{i.quantity} × {i.price} ETB</p>
-                        {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic mt-0.5">📝 {i.notes}</p>}
+                        {cleanNote(i.notes) && <p className="text-[11px] font-semibold text-amber-300 italic mt-0.5">📝 {cleanNote(i.notes)}</p>}
                         {afterPrint && (
                           <p className="text-[10px] font-black text-amber-300 mt-0.5">{L("⚠ added after print: excluded until receipt #2 is printed")}</p>
                         )}

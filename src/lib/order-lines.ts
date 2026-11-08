@@ -64,6 +64,55 @@ export function isPromotionLine(line: Pick<OrderLine, "notes">): boolean {
   return String(line.notes ?? "").trimStart().startsWith(PROMOTION_NOTE_PREFIX);
 }
 
+/**
+ * THE SPORT MENU marker (owner, 2026-11-07). A line a waiter added while the
+ * match-day prices were switched on is stamped here, so the bill, the reports
+ * and a later audit can tell a match-day 150 from a normal-day 50 WITHOUT
+ * opening the sport list (which the owner may since have edited or switched
+ * off). The mark rides inside `notes`, so no migration is needed and every
+ * existing screen keeps working; `sportLineNote` / `stripSportMarker` keep it
+ * invisible to waiters, crews and guests.
+ */
+export const SPORT_NOTE_TAG = "SPORT PRICE";
+
+/** Is this a line charged from the temporary sport menu? */
+export function isSportNote(notes: string | null | undefined): boolean {
+  return String(notes ?? "").includes(SPORT_NOTE_TAG);
+}
+
+/** True when a line was priced from the sport menu. */
+export function isSportLine(line: Pick<OrderLine, "notes">): boolean {
+  return isSportNote(line.notes);
+}
+
+/** Add the marker to a line's own note ("no sugar" keeps its place). */
+export function sportLineNote(notes: string | null | undefined): string {
+  const clean = stripSportMarker(notes);
+  return clean ? `${SPORT_NOTE_TAG} • ${clean}` : SPORT_NOTE_TAG;
+}
+
+/**
+ * The note as a person should read it: the sport marker removed so nobody sees
+ * a machine tag on the kitchen screen or the guest's bill.
+ */
+export function stripSportMarker(notes: string | null | undefined): string {
+  const text = String(notes ?? "");
+  if (!text.includes(SPORT_NOTE_TAG)) return text;
+  return text
+    .replace(new RegExp(`^\\s*${SPORT_NOTE_TAG}\\s*•\\s*`), "")
+    .replace(new RegExp(`\\s*•?\\s*${SPORT_NOTE_TAG}`), "")
+    .trim();
+}
+
+/**
+ * The sport marker must not break the fold: two "Cola · SPORT PRICE" rows on
+ * the same ticket ARE the same line and may merge, while a sport Cola and an
+ * ordinary Cola stay apart because their unit prices differ (orderLineKey).
+ */
+export function notesForMatching(notes: string | null | undefined): string {
+  return stripSportMarker(notes);
+}
+
 function stationOf(line: Pick<OrderLine, "stationName">): string {
   return String(line.stationName ?? "kitchen") || "kitchen";
 }
@@ -79,7 +128,10 @@ export function orderLineKey(line: Pick<OrderLine, "menuItemId" | "name" | "pric
     line.menuItemId ?? "",
     String(line.name ?? "").trim().toLowerCase(),
     Number(line.price ?? 0),
-    String(line.notes ?? "").trim(),
+    // The sport marker is a label, not part of the dish: two sport Colas merge,
+    // and a sport Cola never merges into an ordinary one because its PRICE
+    // differs (above). Stripping it here keeps both rules true at once.
+    notesForMatching(line.notes).trim(),
     stationOf(line),
   ].join("|");
 }

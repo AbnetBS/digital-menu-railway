@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { attendanceLogs, attendanceMembers, attendanceRoleShifts, attendanceRoles } from "@/db/schema";
+import { attendanceFreeSchedules, attendanceLogs, attendanceMembers, attendanceRoleShifts, attendanceRoles } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { etDayKey } from "@/lib/timezone";
@@ -8,6 +8,7 @@ import { and, asc, eq, gte, lte } from "drizzle-orm";
 import {
   clockLabel,
   daysBetween,
+  earlyArrivalMinutesFor,
   etMinutes,
   hoursLabel,
   inStatusOf,
@@ -17,10 +18,12 @@ import {
   pickShift,
   sheetDates,
   sheetPages,
+  stayedIntoNextShift,
   SHEET_MAX_DAYS,
   SHEET_RANGE_MAX_DAYS,
   type RoleShift,
 } from "@/lib/attendance";
+import { isFreeDate, type FreeScheduleRule } from "@/lib/free-schedule";
 
 export const dynamic = "force-dynamic";
 
@@ -108,14 +111,34 @@ export async function GET(request: Request) {
         );
     }
 
+    // THE FREE DAYS (owner, 2026-11-07): "i add free days for each person so
+    // when that person isn't put his finger at that time there will not be
+    // absent label which is red box". A registered free day is violet "Free
+    // day" instead of the red Absent, and a person who comes in anyway is
+    // marked blue "Worked" - the paid overtime, if any, is entered by hand.
+    const freeRows = await db.select().from(attendanceFreeSchedules);
+    const freeByMember = new Map<number, FreeScheduleRule[]>();
+    for (const f of freeRows) {
+      const list = freeByMember.get(f.memberId) || [];
+      list.push({
+        scheduleType: String(f.scheduleType || ""),
+        weekday: f.weekday === null || f.weekday === undefined ? null : Number(f.weekday),
+        freeDate: f.freeDate ? String(f.freeDate) : null,
+        freeUntil: f.freeUntil ? String(f.freeUntil) : null,
+      });
+      freeByMember.set(f.memberId, list);
+    }
+
     const matrix: Record<number, Record<string, ReturnType<typeof cellOf> | null>> = {};
     for (const r of rows) {
       matrix[r.id] = {};
+      const freeRules = freeByMember.get(r.id) || [];
       for (const d of dates) {
         const log = logs.find((l) => l.memberId === r.id && l.date === d) || null;
         const roleId = log?.roleId ?? r.roleId;
         const shifts = roleId ? shiftsByRole.get(roleId) || [] : [];
-        matrix[r.id][d] = cellOf(log, shifts);
+        const freeDay = freeRules.length > 0 && isFreeDate(freeRules, d);
+        matrix[r.id][d] = cellOf(log, shifts, freeDay);
       }
     }
 
@@ -150,12 +173,51 @@ export async function GET(request: Request) {
   }
 }
 
-/** One box of the sheet: the times plus the colour it must be printed in. */
-function cellOf(log: typeof attendanceLogs.$inferSelect | null, shifts: RoleShift[] = []) {
-  if (!log) return null;
+/**
+ * One box of the sheet: the times plus the colour it must be printed in.
+ *
+ * `freeDay` comes from the person's own free schedule. A free day with no scan
+ * is never red; a free day he worked is blue "Worked". The violet "stayed into
+ * the next shift" mark is measured here, not paid: the owner turned the
+ * automatic Shift OT off on 2026-11-07 and enters paid overtime himself.
+ */
+function cellOf(
+  log: typeof attendanceLogs.$inferSelect | null,
+  shifts: RoleShift[] = [],
+  freeDay = false
+) {
+  if (!log && !freeDay) return null;
+  const context = { freeDay };
+  if (!log) {
+    return {
+      logId: null,
+      memberId: null,
+      clockInTime: null,
+      clockOutTime: null,
+      totalHours: null,
+      lateMinutes: 0,
+      isOvertime: false,
+      earlyOut: false,
+      freeDay: true,
+      stayedNextShift: false,
+      status: "free",
+      inStatus: inStatusOf(null, context),
+      outStatus: outStatusOf(null, context),
+      fingerprintId: null,
+      clockInMethod: null,
+    };
+  }
   const shift = log.clockIn && shifts.length > 0 ? pickShift(shifts, etMinutes(log.clockIn)) : null;
   const lateMinutes = shift && log.clockIn ? lateMinutesFor(shift, etMinutes(log.clockIn)) : log.lateMinutes || 0;
   const earlyOut = shift && log.clockOut ? isEarlyOut(shift, etMinutes(log.clockOut)) : Boolean(log.earlyOut);
+  // STAYED UNTIL THE NEXT SHIFT: his OUT is nearer the next shift's leaving
+  // time than his own. A mark only (violet), never money.
+  // Measured on every OUT after his own shift end, whether he left early or
+  // stayed past it: the mark is "he was here into the next shift's time".
+  const stay = shift && log.clockOut ? stayedIntoNextShift(shifts, shift, etMinutes(log.clockOut)) : null;
+  // SENT IN EARLY: hours before his own shift start (supervisor sends him in
+  // early). Marked violet on the paper, never paid by itself.
+  const earlyArrivalMinutes = shift && log.clockIn ? earlyArrivalMinutesFor(shift, etMinutes(log.clockIn)) : 0;
   const measured = { ...log, lateMinutes, earlyOut };
   return {
     logId: log.id,
@@ -166,9 +228,16 @@ function cellOf(log: typeof attendanceLogs.$inferSelect | null, shifts: RoleShif
     lateMinutes,
     isOvertime: Boolean(log.isOvertime),
     earlyOut,
+    freeDay,
+    stayedNextShift: Boolean(stay),
+    earlyArrivalMinutes,
+    stayedShiftLabel: stay?.shift.label ?? null,
     status: log.clockOut ? (earlyOut ? "early_out" : "completed") : lateMinutes > 0 ? "late" : "on_time",
-    inStatus: inStatusOf(measured),
-    outStatus: outStatusOf(measured),
+    // The violet OT mark: early arrival before his own shift, or left after
+    // his own shift but close to the next one. Both say "extra hours here".
+    markedOvertime: Boolean(log.isOvertime) || earlyArrivalMinutes > 0 || Boolean(stay),
+    inStatus: inStatusOf(measured, { ...context, earlyArrival: earlyArrivalMinutes > 0 }),
+    outStatus: outStatusOf(measured, { ...context, stayedNextShift: Boolean(stay) }),
     fingerprintId: log.fingerprintId,
     clockInMethod: log.clockInMethod,
   };

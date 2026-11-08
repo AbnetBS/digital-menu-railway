@@ -108,6 +108,16 @@ async function main() {
           }),
         } as any;
       }
+      if (body.action === "set_price") {
+        state.prices[Number(body.menuItemId)] = Number(body.sportPrice);
+        return {
+          ok: true,
+          json: async () => ({
+            ...makeCatalog(state.categories, state.prices, { canEdit: state.canEdit }),
+            message: "Sport menu saved.",
+          }),
+        } as any;
+      }
       if (body.action === "set_category_prices") {
         for (const row of body.rows) state.prices[row.menuItemId] = Number(row.sportPrice);
         return { ok: true, json: async () => ({ ...makeCatalog(state.categories, state.prices, { canEdit: state.canEdit }), message: "Sport menu saved." }) } as any;
@@ -185,6 +195,33 @@ async function main() {
   strictEqual(save.rows[0].regularPrice, 50, "the normal price travels beside it (from ...)");
   strictEqual(save.rows[0].sportPrice, 70, "the typed match-day price is the number saved");
   strictEqual(save.category, "cold-drinks", "saved against its category");
+
+  /* ── 3b. ONE item saved on its own (owner, 2026-11-08) ── */
+  {
+    const boxes = Array.from(document.querySelectorAll<HTMLInputElement>("input"));
+    const mangoBox = boxes.find((input) => (input.getAttribute("aria-label") || "").startsWith("Mango Juice"));
+    ok(mangoBox, "the price box for Mango Juice exists");
+    await type(mangoBox!, "100");
+    // Mango Juice is the SECOND price row of Cold Drinks (Cola is first).
+    const allSaves = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).filter(
+      (b) => (b.textContent || "").trim() === "Save"
+    );
+    ok(allSaves.length >= 2, "each item row has its own Save button");
+    const mangoRowIndex = Array.from(document.querySelectorAll<HTMLInputElement>("input")).findIndex((input) =>
+      (input.getAttribute("aria-label") || "").startsWith("Mango Juice")
+    );
+    await act(async () => {
+      allSaves[mangoRowIndex].click();
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    const single = posts.filter((body) => body.action === "set_price");
+    ok(single.length === 1, "one POST for the one item");
+    strictEqual(single[0].menuItemId, 4, "it names the Mango Juice row only");
+    strictEqual(Number(single[0].sportPrice), 100, "the typed price is the number saved");
+    ok(!("rows" in single[0]), "the whole category is NOT re-saved with it");
+  }
 
   /* ── 4. switching off for today ── */
   await click((b) => /Switch off for today/.test(b.textContent || ""));

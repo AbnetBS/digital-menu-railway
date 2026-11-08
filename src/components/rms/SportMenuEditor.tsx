@@ -143,6 +143,29 @@ export default function SportMenuEditor({ embedded = true }: Props) {
     }
   };
 
+  /**
+   * SAVE ONE ITEM (owner, 2026-11-08): "he change the item price only for the
+   * sport item". A single row is saved on its own, so the admin never has to
+   * re-save the whole category to fix one drink, and the other items keep the
+   * prices he already typed.
+   */
+  const saveItem = async (item: SportCatalogItem) => {
+    const typed = drafts[item.id] ?? (item.sportPrice === null ? "" : String(item.sportPrice));
+    if (String(typed).trim() === "") {
+      setError(tNow("Type the event price first."));
+      return;
+    }
+    const data = await post(
+      { action: "set_price", menuItemId: item.id, sportPrice: typed },
+      tNow("{name} saved. Only this item changed.", { name: item.name })
+    );
+    if (data) setDrafts((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
+  };
+
   const saveCategory = async (slug: string) => {
     const rows = itemsOf(slug)
       .map((item) => ({ menuItemId: item.id, regularPrice: item.regularPrice, sportPrice: drafts[item.id] ?? item.sportPrice }))
@@ -292,10 +315,13 @@ export default function SportMenuEditor({ embedded = true }: Props) {
                         {L("{priced} of {total} items priced", { priced, total: list.length })}
                       </span>
                     </span>
-                    <span className="text-[10px] font-black text-violet-300 shrink-0">{opened ? L("HIDE") : L("EDIT")}</span>
+                    <span className="text-[10px] font-black text-violet-300 shrink-0">{opened ? L("HIDE") : L("EDIT ITEMS")}</span>
                   </button>
                   {opened && (
                     <div className="border-t border-stone-800 p-3 space-y-2">
+                      <p className="text-[10px] font-bold text-stone-500">
+                        {L("Type only the items you want to change for the sport menu, then Save that item. Everything else keeps the normal price.")}
+                      </p>
                       {list.map((item) => {
                         const current = pricedFor(item);
                         const raised = current !== null && current > item.regularPrice;
@@ -324,8 +350,18 @@ export default function SportMenuEditor({ embedded = true }: Props) {
                               inputMode="decimal"
                               placeholder={String(item.regularPrice)}
                               aria-label={`${item.name} ${L("sport price")}`}
-                              className="w-24 shrink-0 bg-black/30 border border-stone-700 rounded-xl px-2.5 py-2 text-sm font-bold text-white text-right"
+                              className="w-20 shrink-0 bg-black/30 border border-stone-700 rounded-xl px-2.5 py-2 text-sm font-bold text-white text-right"
                             />
+                            {/* One item on its own: the row is saved by itself,
+                                the other items of the category are untouched. */}
+                            <button
+                              onClick={() => void saveItem(item)}
+                              disabled={busy === "set_price"}
+                              className="shrink-0 px-2.5 py-2 rounded-xl bg-violet-600 text-white text-[10px] font-black disabled:opacity-40"
+                              title={L("Save this item only")}
+                            >
+                              {L("Save")}
+                            </button>
                           </div>
                         );
                       })}

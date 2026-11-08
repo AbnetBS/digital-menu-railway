@@ -45,6 +45,7 @@ const admin = read("src/components/AdminPanel.tsx");
 const migrate = read("src/db/migrate.ts");
 const menuApi = read("src/app/api/menu/route.ts");
 const dictionary = read("src/lib/staff-dictionary.ts");
+const deferred = read("src/app/api/tickets/deferred/route.ts");
 
 const failures = [];
 let count = 0;
@@ -140,8 +141,27 @@ const pass = (name, ok) => {
 /* ── 3. the waiter's screen: the SAME menu, only prices differ ─────────────── */
 {
   pass(
-    "the top-corner button is still the Sport menu button and it opens ordering",
-    /onClick=\{\(\) => openSportOrdering\(\)\}/.test(waiter) && /<Flag className="w-4 h-4" \/>\s*\{L\("Sport menu"\)\}/.test(waiter),
+    "the top-corner button opens the sport grid and closes it again",
+    /onClick=\{\(\) => \(sportGroupMode \? closeSportGroups\(\) : openSportOrdering\(\)\)\}/.test(waiter) &&
+      /sportGroupMode \? L\("Tables"\) : L\("Sport menu"\)/.test(waiter),
+  );
+  pass(
+    "NO table is picked for the waiter any more (his correction, 2026-11-08)",
+    !/tables\.find\(\(table\) => table\.status === "available"\)/.test(waiter) &&
+      !/setSelectedTable\(free\)/.test(waiter),
+  );
+  pass(
+    "the Sport button swaps the table cards for the GROUP cards",
+    /sportGroupMode && \(/.test(waiter) && /openSportGroup\(g\)/.test(waiter) && /openSportGroup\(null\)/.test(waiter),
+  );
+  pass(
+    "a sport group is a numbered outdoor bill exactly like the Groups composer",
+    /id: 0,[\s\S]{0,300}?isGroup: true,/.test(waiter) && /const groupRound = selectedTable\.isGroup === true;/.test(waiter),
+  );
+  pass(
+    "the first round of a group names no target ticket (the server numbers it)",
+    /\.\.\.\(send\.targetTicketId \? \{ targetTicketId: send\.targetTicketId \} : \{\}\)/.test(waiter) &&
+      /isGroupOrder = order\?\.groupOrder === true && order\?\.orderType === "outdoor"/.test(deferred),
   );
   pass("group bills stay one tap away (the Groups button is still there)", /onClick=\{\(\) => setGroupComposerOpen\(true\)\}/.test(waiter));
   pass(
@@ -194,7 +214,11 @@ const pass = (name, ok) => {
   );
   pass(
     "leaving the ordering screen puts the ordinary prices back (no mode survives a trip to the tables)",
-    /const onGoBack = \(\) => \{[\s\S]{0,400}?setSportEventMode\(false\);/.test(waiter),
+    /const onGoBack = \(\) => \{[\s\S]{0,700}?if \(!sportGroupMode\) setSportEventMode\(false\);/.test(waiter),
+  );
+  pass(
+    "but Back from a Sport group returns to the sport grid, not the tables",
+    /Coming FROM the Sport grid is different[\s\S]{0,200}?if \(!sportGroupMode\) setSportEventMode\(false\);/.test(waiter),
   );
   pass(
     "tapping a normal table on the grid is always the ordinary order",

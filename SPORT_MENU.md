@@ -19,9 +19,17 @@ the ordinary prices all night.
 > but same design as the normal menu ... the one who is responsible to edit the
 > items is the admin not the waiters too"
 
-There is **no sport screen, no sport mode and no price editor on the waiter's
-phone**. The Sport button opens the ordinary ordering screen; the admin is the
-only person who can type an event price.
+And then the second correction (2026-11-08), after the first build picked a table
+for him:
+
+> "when the customer sit in front of the tv to watch the match the waiter goes and
+> clicks the sport menu then he selects just like the table one ... so when he
+> send it after being printed it will be added as group but the price will be
+> added up just like normal table, outdoor order"
+
+So: **the Sport button shows the GROUP cards, not the tables**, and each group is
+a numbered outdoor bill. There is **no sport screen and no price editor on the
+waiter's phone**; the admin is the only person who can type an event price.
 
 ---
 
@@ -30,18 +38,24 @@ only person who can type an event price.
 | Where | What |
 | --- | --- |
 | Top corner of the tables screen | The button that used to say **Groups** now says **Sport menu** (violet while the event list is live). The Users icon right beside it is the Groups composer. |
-| What it opens | **The ordinary ordering screen.** Same category chips, same food cards, same cart, same send. It picks a free table for him, or the group bill when every table is busy. |
+| What it opens | **The Sport group grid**: the same grid as the tables, but the cards are the OPEN GROUP bills (`GROUP 3`) plus a **New group** button. No table is chosen for him: a match group sits in front of the TV, not at table 3. The button now reads **Tables** and takes him back. |
+| Tapping a group | **The ordinary ordering screen.** Same category chips, same food cards, same cart, same send, on that group's bill. A second tap later adds another round to the same group. |
 | The food cards | One price each. The item the admin re-priced simply reads his number (`70 ETB`); every other item reads its ordinary price (`50 ETB`). No strike-through pair, no badge. |
-| One thin violet bar | `⚡ Event prices: 3 item(s) were changed by the admin.` with a **Normal prices** button. That is the only visible difference, and it disappears the moment he taps a normal table or goes back to the tables screen. |
+| One thin violet bar | `⚡ Event prices: 3 item(s) were changed by the admin.` with a **Normal prices** button. Tapping an ordinary table or **Back to the tables** removes it. |
 | Categories | Untouched: All / Hot Drinks / Cold Drinks / … with no ⚡ on the chips. |
+| The bill | A numbered group bill, printed and settled exactly like an outdoor order. `GROUP 3` appears in the grid and in the cashier's queue like any other group. |
 
 The cart keeps the price each line was added at, and only a line whose item has
-an event price is marked as a match-day line. The order itself is completely
-normal: same stations, same cashier, same bill.
+an event price is marked as a match-day line. Everything after the send is the
+normal path: same stations, same cashier, same printed bill.
 
-On a day with no live list, or after the admin switches it off, the same button
-opens the same screen at the ordinary prices and says
-`No sport prices today. These are the normal menu prices.`
+Back from the ordering screen returns to the **Sport group grid** (event prices
+still on) so he can take another group; **Back to the tables** leaves the sport
+grid entirely and the ordinary prices return.
+
+On a day with no live list, or after the admin switches it off, the grid says
+`No sport prices today. These are the normal menu prices.` and every item keeps
+its ordinary price.
 
 ## 2. What the owner does
 
@@ -56,8 +70,10 @@ open the editor: a non-admin who reaches it sees the read-only list.
    Mango Juice     from 80 ETB  to 100  ETB   [ 100 ]
    ```
 
-   He types the event price in each box and presses **Save Cold Drinks
-   prices**. Struck-through green = raised, rose = lowered.
+   He types the event price in the boxes of the items he wants to change. Each
+   row has its own **Save** button, so he can change **one item only** without
+   re-saving the category; **Save Cold Drinks prices** saves the whole category
+   at once. Struck-through green = raised, rose = lowered.
 3. Adding another category is the same two taps.
 4. **Switch off for today** when the match is over. Nothing is deleted: the
    typed prices stay for the next match day.
@@ -74,6 +90,7 @@ normal price immediately.
 | Event list live, category never added | the ordinary menu price |
 | Event list switched off | the ordinary menu price, for everything |
 | Waiter tapped an ordinary table on the grid | the ordinary menu price, always |
+| A sport group's second round | the event prices again, on the same group bill |
 | The same button when no list is live | the ordinary menu price, plus the "no sport prices today" line |
 | A customer's QR order | the ordinary menu price, always |
 | Sale price running that day | the event price wins for that item (it is the newer, deliberate number) |
@@ -200,7 +217,7 @@ shows a read-only list to anyone who is not the owner.
 | `src/components/rms/WaiterApp.tsx` | the Sport button, the same ordering screen, cart pricing |
 | `src/components/rms/GroupComposer.tsx` | group rounds charged the sport prices too |
 | `src/db/migrate.ts` | the `sport_menus` table |
-| `scripts/verify-sport-menu.mjs` | static guard, 62 assertions |
+| `scripts/verify-sport-menu.mjs` | static guard, 67 assertions |
 | `scripts/verify-sport-menu-pricing.ts` | behaviour guard, 43 checks |
 | `scripts/verify-sport-menu-ui.tsx` | jsdom mount of the admin editor |
 

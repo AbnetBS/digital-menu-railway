@@ -200,6 +200,21 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
   const [sportCatalog, setSportCatalog] = useState<SportCatalogResponse | null>(null);
   /** This ordering screen was opened from the Sport button (event prices). */
   const [sportEventMode, setSportEventMode] = useState(false);
+  /**
+   * SPORT MENU, THE OWNER'S FINAL FLOW (2026-11-08):
+   * "when the waiter clicks the sport menu there need to be groups just like the
+   * table one ... then the waiter will click the group they want to assign".
+   *
+   * So the Sport button does NOT pick a table and does NOT put the phone into a
+   * mode. It swaps the table cards for the GROUP cards: the waiter taps the group
+   * that is watching the match (or starts a new one) and gets the ordinary
+   * ordering screen with the admin's event prices on the items he re-priced.
+   * Each group is its own numbered bill, billed exactly like an outdoor order,
+   * so the money and the report work the way they already do.
+   */
+  const [sportGroupMode, setSportGroupMode] = useState(false);
+  /** Today's next group number for the Sport grid (display only). */
+  const [sportNextGroup, setSportNextGroup] = useState<number | null>(null);
   const [outdoorComposerOpen, setOutdoorComposerOpen] = useState(false);
   /** Which open outdoor bill "+ Add to an outdoor order" is adding to. */
   const [outdoorPickerOpen, setOutdoorPickerOpen] = useState(false);
@@ -1043,6 +1058,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     // Tapping a table on the grid is the NORMAL order: the ordinary prices, even
     // if the last screen he looked at was the sport one.
     setSportEventMode(false);
+    setSportGroupMode(false);
     setSelectedTable(t);
     setCart([]);
     if (t.activeTicketId) {
@@ -1171,7 +1187,14 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
 
   const deferredTicketPayload = (send: PendingWaiterSend) => ({
     ...(send.groupRound
-      ? { source: "staff", orderType: "outdoor", groupOrder: true, targetTicketId: send.targetTicketId }
+      ? {
+          source: "staff",
+          orderType: "outdoor",
+          groupOrder: true,
+          // A FIRST round has no target yet: the server numbers the group. A
+          // later round names the bill it joins (owner, 2026-11-08).
+          ...(send.targetTicketId ? { targetTicketId: send.targetTicketId } : {}),
+        }
       : { tableId: send.tableId }),
     waiterName: send.waiterName,
     idempotencyKey: send.idempotencyKey,
@@ -1252,35 +1275,86 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
    * countdown alive — the violet tile brings her back into it.
    */
   /**
-   * THE SPORT BUTTON ON THE TABLES SCREEN (owner, 2026-11-08).
+   * THE SPORT BUTTON ON THE TABLES SCREEN (owner, 2026-11-08, second correction).
    *
-   * It does not open a second menu and it does not put the phone into a mode.
-   * It opens the SAME ordering screen at the event prices: a table is picked for
-   * him when one is free (a normal day's order), or a group bill when every
-   * table is busy (a match day, guest groups standing). From there everything is
-   * exactly the normal flow: same cards, same categories, same cart, same send.
-   * Only the admin can change a price, and only the items he re-priced differ.
+   * "when the customer sit in front of the tv to watch the match the waiter goes
+   * and clicks the sport menu then he selects just like the table one ... after
+   * being printed it will be added as group but the price will be added up just
+   * like normal table, outdoor order".
+   *
+   * So the Sport button does NOT pick a table for him any more (the first free
+   * table was wrong: a match group is not sitting at table 3). It shows the
+   * GROUP cards instead of the table cards, exactly the same cards the Groups
+   * button shows: the waiter taps the group watching the match, or starts a new
+   * one, and lands on the ordinary ordering screen with the admin's event prices.
+   *
+   * Nothing about the money changes: the group bill is a numbered outdoor bill,
+   * priced and printed like any other, and the admin is still the only one who
+   * can change a price.
    */
   const openSportOrdering = () => {
     // Re-read first: the admin may have typed a price a minute ago.
     void fetchSportCatalog("waiter").then((next) => {
       if (next) setSportCatalog(next);
     });
+    // The next group number is a server prediction (the real one is stamped by
+    // the server at send time), only so the waiter knows which group he is
+    // starting before he sends.
+    void fetch("/api/tickets?nextGroup=1", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (typeof data?.nextGroup === "number") setSportNextGroup(data.nextGroup);
+      })
+      .catch(() => undefined);
+    setSportEventMode(true);
+    setSportGroupMode(true);
+    setSportNextGroup(null);
+  };
+
+  /** Leave the Sport grid without ordering: ordinary tables, ordinary prices. */
+  const closeSportGroups = () => {
+    setSportGroupMode(false);
+    setSportEventMode(false);
+  };
+
+  /**
+   * A group was tapped on the Sport grid. `group` is an OPEN group bill (another
+   * round on the same bill) or null for a brand-new group (the server stamps the
+   * next number at send time, exactly like the Groups composer).
+   */
+  const openSportGroup = (group: Ticket | null) => {
     setSportEventMode(true);
     setCart([]);
-    setActiveTicket(null);
     setCategory("all");
     setSearch("");
-    const free = tables.find((table) => table.status === "available");
-    if (free) {
-      setSelectedTable(free);
-      setActiveHold(null);
+    if (!group) {
+      // A new group: no ticket yet, so the send path knows it is a first round.
+      setActiveTicket(null);
+      setSelectedTable({
+        id: 0,
+        name: sportNextGroup ? `GROUP ${sportNextGroup}` : L("New group"),
+        status: "available",
+        activeTicketId: null,
+        activeTicketTotal: 0,
+        activeTicketBy: "",
+        activeTicketAt: null,
+        isGroup: true,
+      });
       setView("order");
       return;
     }
-    // No free table: a group bill takes the order, and the guest group is asked
-    // for nothing extra (the number IS the identity).
-    setGroupComposerOpen(true);
+    setSelectedTable({
+      id: group.tableId,
+      name: group.tableName,
+      status: groupTableStatus(group),
+      activeTicketId: group.id,
+      activeTicketTotal: group.totalAmount,
+      activeTicketBy: group.createdBy,
+      activeTicketAt: group.createdAt,
+      isGroup: true,
+    });
+    setActiveTicket(group);
+    setView("order");
   };
 
   const startSendHold = () => {
@@ -1288,7 +1362,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     const hold = Math.max(1, holdSeconds);
     const dueAt = Date.now() + hold * 1000;
     const idempotencyKey = newSubmissionKey();
-    const groupRound = selectedTable.isGroup === true && !!selectedTable.activeTicketId;
+    // A sport group round is ALWAYS a group send, even the first one (there is
+    // no target ticket yet: the server stamps the number). The Groups composer
+    // always worked that way; the sport grid needed the same rule.
+    const groupRound = selectedTable.isGroup === true;
     const queued: PendingWaiterSend = {
       idempotencyKey,
       dueAt,
@@ -1396,7 +1473,9 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     // Back to the tables screen = back to the ordinary menu. The event prices
     // belong to the screen the Sport button opened, never to the next table, so
     // a waiter can never carry a match-day price onto a normal order by accident.
-    setSportEventMode(false);
+    // Coming FROM the Sport grid is different: Back returns to the Sport group
+    // cards with the event prices still on, until he taps "Back to the tables".
+    if (!sportGroupMode) setSportEventMode(false);
     setView("tables");
   };
 
@@ -1526,12 +1605,26 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
     showToast(
       d.duplicate
         ? tNow("✓ Already sent • not sent twice")
-        : queued.groupRound && d.merged
-        ? tNow("✓ Items added to {tableName}", { tableName: String(d.tableName || queued.tableName) })
+        : queued.groupRound
+        // A group bill always names itself, whether this round started it or
+        // joined it: "GROUP 3 created" / "Items added to GROUP 3".
+        ? d.merged
+          ? tNow("✓ Items added to {tableName}", { tableName: String(d.tableName || queued.tableName) })
+          : tNow("✓ {group} created • sent to the stations", { group: String(d.tableName || queued.tableName) })
         : d.merged
         ? tNow("✓ Items added to the table bill")
         : tNow("✓ Order sent to cashier")
     );
+    // The Sport grid is still on screen: re-read the open groups and the number
+    // the next one will get, so the card he just billed is there to tap again.
+    if (queued.groupRound) {
+      void fetch("/api/tickets?nextGroup=1", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (typeof data?.nextGroup === "number") setSportNextGroup(data.nextGroup);
+        })
+        .catch(() => undefined);
+    }
 
     // Only navigate away if this is still the order screen that created the
     // hold. A send expiring in the background must not interrupt another table.
@@ -2254,28 +2347,30 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           )}
           <div>
             <div className="flex items-center justify-between gap-2">
-              <h1 className="font-serif text-xl font-bold text-amber-100">{L("Select Table")}</h1>
-              {/* THE SPORT MENU (owner, 2026-11-08 — his correction).
-                  "when they click sport menu they see prices for that event
-                  only but same design as the normal menu".
-                  So this button does NOT open a price editor and does NOT put
-                  the phone into a mode he has to remember to leave. It simply
-                  says "let me order at the event prices", picks the table for
-                  him on a normal day (a group bill on a match day) and opens the
-                  SAME menu screen. The admin is the only one who can change a
-                  price; the waiter just sees it. */}
+              <h1 className="font-serif text-xl font-bold text-amber-100">
+                {sportGroupMode ? L("Sport menu • choose the group") : L("Select Table")}
+              </h1>
+              {/* THE SPORT MENU (owner, 2026-11-08, second correction).
+                  "when the customer sit in front of the tv ... the waiter goes
+                  and clicks the sport menu then he selects just like the table
+                  one ... it will be added as group".
+                  So the button swaps the table cards for the GROUP cards: no
+                  table is picked for him, he chooses the group watching the
+                  match, and the menu that opens is the ordinary one with the
+                  admin's event prices. The admin is the only one who can change
+                  a price; the waiter just sees it. */}
               <div className="shrink-0 flex items-center gap-1.5">
                 <button
-                  onClick={() => openSportOrdering()}
+                  onClick={() => (sportGroupMode ? closeSportGroups() : openSportOrdering())}
                   className={`flex items-center gap-1.5 border-2 rounded-xl px-3 py-2 text-[11px] font-black active:scale-95 transition ${
-                    sportPricesLive(sportCatalog)
+                    sportGroupMode || sportPricesLive(sportCatalog)
                       ? "bg-violet-700/80 border-violet-400 text-violet-50"
                       : "bg-emerald-800/80 border-emerald-400/60 hover:bg-emerald-700 text-emerald-100"
                   }`}
                   title={L("Sport menu")}
                 >
                   <Flag className="w-4 h-4" />
-                  {L("Sport menu")}
+                  {sportGroupMode ? L("Tables") : L("Sport menu")}
                 </button>
                 <button
                   onClick={() => setGroupComposerOpen(true)}
@@ -2295,7 +2390,69 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {/* ── THE SPORT GRID (owner, 2026-11-08) ──
+              The Sport button swaps the table cards for the GROUP cards. A match
+              group sits in front of the TV, not at table 3, so picking the first
+              free table was wrong. Same cards, same bill, same printing as the
+              Groups composer: only the prices come from the admin's list. */}
+          {sportGroupMode && (
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-violet-500/40 bg-violet-950/30 px-3 py-2">
+                <p className="text-[11px] font-black text-violet-200">
+                  ⚡ {L("Sport menu: tap the group watching the match, or start a new group.")}
+                </p>
+                <p className="text-[10px] font-bold text-stone-400 mt-0.5">
+                  {sportPricesLive(sportCatalog)
+                    ? L("The price of {n} item(s) was changed by the admin for this match.", { n: sportPricedCount(sportCatalog) })
+                    : L("No sport prices today. These are the normal menu prices.")}
+                </p>
+              </div>
+
+              <button
+                onClick={() => openSportGroup(null)}
+                className="w-full bg-[#C9A227] text-[#2C1B17] font-black text-sm uppercase py-3.5 rounded-2xl flex items-center justify-center gap-2 active:scale-95 transition"
+              >
+                <Users className="w-4 h-4" />
+                {L("New group")}{sportNextGroup ? L(" • will be GROUP {nextGroup}", { nextGroup: sportNextGroup }) : ""}
+              </button>
+
+              {/* Every OPEN group bill is a card, exactly like a table's: the
+                  waiter taps the one in front of the TV and adds a round. */}
+              {groupTickets.length === 0 ? (
+                <p className="text-center text-[11px] font-bold text-stone-400 py-4">
+                  {L("No open groups right now. Tap New group above for the first one.")}
+                </p>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                  {groupTickets.map((g) => (
+                    <button
+                      key={`sport-group-${g.id}`}
+                      onClick={() => openSportGroup(g)}
+                      className="text-left rounded-2xl p-5 border-2 transition active:scale-95 border-violet-500/70 bg-violet-950/40"
+                    >
+                      <p className="font-serif font-bold text-lg text-violet-100 flex items-center gap-1.5">
+                        <Users className="w-4 h-4 shrink-0" /> {g.tableName}
+                      </p>
+                      <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(groupTableStatus(g))}`}>
+                        {tableStatusLabel(groupTableStatus(g))}
+                      </span>
+                      <p className="text-xs font-bold text-stone-200 mt-1">{L("{totalAmount} ETB open", { totalAmount: g.totalAmount })}</p>
+                      <p className="text-[11px] font-black text-violet-300 mt-1.5">{L("Tap to add sport items")}</p>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <button
+                onClick={closeSportGroups}
+                className="w-full bg-white/10 text-stone-200 font-bold text-xs py-2.5 rounded-xl"
+              >
+                {L("Back to the tables")}
+              </button>
+            </div>
+          )}
+
+          <div className={`grid grid-cols-2 sm:grid-cols-3 gap-3 ${sportGroupMode ? "hidden" : ""}`}>
             {tables.map((t) => {
               // THE VIOLET "WAITING TO SEND" TILE (owner, Sept 2026): a table
               // whose order is inside its hold glows violet with its own
@@ -2411,7 +2568,7 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
             {/* ── GROUP ORDERS: open groups sit in the grid like tables.
                 Tap → the same bill view a table gets: add items, request
                 payment, settle. The 👥 GROUP card is the only difference. ── */}
-            {groupTickets.map((g) => {
+            {!sportGroupMode && groupTickets.map((g) => {
               // A queued round for this group paints violet while it waits,
               // exactly like a real table's waiting tile.
               const queuedForGroup = pendingSends.find((send) => send.groupRound && send.targetTicketId === g.id);

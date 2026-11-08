@@ -242,7 +242,15 @@ pass("a 'Don't give' decision is read for the month and filters manual and holid
     payrollApi.includes("excludedOt.has(`${date}|holiday`)") &&
     payrollApi.includes("allowedOtRow"));
 pass("excluded rows stay in the overtime history, marked as not given", payrollApi.includes("excluded: excludedOt.has(") && payrollApi.includes("otExclusions: excludedQ.rows") && payrollApi.includes("const writtenEntries = otRows.filter((r) => r.source !== \"auto\")") && payrollApi.includes("excluded: d.excluded"));
-pass("and their hours are never added to pay, nor counted as paid OT days", payrollApi.includes("if (!excluded) autoHolidayMinutes += minutes") && payrollApi.includes('autoDays.filter((d) => d.type === "holiday" && !d.excluded)'));
+// Since the supervisor gate (2026-11-08) a "do not add" row and a still pending
+// row are both `excluded`, and the payable minutes are clamped to what the
+// supervisor approved, so a measured holiday can never pay itself.
+pass(
+  "and their hours are never added to pay, nor counted as paid OT days",
+  payrollApi.includes("const excluded = excludedOt.has(`${date}|holiday`) || approvedMinutes === 0") &&
+    payrollApi.includes("if (!excluded) autoHolidayMinutes += Math.min(minutes, approvedMinutes)") &&
+    payrollApi.includes('autoDays.filter((d) => d.type === "holiday" && !d.excluded)')
+);
 pass("manual holiday OT overrides auto holiday scan on the same day, and free days are never absences", payrollApi.includes("manualHolidayDates.has(date)") && payrollApi.includes("holidayByDate.get(date)") && payrollApi.includes("!isFree(d)"));
 pass("the No. column is the position in this list, never the database id", payrollApi.includes("employeeNumber: index + 1") && !payrollApi.includes("employeeNumber: memberId"));
 pass("breakage comes from Store records while salary and transport are typed", payrollApi.includes("payroll_breakages") && payrollApi.includes("Breakage is recorded in Store"));
@@ -314,15 +322,52 @@ pass("the decision is one row per person + day + kind, in its own table", schema
 pass("the overtime tab still has no approval language", !/approve|pending approval|reject/i.test(payrollTab.slice(payrollTab.indexOf("function OvertimeDialog"), payrollTab.indexOf("function ExceptionPanel"))));
 pass("no user-visible payroll string carries an em dash", !/[—‒–]/.test(payrollTab + holidayApi + payrollApi));
 
-/* ── 5. Ethiopian calendar helpers are untouched ─────────────────────────── */
-
-const meskerem = ethiopianMonthBounds(2019, 1);
-assert.match(meskerem.from, /^2026-09-/);
-assert.match(meskerem.to, /^2026-10-/);
-const pagumen = ethiopianMonthBounds(2018, 13);
-assert.ok(Date.parse(pagumen.to) >= Date.parse(pagumen.from));
-assert.equal(gregorianDateToEthiopian(ethiopianDateToGregorian("2019-02-15")), "2019-02-15");
-assert.throws(() => ethiopianDateToGregorian("2018-13-06"), /has 5 days/);
+/* ── 5. The Ethiopian calendar, checked against published dates ────────────
+ * The owner asked for a real source (2026-11-08), not the machine's opinion:
+ * "the system must know the dates well". These are the dates the converters
+ * publish (truecalendar, temari, ethiotime, ertale), so a regression in the
+ * Intl mapping fails here instead of on a payslip.
+ */
+{
+  const publishedNewYears: Array<[number, string]> = [
+    [2015, "2022-09-11"], [2016, "2023-09-12"], [2017, "2024-09-11"],
+    [2018, "2025-09-11"], [2019, "2026-09-11"], [2020, "2027-09-12"],
+  ];
+  for (const [year, firstDay] of publishedNewYears) {
+    assert.equal(ethiopianMonthBounds(year, 1).from, firstDay, `Meskerem 1 ${year} E.C.`);
+    assert.equal(gregorianDateToEthiopian(firstDay), `${year}-01-01`, `${firstDay} is New Year`);
+  }
+  // The day he is standing in, and the two days he named.
+  assert.equal(gregorianDateToEthiopian("2026-11-08"), "2019-02-29");
+  assert.equal(gregorianDateToEthiopian("2026-11-09"), "2019-02-30");
+  assert.equal(gregorianDateToEthiopian("2026-11-10"), "2019-03-01");
+  // month spans, as the converters publish them
+  assert.deepEqual(ethiopianMonthBounds(2019, 2), { from: "2026-10-11", to: "2026-11-09" });
+  assert.deepEqual(ethiopianMonthBounds(2019, 3), { from: "2026-11-10", to: "2026-12-09" });
+  // Pagume is 6 days only in the year before a Gregorian leap year.
+  const pagumeLength = (y: number) => {
+    const b = ethiopianMonthBounds(y, 13);
+    return Math.round((Date.parse(b.to) - Date.parse(b.from)) / 86400000) + 1;
+  };
+  assert.equal(pagumeLength(2015), 6, "Pagume 2015 (before 2024, a leap year)");
+  assert.equal(pagumeLength(2016), 5);
+  assert.equal(pagumeLength(2019), 6, "Pagume 2019 (before 2028, a leap year)");
+  assert.equal(pagumeLength(2020), 5);
+  // No gap and no overlap between consecutive months, three whole years.
+  let previousEnd = "";
+  for (let y = 2018; y <= 2020; y++) {
+    for (let m = 1; m <= 13; m++) {
+      const b = ethiopianMonthBounds(y, m);
+      if (previousEnd) {
+        assert.equal(new Date(Date.parse(previousEnd) + 86400000).toISOString().slice(0, 10), b.from, `gap before ${y}-${m}`);
+      }
+      previousEnd = b.to;
+    }
+  }
+  assert.equal(gregorianDateToEthiopian(ethiopianDateToGregorian("2019-02-15")), "2019-02-15");
+  assert.throws(() => ethiopianDateToGregorian("2018-13-06"), /has 5 days/);
+  pass("the calendar matches the published Ethiopian dates (2015 to 2020 E.C.)", true);
+}
 
 console.log("");
 if (failures > 0) {

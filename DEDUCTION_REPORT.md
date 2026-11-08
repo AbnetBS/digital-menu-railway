@@ -167,6 +167,44 @@ app, row 556 of the sheet:
 The other row on the sheet with a partial transport allowance (9,497.06 basic +
 192.00 transport) also matches every column, to 7,500.00 net.
 
+### The paper is his fifteen columns
+
+His sheet has fifteen columns and the printed sheet now has exactly those, in
+his order:
+
+| # | Column | # | Column |
+| --- | --- | --- | --- |
+| 1 | No. | 9 | Income tax |
+| 2 | Employee Name | 10 | P.C 7 % |
+| 3 | Basic Salary | 11 | P.C 18% |
+| 4 | 11% | 12 | Breakage & shortage |
+| 5 | Transport Allowance | 13 | Total Deduction |
+| 6 | OT | 14 | Net pay |
+| 7 | Gross Salary | 15 | Signature |
+| 8 | Taxable salary | | |
+
+Absence, Late and Early out are **not** columns on his sheet. They are already
+inside Total Deduction, so printing them as three more columns made the paper
+wider than his file and put three zeros in the middle of it. They are now off
+by default and one button brings them back ("Show Absence / Late / Early out")
+for a supervisor who wants the proof of a deduction. The letterhead keeps the
+company name, "Payroll Sheet", "For The Month of <Ethiopian month> E.C." and
+the TIN, and Prepared / Checked / Approved stay under the table.
+
+### The calendar is checked against published dates, not against opinion
+
+`scripts/verify-payroll.ts` now pins the Ethiopian calendar to the dates the
+converters publish, so a regression fails in the guard instead of on a payslip:
+
+* Meskerem 1 = 11 Sep 2022, 12 Sep 2023, 11 Sep 2024, 11 Sep 2025,
+  **11 Sep 2026**, 12 Sep 2027.
+* Tikimt 2019 = 11 Oct to 9 Nov 2026. Hidar 2019 = 10 Nov to 9 Dec 2026.
+* 8 Nov 2026 = **Tikimt 29, 2019 E.C.** (Sunday). 9 Nov = Tikimt 30.
+  10 Nov = **Hidar 1** (Tuesday).
+* Pagume is 6 days only in the year before a Gregorian leap year
+  (2015 and 2019 are 6 days, 2016 and 2020 are 5), and every month joins the
+  next with no gap and no overlap across three whole years.
+
 **One bug found and fixed while checking this**, and it mattered for the very
 first real payroll: *proration*. The factor was computed from `created`, which is
 the first fingerprint scan, so somebody whose first scan was on the 5th had his

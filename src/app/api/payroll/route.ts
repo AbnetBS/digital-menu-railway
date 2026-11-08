@@ -388,43 +388,80 @@ async function buildRows(periodKey: string) {
     let autoHolidayMinutes = 0;
     /** A scan on the person's own free day: the hours he worked, paid only on Add overtime. */
     let autoFreeWeekMinutes = 0;
+    /* PAID BY THE RATE HE CHOSE (owner, 2026-11-08: "let me choose per row").
+     * A scan the system measured can be approved as a holiday, a free week, an
+     * extra shift or a night shift, and that choice is what pays it, not the
+     * day it happened to fall on. approvedKindMinutes is that ledger, grouped
+     * by the rate the supervisor pressed, so a free-day visit approved at the
+     * holiday rate really pays 2.5x and one approved as a shift pays 1.5x.
+     */
+    const approvedByKind = new Map<OvertimeType, number>();
+    for (const d of addedOt) {
+      const kind = String(d.overtime_type || "shift") as OvertimeType;
+      if (!(OVERTIME_TYPES as readonly string[]).includes(kind)) continue;
+      if (excludedOt.has(`${String(d.attendance_date)}|${kind}`)) continue;
+      approvedByKind.set(kind, (approvedByKind.get(kind) || 0) + Math.max(0, Math.round(Number(d.minutes) || 0)));
+    }
+    const kindMinutes = (kind: OvertimeType) => approvedByKind.get(kind) || 0;
+    /** Hours that a measured scan already covers on that day, so nothing doubles. */
+    const measuredKindsOn = (date: string) => {
+      const kinds = new Set<OvertimeType>();
+      if (holidayByDate.has(date)) kinds.add("holiday");
+      if (isWorkedFreeDay(freeSchedules, date) && !isAnnualLeaveDate(freeSchedules, date)) kinds.add("free_week");
+      return kinds;
+    };
     const autoDays: Array<{ date: string; type: OvertimeType; hours: number; why: string; excluded: boolean }> = [];
+    /**
+     * THE ONE VISIT, PAID ONCE, AT THE RATE HE CHOSE.
+     *
+     * A day with a scan is either a holiday, or a free day, or an ordinary
+     * shift, and it is ONE visit. The rate picker may price that visit at any
+     * of the four formulas, but changing the rate must not change the hours.
+     * So a day whose scan was already counted by the auto pass is never counted
+     * again, whatever kind the supervisor pressed, and the extra hours of an
+     * ordinary working day are still added by hand as before (measuredTypes).
+     */
+    const autoCountedDates = new Set(autoDays.map((d) => d.date));
     for (const date of allDates) {
       const log = logByDate.get(date);
       if (!log) continue;
       const shift = shiftOfLog(log, roleShifts);
+      const minutes = recognizedOtMinutes(shift, log);
+      if (minutes <= 0) continue;
       const holiday = holidayByDate.get(date);
-      if (holiday && !manualHolidayDates.has(date)) {
+      const freeDay = isWorkedFreeDay(freeSchedules, date) && !isAnnualLeaveDate(freeSchedules, date);
+      /* WHICH RATE, AND WHEN A DAY IS NO LONGER THAT KIND (owner: "let me
+       * choose per row"). If he approved this day at one of the four rates,
+       * that rate owns the day: the measured kind gives way, so the visit is
+       * paid once, by the formula he picked. An approval at the measured kind
+       * keeps the normal path below. */
+      const approvedKindHere = addedOt
+        .filter((d) => String(d.attendance_date) === date)
+        .map((d) => String(d.overtime_type || "shift"))
+        .find((k) => (OVERTIME_TYPES as readonly string[]).includes(k));
+      const measuredHoliday = Boolean(holiday) && !manualHolidayDates.has(date);
+      const measuredFree = isWorkedFreeDay(freeSchedules, date) && !isAnnualLeaveDate(freeSchedules, date);
+      const replacedHoliday = measuredHoliday && approvedKindHere !== "holiday" && approvedKindHere !== undefined;
+      const replacedFree = measuredFree && approvedKindHere !== "free_week" && approvedKindHere !== undefined;
+      if (holiday && !manualHolidayDates.has(date) && !replacedHoliday) {
         // A holiday scan is a measurement like any other: it waits for Add
         // overtime. `excluded` is "do not add" or "still waiting", so the paper
         // shows the row greyed until somebody decides it.
         const approvedMinutes = approvedOtMinutes(date, "holiday");
         const excluded = excludedOt.has(`${date}|holiday`) || approvedMinutes === 0;
-        const minutes = recognizedOtMinutes(shift, log);
-        if (minutes > 0) {
-          if (!excluded) autoHolidayMinutes += Math.min(minutes, approvedMinutes);
-          autoDays.push({ date, type: "holiday", hours: minutesToHours(minutes), why: holiday.name, excluded });
-        }
-      }
-      /* HE CAME ON HIS FREE DAY (owner, 2026-11-08). The free colour on the
-       * sheet stays; the visit is measured from the scan and, exactly like a
-       * holiday, it pays nothing until the supervisor presses Add overtime on
-       * the report. Ye amet ereft is skipped: those days are paid already. */
-      if (isWorkedFreeDay(freeSchedules, date) && !isAnnualLeaveDate(freeSchedules, date)) {
+        if (!excluded) autoHolidayMinutes += Math.min(minutes, approvedMinutes);
+        autoDays.push({ date, type: "holiday", hours: minutesToHours(minutes), why: holiday.name, excluded });
+      } else if (freeDay && !replacedFree) {
+        /* HE CAME ON HIS FREE DAY (owner, 2026-11-08). The free colour on the
+         * sheet stays; the visit is measured from the scan and, exactly like a
+         * holiday, it pays nothing until the supervisor presses Add overtime on
+         * the report. Ye amet ereft is skipped: those days are paid already. */
         const approvedMinutes = approvedOtMinutes(date, "free_week");
         const excluded = excludedOt.has(`${date}|free_week`) || approvedMinutes === 0;
-        const minutes = recognizedOtMinutes(shift, log);
-        if (minutes > 0) {
-          const alreadyTyped = manualOtRows.some((r) => r.type === "free_week" && String(r.date) === date);
-          if (alreadyTyped) continue; // the typed hours are the record; never count the scan twice
+        const alreadyTyped = manualOtRows.some((r) => r.type === "free_week" && String(r.date) === date);
+        if (!alreadyTyped) {
           if (!excluded) autoFreeWeekMinutes += Math.min(minutes, approvedMinutes);
-          autoDays.push({
-            date,
-            type: "free_week",
-            hours: minutesToHours(minutes),
-            why: "Came on his free day",
-            excluded,
-          });
+          autoDays.push({ date, type: "free_week", hours: minutesToHours(minutes), why: "Came on his free day", excluded });
         }
       }
     }
@@ -443,14 +480,41 @@ async function buildRows(periodKey: string) {
           }, 0)
       );
 
-    const holidayOtHours = money(minutesToHours(autoHolidayMinutes + manualMinutes("holiday")) + legacyHours("holiday"));
+    /* THE FOUR RATES, each fed by what was approved AT THAT RATE.
+     *
+     * A typed row is the record for its own kind (manualMinutes). An approval
+     * whose rate no measured day covers (measuredKindsOn) is the owner choosing
+     * a different rate for a visit ("let me choose per row"), so it is added on
+     * that kind. An approval that a measured day DOES cover is already counted
+     * by the auto pass above (autoHolidayMinutes / autoFreeWeekMinutes), which is
+     * clamped to the same approved minutes, so it is not counted twice. */
+    /* A row already counted by manualMinutes (the overtime table row with
+     * source 'supervisor' on that day) must not be counted again here: the two
+     * representations of the same press are the ledger row and the table row. */
+    const manualRowOn = (date: string, kind: string) =>
+      otRows.some((r) => r.source !== "auto" && r.type === kind && String(r.date) === date);
+    const unmeasured = (kind: OvertimeType) =>
+      money(
+        addedOt
+          .filter((d) => String(d.overtime_type || "shift") === kind)
+          .filter((d) => !autoCountedDates.has(String(d.attendance_date)))
+          .filter((d) => !manualRowOn(String(d.attendance_date), kind))
+          .filter((d) => !excludedOt.has(`${String(d.attendance_date)}|${kind}`))
+          .reduce((sum, d) => sum + Math.max(0, Math.round(Number(d.minutes) || 0)), 0) / 60
+      );
+    void kindMinutes;
+    const holidayOtHours = money(
+      minutesToHours(autoHolidayMinutes + manualMinutes("holiday")) + legacyHours("holiday") + unmeasured("holiday")
+    );
     // A free-day visit is measured from the scan (autoFreeWeekMinutes) OR typed
     // by hand; whichever exists, and never both for one day.
     const freeWeekOtHours = money(
-      minutesToHours(autoFreeWeekMinutes + manualMinutes("free_week")) + legacyHours("free_week")
+      minutesToHours(autoFreeWeekMinutes + manualMinutes("free_week")) + legacyHours("free_week") + unmeasured("free_week")
     );
-    const shiftOtHours = money(minutesToHours(manualMinutes("shift")) + legacyHours("shift"));
-    const nightShiftOtHours = money(minutesToHours(manualMinutes("night_shift")) + legacyHours("night_shift"));
+    const shiftOtHours = money(minutesToHours(manualMinutes("shift")) + legacyHours("shift") + unmeasured("shift"));
+    const nightShiftOtHours = money(
+      minutesToHours(manualMinutes("night_shift")) + legacyHours("night_shift") + unmeasured("night_shift")
+    );
 
     const attendance = {
       scheduledDays: expectedDates.length,

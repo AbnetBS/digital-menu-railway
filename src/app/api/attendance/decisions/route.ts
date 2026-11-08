@@ -163,6 +163,19 @@ export async function POST(request: Request) {
           );
           minutes = Math.max(0, Math.min(24 * 60, Math.round(Number(measured.rows[0]?.minutes) || 0)));
         }
+        /* THE RATE HE PICKED WINS ("let me choose per row"). When the supervisor
+         * changes the rate on a row the clock measured, the measured row of the
+         * ORIGINAL kind is not the record any more: it is removed (the ledger
+         * above still holds the approved minutes and the chosen rate, which is
+         * what pays), so the same visit can never be paid at two rates in the
+         * old auto pass on the payroll. A manual row of the original kind is
+         * left alone: that one was typed as work, not measured by a scan. */
+        if (typeof body?.measuredType === "string" && body.measuredType !== kind) {
+          await pool.query(
+            "DELETE FROM attendance_overtime WHERE member_id=$1 AND date=$2 AND type=$3 AND source='auto'",
+            [memberId, date, String(body.measuredType)]
+          );
+        }
         if (minutes <= 0) return NextResponse.json({ error: "Positive overtime minutes required" }, { status: 400 });
         const shiftLabel = body?.shiftLabel ? String(body.shiftLabel).slice(0, 40) : null;
         // The ledger keeps the exact hours that were approved, which is what

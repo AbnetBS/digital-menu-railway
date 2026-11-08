@@ -437,6 +437,35 @@ pass(
     read("src/components/rms/NewPersonDialog.tsx").includes("/api/attendance/members") &&
     read("src/app/api/attendance/members/route.ts").includes("employmentStartedAt: startedOn")
 );
+/* ── WHICH RATE PAYS (owner, 2026-11-08: "let me choose per row") ──────────
+ * A visit measured as a free day can be approved at any of the four rates, and
+ * that choice is what pays it. It is still ONE visit: never paid twice.
+ */
+const reportSrc = read("src/components/rms/DeductionReportPanel.tsx");
+pass(
+  "every overtime row carries a rate picker with the four rates",
+  reportSrc.includes("OT_RATE_OPTIONS") &&
+    reportSrc.includes('phrase("Holiday OT")') &&
+    reportSrc.includes('phrase("Free week OT")') &&
+    reportSrc.includes('phrase("Shift OT")') &&
+    reportSrc.includes('phrase("Night shift OT")') &&
+    reportSrc.includes('L("Which rate pays")')
+);
+pass(
+  "the rate he picks travels to the server with the measured kind",
+  reportSrc.includes("otKind[key] || (event.overtimeType as OvertimeType) || \"shift\"") &&
+    reportSrc.includes("measuredType: event.type === \"overtime\" ? event.overtimeType || null : undefined") &&
+    decisionsApiSrc.includes("body?.measuredType") &&
+    decisionsApiSrc.includes("DELETE FROM attendance_overtime WHERE member_id=$1 AND date=$2 AND type=$3 AND source='auto'")
+);
+pass(
+  "a rate change re-prices the visit and never pays it twice",
+  payrollApiSrc.includes("const approvedKindHere = addedOt") &&
+    payrollApiSrc.includes("const replacedHoliday = measuredHoliday && approvedKindHere !== \"holiday\"") &&
+    payrollApiSrc.includes("const replacedFree = measuredFree && approvedKindHere !== \"free_week\"") &&
+    payrollApiSrc.includes("const autoCountedDates = new Set(autoDays.map((d) => d.date))") &&
+    payrollApiSrc.includes("const manualRowOn = (date: string, kind: string) =>")
+);
 pass(
   "the printed month is the Ethiopian one, Tikimt and Hidar, not October",
   payrollApiSrc.includes("monthLabel: payrollPeriodLabel(periodKey)") &&
@@ -445,7 +474,7 @@ pass(
 
 console.log(
   failures === 0
-    ? "\n✅ attendance decisions guard PASSED\n   • pending costs nothing, pays nothing; only Deduct / Add overtime moves money\n   • overtime waits like lateness, absence and early leave\n   • the kiosk button is gone, the report is in its place\n   • 20 groups by default\n   • a free day is never red, and a visit on it waits for the same two buttons\n   • a typed start date is read correctly, so the whole month is a whole month"
+    ? "\n✅ attendance decisions guard PASSED\n   • pending costs nothing, pays nothing; only Deduct / Add overtime moves money\n   • overtime waits like lateness, absence and early leave\n   • the kiosk button is gone, the report is in its place\n   • 20 groups by default\n   • a free day is never red, and a visit on it waits for the same two buttons\n   • a typed start date is read correctly, so the whole month is a whole month\n   • the overtime rate is his choice per row, and one visit is never paid twice"
     : `\n❌ ${failures} check(s) failed`
 );
 process.exit(failures === 0 ? 0 : 1);

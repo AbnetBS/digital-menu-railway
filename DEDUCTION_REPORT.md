@@ -229,6 +229,27 @@ formula in Formula Settings, and only after **Add overtime**. A ye amet ereft
 day is skipped on purpose: those days are paid already, and paying the visit
 again would pay twice.
 
+### Which rate pays
+
+Every overtime row on the report carries a small rate picker: **Holiday OT**,
+**Free week OT**, **Shift OT**, **Night shift OT**. Only he knows whether a
+weekend visit was a holiday, his own free day or an extra shift, so the rate is
+his choice per row. The default is the kind the scan measured.
+
+The hours do not change with the rate, only the money, and the visit is paid
+once. Proved live on the same 5 hours on 5,342.47:
+
+| Rate chosen | Formula in Formula Settings | Paid |
+| --- | --- | --- |
+| Free week OT | BasicSalary / 30 / 8 * hours * 2 | 222.60 |
+| Holiday OT | BasicSalary / 30 / 8 * hours * 2.5 | 278.25 |
+| Shift OT | BasicSalary / 30 / 8 * hours * 1.5 | 166.95 |
+| Night shift OT | BasicSalary / 30 / 8 * hours * 1.75 | 194.78 |
+
+Changing the rate on an already approved day re-prices it: the earlier rate is
+retired, the new one pays, and a second approval can never leave the same visit
+earning two rates.
+
 ### A person added in the middle of a month
 
 Two things were wrong, both found on the live database while proving the above:

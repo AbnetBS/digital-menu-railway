@@ -1568,6 +1568,12 @@ export const STAFF_AM = {
   "Select role": "ሚና ይምረጡ",
   "Counted from this month": "ከዚህ ወር ጀምሮ ይቆጠራል",
   "Ethiopian month, for example 2019-02 is Tikimt 2019": "የኢትዮጵያ ወር፤ ለምሳሌ 2019-02 ጥቅምት 2019 ነው",
+  // WHICH RATE PAYS (owner, 2026-11-08: "let me choose per row").
+  "Which rate pays": "የትኛው ተመን ይከፍላል",
+  "Free week OT": "የስራ ዕረፍት ተጨማሪ ሰዓት",
+  "Holiday OT": "የበዓል ተጨማሪ ሰዓት",
+  "Shift OT": "የፈረቃ ተጨማሪ ሰዓት",
+  "Night shift OT": "የሌሊት ፈረቃ ተጨማሪ ሰዓት",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

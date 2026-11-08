@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, Loader2, RefreshCw, ThumbsDown, X } from "lucide-react";
 import { useStaffT } from "@/lib/staff-i18n";
+import type { OvertimeType } from "@/lib/attendance";
+import { phrase } from "@/lib/staff-i18n";
 import {
   decisionButtonLabels,
   decisionHeadline,
@@ -48,6 +50,14 @@ type MonthPayload = {
 
 type RowDecision = "deduct" | "dont_deduct";
 
+/** The four rates the owner can pick from, on every overtime row. */
+const OT_RATE_OPTIONS: Array<{ kind: OvertimeType; label: ReturnType<typeof phrase> }> = [
+  { kind: "holiday", label: phrase("Holiday OT") },
+  { kind: "free_week", label: phrase("Free week OT") },
+  { kind: "shift", label: phrase("Shift OT") },
+  { kind: "night_shift", label: phrase("Night shift OT") },
+];
+
 const TYPE_LABEL = {
   lateness: "Late",
   early_out: "Left early",
@@ -73,6 +83,14 @@ export default function DeductionReportPanel({
   const [msgBad, setMsgBad] = useState(false);
   const [filter, setFilter] = useState<"pending" | "all">("pending");
   const [memberId, setMemberId] = useState<number | "">("");
+  /**
+   * WHICH RATE PAYS (owner, 2026-11-08). "Let me choose per row". A visit on a
+   * free day, a holiday and an extra shift are not the same money, and only he
+   * knows which one he is looking at, so every overtime row carries a rate
+   * picker. The default is the kind the scan measured; changing it re-prices
+   * the row with the formula of that kind in Formula Settings.
+   */
+  const [otKind, setOtKind] = useState<Record<string, OvertimeType>>({});
 
   /**
    * Every press answers on the screen itself, in its own strip: the button
@@ -122,7 +140,13 @@ export default function DeductionReportPanel({
           // The measured number, never the decided one: the server stores what
           // was approved, and an overtime row needs its hours to be paid.
           minutes: event.measuredMinutes || event.minutes,
-          overtimeType: event.type === "overtime" ? event.overtimeType || "shift" : undefined,
+          overtimeType:
+            event.type === "overtime"
+              ? otKind[key] || (event.overtimeType as OvertimeType) || "shift"
+              : undefined,
+          // What the clock measured, so the server can retire that row when the
+          // owner prices the visit at a different rate.
+          measuredType: event.type === "overtime" ? event.overtimeType || null : undefined,
           shiftLabel: event.type === "overtime" ? event.label : undefined,
           reason: decision === "dont_deduct" ? L("Reasonable excuse") : "",
         }),
@@ -300,7 +324,23 @@ export default function DeductionReportPanel({
                     {e.status === "approved" ? L("Deducted") : L("Not deducted")}
                   </span>
                 ) : (
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {e.type === "overtime" && (
+                      <select
+                        value={otKind[key] || (e.overtimeType as OvertimeType) || "shift"}
+                        onChange={(ev) =>
+                          setOtKind((prev) => ({ ...prev, [key]: ev.target.value as OvertimeType }))
+                        }
+                        aria-label={L("Which rate pays")}
+                        className="bg-[#1C120F] border border-stone-700 rounded-lg px-2 py-2 text-[11px] font-bold text-amber-100"
+                      >
+                        {OT_RATE_OPTIONS.map((o) => (
+                          <option key={o.kind} value={o.kind}>
+                            {L(o.label)}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                     <button
                       onClick={() => void decide(e, "deduct")}
                       disabled={busy}

@@ -177,6 +177,10 @@ const pass = (name, ok) => {
     /sportMenuId\?: number;/.test(waiter) && /\.\.\.\(send\.sportMenuId \? \{ sportMenuId: send\.sportMenuId \} : \{\}\)/.test(waiter),
   );
   pass(
+    "the group composer shows ONE price per item too (no strike-through pair)",
+    !/line-through text-stone-600/.test(composer) && /\{priceOf\(item\)\} ETB/.test(composer),
+  );
+  pass(
     "a group order placed on a match day is charged the event price as well",
     /sportMenuId=\{sportEventMode \? sportCatalog\?\.menu\?\.id : undefined\}/.test(waiter) && /sportMenuId\?: number;/.test(composer),
   );

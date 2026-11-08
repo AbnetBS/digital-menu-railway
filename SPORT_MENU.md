@@ -200,7 +200,7 @@ shows a read-only list to anyone who is not the owner.
 | `src/components/rms/WaiterApp.tsx` | the Sport button, the same ordering screen, cart pricing |
 | `src/components/rms/GroupComposer.tsx` | group rounds charged the sport prices too |
 | `src/db/migrate.ts` | the `sport_menus` table |
-| `scripts/verify-sport-menu.mjs` | static guard, 61 assertions |
+| `scripts/verify-sport-menu.mjs` | static guard, 62 assertions |
 | `scripts/verify-sport-menu-pricing.ts` | behaviour guard, 43 checks |
 | `scripts/verify-sport-menu-ui.tsx` | jsdom mount of the admin editor |
 

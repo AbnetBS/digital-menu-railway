@@ -5,6 +5,7 @@ import { ArrowLeft, Minus, Plus, Search, Send, Users, XCircle } from "lucide-rea
 import { Category, MenuItem, Ticket } from "@/types";
 import { effectivePrice } from "@/lib/price";
 import { useStaffT, tNow } from "@/lib/staff-i18n";
+import { DEFAULT_GROUP_COUNT, groupLabel, groupNumbersForGrid } from "@/lib/group-grid";
 
 /**
  * GROUP ORDERS (owner's decision, Sept 2026).
@@ -81,6 +82,15 @@ export default function GroupComposer({
   const [openGroups, setOpenGroups] = useState<Ticket[]>([]);
   /** What the server says the next group number will be (display only). */
   const [nextGroup, setNextGroup] = useState<number | null>(null);
+  /**
+   * A DEFAULT SLOT THE WAITER PICKED, before that group has a bill (owner,
+   * 2026-11-08: "create 20 groups by default"). GROUP 7 is on the grid from the
+   * first minute, so tapping it must mean 7 and not "whatever number is next".
+   * The server still owns the number: it accepts the pick only while that
+   * number is unused today (see /api/tickets), so a stale screen can never
+   * overwrite another group's bill.
+   */
+  const [pinned, setPinned] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const pendingKeyRef = useRef("");
@@ -115,6 +125,7 @@ export default function GroupComposer({
     setSearch("");
     setCart([]);
     setTarget(null);
+    setPinned(null);
     setSending(false);
     pendingKeyRef.current = "";
   };
@@ -191,6 +202,10 @@ export default function GroupComposer({
         orderType: "outdoor",
         groupOrder: true,
         targetTicketId: target ? target.id : undefined,
+        // A DEFAULT SLOT the waiter tapped before it had a bill: "use GROUP 7".
+        // The server only honours it while 7 is still free today, so this can
+        // never steal another group's number.
+        groupNumber: !target && pinned ? pinned : undefined,
         idempotencyKey: pendingKeyRef.current,
         // SPORT MENU: the id only, and only when a sport line is in this cart.
         // The server reads the temporary prices and charges them to the lines
@@ -260,39 +275,56 @@ export default function GroupComposer({
           <div className="p-4 md:border-r border-stone-800 space-y-4">
             <div>
               <p className="text-[11px] font-black uppercase tracking-wider text-emerald-300">
-                {L("Open groups · tap one to add a round")}
+                {L("Groups 1 to {n} are ready · tap one", { n: DEFAULT_GROUP_COUNT })}
               </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  onClick={() => setTarget(null)}
-                  className={`px-3.5 py-2.5 rounded-xl border text-xs font-black transition ${
-                    target === null
-                      ? "bg-emerald-500/20 border-emerald-400 text-emerald-200"
-                      : "bg-[#2C1B17] border-stone-700 text-stone-300 hover:border-emerald-500/50"
-                  }`}
-                >
-                  <Users className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
-                  {L("New group")}{nextGroup ? L(" • will be GROUP {nextGroup}", { nextGroup }) : ""}
-                </button>
-                {openGroups.map((g) => (
-                  <button
-                    key={g.id}
-                    onClick={() => setTarget(g)}
-                    className={`px-3.5 py-2.5 rounded-xl border text-xs font-black transition ${
-                      target?.id === g.id
-                        ? "bg-emerald-500/20 border-emerald-400 text-emerald-200"
-                        : "bg-[#2C1B17] border-stone-700 text-stone-300 hover:border-emerald-500/50"
-                    }`}
-                  >
-                    {g.tableName} · {g.totalAmount} ETB
-                  </button>
-                ))}
+              {/*
+                TWENTY GROUPS BY DEFAULT (owner, 2026-11-08). Every default
+                number is a card from the first minute, whether or not it has a
+                bill yet: a group with a bill shows what it owes and adds a
+                round, an empty one starts that number's bill. Numbers above 20
+                that are open tonight (a wild night) keep their card too.
+              */}
+              <div className="mt-2 grid grid-cols-4 sm:grid-cols-5 gap-2">
+                {groupNumbersForGrid(openGroups).map((n) => {
+                  const bill = openGroups.find((g) => g.tableName === groupLabel(n)) || null;
+                  const selected = bill ? target?.id === bill.id : target === null && pinned === n;
+                  return (
+                    <button
+                      key={`group-slot-${n}`}
+                      onClick={() => {
+                        setTarget(bill);
+                        setPinned(bill ? null : n);
+                      }}
+                      className={`px-2 py-2.5 rounded-xl border text-[11px] font-black transition text-center leading-tight ${
+                        selected
+                          ? "bg-emerald-500/20 border-emerald-400 text-emerald-200"
+                          : bill
+                            ? "bg-[#2C1B17] border-emerald-700/60 text-stone-200 hover:border-emerald-500/50"
+                            : "bg-[#241714] border-stone-700 text-stone-400 hover:border-emerald-500/50"
+                      }`}
+                    >
+                      <span className="block text-xs">{groupLabel(n)}</span>
+                      <span className={`block mt-0.5 text-[10px] font-bold ${bill ? "text-amber-300" : "text-stone-500"}`}>
+                        {bill ? `${bill.totalAmount} ETB` : L("empty")}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-              {openGroups.length === 0 && (
-                <p className="text-[11px] text-stone-500 mt-1.5">
-                  {L("No open groups right now. The first send starts GROUP {n}.", { n: nextGroup || 1 })}
-                </p>
-              )}
+              <button
+                onClick={() => {
+                  setTarget(null);
+                  setPinned(null);
+                }}
+                className={`mt-2 w-full px-3.5 py-2.5 rounded-xl border text-xs font-black transition ${
+                  target === null && pinned === null
+                    ? "bg-emerald-500/20 border-emerald-400 text-emerald-200"
+                    : "bg-[#2C1B17] border-stone-700 text-stone-300 hover:border-emerald-500/50"
+                }`}
+              >
+                <Users className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
+                {L("Another group")}{nextGroup ? tNow(" • will be GROUP {nextGroup}", { nextGroup }) : ""}
+              </button>
             </div>
 
             <div className="relative">
@@ -365,10 +397,12 @@ export default function GroupComposer({
             <div>
               <p className="text-[11px] font-black uppercase tracking-wider text-emerald-300">{L("Order summary")}</p>
               <h3 className="font-serif font-black text-2xl text-white mt-1">
-                {target ? target.tableName : nextGroup ? `GROUP ${nextGroup}` : L("New group")}
+                {target ? target.tableName : pinned ? String(groupLabel(pinned)) : nextGroup ? `GROUP ${nextGroup}` : L("New group")}
               </h3>
               <p className="text-[11px] font-bold text-stone-500 mt-0.5">
-                {target ? L("another round on the same bill") : L("its own bill, paid separately, labeled GROUP {n}", { n: nextGroup || 1 })}
+                {target
+                  ? L("another round on the same bill")
+                  : L("its own bill, paid separately, labeled GROUP {n}", { n: pinned || nextGroup || 1 })}
               </p>
             </div>
 

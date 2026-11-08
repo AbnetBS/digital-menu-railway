@@ -9,6 +9,7 @@ import { MenuItem, Ticket, TicketItem, CafeTable, TableStatus } from "@/types";
 
 import UrgentAlertOverlay, { UrgentAlert } from "@/components/rms/UrgentAlertOverlay";
 import GroupComposer from "@/components/rms/GroupComposer";
+import { groupLabel, groupNumbersForGrid } from "@/lib/group-grid";
 import {
   chargePrice,
   eventPriceByItem,
@@ -66,6 +67,12 @@ interface PendingWaiterSend {
   tableName: string;
   groupRound: boolean;
   targetTicketId?: number;
+  /**
+   * A DEFAULT GROUP SLOT the waiter tapped before that group had a bill
+   * (owner, 2026-11-08: "create 20 groups by default"). The server stamps it
+   * only while the number is still unused today.
+   */
+  groupNumber?: number;
   waiterName: string;
   items: CartEntry[];
   /**
@@ -1194,6 +1201,8 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
           // A FIRST round has no target yet: the server numbers the group. A
           // later round names the bill it joins (owner, 2026-11-08).
           ...(send.targetTicketId ? { targetTicketId: send.targetTicketId } : {}),
+          // A tapped default slot asks for ITS number ("use GROUP 7").
+          ...(!send.targetTicketId && send.groupNumber ? { groupNumber: send.groupNumber } : {}),
         }
       : { tableId: send.tableId }),
     waiterName: send.waiterName,
@@ -1322,23 +1331,27 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
    * round on the same bill) or null for a brand-new group (the server stamps the
    * next number at send time, exactly like the Groups composer).
    */
-  const openSportGroup = (group: Ticket | null) => {
+  const openSportGroup = (group: Ticket | null, slot?: number) => {
     setSportEventMode(true);
     setCart([]);
     setCategory("all");
     setSearch("");
     if (!group) {
       // A new group: no ticket yet, so the send path knows it is a first round.
+      // `slot` is one of the 20 default numbers the waiter tapped: he asked for
+      // GROUP 7, so the server is told 7 (and stamps it only while it is free).
+      const number = slot || sportNextGroup || null;
       setActiveTicket(null);
       setSelectedTable({
         id: 0,
-        name: sportNextGroup ? `GROUP ${sportNextGroup}` : L("New group"),
+        name: number ? `GROUP ${number}` : L("New group"),
         status: "available",
         activeTicketId: null,
         activeTicketTotal: 0,
         activeTicketBy: "",
         activeTicketAt: null,
         isGroup: true,
+        ...(slot ? { groupNumber: slot } : {}),
       });
       setView("order");
       return;
@@ -1373,6 +1386,10 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
       tableName: selectedTable.name,
       groupRound,
       ...(groupRound ? { targetTicketId: selectedTable.activeTicketId ?? undefined } : {}),
+      // A tapped default slot (GROUP 7 with no bill yet) travels as its number.
+      ...(groupRound && !selectedTable.activeTicketId && selectedTable.groupNumber
+        ? { groupNumber: selectedTable.groupNumber }
+        : {}),
       waiterName: staffName,
       items: cart.map((item) => ({ ...item })),
       // The list is named when ANY line was added in sport mode; each such line
@@ -2408,40 +2425,57 @@ export default function WaiterApp({ role = "waiter" }: { role?: "waiter" | "buna
                 </p>
               </div>
 
-              <button
-                onClick={() => openSportGroup(null)}
-                className="w-full bg-[#C9A227] text-[#2C1B17] font-black text-sm uppercase py-3.5 rounded-2xl flex items-center justify-center gap-2 active:scale-95 transition"
-              >
-                <Users className="w-4 h-4" />
-                {L("New group")}{sportNextGroup ? L(" • will be GROUP {nextGroup}", { nextGroup: sportNextGroup }) : ""}
-              </button>
-
-              {/* Every OPEN group bill is a card, exactly like a table's: the
-                  waiter taps the one in front of the TV and adds a round. */}
-              {groupTickets.length === 0 ? (
-                <p className="text-center text-[11px] font-bold text-stone-400 py-4">
-                  {L("No open groups right now. Tap New group above for the first one.")}
-                </p>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  {groupTickets.map((g) => (
+              {/*
+                20 GROUPS BY DEFAULT (owner, 2026-11-08). The cards are the
+                numbers 1 to 20 whether or not a bill exists on them, exactly
+                like the tables grid: a group in front of the TV is chosen, not
+                invented. A number with a bill adds a round to it; an empty one
+                starts that number's bill (the server still owns the number).
+              */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {groupNumbersForGrid(groupTickets).map((n) => {
+                  const bill = groupTickets.find((g) => g.tableName === groupLabel(n)) || null;
+                  return bill ? (
                     <button
-                      key={`sport-group-${g.id}`}
-                      onClick={() => openSportGroup(g)}
+                      key={`sport-group-${bill.id}`}
+                      onClick={() => openSportGroup(bill)}
                       className="text-left rounded-2xl p-5 border-2 transition active:scale-95 border-violet-500/70 bg-violet-950/40"
                     >
                       <p className="font-serif font-bold text-lg text-violet-100 flex items-center gap-1.5">
-                        <Users className="w-4 h-4 shrink-0" /> {g.tableName}
+                        <Users className="w-4 h-4 shrink-0" /> {bill.tableName}
                       </p>
-                      <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(groupTableStatus(g))}`}>
-                        {tableStatusLabel(groupTableStatus(g))}
+                      <span className={`inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${statusChip(groupTableStatus(bill))}`}>
+                        {tableStatusLabel(groupTableStatus(bill))}
                       </span>
-                      <p className="text-xs font-bold text-stone-200 mt-1">{L("{totalAmount} ETB open", { totalAmount: g.totalAmount })}</p>
+                      <p className="text-xs font-bold text-stone-200 mt-1">{L("{totalAmount} ETB open", { totalAmount: bill.totalAmount })}</p>
                       <p className="text-[11px] font-black text-violet-300 mt-1.5">{L("Tap to add sport items")}</p>
                     </button>
-                  ))}
-                </div>
-              )}
+                  ) : (
+                    <button
+                      key={`sport-slot-${n}`}
+                      onClick={() => openSportGroup(null, n)}
+                      className="text-left rounded-2xl p-5 border-2 transition active:scale-95 border-stone-700 bg-[#241714] hover:border-violet-500/60"
+                    >
+                      <p className="font-serif font-bold text-lg text-stone-300 flex items-center gap-1.5">
+                        <Users className="w-4 h-4 shrink-0" /> {groupLabel(n)}
+                      </p>
+                      <span className="inline-block mt-2 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-stone-800 text-stone-400">
+                        {L("empty")}
+                      </span>
+                      <p className="text-xs font-bold text-stone-500 mt-1">{L("No items yet")}</p>
+                      <p className="text-[11px] font-black text-violet-300 mt-1.5">{L("Tap to start this group")}</p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                onClick={() => openSportGroup(null)}
+                className="w-full bg-white/10 text-stone-200 font-bold text-xs py-2.5 rounded-xl"
+              >
+                <Users className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
+                {L("Another group")}{sportNextGroup ? tNow(" • will be GROUP {nextGroup}", { nextGroup: sportNextGroup }) : ""}
+              </button>
 
               <button
                 onClick={closeSportGroups}

@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-export const SCHEMA_VERSION = "2026-11-07-2";
+export const SCHEMA_VERSION = "2026-11-08-2";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -504,6 +504,23 @@ const RMS_CREATES: Array<[string, string]> = [
       reason text NOT NULL,
       created_at timestamp DEFAULT now(),
       UNIQUE(period_key, member_id, attendance_date, exception_type)
+    )`,
+  ],
+  [
+    "payroll_deduction_decisions",
+    `CREATE TABLE IF NOT EXISTS payroll_deduction_decisions (
+      id serial PRIMARY KEY,
+      period_key varchar(10) NOT NULL,
+      member_id integer NOT NULL,
+      attendance_date varchar(10) NOT NULL,
+      event_type varchar(20) NOT NULL,
+      decision varchar(12) NOT NULL,
+      decided_by varchar(100) NOT NULL,
+      reason text,
+      minutes integer NOT NULL DEFAULT 0,
+      overtime_type varchar(20),
+      decided_at timestamp DEFAULT now(),
+      UNIQUE(period_key, member_id, attendance_date, event_type)
     )`,
   ],
   [
@@ -1105,6 +1122,10 @@ async function runFullMigrate(force: boolean) {
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_holidays_date_key ON payroll_holidays (holiday_date)`);
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_payments_period_member_key ON payroll_payments (period_key, member_id)`);
   await run(`ALTER TABLE payroll_payments ADD COLUMN IF NOT EXISTS snapshot jsonb`);
+  // The decision ledger gained the number the supervisor approved and which
+  // kind of overtime it was (see payroll_deduction_decisions).
+  await run(`ALTER TABLE payroll_deduction_decisions ADD COLUMN IF NOT EXISTS minutes integer DEFAULT 0`);
+  await run(`ALTER TABLE payroll_deduction_decisions ADD COLUMN IF NOT EXISTS overtime_type varchar(20)`);
   // CASH PAYROLL (owner, 2026-11-07): the people paid in cash have no TIN, so
   // the main sheet's tax, pension and transport columns never apply to them.
   // One row per person per month, either an attendance member or a typed name.

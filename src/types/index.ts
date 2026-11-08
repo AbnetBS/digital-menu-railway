@@ -187,6 +187,12 @@ export interface CafeTable {
    * items, payment) but has no row in cafe_tables.
    */
   isGroup?: boolean;
+  /**
+   * A DEFAULT GROUP SLOT the waiter tapped before that number had a bill
+   * (owner, 2026-11-08). The server stamps this number if it is still free
+   * today; otherwise it moves on to the next free one.
+   */
+  groupNumber?: number;
   /** Guest tapped "bring us the bill" from their phone (Group 8). */
   activeTicketReceiptRequestedAt?: string | null;
   /** Waiter or guest who requested the bill. */

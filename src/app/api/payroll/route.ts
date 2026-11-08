@@ -127,7 +127,7 @@ async function buildRows(periodKey: string) {
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Addis_Ababa" });
   const effectiveTo = bounds.to < today ? bounds.to : today;
 
-  const [membersQ, logsQ, compQ, inputQ, otEntriesQ, periodQ, savedQ, exceptionsQ, historyQ, freeQ, rolesQ, holidaysQ, otRowsQ, paymentsQ, headerQ, excludedQ, breakageQ, cashQ, cashSignoffQ] =
+  const [membersQ, logsQ, compQ, inputQ, otEntriesQ, periodQ, savedQ, exceptionsQ, decisionsQ, historyQ, freeQ, rolesQ, holidaysQ, otRowsQ, paymentsQ, headerQ, excludedQ, breakageQ, cashQ, cashSignoffQ] =
     await Promise.all([
       pool.query(
         "SELECT m.id,m.name,m.role_id,m.active,m.employment_started_at,m.terminated_at,m.created_at,(SELECT min(l.date) FROM attendance_logs l WHERE l.member_id=m.id) AS first_attendance_date FROM attendance_members m ORDER BY m.name"
@@ -142,6 +142,13 @@ async function buildRows(periodKey: string) {
       pool.query("SELECT * FROM payroll_periods WHERE period_key=$1", [periodKey]),
       pool.query("SELECT member_id,snapshot FROM payroll_rows WHERE period_key=$1", [periodKey]),
       pool.query("SELECT * FROM payroll_exceptions WHERE period_key=$1 ORDER BY created_at DESC", [periodKey]),
+      // THE SUPERVISOR'S DECISIONS (owner, 2026-11-08). A lateness, early-out or
+      // absence event is charged ONLY when a person pressed Deduct on the
+      // Deduction Report. No row = pending = no money.
+      pool.query(
+        "SELECT member_id,attendance_date,event_type,decision,decided_by,reason,minutes,overtime_type FROM payroll_deduction_decisions WHERE period_key=$1",
+        [periodKey]
+      ),
       pool.query("SELECT period_key,status,approved_at,paid_at,prepared_by,checked_by,approved_by FROM payroll_periods ORDER BY period_key DESC LIMIT 36"),
       pool.query("SELECT * FROM attendance_free_schedules"),
       pool.query(
@@ -232,6 +239,62 @@ async function buildRows(periodKey: string) {
     const logByDate = new Map(memberLogs.map((l) => [String(l.date), l]));
     const c = comp.get(memberId) || {};
     const exceptions = exceptionsQ.rows.filter((e) => Number(e.member_id) === memberId);
+    /* ── NOTHING IS CHARGED WITHOUT A DECISION (owner, 2026-11-08) ────────
+     * "dont deduct at side if they come with reasonable way" and "for overtime
+     * and absent and late and early out it waits for the supervisor
+     * confirmation".
+     *
+     * Every one of the three sets below is a day the supervisor PRESSED
+     * Deduct on the Deduction Report. A day with no press is pending, and a
+     * pending day is not charged: the old behaviour (charge everything except
+     * an approved excuse) is exactly what he asked to stop.
+     *
+     * `excused*` is the other press, Do not deduct, kept for the screen.
+     */
+    const ownDecisions = (decisionsQ.rows as Array<{
+      member_id: number;
+      attendance_date: string;
+      event_type: string;
+      decision: string;
+      decided_by: string;
+      reason: string | null;
+      minutes: number | null;
+      overtime_type: string | null;
+    }>).filter((d) => Number(d.member_id) === memberId);
+    const decidedDeduct = (type: string) =>
+      new Set(
+        ownDecisions
+          .filter((d) => d.event_type === type && d.decision === "deduct")
+          .map((d) => String(d.attendance_date))
+      );
+    const chargedAbsence = decidedDeduct("absence");
+    const chargedLate = decidedDeduct("lateness");
+    const chargedEarly = decidedDeduct("early_out");
+    /**
+     * OVERTIME WAITS TOO. "for overtime and absent and late and early out it
+     * waits for the supervisor confirmation". An hours row (typed on the
+     * Overtime tab, measured at the door, or stamped on a holiday) is a
+     * MEASUREMENT, not a payment: it earns money only when the supervisor
+     * pressed Add overtime on the Deduction Report, which writes an
+     * attendance_overtime row with source 'supervisor'. Everything else stays
+     * in the history, owed nothing, until it is decided.
+     */
+    const addedOt = ownDecisions.filter(
+      (d) => d.event_type === "overtime" && d.decision === "deduct"
+    );
+    /** The supervisor pressed Add overtime on this day (and this kind). */
+    const overtimeApproved = (date: string, kind?: string) =>
+      addedOt.some((d) => String(d.attendance_date) === date && (!kind || !d.overtime_type || String(d.overtime_type) === kind));
+    /** The hours the supervisor approved on a day, for the kind he approved. */
+    const approvedOtMinutes = (date: string, kind: string) =>
+      addedOt
+        .filter((d) => String(d.attendance_date) === date && (!d.overtime_type || String(d.overtime_type) === kind))
+        .reduce((sum, d) => sum + Math.max(0, Math.round(Number(d.minutes) || 0)), 0);
+    // Legacy excuses (payroll_exceptions) still mean "do not deduct" for a
+    // month that had them before the report screen existed.
+    const excusedAbsence = new Set(exceptions.filter((e) => e.exception_type === "absence").map((e) => e.attendance_date));
+    const excusedLate = new Set(exceptions.filter((e) => e.exception_type === "lateness").map((e) => e.attendance_date));
+    const excusedEarly = new Set(exceptions.filter((e) => e.exception_type === "early_out").map((e) => e.attendance_date));
     const payment = payments.get(memberId);
     const roleShifts = shiftsByRole.get(Number(member.role_id)) || [];
     const otRows = otByMember.get(memberId) || [];
@@ -240,7 +303,10 @@ async function buildRows(periodKey: string) {
         .filter((e) => Number(e.member_id) === memberId)
         .map((e) => `${String(e.date)}|${String(e.type)}`)
     );
-    const allowedOtRow = (r: OtRow) => !excludedOt.has(`${String(r.date)}|${String(r.type)}`);
+    // A row is allowed only when the supervisor ADDED it: an undecided or a
+    // "do not add" row keeps its history and earns nothing.
+    const allowedOtRow = (r: OtRow) =>
+      !excludedOt.has(`${String(r.date)}|${String(r.type)}`) && overtimeApproved(String(r.date), String(r.type));
     const manualOtRows = otRows.filter((r) => r.source !== "auto" && allowedOtRow(r));
     const manualHolidayDates = new Set(
       otRows.filter((r) => r.source !== "auto" && r.type === "holiday").map((r) => r.date)
@@ -269,9 +335,6 @@ async function buildRows(periodKey: string) {
     // their shift ended. Yesterday and older are decided; a finished month
     // (bounds.to < today) counts every day as before.
     const absenceDates = expectedDates.filter((d) => d < today && !presentDates.has(d));
-    const excusedAbsence = new Set(exceptions.filter((e) => e.exception_type === "absence").map((e) => e.attendance_date));
-    const excusedLate = new Set(exceptions.filter((e) => e.exception_type === "lateness").map((e) => e.attendance_date));
-    const excusedEarly = new Set(exceptions.filter((e) => e.exception_type === "early_out").map((e) => e.attendance_date));
     /* ── chargeable minutes: the role's OWN grace, not a fixed 20 or 30 ────
      * The owner (2026-10-27): "i am thinking to make it based on the time of
      * Maximum Late Time (min) and Leaving Grace (min) i enter ... if someone
@@ -299,9 +362,10 @@ async function buildRows(periodKey: string) {
       return { date: String(l.date), late, early, isFree: isFree(String(l.date)) };
     });
     const lateLogs = measured.filter((l) => l.late > 0);
-    const deductibleLate = lateLogs.filter((l) => !excusedLate.has(l.date) && !l.isFree);
+    // Charged only when the supervisor pressed Deduct on that day.
+    const deductibleLate = lateLogs.filter((l) => chargedLate.has(l.date) && !l.isFree);
     const earlyLogs = measured.filter((l) => l.early > 0);
-    const deductibleEarly = earlyLogs.filter((l) => !excusedEarly.has(l.date) && !l.isFree);
+    const deductibleEarly = earlyLogs.filter((l) => chargedEarly.has(l.date) && !l.isFree);
 
     /* ── automatic overtime ONLY on registered holiday dates ──────────────
      * Only registered holiday fingerprint scans earn overtime automatically.
@@ -315,18 +379,31 @@ async function buildRows(periodKey: string) {
       const holiday = holidayByDate.get(date);
       if (!log || !holiday || manualHolidayDates.has(date)) continue;
       const shift = shiftOfLog(log, roleShifts);
-      const excluded = excludedOt.has(`${date}|holiday`);
+      // A holiday scan is a measurement like any other: it waits for Add
+      // overtime. `excluded` is "do not add" or "still waiting", so the paper
+      // shows the row greyed until somebody decides it.
+      const approvedMinutes = approvedOtMinutes(date, "holiday");
+      const excluded = excludedOt.has(`${date}|holiday`) || approvedMinutes === 0;
       const minutes = recognizedOtMinutes(shift, log);
       if (minutes > 0) {
-        if (!excluded) autoHolidayMinutes += minutes;
+        if (!excluded) autoHolidayMinutes += Math.min(minutes, approvedMinutes);
         autoDays.push({ date, type: "holiday", hours: minutesToHours(minutes), why: holiday.name, excluded });
       }
     }
 
     const manualMinutes = (type: OtRow["type"]) =>
       manualOtRows.filter((r) => r.type === type).reduce((s, r) => s + Number(r.minutes || 0), 0);
+    // Legacy rows (the old Overtime form wrote hours, not minutes) wait the same
+    // way: only the hours the supervisor approved on that day are paid.
     const legacyHours = (type: OtRow["type"]) =>
-      money(legacyOt.filter((o) => o.overtime_type === type).reduce((s, o) => s + Number(o.hours), 0));
+      money(
+        legacyOt
+          .filter((o) => o.overtime_type === type)
+          .reduce((s, o) => {
+            const approved = approvedOtMinutes(String(o.date || o.period_key), type) / 60;
+            return s + Math.min(Number(o.hours) || 0, approved);
+          }, 0)
+      );
 
     const holidayOtHours = money(minutesToHours(autoHolidayMinutes + manualMinutes("holiday")) + legacyHours("holiday"));
     const freeWeekOtHours = money(minutesToHours(manualMinutes("free_week")) + legacyHours("free_week"));
@@ -337,8 +414,10 @@ async function buildRows(periodKey: string) {
       scheduledDays: expectedDates.length,
       scheduledHours: money(memberLogs.reduce((s, l) => s + Number(l.total_minutes || 0), 0) / 60),
       daysPresent: presentDates.size,
-      approvedAbsences: absenceDates.filter((d) => excusedAbsence.has(d)).length,
-      unapprovedAbsences: absenceDates.filter((d) => !excusedAbsence.has(d)).length,
+      // Money only follows a DEDUCT press. `approvedAbsences` is the not-charged
+      // count the formulas see (a supervisor said the excuse was good).
+      approvedAbsences: absenceDates.filter((d) => excusedAbsence.has(d) || !chargedAbsence.has(d)).length,
+      unapprovedAbsences: absenceDates.filter((d) => chargedAbsence.has(d) && !excusedAbsence.has(d)).length,
       lateCount: deductibleLate.length,
       lateMinutes: deductibleLate.reduce((s, l) => s + l.late, 0),
       earlyOutCount: deductibleEarly.length,
@@ -361,8 +440,26 @@ async function buildRows(periodKey: string) {
     const basic = positive(c.basic_salary);
     const transport = positive(c.transport_allowance);
     const breakage = positive(breakageQ.rows.find((r) => Number(r.member_id) === memberId)?.amount);
-    const employmentDays = periodDates.filter((d) => d >= created && (!terminated || d < terminated || presentDates.has(d))).length;
-    const prorationFactor = periodDates.length ? Math.min(1, employmentDays / periodDates.length) : 1;
+    /* ── A FULL MONTH IS A FULL MONTH (owner, 2026-11-08) ──────────────────
+     * Proration exists for ONE honest case: somebody started or left in the
+     * middle of the month, so he is paid for the part he worked. It used to be
+     * computed from `created`, which is the FIRST FINGERPRINT SCAN or, with none,
+     * the first day of the month. The first scan is usually the 2nd or the 5th of
+     * the month, so a full month quietly became 4,000 out of 6,000 and the
+     * paper stopped matching the Excel: the owner's number is the basic salary
+     * he typed, whole, unless the employment really started inside the month.
+     *
+     * So the only source that may shorten a month is the employment start the
+     * owner actually typed (or a termination). No scan is not a resignation.
+     */
+    const employmentStart = member.employment_started_at
+      ? String(member.employment_started_at).slice(0, 10)
+      : null;
+    const prorated = Boolean(employmentStart && employmentStart > bounds.from) || Boolean(terminated);
+    const employmentDays = periodDates.filter(
+      (d) => (!employmentStart || d >= employmentStart) && (!terminated || d < terminated || presentDates.has(d))
+    ).length;
+    const prorationFactor = prorated && periodDates.length ? Math.min(1, employmentDays / periodDates.length) : 1;
     // ONE money chain, with Excel's full precision behind the two displayed
     // decimals. The server row and the live screen preview both call this, so
     // the paper, the screen and the payment snapshot can never disagree.
@@ -438,6 +535,17 @@ async function buildRows(periodKey: string) {
       attendance,
       attendanceEvents,
       exceptions,
+      // What is still waiting for the supervisor's press this month. A row here
+      // is money nobody has decided on: no deduction is taken and no overtime is
+      // paid for it.
+      pendingDecisions: {
+        lateness: lateLogs.filter((l) => !chargedLate.has(l.date) && !l.isFree).length,
+        earlyOut: earlyLogs.filter((l) => !chargedEarly.has(l.date) && !l.isFree).length,
+        absence: absenceDates.filter((d) => !chargedAbsence.has(d)).length,
+        get total() {
+          return this.lateness + this.earlyOut + this.absence;
+        },
+      },
       overtimeEntries: [...writtenEntries, ...automaticEntries].sort((a, b) => b.date.localeCompare(a.date)),
       otBreakdown: {
         holiday: { hours: holidayOtHours, pay: pay.holidayOtPay, days: attendance.holidayDays },

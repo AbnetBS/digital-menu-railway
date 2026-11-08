@@ -1514,6 +1514,51 @@ export const STAFF_AM = {
   "Day": "ቀን",
   "Revenue": "ገቢ",
   "Total (7 days)": "ጠቅላላ (7 ቀናት)",
+
+  /* ── the deduction report: nothing charged without a decision (8 Nov 2026) ──
+     The owner's own words: "abnet late 30 min, deduct / dont deduct", "dont
+     deduct at side if they come with reasonable way", and for all four kinds
+     "it waits for the supervisor confirmation". The two buttons are the same
+     words he dictated, in both languages. */
+  "Deduction Report": "የቅጣት ሪፖርት",
+  "Decide deductions": "ቅጣቶችን ውሰን",
+  "Deduct": "ቀንስ",
+  "Do not deduct": "አትቀንስ",
+  "Add overtime": "ተጨማሪ ሰዓት ጨምር",
+  "Do not add": "አትጨምር",
+  "Deducted": "ተቀንሷል",
+  "Not deducted": "አልተቀነሰም",
+  "waiting": "በመጠበቅ ላይ",
+  "Waiting for me": "የእኔን ውሳኔ የሚጠብቁ",
+  "All decisions": "ሁሉም ውሳኔዎች",
+  "Month": "ወር",
+  "Payroll month": "የደመወዝ ወር",
+  "Employee": "ሰራተኛ",
+  "All employees": "ሁሉም ሰራተኞች",
+  "Late": "ዘግይቷል",
+  "Left early": "በስቀድሞ ወጥቷል",
+  "Absent": "አልመጣም",
+  "Overtime": "ተጨማሪ ሰዓት",
+  "Breakage and shortage": "ብልሽትና ጉድለት",
+  "Nothing is deducted until you decide": "እርስዎ እስኪወስኑ ድረስ ምንም አይቀነስም",
+  "Every absence, lateness, early leave and overtime waits here. Do not deduct when the reason is good: the person keeps the money and the reason is saved.":
+    "እያንዳንዱ አለመመጣጠን፣ መዘግየት፣ በስቀድሞ መውጣትና ተጨማሪ ሰዓት እዚህ ይጠብቃል። ምክንያቱ ተገቢ ከሆነ አትቀንሱ፦ ሰራተኛው ገንዘቡን ይይዛል፤ ምክንያቱም ይቀመጣል።",
+  "Nothing is waiting for a decision this month.": "በዚህ ወር ውሳኔ የሚጠብቅ ነገር የለም።",
+  "No attendance events in this month.": "በዚህ ወር የአቴንዳንስ ክስተት የለም።",
+  "Reasonable excuse": "ተገቢ ምክንያት",
+  "Overtime added. It is paid this month.": "ተጨማሪ ሰዓት ተጨምሯል። በዚህ ወር ይከፈላል።",
+  "Deduction confirmed for {name}.": "ለ{name} ቅጣቱ ተረጋግጧል።",
+  "{name} is not charged this time.": "{name} በዚህ ጊዜ አይቀጣም።",
+  "This person is already paid for this month. Take the paid tick back first.":
+    "ይህ ሰራተኛ ለዚህ ወር አስቀድሞ ተከፍሏል። መጀመሪያ የተከፈለ ምልክቱን ይመልሱ።",
+  "No items yet": "እስካሁን ዕቃ የለም",
+  "Another group": "ሌላ ቡድን",
+  "Tap to start this group": "ይህን ቡድን ለመጀመር ይንኩ",
+  "Groups 1 to {n} are ready · tap one": "ቡድን 1 እስከ {n} ዝግጁ ናቸው · አንዱን ይንኩ",
+  "This month's payroll is paid, so these decisions are locked.":
+    "የዚህ ወር ደመወዝ ተከፍሏል፤ ስለዚህ እነዚህ ውሳኔዎች ተቆልፈዋል።",
+  "This month's payroll is approved, so these decisions are locked.":
+    "የዚህ ወር ደመወዝ ጸድቋል፤ ስለዚህ እነዚህ ውሳኔዎች ተቆልፈዋል።",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

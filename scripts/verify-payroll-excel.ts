@@ -206,6 +206,37 @@ if (failures > 0) {
   console.error(`\n❌ EXCEL PARITY GUARD FAILED (${failures})\n`);
   process.exit(1);
 }
+/* ── the full month is the whole basic salary (owner, 2026-11-08) ─────────
+ * The sheet he sent is a FULL month: 5,342.47 in, 5,000.00 out. The old
+ * proration used the first fingerprint scan as the employment start, so a full
+ * month quietly paid 20% and the paper stopped matching the Excel. The API now
+ * prorates only when the owner typed an employment start inside the month.
+ */
+const routeSource = read("src/app/api/payroll/route.ts");
+pass(
+  "a full month is never prorated by the first scan",
+  routeSource.includes("const prorationFactor = prorated && periodDates.length") &&
+    routeSource.includes("member.employment_started_at") &&
+    !routeSource.includes("Math.min(1, employmentDays / periodDates.length) : 1;\n") 
+);
+pass(
+  "proration still exists for a real mid-month start or a termination",
+  routeSource.includes("employmentStart > bounds.from") && routeSource.includes("terminated")
+);
+pass(
+  "the whole month's basic salary is what the Excel row shows",
+  near(
+    computePayrollMoney({
+      basicSalary: 5342.47,
+      transportAllowance: 600,
+      breakageShortage: 0,
+      settings: excelSettings(0),
+      prorationFactor: 1,
+    }).display.netPay,
+    5000
+  )
+);
+
 console.log("✅ Excel parity guard PASSED");
 console.log(`   • ${rows.length} real rows: 11%, Gross, Taxable, Income tax, P.C 7%, P.C 18%, Total Deduction and Net pay`);
 console.log("   • full precision behind the two displayed decimals, one-cent drift documented");

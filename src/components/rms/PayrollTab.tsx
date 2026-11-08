@@ -352,6 +352,31 @@ export default function PayrollTab() {
         </div>
       </div>
 
+      {/* NOTHING IS DEDUCTED BY ITSELF (owner, 2026-11-08). The month totals are
+          already correct without a decision, because a pending row is charged
+          nothing. This band is the reminder that some rows are still waiting,
+          with a button to the report, so the owner is never surprised. */}
+      {(() => {
+        const pending = Number(
+          (data?.rows || []).reduce((sum: number, r: any) => sum + Number(r?.pendingDecisions?.total || 0), 0)
+        );
+        if (!pending) return null;
+        return (
+          <div className="p-3 rounded-xl bg-amber-950/60 border border-amber-600 text-amber-100 text-sm flex gap-2 items-start no-print">
+            <TriangleAlert className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              <b>{pending}</b>{" "}
+              {pending === 1
+                ? "attendance row is waiting for a decision. It is not deducted and no overtime is paid until you press Deduct or Do not deduct on the Deduction Report."
+                : "attendance rows are waiting for a decision. They are not deducted and no overtime is paid until you press Deduct or Do not deduct on the Deduction Report."}
+            </span>
+            <a href="/admin?tab=attendance" className="ml-auto underline font-bold shrink-0">
+              Open the report
+            </a>
+          </div>
+        );
+      })()}
+
       {message && (
         <div className="p-3 rounded-xl bg-emerald-950 border border-emerald-600 text-emerald-100 text-sm flex gap-2 items-start">
           <Check className="w-4 h-4 mt-0.5 shrink-0" />

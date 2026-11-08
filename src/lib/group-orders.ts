@@ -2,6 +2,10 @@ import { and, eq, gte, like, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { tickets } from "@/db/schema";
 import { etStartOfToday } from "@/lib/timezone";
+import { GROUP_LABEL_RE, groupLabel } from "@/lib/group-grid";
+
+// Re-exported so every server caller keeps its one import.
+export { DEFAULT_GROUP_COUNT, GROUP_LABEL_RE, defaultGroupLabels, groupLabel, groupNumbersForGrid } from "@/lib/group-grid";
 
 /**
  * GROUP ORDERS (owner's decision, Sept 2026).
@@ -14,16 +18,12 @@ import { etStartOfToday } from "@/lib/timezone";
  * separately. The number is the identity — no names, no seat labels.
  */
 
-/** Matches the tableName of a group bill, e.g. "GROUP 3". */
-export const GROUP_LABEL_RE = /^GROUP (\d+)$/;
-export const groupLabel = (n: number) => `GROUP ${n}`;
 
 /**
  * Advisory-lock key: two waiters creating groups at the same millisecond must
  * still get consecutive numbers. The xact lock is held until the surrounding
  * transaction commits, so the read-max-then-write pair is atomic in practice.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const GROUP_NUMBER_LOCK = 8_602_140_917; // arbitrary constant, stable forever
 
 /**
@@ -35,7 +35,6 @@ const GROUP_NUMBER_LOCK = 8_602_140_917; // arbitrary constant, stable forever
  * Must run INSIDE the ticket transaction (tx) so the advisory lock covers the
  * insert that uses the number.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function nextGroupNumberInTx(tx: any): Promise<number> {
   await tx.execute(sql`select pg_advisory_xact_lock(${GROUP_NUMBER_LOCK})`);
   const rows = await tx
@@ -54,6 +53,45 @@ export async function nextGroupNumberInTx(tx: any): Promise<number> {
     if (match) max = Math.max(max, Number(match[1]));
   }
   return max + 1;
+}
+
+/** Every group number that already has a bill today. */
+async function takenGroupNumbersInTx(tx: any): Promise<Set<number>> {
+  const rows = await tx
+    .select({ tableName: tickets.tableName })
+    .from(tickets)
+    .where(
+      and(
+        eq(tickets.orderType, "outdoor"),
+        gte(tickets.createdAt, etStartOfToday()),
+        like(tickets.tableName, "GROUP %")
+      )
+    );
+  const taken = new Set<number>();
+  for (const row of rows) {
+    const match = GROUP_LABEL_RE.exec(String(row.tableName || ""));
+    if (match) taken.add(Number(match[1]));
+  }
+  return taken;
+}
+
+/**
+ * The number a NEW group bill gets. The waiter may tap a default slot before
+ * that group has any bill ("use GROUP 7"), so `requested` is honoured when it is
+ * still free today; otherwise the next unused number is stamped.
+ *
+ * The client can only ever ask for a number, never force one: every used number
+ * of the day is read under the same advisory lock, so two waiters who both tap
+ * GROUP 7 still end up with 7 and the next free number, never one bill twice.
+ */
+export async function groupNumberForNewBillInTx(tx: any, requested?: number | null): Promise<number> {
+  await tx.execute(sql`select pg_advisory_xact_lock(${GROUP_NUMBER_LOCK})`);
+  const taken = await takenGroupNumbersInTx(tx);
+  const want = Math.floor(Number(requested) || 0);
+  if (want > 0 && !taken.has(want)) return want;
+  let next = 1;
+  while (taken.has(next)) next++;
+  return next;
 }
 
 /** Outside a transaction (GET /api/tickets?nextGroup=1): a display prediction. */

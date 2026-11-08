@@ -497,12 +497,20 @@ pass("the today feed tells the tablet who is standing at the door", todayApi.inc
 /* ── 8. the admin tab: order, and what was removed ───────────────────────── */
 
 pass(
-  "the buttons are ordered Today Live first and Open Kiosk last",
-  adminTab.indexOf('"today"') < adminTab.indexOf('"roles"') &&
+  "the buttons are ordered Today Live first, then the Deduction Report, then the rest",
+  adminTab.indexOf('"today"') < adminTab.indexOf('"decisions"') &&
+    adminTab.indexOf('"decisions"') < adminTab.indexOf('"roles"') &&
     adminTab.indexOf('"roles"') < adminTab.indexOf('"members"') &&
     adminTab.indexOf('"members"') < adminTab.indexOf('"sheet"') &&
-    adminTab.indexOf('"sheet"') < adminTab.indexOf('"prints"') &&
-    adminTab.lastIndexOf("/attendance") > adminTab.indexOf('"prints"')
+    adminTab.indexOf('"sheet"') < adminTab.indexOf('"prints"')
+);
+// The owner (2026-11-08): "they are not using that tab" about the kiosk, so its
+// button left the admin and the report that needs a person took its place.
+pass(
+  "the Open Kiosk button is gone and the Deduction Report took its place",
+  !adminTab.includes("Open Kiosk /attendance") &&
+    !adminTab.includes('href="/attendance"') &&
+    adminTab.includes("Decide deductions")
 );
 pass(
   "the FPC1020A + ESP32 WROOM subtitle is gone from the admin header",

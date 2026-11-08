@@ -17,7 +17,7 @@ import { mergeCategoryRouting, stationForOrder, stationOf, STATION_LABELS, type 
 import { isBillSent, isTableReleased, allLinesFinished } from "@/lib/order-release";
 import { PRINT_WITHOUT_DONE_KEY, crewsPrintMaySkip } from "@/lib/station-print-without-done";
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
-import { nextGroupNumberToday, nextGroupNumberInTx, groupLabel } from "@/lib/group-orders";
+import { nextGroupNumberToday, groupNumberForNewBillInTx, groupLabel } from "@/lib/group-orders";
 import { isDeferredWorkerRequest } from "@/lib/deferred-ticket-auth";
 import { parseSportPrices } from "@/lib/sport-menu";
 
@@ -514,7 +514,11 @@ export async function POST(request: Request) {
       // A NEW group bill takes its number under the advisory lock, so two
       // waiters creating groups in the same instant still get consecutive
       // numbers (never the same one twice).
-      if (isGroupOrder) tableName = groupLabel(await nextGroupNumberInTx(tx));
+      // A default slot the waiter tapped (GROUP 7 before it had a bill) is
+      // honoured only while 7 is still free today; otherwise the next free
+      // number is stamped. The server always decides, the client only asks.
+      if (isGroupOrder)
+        tableName = groupLabel(await groupNumberForNewBillInTx(tx, Number(body?.groupNumber) || 0));
       try {
         const created = await tx
           .insert(tickets)

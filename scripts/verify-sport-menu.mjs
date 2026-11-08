@@ -37,7 +37,7 @@ const lib = read("src/lib/sport-menu.ts");
 const client = read("src/lib/sport-menu-client.ts");
 const api = read("src/app/api/sport-menu/route.ts");
 const route = read("src/app/api/tickets/route.ts");
-const sheet = read("src/components/rms/SportMenuSheet.tsx");
+const editor = read("src/components/rms/SportMenuEditor.tsx");
 const tab = read("src/components/rms/SportMenuTab.tsx");
 const waiter = read("src/components/rms/WaiterApp.tsx");
 const composer = read("src/components/rms/GroupComposer.tsx");
@@ -116,78 +116,93 @@ const pass = (name, ok) => {
   );
   pass(
     "the editor lists every item as from <menu price> to <typed price>",
-    /L\("from"\)/.test(sheet) && /L\("to"\)/.test(sheet) && /line-through/.test(sheet),
+    /L\("from"\)/.test(editor) && /L\("to"\)/.test(editor) && /line-through/.test(editor),
   );
   pass(
     "the editor says one category at a time and names the three the owner asked for",
-    /L\("Add a category"\)/.test(sheet) && /cold drinks, hot drinks or pastry/.test(sheet),
+    /L\("Add a category"\)/.test(editor) && /cold drinks, hot drinks or pastry/.test(editor),
   );
   pass(
     "the owner reaches it from his dashboard (a Sport menu tab, ?tab=sport)",
     /key: "sport", label: L\("Sport menu"\)/.test(admin) && /activeTab === "sport" && <SportMenuTab \/>/.test(admin),
   );
-  pass("the dashboard tab is the same editor, embedded (no second copy)", /<SportMenuSheet open embedded/.test(tab));
+  pass("the dashboard tab renders the single admin editor (no second copy)", /<SportMenuEditor \/>/.test(tab));
   pass(
     "the waiter's phone is read-only (the server decides with canEdit)",
-    /setCanEdit\(Boolean\(next\.canEdit\)\)/.test(sheet) && /canEdit: Boolean\(who\)/.test(api),
+    /setCanEdit\(Boolean\(next\.canEdit\)\)/.test(editor) && /canEdit: Boolean\(who\)/.test(api),
   );
   pass(
     "every new label is in the staff dictionary (English ⇄ አማርኛ)",
-    /"Sport menu":/.test(dictionary) && /"Use sport prices":/.test(dictionary) && /"Add a category":/.test(dictionary),
+    /"Sport menu":/.test(dictionary) && /"Normal prices":/.test(dictionary) && /"Add a category":/.test(dictionary),
   );
 }
 
-/* ── 3. the waiter's screen ───────────────────────────────────────────────── */
+/* ── 3. the waiter's screen: the SAME menu, only prices differ ─────────────── */
 {
   pass(
-    "the top-corner button that used to say Groups is now the Sport menu button",
-    /onClick=\{\(\) => \{\s*setSportSheetOpen\(true\);/.test(waiter) && /sportMode \? L\("Sport ON"\) : L\("Sport menu"\)/.test(waiter),
+    "the top-corner button is still the Sport menu button and it opens ordering",
+    /onClick=\{\(\) => openSportOrdering\(\)\}/.test(waiter) && /<Flag className="w-4 h-4" \/>\s*\{L\("Sport menu"\)\}/.test(waiter),
   );
   pass("group bills stay one tap away (the Groups button is still there)", /onClick=\{\(\) => setGroupComposerOpen\(true\)\}/.test(waiter));
   pass(
-    "a Sport menu chip sits beside the normal category chips",
-    /\{categories\.map\(\(c\) => \([\s\S]{0,4000}?⚡ \{sportMode \? L\("Sport ON"\) : L\("Sport menu"\)\}/.test(waiter),
+    "no separate sport screen and no 'Use sport prices' switch anywhere on the waiter's phone",
+    !/SportMenuSheet/.test(waiter) && !/Use sport prices/.test(waiter) && !/sportSheetOpen/.test(waiter),
   );
   pass(
-    "added categories are marked on the normal chips (⚡)",
-    /isSportCategory\(sportCatalog, c\.slug\)/.test(waiter),
+    "the cart price comes from one rule: event price when the admin set one, else the menu price",
+    /const priceFor = \(item: MenuItem\) => chargePrice\(item, effectivePrice\(item\)\.price, sportEventMode, sportCatalog\)/.test(waiter),
   );
   pass(
-    "the cart price comes from the sport rule, not from the raw menu price",
-    /const priceFor = \(item: MenuItem\) => chargePrice\(item, effectivePrice\(item\)\.price, sportMode, sportCatalog\)/.test(waiter),
+    "that rule is the shared client helper, not a second copy on the phone",
+    /const typed = sportPriceMap\(catalog\)\.get\(item\.id\);/.test(client) && /return typed !== undefined \? typed : regularPrice;/.test(client),
   );
   pass(
-    "a cart line keeps the price it was added at (switching mode never rewrites money)",
-    /const existing = prev\.find\(\(c\) => c\.menuItemId === item\.id && c\.price === unitPrice\)/.test(waiter),
+    "the item card shows exactly one price: the event price when there is one, never a strike-through pair",
+    /\{event \} ETB/.test(waiter) === false && /return <>\{event\} ETB<\/>;/.test(waiter) && !/if \(sportMode && charged !== live\.price\) \{/.test(waiter),
   );
   pass(
-    "the food card reads from <normal> to <match-day> in sport mode",
-    /if \(sportMode && charged !== live\.price\) \{/.test(waiter) && /\{live\.price\} <\/span>/.test(waiter),
+    "the waiter is told, once, that these numbers are the admin's event prices",
+    /Event prices: \{n\} item\(s\) were changed by the admin\./.test(waiter) && /Sport menu prices/.test(waiter) === false,
+  );
+  pass(
+    "there is no ⚡ badge on the cards or the category chips",
+    !/isSportCategory\(sportCatalog/.test(waiter) && !/⚡ \{sportMode/.test(waiter),
   );
   pass(
     "the send carries the sport list id only (never a price of its own)",
-    /\.\.\.\(sportMode && sportCatalog\?\.menu\?\.id && cart\.some\(\(line\) => line\.sportLine\)[\s\S]{0,80}?\{ sportMenuId: sportCatalog\.menu\.id \}/.test(waiter),
+    /\.\.\.\(sportCatalog\?\.menu\?\.id && cart\.some\(\(line\) => line\.sportLine\)[\s\S]{0,80}?\{ sportMenuId: sportCatalog\.menu\.id \}/.test(waiter),
   );
   pass(
     "the saved (held) send keeps the sport list too",
     /sportMenuId\?: number;/.test(waiter) && /\.\.\.\(send\.sportMenuId \? \{ sportMenuId: send\.sportMenuId \} : \{\}\)/.test(waiter),
   );
   pass(
-    "a group order placed on a match day is charged the sport prices as well",
-    /sportMenuId=\{sportMode \? sportCatalog\?\.menu\?\.id : undefined\}/.test(waiter) && /sportMenuId\?: number;/.test(composer),
+    "the group composer shows ONE price per item too (no strike-through pair)",
+    !/line-through text-stone-600/.test(composer) && /\{priceOf\(item\)\} ETB/.test(composer),
   );
   pass(
-    "the phone's Back button closes the sport sheet first",
-    /\{ at: \(\) => sportSheetOpen, close: \(\) => setSportSheetOpen\(false\) \}/.test(waiter),
+    "a group order placed on a match day is charged the event price as well",
+    /sportMenuId=\{sportEventMode \? sportCatalog\?\.menu\?\.id : undefined\}/.test(waiter) && /sportMenuId\?: number;/.test(composer),
   );
   pass(
-    "switching on says so out loud, switching off says normal prices are back",
-    /tNow\("⚡ Sport prices ON • the marked items are charged the match-day price"\)/.test(waiter) &&
-      /tNow\("Normal menu prices are back"\)/.test(waiter),
+    "a line keeps the price it was added at (nothing rewrites money in the cart)",
+    /const existing = prev\.find\(\(c\) => c\.menuItemId === item\.id && c\.price === unitPrice\)/.test(waiter),
   );
   pass(
-    "a disabled list cannot leave sport mode on (it is switched off when inactive)",
-    /if \(!next\.menu \|\| next\.menu\.active === false\) setSportMode\(false\)/.test(waiter),
+    "only a line whose item has an event price is marked as a match-day line",
+    /\.\.\.\(sportEventMode && eventPriceFor\(item\) !== null \? \{ sportLine: true \} : \{\}\)/.test(waiter),
+  );
+  pass(
+    "leaving the ordering screen puts the ordinary prices back (no mode survives a trip to the tables)",
+    /const onGoBack = \(\) => \{[\s\S]{0,400}?setSportEventMode\(false\);/.test(waiter),
+  );
+  pass(
+    "tapping a normal table on the grid is always the ordinary order",
+    /Tapping a table on the grid is the NORMAL order[\s\S]{0,160}?setSportEventMode\(false\);/.test(waiter),
+  );
+  pass(
+    "the waiter never writes to the sport list (only the admin screen posts)",
+    !/method: "POST"[\s\S]{0,200}?\/api\/sport-menu/.test(waiter) && /method: "POST"/.test(editor),
   );
 }
 

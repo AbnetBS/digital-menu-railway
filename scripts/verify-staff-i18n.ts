@@ -140,7 +140,7 @@ const STAFF_FILES = [
   "src/components/rms/PocketAlertsHint.tsx",
   "src/components/rms/UrgentAlertOverlay.tsx",
   "src/components/rms/BillNotificationCard.tsx",
-  "src/components/rms/SportMenuSheet.tsx",
+  "src/components/rms/SportMenuEditor.tsx",
   "src/components/rms/SportMenuTab.tsx",
 ];
 // Translation calls: the screens use L/Lr (hook), tNow (handlers), phrase

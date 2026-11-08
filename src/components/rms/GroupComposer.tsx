@@ -339,14 +339,10 @@ export default function GroupComposer({
                 >
                   <p className="text-sm font-black text-amber-100 leading-tight">{item.name}</p>
                   <p className="text-[11px] text-stone-400 mt-1">
-                    {sportMenuId && priceOf(item) !== effectivePrice(item).price ? (
-                      <>
-                        <span className="line-through text-stone-600">{effectivePrice(item).price} </span>
-                        <span className="text-violet-300 font-black">{priceOf(item)} ETB</span>
-                      </>
-                    ) : (
-                      <>{effectivePrice(item).price} ETB</>
-                    )}
+                    {/* Same design as the normal menu (owner, 2026-11-08): ONE
+                        price. When the admin gave this item an event price, that
+                        number is simply the price today. No strike-through pair. */}
+                    {priceOf(item)} ETB
                   </p>
                   <div className="mt-3 flex items-center justify-between gap-2">
                     <span className="text-[10px] font-bold text-stone-500 uppercase">{item.category}</span>

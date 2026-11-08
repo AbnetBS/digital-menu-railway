@@ -71,6 +71,9 @@ const FEEDBACK_SINKS = [
   "setRevMsg(",
   "setSubmitFailed(",
   "setBillFailed(", // the guest's bill-request button
+  "onError?.(", // a child panel handing the failure up to its screen's banner
+  "onFailed?.(", // the cash payroll panel: its screen's red banner
+  "onSaved?.(", // the cash payroll panel: its screen's green banner
   "expireSession(", // a 401 sends the crew back to the login screen
 ];
 

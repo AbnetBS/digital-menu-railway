@@ -35,6 +35,8 @@ interface CartLine {
   price: number;
   quantity: number;
   notes: string;
+  /** Added while the match-day prices were on, so the server charges the sport price. */
+  sportLine?: boolean;
 }
 
 function newSubmissionKey() {
@@ -53,11 +55,20 @@ export default function GroupComposer({
   waiterName,
   onClose,
   onSent,
+  sportMenuId,
+  sportPriceFor,
 }: {
   open: boolean;
   waiterName: string;
   onClose: () => void;
   onSent: (message: string) => void;
+  /**
+   * THE SPORT MENU (owner, 2026-11-07). A group order placed on a match day is
+   * charged the temporary prices. The screen shows them; the server re-reads
+   * the same list and stamps them on the bill (sportMenuId only travels up).
+   */
+  sportMenuId?: number;
+  sportPriceFor?: (menuItemId: number, regularPrice: number) => number;
 }) {
   const { t: L } = useStaffT();
   const [menu, setMenu] = useState<MenuItem[]>([]);
@@ -114,9 +125,11 @@ export default function GroupComposer({
     onClose();
   };
 
+  const priceOf = (item: MenuItem) => sportPriceFor?.(item.id, effectivePrice(item).price) ?? effectivePrice(item).price;
+
   const addToCart = (item: MenuItem) => {
     if (!item.isAvailable) return;
-    const livePrice = effectivePrice(item).price;
+    const livePrice = priceOf(item);
     setCart((prev) => {
       const existing = prev.find((line) => line.menuItemId === item.id && line.price === livePrice);
       if (existing) {
@@ -128,7 +141,15 @@ export default function GroupComposer({
       }
       return [
         ...prev,
-        { menuItemId: item.id, name: item.name, category: item.category, price: livePrice, quantity: 1, notes: "" },
+        {
+          menuItemId: item.id,
+          name: item.name,
+          category: item.category,
+          price: livePrice,
+          quantity: 1,
+          notes: "",
+          ...(sportMenuId && livePrice !== effectivePrice(item).price ? { sportLine: true } : {}),
+        },
       ];
     });
   };
@@ -171,6 +192,10 @@ export default function GroupComposer({
         groupOrder: true,
         targetTicketId: target ? target.id : undefined,
         idempotencyKey: pendingKeyRef.current,
+        // SPORT MENU: the id only, and only when a sport line is in this cart.
+        // The server reads the temporary prices and charges them to the lines
+        // that say sportLine.
+        ...(sportMenuId && cart.some((line) => line.sportLine) ? { sportMenuId } : {}),
         items: cart.map((line) => ({
           menuItemId: line.menuItemId,
           name: line.name,
@@ -178,6 +203,7 @@ export default function GroupComposer({
           price: line.price,
           quantity: line.quantity,
           notes: line.notes,
+          ...(line.sportLine ? { sportLine: true } : {}),
         })),
       }),
     });
@@ -312,7 +338,16 @@ export default function GroupComposer({
                   }`}
                 >
                   <p className="text-sm font-black text-amber-100 leading-tight">{item.name}</p>
-                  <p className="text-[11px] text-stone-400 mt-1">{effectivePrice(item).price} ETB</p>
+                  <p className="text-[11px] text-stone-400 mt-1">
+                    {sportMenuId && priceOf(item) !== effectivePrice(item).price ? (
+                      <>
+                        <span className="line-through text-stone-600">{effectivePrice(item).price} </span>
+                        <span className="text-violet-300 font-black">{priceOf(item)} ETB</span>
+                      </>
+                    ) : (
+                      <>{effectivePrice(item).price} ETB</>
+                    )}
+                  </p>
                   <div className="mt-3 flex items-center justify-between gap-2">
                     <span className="text-[10px] font-bold text-stone-500 uppercase">{item.category}</span>
                     <span className={`text-[10px] font-black px-2.5 py-1 rounded-full ${item.isAvailable ? "bg-emerald-500/20 text-emerald-300" : "bg-stone-800 text-stone-500"}`}>

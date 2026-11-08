@@ -17,6 +17,14 @@ import {
 import { staffEtb, staffNum, useStaffT, type StaffI18n, type StaffPhrase } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
 import PrintLetterhead from "@/components/rms/PrintLetterhead";
+import { stripSportMarker } from "@/lib/order-lines";
+
+/**
+ * A line note as a person should read it: the sport-menu marker (written by
+ * the ticket API on match-day lines) is stripped so nobody sees a machine tag.
+ */
+const cleanNote = (notes?: string | null) => stripSportMarker(notes);
+
 
 type ShiftFilter = "all" | "morning" | "afternoon" | "combined";
 type ShiftKey = "morning" | "afternoon" | "combined";
@@ -890,7 +898,7 @@ function StationCard({ order, role, onOpen, i18n }: { order: ShiftOrderCard; rol
               <p className="text-sm font-bold text-amber-100">
                 {i.name} <span className="text-stone-400">x{i.quantity}</span>
               </p>
-              {i.notes && <p className="text-[11px] italic text-amber-300">📝 {i.notes}</p>}
+              {cleanNote(i.notes) && <p className="text-[11px] italic text-amber-300">📝 {cleanNote(i.notes)}</p>}
               {i.acceptedBy && (
                 <p className="text-[11px] font-bold text-sky-300">
                   {t("▶ Accepted by {name}", { name: i.acceptedBy })}
@@ -1013,7 +1021,7 @@ function OrderDetail({
                       })}
                     </p>
                   )}
-                  {i.notes && <p className="italic text-amber-300">📝 {i.notes}</p>}
+                  {cleanNote(i.notes) && <p className="italic text-amber-300">📝 {cleanNote(i.notes)}</p>}
                   {i.acceptedBy && (
                     <p className="font-bold text-sky-300">
                       {t("▶ Accepted by {name}", { name: i.acceptedBy })} {i.acceptedAt ? `• ${formatClock(i.acceptedAt)}` : ""}
@@ -1246,7 +1254,7 @@ function ShiftPrintSheet({
                         <tr key={i.id}>
                           <td>
                             {i.saleQuantity} × {i.name}
-                            {i.notes ? ` (${i.notes})` : ""}
+                            {cleanNote(i.notes) ? ` (${cleanNote(i.notes)})` : ""}
                             {i.saleQuantity !== i.quantity && (
                               <div style={{ fontSize: "10px" }}>
                                 {t("EFD: {printed} unit(s) printed • {pending} waiting", {

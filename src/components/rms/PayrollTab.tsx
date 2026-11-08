@@ -29,6 +29,8 @@ import {
 } from "@/lib/payroll";
 import { OVERTIME_TYPE_LABELS, weekdayName, type OvertimeType } from "@/lib/attendance";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
+import TableScroll from "@/components/rms/TableScroll";
+import CashPayrollPanel from "@/components/rms/CashPayrollPanel";
 
 const birr = (n: number) => new Intl.NumberFormat("en-ET", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
 /** The Excel leaves optional money cells blank when they are zero. */
@@ -98,6 +100,9 @@ export default function PayrollTab() {
   const [pending, setPending] = useState<null | { row: any; field: string; value: number; previous: number }>(null);
   const [payTarget, setPayTarget] = useState<any>(null);
   const [otMemberId, setOtMemberId] = useState<number | null>(null);
+  // Which sheet the printer shows. The cash button flips this for one print,
+  // so the two print buttons never print each other's table.
+  const [printMode, setPrintMode] = useState<"tin" | "cash">("tin");
   const [holidayOpen, setHolidayOpen] = useState(false);
   // The company name and TIN printed on the government sheet. Stored in
   // site_settings, edited here, read by the payroll API for the letterhead.
@@ -135,6 +140,14 @@ export default function PayrollTab() {
     const timer = setTimeout(() => load(), 0);
     return () => clearTimeout(timer);
   }, [load]);
+
+  // The cash print is for ONE print. When the dialog closes (afterprint) the
+  // page goes back to the TIN sheet, so a normal Print never repeats it.
+  useEffect(() => {
+    const back = () => setPrintMode("tin");
+    window.addEventListener("afterprint", back);
+    return () => window.removeEventListener("afterprint", back);
+  }, []);
 
   const act = async (body: any, success: string) => {
     setBusy(true);
@@ -255,7 +268,7 @@ export default function PayrollTab() {
   }, settings) : 0;
 
   return (
-    <div id="fana-payroll" className="space-y-5 text-white">
+    <div id="fana-payroll" className={`space-y-5 text-white ${printMode === "cash" ? "cash-print-mode" : ""}`}>
       {/*
         GOVERNMENT PRINT SHEET (owner, 2026-10-27): "the current 1 have so
         many unnecessary thing like my dashboard ... since it send to
@@ -265,6 +278,9 @@ export default function PayrollTab() {
         company name, Payroll Sheet, month, TIN, the same columns, a Signature
         column and Prepared / Checked / Approved lines.
       */}
+      {/* The cash sheet is four columns: it prints on a portrait A4, not on
+          the wide landscape page the 18 column government sheet needs. */}
+      {printMode === "cash" && <style>{`@media print { @page { size: A4 portrait; margin: 12mm; } }`}</style>}
       <style>{`
         #fana-payroll .print-sheet { display: none; }
         @media print {
@@ -518,7 +534,11 @@ export default function PayrollTab() {
                 ))}
                 {data && data.rows?.length === 0 && (
                   <tr>
-                    <td colSpan={18} className="center">No staff in the attendance list yet.</td>
+                    <td colSpan={18} className="center">
+                      {data?.cash?.rows?.length > 0
+                        ? "Every employee is paid in cash this month. See the cash payroll sheet."
+                        : "No staff in the attendance list yet."}
+                    </td>
                   </tr>
                 )}
               </tbody>
@@ -600,7 +620,15 @@ export default function PayrollTab() {
             >
               <CalendarDays className="w-4 h-4 inline" /> Holiday dates ({data?.holidays?.length || 0})
             </button>
-            <button onClick={() => window.print()} className="px-4 py-2.5 rounded-xl bg-white/10 text-xs font-bold">
+            <button
+              onClick={() => {
+                setPrintMode("tin");
+                // The state has to be on the page before the browser builds
+                // the print preview, so the print waits one frame.
+                requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
+              }}
+              className="px-4 py-2.5 rounded-xl bg-white/10 text-xs font-bold"
+            >
               <Printer className="w-4 h-4 inline" /> Print
             </button>
             <span className="ml-auto text-xs flex flex-wrap items-center gap-3">
@@ -619,7 +647,7 @@ export default function PayrollTab() {
             </div>
           )}
 
-          <div className="overflow-x-auto bg-white text-black rounded-xl">
+          <TableScroll label="Monthly payroll table" maxHeight="72vh" className="bg-white text-black rounded-xl">
             <table className="w-full text-[11px] border-collapse whitespace-nowrap">
               <thead className="bg-stone-200">
                 <tr>
@@ -643,7 +671,13 @@ export default function PayrollTab() {
                     "Net Pay",
                     "Paid",
                   ].map((h) => (
-                    <th key={h} className="border p-2">
+                    <th
+                      key={h}
+                      // The EMPLOYEE NAME is the one pinned column (owner,
+                      // 2026-11-07): scrolled to the far right he still knows
+                      // whose Net Pay he is reading.
+                      className={`border p-2 bg-stone-200 ${h === "Employee Name" ? "fana-freeze-cell fana-freeze-head" : ""}`}
+                    >
                       {h}
                       {["Basic Salary", "Transport"].includes(h) && <Pencil className="w-3 h-3 inline ml-1 text-stone-600" />}
                     </th>
@@ -654,7 +688,9 @@ export default function PayrollTab() {
                 {data?.rows?.map((r: any) => (
                   <tr key={r.memberId} className={`hover:bg-amber-50 ${r.paid ? "bg-emerald-50/60" : ""}`}>
                     <td className="border p-2 text-center font-black text-stone-700">{r.employeeNumber}</td>
-                    <td className="border p-2 font-bold">
+                    <td
+                      className={`fana-freeze-cell border p-2 font-bold ${r.paid ? "bg-emerald-50" : "bg-white"}`}
+                    >
                       {r.employeeName}
                       <div className="text-[9px] font-normal text-stone-500">
                         Present {r.attendance.daysPresent}/{r.attendance.scheduledDays} • Late {r.attendance.lateMinutes}m
@@ -735,7 +771,9 @@ export default function PayrollTab() {
                 {data && data.rows?.length === 0 && (
                   <tr>
                     <td colSpan={18} className="border p-8 text-center text-stone-500">
-                      No staff in the attendance list yet. Add them in Attendance • Staff Members.
+                      {data?.cash?.rows?.length > 0
+                        ? "Every employee is paid in cash this month. The cash payroll table is below."
+                        : "No staff in the attendance list yet. Add them in Attendance • Staff Members."}
                     </td>
                   </tr>
                 )}
@@ -766,7 +804,24 @@ export default function PayrollTab() {
                 </tfoot>
               )}
             </table>
-          </div>
+          </TableScroll>
+
+          {/* THE CASH PAYROLL (owner, 2026-11-07), under the TIN payroll. */}
+          <CashPayrollPanel
+            period={period}
+            monthLabel={data?.letterhead?.periodLabel || period}
+            dateEc={data?.letterhead?.dateEc || ""}
+            dateLabel={data?.letterhead?.dateLabel || ""}
+            companyName={data?.letterhead?.companyName || headerDraft.companyName}
+            tin={data?.letterhead?.tin || headerDraft.tin}
+            onChanged={() => load(true)}
+            onSaved={setMessage}
+            onFailed={setError}
+            onPrint={() => {
+              setPrintMode("cash");
+              requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
+            }}
+          />
 
           <div className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 grid md:grid-cols-3 gap-3">
             {[

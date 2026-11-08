@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Search, RefreshCw, ImageIcon, X, Trash2 } from "lucide-react";
 import { Ticket } from "@/types";
-import { formatDateTime, groupOrderLines, type OrderLine } from "@/lib/order-lines";
+import { formatDateTime, groupOrderLines, stripSportMarker, type OrderLine } from "@/lib/order-lines";
 import { useStaffT } from "@/lib/staff-i18n";
 import {
   ORDER_DATE_FILTERS,
@@ -12,6 +12,13 @@ import {
   orderHistoryDateOf,
   type OrderDateFilter,
 } from "@/lib/order-date-filter";
+
+/**
+ * A line note as a person should read it: the sport-menu marker (written by
+ * the ticket API on match-day lines) is stripped so nobody sees a machine tag.
+ */
+const cleanNote = (notes?: string | null) => stripSportMarker(notes);
+
 
 const historyStatusOf = (t: Ticket) => t.historyStatus || (t.status === "cancelled" ? "cancelled" : "done");
 
@@ -354,7 +361,7 @@ export default function OrderHistoryTab() {
                           {badge.text}
                         </span>
                       )}
-                      {i.notes && <p className="text-[10px] text-amber-300/80 italic">📝 {i.notes}</p>}
+                      {cleanNote(i.notes) && <p className="text-[10px] text-amber-300/80 italic">📝 {cleanNote(i.notes)}</p>}
                     </div>
                     <span className="font-bold text-amber-200 shrink-0">{Number(i.price ?? 0) * i.quantity} ETB</span>
                   </div>

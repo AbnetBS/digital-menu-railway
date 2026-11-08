@@ -11,7 +11,7 @@ import { requireStaffOrAdmin, requireAdmin, readStaffSession } from "@/lib/sessi
 import { publish, CHANNELS } from "@/lib/realtime";
 import { checkSharedIpRateLimit, VENUE_POLICIES } from "@/lib/rate-limit";
 import { calculateDailyPromotionLinePrices, isDailyPromotionOrderable, parseDailyPromotion } from "@/lib/daily-promotion";
-import { canMergeLines } from "@/lib/order-lines";
+import { canMergeLines, isSportNote, sportLineNote } from "@/lib/order-lines";
 import { recordTicketEvent, summarizeSubmissionLines } from "@/lib/ticket-audit";
 import { mergeCategoryRouting, stationForOrder, stationOf, STATION_LABELS, type StationName } from "@/lib/stations";
 import { isBillSent, isTableReleased, allLinesFinished } from "@/lib/order-release";
@@ -19,6 +19,7 @@ import { PRINT_WITHOUT_DONE_KEY, crewsPrintMaySkip } from "@/lib/station-print-w
 import { etStartOfToday, etStartOfCalendarDay } from "@/lib/timezone";
 import { nextGroupNumberToday, nextGroupNumberInTx, groupLabel } from "@/lib/group-orders";
 import { isDeferredWorkerRequest } from "@/lib/deferred-ticket-auth";
+import { parseSportPrices } from "@/lib/sport-menu";
 
 /**
  * Customer order limits are TWO-TIER (per table + per venue) because every guest
@@ -361,6 +362,13 @@ export async function POST(request: Request) {
     // groupOrder: true and the SERVER stamps the bill "GROUP <n>" (numbered
     // daily, never reused) — the client can never pick or forge a number.
     const isGroupOrder = orderType === "outdoor" && body?.groupOrder === true;
+    // THE SPORT MENU (owner, 2026-11-07): on a match day the waiter charges
+    // from the temporary price list. The client says WHICH list (sportMenuId)
+    // and nothing else: the unit price of every such line is read from the
+    // database below, never from the phone. A disabled list is ignored, so
+    // switching it off in the owner's screen instantly restores normal prices.
+    const requestedSportMenuId = Number(body?.sportMenuId);
+    let sportPricesApplied = 0;
 
     await ensureTablesExist();
     // Idempotency key: unique per submission, generated client-side. Same key =
@@ -598,6 +606,14 @@ export async function POST(request: Request) {
         ? await tx.select().from(menuItems).where(inArray(menuItems.id, orderedMenuIds))
         : [];
     const priceById = new Map(menuRows.map((m) => [m.id, effectivePrice(m).price]));
+    /**
+     * The ORDINARY price of each item, kept separately and never mutated. The
+     * sport block below must not touch it: when one table buys a normal Cola
+     * (50) and a match-day Cola (150) in the same send, the normal line has to
+     * keep finding 50 while the sport line gets 150.
+     */
+    const regularPriceById = new Map(priceById);
+
     // Which ordered items are TRADITIONAL BUNA: those leave the category
     // routing entirely and are made by the buna makers at their own place.
     const bunaById = new Map(menuRows.map((m) => [m.id, Boolean(m.isBuna)]));
@@ -605,6 +621,14 @@ export async function POST(request: Request) {
     // coffee cup is the barista's, a take away bag is the kitchen's — the
     // override wins over the category routing, null = follow the routing.
     const overrideById = new Map(menuRows.map((m) => [m.id, (m.stationOverride as string | null) ?? null]));
+
+    /**
+     * payload index → the sport price the SERVER resolved for that line. The
+     * line builder below uses it so a line that was never added in sport mode
+     * keeps its ordinary price even when the same dish also appears in sport
+     * mode on the same ticket (priceById alone cannot tell them apart).
+     */
+    const sportPriceByPayloadIndex = new Map<number, number>();
 
     // ── DAILY PROMOTION INTEGRITY ──
     // The browser may name a Daily Board promotion, but it can never choose its
@@ -674,11 +698,66 @@ export async function POST(request: Request) {
       }
     }
 
+    // ── SPORT MENU INTEGRITY (owner, 2026-11-07) ──
+    // A match-day order names the sport list (sportMenuId) and WHICH LINES were
+    // added in sport mode (sportLine, see below). The temporary price is read
+    // HERE from the database and stamped onto exactly those lines, so a stale
+    // phone or a tampered body can neither invent a price nor keep last night's
+    // one. A list that is switched off is not applied at all, the ordinary
+    // price stands, and the customer menu never names a sport list.
+    // (The deferred worker replays a staff payload, so it carries the same
+    // sportMenuId and is priced exactly like the waiter's own send.)
+    //
+    // PER LINE, not per send: a waiter builds one cart for one table and some
+    // guests at that table may have been quoted the normal price before the
+    // match started. Re-pricing the whole send would silently over-charge those
+    // lines, so each line says for itself whether it was added in sport mode.
+    // A payload with NO sportLine flags at all (an older phone, the cashier's
+    // composer) is priced as a whole send in sport mode, which is what a sport
+    // send meant before this flag existed.
+    const sportLinesRequested = items.some(
+      (it: { sportLine?: unknown }) => it?.sportLine === true || it?.sportLine === "true"
+    );
+    const isSportLine = (it: { sportLine?: unknown }) =>
+      sportLinesRequested
+        ? it?.sportLine === true || it?.sportLine === "true"
+        : true; // no per-line flag in this payload: the whole send is a sport send
+    if (!isCustomer && Number.isInteger(requestedSportMenuId) && requestedSportMenuId > 0) {
+      const sportRow = await tx.execute(sql`
+        SELECT id, active, prices FROM sport_menus WHERE id = ${requestedSportMenuId} LIMIT 1
+      `);
+      // db.execute is typed as a result object (node-postgres) OR the plain
+      // array (other drivers), so normalise both shapes before reading rows.
+      const sportRows = (((sportRow as unknown as { rows?: unknown[] }).rows ?? sportRow) || []) as unknown[];
+      const sport = (sportRows[0] || null) as { id: number; active: boolean; prices: unknown } | null;
+      if (sport) {
+        const sportActive = sport.active !== false;
+        const typed = new Map<number, number>();
+        if (sportActive) {
+          for (const price of parseSportPrices(sport.prices)) typed.set(price.menuItemId, price.sportPrice);
+        }
+        if (sportActive && typed.size > 0) {
+          // The map the line builder reads: a sport price for the sport lines,
+          // the ordinary (or sale) price for everything else.
+          items.forEach((it: { menuItemId?: unknown; sportLine?: unknown }, index: number) => {
+            if (!isSportLine(it)) return;
+            const menuItemId = Number(it?.menuItemId);
+            const sportPrice = typed.get(menuItemId);
+            if (sportPrice === undefined || !regularPriceById.has(menuItemId)) return;
+            // Recorded per payload index only. The shared map stays on the
+            // ordinary price so a normal line of the same dish is untouched.
+            sportPriceByPayloadIndex.set(index, sportPrice);
+            sportPricesApplied += 1;
+          });
+        }
+      }
+    }
+
     // Expand promotion lines into their authoritative unit-price entries. This
     // preserves an exact integer combo total even where a configured item has a
     // quantity greater than one, while the resulting ticket remains standard
     // ticket_items for the existing kitchen/cashier/waiter workflow.
-    const ticketRows: Array<{ menuItemId: number; name: string; category: string; price: number; quantity: number; notes: string }> = [];
+    const ticketRows: Array<{ menuItemId: number; name: string; category: string; price: number; quantity: number; notes: string; sportLine?: boolean }> = [];
     for (let payloadIndex = 0; payloadIndex < items.length; payloadIndex++) {
       const it = items[payloadIndex];
       const qty = Number(it.quantity);
@@ -695,9 +774,13 @@ export async function POST(request: Request) {
       }
 
       const promotionLine = promotionLineByPayloadIndex.get(payloadIndex);
+      // SPORT MENU: this exact line, added in sport mode, gets the server's
+      // sport price. A line added on the normal menu keeps the normal price even
+      // when the same dish is also ordered in sport mode on this ticket.
+      const sportUnitPrice = sportPriceByPayloadIndex.get(payloadIndex);
       // A client-supplied price (including 0) is always overwritten. Promotion
       // prices are only the unit prices calculated from trusted DB data above.
-      it.price = priceById.get(menuId);
+      it.price = sportUnitPrice !== undefined ? sportUnitPrice : regularPriceById.get(menuId);
       it.quantity = qty;
       if (!promotionLine) {
         // The NAME and CATEGORY come from the menu row, never from the client:
@@ -705,7 +788,17 @@ export async function POST(request: Request) {
         // the bill — or worse, route the line to the wrong crew through an
         // outdated category. (Prices were already server-side; this closes the
         // same hole for the other two fields the crews and bills read.)
-        ticketRows.push({ menuItemId: menuId, name: menuRow.name, category: menuRow.category, price: Number(it.price), quantity: qty, notes: it.notes || "" });
+        ticketRows.push({
+          menuItemId: menuId,
+          name: menuRow.name,
+          category: menuRow.category,
+          price: Number(it.price),
+          quantity: qty,
+          notes: it.notes || "",
+          // The bill, the reports and a later audit can tell a match-day 150
+          // from a normal-day 50 without opening the sport list.
+          ...(sportUnitPrice !== undefined ? { sportLine: true } : {}),
+        });
         continue;
       }
 
@@ -758,6 +851,14 @@ export async function POST(request: Request) {
     try {
       for (let idx = 0; idx < ticketRows.length; idx++) {
         const it = ticketRows[idx];
+        // SPORT MENU (owner, 2026-11-07: "if cola is 70 in normal and 150 in
+        // sport then when they send it with sport it will be 150"). A sport
+        // line must never fold into an ordinary Cola row, or the bill would
+        // read "3 Cola" at one price and under-charge the match-day units.
+        // canMergeLines already splits by unit price, so the only thing needed
+        // here is to keep the sport flag itself in the comparison.
+        const sportFlagDiffers = (row: { notes?: string | null }) =>
+          isSportNote(row.notes) !== (it.sportLine === true);
         const catSlug = String(it.category || "").toLowerCase();
         // A menu item flagged "Traditional Buna" always goes to the BUNA crew,
         // whatever category it sits in; an item with a per-item override (e.g.
@@ -785,6 +886,7 @@ export async function POST(request: Request) {
             // Only fold into a row in the same release state (see above): a
             // held top-up never hides inside a line the crew already has.
             (row.released ?? true) === !holdNewLines &&
+            !sportFlagDiffers(row) &&
             canMergeLines(row, incoming) &&
             (Number(row.quantity) || 0) + it.quantity <= MAX_MERGED_LINE_QUANTITY
         );
@@ -810,7 +912,9 @@ export async function POST(request: Request) {
             category: it.category || "",
             price: Number(it.price),
             quantity: it.quantity,
-            notes: it.notes || "",
+            // The sport marker rides in `notes` so no migration is needed and
+            // every existing screen keeps reading the line exactly as before.
+            notes: it.sportLine ? sportLineNote(it.notes) : it.notes || "",
             stationName,
             stationStatus: "pending",
             // A guest top-up on an already-sent bill waits for the cashier's or
@@ -857,7 +961,11 @@ export async function POST(request: Request) {
         source: isCustomer ? "customer" : "staff",
         fromValue: mergedLineCount > 0 ? String(mergedLineCount) : null,
         toValue: String(ticketRows.length),
-        details: summarizeSubmissionLines(ticketRows.map((line) => ({ name: line.name, quantity: line.quantity }))),
+        // SPORT MENU audit: which match-day list priced this submission, so a
+        // bill from last Saturday explains its higher tea without guessing.
+        details:
+          summarizeSubmissionLines(ticketRows.map((line) => ({ name: line.name, quantity: line.quantity }))) +
+          (sportPricesApplied > 0 ? ` • sport menu #${requestedSportMenuId}` : ""),
       });
     } catch (err) {
       throw err;

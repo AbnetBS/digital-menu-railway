@@ -13,6 +13,14 @@ import { ArrowLeft, CheckCircle2, ChevronDown, Loader2, Receipt, RefreshCw, XCir
 import { useT } from "@/lib/i18n";
 import { formatClock, type CustomerOrderPhase } from "@/lib/order-lines";
 import LanguageToggle from "@/components/LanguageToggle";
+import { stripSportMarker } from "@/lib/order-lines";
+
+/**
+ * A line note as a person should read it: the sport-menu marker (written by
+ * the ticket API on match-day lines) is stripped so nobody sees a machine tag.
+ */
+const cleanNote = (notes?: string | null) => stripSportMarker(notes);
+
 
 /**
  * THE GUEST'S ORDER STATUS + RECEIPT BUTTON.
@@ -480,7 +488,7 @@ function LineTimeline({ line, compact = false }: { line: TableTicketLine; compac
           <p className={`font-bold text-[#2C1B17] leading-snug ${compact ? "text-xs" : "text-sm"}`}>
             {line.name} <span className="text-stone-400 font-semibold">×{line.quantity}</span>
           </p>
-          {line.notes ? <p className="text-[10px] text-stone-500 leading-snug mt-0.5">{line.notes}</p> : null}
+          {cleanNote(line.notes) ? <p className="text-[10px] text-stone-500 leading-snug mt-0.5">{cleanNote(line.notes)}</p> : null}
         </div>
         <span className={`shrink-0 text-[10px] font-black px-2 py-0.5 rounded-full ${CHIP_STYLE[chip]}`}>
           {chipLabel}

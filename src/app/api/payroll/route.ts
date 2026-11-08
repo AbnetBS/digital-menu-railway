@@ -127,7 +127,7 @@ async function buildRows(periodKey: string) {
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Addis_Ababa" });
   const effectiveTo = bounds.to < today ? bounds.to : today;
 
-  const [membersQ, logsQ, compQ, inputQ, otEntriesQ, periodQ, savedQ, exceptionsQ, historyQ, freeQ, rolesQ, holidaysQ, otRowsQ, paymentsQ, headerQ, excludedQ, breakageQ] =
+  const [membersQ, logsQ, compQ, inputQ, otEntriesQ, periodQ, savedQ, exceptionsQ, historyQ, freeQ, rolesQ, holidaysQ, otRowsQ, paymentsQ, headerQ, excludedQ, breakageQ, cashQ, cashSignoffQ] =
     await Promise.all([
       pool.query(
         "SELECT m.id,m.name,m.role_id,m.active,m.employment_started_at,m.terminated_at,m.created_at,(SELECT min(l.date) FROM attendance_logs l WHERE l.member_id=m.id) AS first_attendance_date FROM attendance_members m ORDER BY m.name"
@@ -159,6 +159,18 @@ async function buildRows(periodKey: string) {
       // "Don't give": overtime kept in the history but not added to the salary.
       pool.query("SELECT id,member_id,date,type,authorized_by,reason FROM attendance_ot_exclusions WHERE date BETWEEN $1 AND $2", [bounds.from, bounds.to]),
       pool.query("SELECT member_id, COALESCE(sum(amount),0) AS amount FROM payroll_breakages WHERE period_key=$1 AND voided_at IS NULL GROUP BY member_id", [periodKey]),
+      // CASH PAYROLL (owner, 2026-11-07). The people in this month's cash table
+      // are paid from the cash box and have no TIN, so they are NOT rows of the
+      // TIN sheet: no tax, no pension, no transport column applies to them.
+      pool.query(
+        `SELECT c.id, c.member_id, COALESCE(NULLIF(btrim(m.name), ''), c.name) AS name, c.net_pay, c.note, c.paid_at
+           FROM cash_payroll_entries c
+           LEFT JOIN attendance_members m ON m.id = c.member_id
+          WHERE c.period_key = $1
+          ORDER BY c.sort_order, c.id`,
+        [periodKey]
+      ),
+      pool.query("SELECT prepared_by, checked_by, approved_by FROM cash_payroll_signoff WHERE period_key=$1", [periodKey]),
     ]);
 
   const settings = await loadSettings();
@@ -203,7 +215,18 @@ async function buildRows(periodKey: string) {
   const periodDates = dateRange(bounds.from, bounds.to);
   const typeLabels: Record<string, string> = OVERTIME_TYPE_LABELS;
 
-  const rows = membersQ.rows.map((member, index) => {
+  // CASH PAYROLL (owner, 2026-11-07): whoever is in this month's cash table is
+  // paid from the cash box, so he is not a row of the TIN sheet. Next month he
+  // is back unless he is added again.
+  const cashMemberIds = new Set(
+    (cashQ.rows as Array<{ member_id: number | null }>)
+      .filter((r) => r.member_id !== null && r.member_id !== undefined)
+      .map((r) => Number(r.member_id))
+  );
+
+  const rows = membersQ.rows
+    .filter((member) => !cashMemberIds.has(Number(member.id)))
+    .map((member, index) => {
     const memberId = Number(member.id);
     const memberLogs = logsQ.rows.filter((l) => Number(l.member_id) === memberId);
     const logByDate = new Map(memberLogs.map((l) => [String(l.date), l]));
@@ -476,7 +499,7 @@ async function buildRows(periodKey: string) {
       paidAt: payment.paid_at || null,
       paymentMethod: payment.method || null,
     };
-  });
+    });
 
   const period = periodQ.rows[0] || {};
   return {
@@ -512,6 +535,28 @@ async function buildRows(periodKey: string) {
     history: historyQ.rows,
     paidCount: rows.filter((r) => r.paid).length,
     rows,
+    // THE CASH SHEET under the TIN sheet. The Payroll page prints it on its own
+    // with its own button and its own Prepared / Checked / Approved lines, and
+    // these same rows are the reason those people are not on the rows above.
+    cash: {
+      rows: (cashQ.rows as Array<{ id: number; member_id: number | null; name: string; net_pay: string | number; note: string | null; paid_at: Date | null }>).map(
+        (r) => ({
+          id: Number(r.id),
+          memberId: r.member_id === null || r.member_id === undefined ? null : Number(r.member_id),
+          name: String(r.name || ""),
+          netPay: money(r.net_pay),
+          note: String(r.note || ""),
+          paid: Boolean(r.paid_at),
+          paidAt: r.paid_at ? new Date(r.paid_at).toISOString() : null,
+          fromAttendance: r.member_id !== null && r.member_id !== undefined,
+        })
+      ),
+      signoff: {
+        preparedBy: cashSignoffQ.rows[0]?.prepared_by || "",
+        checkedBy: cashSignoffQ.rows[0]?.checked_by || "",
+        approvedBy: cashSignoffQ.rows[0]?.approved_by || "",
+      },
+    },
   };
 }
 

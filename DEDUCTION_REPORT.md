@@ -283,6 +283,33 @@ which the Ethiopian month starts. It now prints the month he reads:
 Hidar, Tahsas and the rest follow by themselves. The Gregorian span
 (`2026-10-11 to 2026-11-09`) stays on the small line underneath.
 
+## 7c. Emptying the waiting list, and the overtime rate
+
+### Delete all / Deduct all
+
+A Tikimt with 359 waiting rows is not a list a person works through by hand.
+Two buttons sit in the toolbar of the report, and each appears only while
+something is waiting and the month is not locked:
+
+* **Delete all** clears the waiting rows. The people keep their money.
+* **Deduct all** charges the waiting rows.
+
+Both ask once before acting ("Clear all 359 waiting rows?"), then it is done.
+Proved on 560 real rows of Tikimt: **498 ms**, 20 people, and the waiting count
+went to zero.
+
+What "delete" means here matters. It deletes the rows **from the waiting list**,
+not from the record. Every row is written exactly as a single press writes it,
+with the name of the person who pressed and the moment, so months later the
+history still answers "who let this one go". It is one transaction: if anything
+fails, nothing is half-applied.
+
+A locked month refuses both, with the same 409 the single buttons return.
+
+### Which rate pays
+
+(see 7b above for the picker itself)
+
 ## 8. Guards
 
 `npx tsx scripts/verify-attendance-decisions.ts` (in `npm test`) pins:

@@ -1574,6 +1574,20 @@ export const STAFF_AM = {
   "Holiday OT": "የበዓል ተጨማሪ ሰዓት",
   "Shift OT": "የፈረቃ ተጨማሪ ሰዓት",
   "Night shift OT": "የሌሊት ፈረቃ ተጨማሪ ሰዓት",
+  // EMPTY THE WAITING LIST (owner, 2026-11-08: "can you add delete all button").
+  "Delete all": "ሁሉንም አጽዳ",
+  "Deduct all": "ሁሉንም ቀንስ",
+  "Yes, delete all": "አዎ፣ ሁሉንም አጽዳ",
+  "Yes, deduct all": "አዎ፣ ሁሉንም ቀንስ",
+  "Clear all {count} waiting rows? The people keep their money.":
+    "ጠባቂ የሆኑትን {count} ረድፎች ሁሉ ያጽዱ? ሰዎቹ ገንዘባቸውን ይይዛሉ።",
+  "Deduct all {count} waiting rows?": "ጠባቂ የሆኑትን {count} ረድፎች ሁሉ ይቀንሱ?",
+  "Only the rows still waiting change. What is already decided, and the history, stays as it is.":
+    "የሚቀየሩት አሁንም ጠባቂ የሆኑት ረድፎች ብቻ ናቸው። አስቀድሞ የተወሰነውና ታሪኩ እንዳለው ይቆያል።",
+  "{count} waiting rows are cleared. The people keep their money.":
+    "{count} ጠባቂ ረድፎች ጸድተዋል። ሰዎቹ ገንዘባቸውን ይይዛሉ።",
+  "{count} waiting rows are deducted.": "{count} ጠባቂ ረድፎች ተቀንሰዋል።",
+  "Cleared in one go": "በአንድ ጊዜ ጸድቷል",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

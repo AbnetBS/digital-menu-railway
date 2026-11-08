@@ -264,3 +264,239 @@ export async function POST(request: Request) {
     pending: pendingCounts(monthResult.events),
   });
 }
+
+/**
+ * BULK (owner, 2026-11-08).
+ *
+ * "can you add delete all button to delet all beacsue as you can see there is
+ * more than 300 req and currently i cant do that"
+ *
+ * He is standing in front of a Tikimt with 359 waiting rows and he is not going
+ * to press 718 buttons. So the same decisions, taken once for many rows:
+ *
+ *   POST { period, decision, rows: [{memberId,date,type,minutes,overtimeType,shiftLabel,measuredType}] }
+ *        or  { period, decision, all: true }
+ *
+ * `all: true` is the whole WAITING list of that month, rebuilt here on the
+ * server from the very same builder the screen reads, so the client can never
+ * send a list that is older (or shorter) than what he is looking at.
+ *
+ * It is NOT a second opinion about money: every row goes through the exact same
+ * three tables as a single press (payroll_deduction_decisions plus
+ * payroll_exceptions or attendance_ot_exclusions / attendance_overtime), one
+ * audit row per person, and a locked month is still locked.
+ *
+ * "Delete all" here means "empty the waiting list", not "erase the history":
+ * what he pressed stays written, with his name and the hour he pressed it.
+ */
+export async function PUT(request: Request) {
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth.response;
+  await ensureTablesExist();
+  const body = await request.json().catch(() => ({}));
+  const period = String(body?.period || "");
+  const decision = String(body?.decision || "") as Decision;
+  const reason = String(body?.reason || "").trim();
+
+  if (!PERIOD_RE.test(period)) {
+    return NextResponse.json({ error: "Valid Ethiopian period YYYY-MM required" }, { status: 400 });
+  }
+  if (decision !== "deduct" && decision !== "dont_deduct") {
+    return NextResponse.json({ error: "decision must be deduct or dont_deduct" }, { status: 400 });
+  }
+
+  const periodRow = await pool.query("SELECT status FROM payroll_periods WHERE period_key=$1", [period]);
+  const periodStatus = String(periodRow.rows[0]?.status || "draft");
+  if (periodStatus === "approved" || periodStatus === "paid") {
+    return NextResponse.json(
+      { error: `This month's payroll is ${periodStatus}, so its decisions are locked.` },
+      { status: 409 }
+    );
+  }
+
+  /** A row as the screen sends it, or as the month builder returns it. */
+  type BulkRow = {
+    memberId: number;
+    date: string;
+    type: DecisionKind;
+    minutes?: number;
+    overtimeType?: string | null;
+    shiftLabel?: string | null;
+    measuredType?: string | null;
+  };
+
+  let rows: BulkRow[] = [];
+  if (body?.all === true) {
+    // The waiting list, exactly as the report builds it.
+    const month = await monthAttendanceEvents(period);
+    rows = month.events
+      .filter((e) => e.status === "pending" && e.type !== "shortage")
+      .map((e) => ({
+        memberId: e.memberId,
+        date: e.date,
+        type: e.type,
+        minutes: e.measuredMinutes,
+        overtimeType: e.overtimeType,
+        shiftLabel: e.label || null,
+        measuredType: e.overtimeType,
+      }));
+  } else if (Array.isArray(body?.rows)) {
+    rows = (body.rows as BulkRow[]).filter(
+      (r) =>
+        Number(r?.memberId) > 0 &&
+        DATE_RE.test(String(r?.date || "")) &&
+        (DECISION_KINDS as readonly string[]).includes(String(r?.type || ""))
+    );
+  }
+
+  if (rows.length === 0) {
+    return NextResponse.json({ error: "There is nothing waiting in this month" }, { status: 400 });
+  }
+
+  const by = await actorName();
+  const status: DecisionStatus = decision === "deduct" ? "approved" : "denied";
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // One audit line per person, so the history says "abnet decided" and not
+    // 359 anonymous rows.
+    const audit = new Map<number, { count: number; dates: Set<string>; kinds: Set<string> }>();
+    for (const row of rows) {
+      const memberId = Number(row.memberId);
+      const date = String(row.date);
+      const type = row.type as DecisionKind;
+      const entry = audit.get(memberId) || { count: 0, dates: new Set<string>(), kinds: new Set<string>() };
+      entry.count += 1;
+      entry.dates.add(date);
+      entry.kinds.add(type);
+      audit.set(memberId, entry);
+
+      if (type === "lateness" || type === "early_out" || type === "absence") {
+        await client.query(
+          `INSERT INTO payroll_deduction_decisions(period_key,member_id,attendance_date,event_type,decision,decided_by,reason)
+           VALUES($1,$2,$3,$4,$5,$6,$7)
+           ON CONFLICT(period_key,member_id,attendance_date,event_type)
+           DO UPDATE SET decision=$5, decided_by=$6, reason=$7, decided_at=now()`,
+          [period, memberId, date, type, decision, by, reason || (decision === "dont_deduct" ? "Reasonable excuse" : "")]
+        );
+        if (decision === "dont_deduct") {
+          await client.query(
+            `INSERT INTO payroll_exceptions(period_key,member_id,attendance_date,exception_type,authorized_by,reason)
+             VALUES($1,$2,$3,$4,$5,$6)
+             ON CONFLICT(period_key,member_id,attendance_date,exception_type)
+             DO UPDATE SET authorized_by=$5, reason=$6, created_at=now()`,
+            [period, memberId, date, type, by, reason || "Reasonable excuse"]
+          );
+        } else {
+          await client.query(
+            "DELETE FROM payroll_exceptions WHERE period_key=$1 AND member_id=$2 AND attendance_date=$3 AND exception_type=$4",
+            [period, memberId, date, type]
+          );
+        }
+        continue;
+      }
+
+      if (type === "overtime") {
+        const kind = String(row.overtimeType || "shift");
+        if (!(OVERTIME_TYPES as readonly string[]).includes(kind)) continue;
+        if (decision === "deduct") {
+          const minutes = Math.max(0, Math.min(24 * 60, Math.round(Number(row.minutes) || 0)));
+          if (minutes <= 0) continue;
+          const shiftLabel = row.shiftLabel ? String(row.shiftLabel).slice(0, 40) : null;
+          await client.query(
+            `INSERT INTO payroll_deduction_decisions(period_key,member_id,attendance_date,event_type,decision,decided_by,reason,minutes,overtime_type)
+             VALUES($1,$2,$3,'overtime','deduct',$4,$5,$6,$7)
+             ON CONFLICT(period_key,member_id,attendance_date,event_type)
+             DO UPDATE SET decision='deduct', decided_by=$4, reason=$5, minutes=$6, overtime_type=$7, decided_at=now()`,
+            [period, memberId, date, by, reason || "", minutes, kind]
+          );
+          // The rate he picked replaces the measured kind of that day.
+          if (row.measuredType && String(row.measuredType) !== kind) {
+            await client.query(
+              "DELETE FROM attendance_overtime WHERE member_id=$1 AND date=$2 AND type=$3 AND source='auto'",
+              [memberId, date, String(row.measuredType)]
+            );
+          }
+          const taken = await client.query<{ id: number; source: string }>(
+            "SELECT id, source FROM attendance_overtime WHERE member_id=$1 AND date=$2 AND type=$3 ORDER BY id LIMIT 1",
+            [memberId, date, kind]
+          );
+          if (!taken.rows[0]) {
+            await client.query(
+              `INSERT INTO attendance_overtime(member_id,date,type,minutes,shift_label,source,entered_by,note)
+               VALUES($1,$2,$3,$4,$5,'supervisor',$6,$7)`,
+              [memberId, date, kind, minutes, shiftLabel, by, reason || null]
+            );
+          } else if (taken.rows[0].source !== "auto") {
+            await client.query(
+              `UPDATE attendance_overtime
+                  SET minutes=$2, shift_label=COALESCE($3, shift_label), source='supervisor', entered_by=$4,
+                      note=COALESCE(NULLIF($5,''), note)
+                WHERE id=$1`,
+              [taken.rows[0].id, minutes, shiftLabel, by, reason || ""]
+            );
+          }
+          await client.query("DELETE FROM attendance_ot_exclusions WHERE member_id=$1 AND date=$2 AND type=$3", [
+            memberId,
+            date,
+            kind,
+          ]);
+        } else {
+          await client.query(
+            `INSERT INTO payroll_deduction_decisions(period_key,member_id,attendance_date,event_type,decision,decided_by,reason,minutes,overtime_type)
+             VALUES($1,$2,$3,'overtime','dont_deduct',$4,$5,0,$6)
+             ON CONFLICT(period_key,member_id,attendance_date,event_type)
+             DO UPDATE SET decision='dont_deduct', decided_by=$4, reason=$5, minutes=0, overtime_type=$6, decided_at=now()`,
+            [period, memberId, date, by, reason || "Not allowed", kind]
+          );
+          await client.query("DELETE FROM attendance_ot_exclusions WHERE member_id=$1 AND date=$2 AND type=$3", [
+            memberId,
+            date,
+            kind,
+          ]);
+          await client.query(
+            `INSERT INTO attendance_ot_exclusions(member_id,date,type,authorized_by,reason)
+             VALUES($1,$2,$3,$4,$5)`,
+            [memberId, date, kind, by, reason || "Not allowed"]
+          );
+        }
+      }
+    }
+
+    for (const [memberId, entry] of Array.from(audit.entries())) {
+      await client.query(
+        "INSERT INTO payroll_audit(period_key,member_id,action,detail) VALUES($1,$2,'attendance_decision_bulk',$3::jsonb)",
+        [
+          period,
+          memberId,
+          JSON.stringify({
+            decision,
+            status,
+            by,
+            reason,
+            rows: entry.count,
+            dates: Array.from(entry.dates).sort(),
+            kinds: Array.from(entry.kinds),
+          }),
+        ]
+      );
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+  } finally {
+    client.release();
+  }
+
+  const monthResult = await monthAttendanceEvents(period);
+  return NextResponse.json({
+    ok: true,
+    applied: rows.length,
+    people: new Set(rows.map((r) => Number(r.memberId))).size,
+    decision,
+    status,
+    events: monthResult.events,
+    pending: pendingCounts(monthResult.events),
+  });
+}

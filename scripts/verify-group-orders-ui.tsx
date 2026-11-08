@@ -155,6 +155,31 @@ async function main() {
   ok(!("outdoorLabel" in posts[1]), "the client never sends a label; the server owns it");
   ok(/Added to GROUP 3/.test(String(sent)), "the toast says the round joined the group");
 
+  /* ── 4. TWENTY GROUPS BY DEFAULT (owner, 2026-11-08) ──
+     "create 20 groups by default... if they want more they will add more".
+     Every default number is a card whether or not it has a bill, and tapping
+     an EMPTY one asks the server for THAT number (groupNumber), not for
+     "whatever is next". */
+  await act(async () => {
+    await click((b) => /New group|Another group/.test(b.textContent || ""));
+  });
+  ok(/GROUP 1/.test(text()), "GROUP 1 is on the grid before it has a bill");
+  ok(/GROUP 20/.test(text()), "GROUP 20 is on the grid before it has a bill");
+  ok(/GROUP 3/.test(text()), "the open group keeps its card");
+  ok(/440 ETB/.test(text()), "a card with a bill shows what it owes");
+  ok(/empty/.test(text()), "an unused number says it is empty");
+
+  await click((b) => /New group|Another group/.test(b.textContent || ""));
+  await click((b) => /GROUP 12/.test(b.textContent || ""));
+  ok(/GROUP 12/.test(text()), "tapping the empty GROUP 12 selects 12");
+
+  await click((b) => /Doro Wot/.test(b.textContent || ""));
+  const beforeSlot = posts.length;
+  await click((b) => /Send Group Order/.test(b.textContent || ""));
+  strictEqual(posts.length, beforeSlot + 1, "the tapped slot sends one order");
+  strictEqual(posts[beforeSlot].groupNumber, 12, "the tapped number travels as groupNumber, not as a label");
+  ok(!("outdoorLabel" in posts[beforeSlot]), "still no label from the client");
+
   root.unmount();
   console.log("✅ Group Orders composer UI smoke PASSED");
 }

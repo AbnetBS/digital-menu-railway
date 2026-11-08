@@ -101,6 +101,14 @@ export async function POST(request: Request) {
     }
 
     const pin = String(body.pin ?? "").trim();
+    /* COUNTED FROM WHICH DAY (owner, 2026-11-08). A person added from the
+     * payroll screen is added with the first day of the Ethiopian month the
+     * owner picked, so a name typed in Tikimt is not retroactively absent for
+     * Meskerem, and a person hired mid-month is prorated from that day without
+     * anybody having to remember to type it twice. Absent or invalid means "no
+     * typed start", which the report and payroll already handle. */
+    const startedRaw = String(body.employmentStartedAt ?? "").trim().slice(0, 10);
+    const startedOn = /^\d{4}-\d{2}-\d{2}$/.test(startedRaw) && !Number.isNaN(Date.parse(startedRaw)) ? new Date(`${startedRaw}T00:00:00Z`) : null;
     const member = await db
       .insert(attendanceMembers)
       .values({
@@ -108,6 +116,7 @@ export async function POST(request: Request) {
         roleId,
         // The PIN is the backup for a wet finger: stored hashed, never echoed.
         pin: pin ? await hashSecret(pin) : null,
+        employmentStartedAt: startedOn,
       })
       .returning();
 

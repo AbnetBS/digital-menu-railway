@@ -28,6 +28,11 @@ export const STAFF_AM = {
   "Print": "አትም",
   "Cancel": "ይቅር",
   "Save": "አስቀምጥ",
+  "Save this item only": "ይህን እቃ ብቻ አስቀምጥ",
+  "EDIT ITEMS": "እቃዎችን ቀይር",
+  "Type only the items you want to change for the sport menu, then Save that item. Everything else keeps the normal price.": "ለስፖርት ምናሌ መቀየር የሚፈልጉትን እቃዎች ብቻ ይጻፉ፣ ከዚያ ያንን እቃ ያስቀምጡ። ሌሎቹ ሁሉ የተለመደውን ዋጋ ይይዛሉ።",
+  "{name} saved. Only this item changed.": "{name} ተቀምጧል። የተቀየረው ይህ እቃ ብቻ ነው።",
+  "Type the event price first.": "መጀመሪያ የዝግጅቱን ዋጋ ይጻፉ።",
   "Delete": "ሰርዝ",
   "Remove": "አስወግድ",
   "Edit": "አስተካክል",
@@ -896,6 +901,13 @@ export const STAFF_AM = {
 
   /* Sport menu (owner, 2026-11-07) */
   "Sport menu": "የስፖርት ምናሌ",
+  "Sport menu • choose the group": "የስፖርት ምናሌ • ቡድኑን ይምረጡ",
+  "Tables": "ጠረጴዛዎች",
+  "Sport menu: tap the group watching the match, or start a new group.": "የስፖርት ምናሌ፦ ጨዋታውን የሚመለከተውን ቡድን ይንኩ፣ ወይም አዲስ ቡድን ይጀምሩ።",
+  "The price of {n} item(s) was changed by the admin for this match.": "የ{n} እቃዎች ዋጋ በአስተዳዳሪው ለዚህ ጨዋታ ተቀይሯል።",
+  "No open groups right now. Tap New group above for the first one.": "አሁን ክፍት ቡድን የለም። ለመጀመሪያው ከላይ አዲስ ቡድን ይንኩ።",
+  "Tap to add sport items": "የስፖርት እቃዎችን ለመጨመር ይንኩ",
+  "Back to the tables": "ወደ ጠረጴዛዎች ተመለስ",
   "Event prices: {n} item(s) were changed by the admin.": "የዝግጅት ዋጋዎች፦ {n} እቃዎች በአስተዳዳሪው ተቀይረዋል።",
   "Normal prices": "የተለመዱ ዋጋዎች",
   "Only the owner sets these prices. The waiter sees them on the normal menu and a customer never does.": "እነዚህን ዋጋዎች የሚወስነው ባለቤቱ ብቻ ነው። አስተናጋጁ በተለመደው ምናሌ ላይ ያያቸዋል፣ ደንበኛው ግን ፈጽሞ አያያቸውም።",
@@ -1502,6 +1514,66 @@ export const STAFF_AM = {
   "Day": "ቀን",
   "Revenue": "ገቢ",
   "Total (7 days)": "ጠቅላላ (7 ቀናት)",
+
+  /* ── the deduction report: nothing charged without a decision (8 Nov 2026) ──
+     The owner's own words: "abnet late 30 min, deduct / dont deduct", "dont
+     deduct at side if they come with reasonable way", and for all four kinds
+     "it waits for the supervisor confirmation". The two buttons are the same
+     words he dictated, in both languages. */
+  "Deduction Report": "የቅጣት ሪፖርት",
+  "Decide deductions": "ቅጣቶችን ውሰን",
+  "Deduct": "ቀንስ",
+  "Do not deduct": "አትቀንስ",
+  "Add overtime": "ተጨማሪ ሰዓት ጨምር",
+  "Do not add": "አትጨምር",
+  "Deducted": "ተቀንሷል",
+  "Not deducted": "አልተቀነሰም",
+  "waiting": "በመጠበቅ ላይ",
+  "Waiting for me": "የእኔን ውሳኔ የሚጠብቁ",
+  "All decisions": "ሁሉም ውሳኔዎች",
+  "Month": "ወር",
+  "Payroll month": "የደመወዝ ወር",
+  "Employee": "ሰራተኛ",
+  "All employees": "ሁሉም ሰራተኞች",
+  "Late": "ዘግይቷል",
+  "Left early": "በስቀድሞ ወጥቷል",
+  "Absent": "አልመጣም",
+  "Overtime": "ተጨማሪ ሰዓት",
+  "Breakage and shortage": "ብልሽትና ጉድለት",
+  "Nothing is deducted until you decide": "እርስዎ እስኪወስኑ ድረስ ምንም አይቀነስም",
+  "Every absence, lateness, early leave and overtime waits here. Do not deduct when the reason is good: the person keeps the money and the reason is saved.":
+    "እያንዳንዱ አለመመጣጠን፣ መዘግየት፣ በስቀድሞ መውጣትና ተጨማሪ ሰዓት እዚህ ይጠብቃል። ምክንያቱ ተገቢ ከሆነ አትቀንሱ፦ ሰራተኛው ገንዘቡን ይይዛል፤ ምክንያቱም ይቀመጣል።",
+  "Nothing is waiting for a decision this month.": "በዚህ ወር ውሳኔ የሚጠብቅ ነገር የለም።",
+  "No attendance events in this month.": "በዚህ ወር የአቴንዳንስ ክስተት የለም።",
+  "Reasonable excuse": "ተገቢ ምክንያት",
+  "Overtime added. It is paid this month.": "ተጨማሪ ሰዓት ተጨምሯል። በዚህ ወር ይከፈላል።",
+  "Deduction confirmed for {name}.": "ለ{name} ቅጣቱ ተረጋግጧል።",
+  "{name} is not charged this time.": "{name} በዚህ ጊዜ አይቀጣም።",
+  "This person is already paid for this month. Take the paid tick back first.":
+    "ይህ ሰራተኛ ለዚህ ወር አስቀድሞ ተከፍሏል። መጀመሪያ የተከፈለ ምልክቱን ይመልሱ።",
+  "No items yet": "እስካሁን ዕቃ የለም",
+  "Another group": "ሌላ ቡድን",
+  "Tap to start this group": "ይህን ቡድን ለመጀመር ይንኩ",
+  "Groups 1 to {n} are ready · tap one": "ቡድን 1 እስከ {n} ዝግጁ ናቸው · አንዱን ይንኩ",
+  "This month's payroll is paid, so these decisions are locked.":
+    "የዚህ ወር ደመወዝ ተከፍሏል፤ ስለዚህ እነዚህ ውሳኔዎች ተቆልፈዋል።",
+  "This month's payroll is approved, so these decisions are locked.":
+    "የዚህ ወር ደመወዝ ጸድቋል፤ ስለዚህ እነዚህ ውሳኔዎች ተቆልፈዋል።",
+  // NEW PERSON FROM THE PAYROLL SHEET (owner, 2026-11-08).
+  "New person": "አዲስ ሰው",
+  "Add person": "ሰው ጨምር",
+  "Type the name first": "መጀመሪያ ስሙን ይጻፉ",
+  "He appears on the payroll sheet straight away. Type his Basic Salary in the cell after saving.":
+    "ወዲያውኑ በደመወዝ ሰነዱ ላይ ይታያል። ካስቀመጡ በኋላ መሠረታዊ ደመወዙን በሳጥኑ ውስጥ ይጻፉ።",
+  "Select role": "ሚና ይምረጡ",
+  "Counted from this month": "ከዚህ ወር ጀምሮ ይቆጠራል",
+  "Ethiopian month, for example 2019-02 is Tikimt 2019": "የኢትዮጵያ ወር፤ ለምሳሌ 2019-02 ጥቅምት 2019 ነው",
+  // WHICH RATE PAYS (owner, 2026-11-08: "let me choose per row").
+  "Which rate pays": "የትኛው ተመን ይከፍላል",
+  "Free week OT": "የስራ ዕረፍት ተጨማሪ ሰዓት",
+  "Holiday OT": "የበዓል ተጨማሪ ሰዓት",
+  "Shift OT": "የፈረቃ ተጨማሪ ሰዓት",
+  "Night shift OT": "የሌሊት ፈረቃ ተጨማሪ ሰዓት",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

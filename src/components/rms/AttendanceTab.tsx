@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } fr
 import {
   Calendar,
   CalendarDays,
+  ClipboardCheck,
   Clock,
   Fingerprint,
   LogOut,
@@ -36,13 +37,18 @@ import FreeScheduleDialog from "@/components/rms/FreeScheduleDialog";
 import TableScroll from "@/components/rms/TableScroll";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
 import { currentEthiopianPeriod } from "@/lib/payroll";
+import DeductionReportPanel from "@/components/rms/DeductionReportPanel";
 import { etDayKeyDaysAgo } from "@/lib/timezone";
 
 /**
  * ADMIN -> ATTENDANCE (owner, Oct 2026).
  *
- * The order of the buttons is the owner's: Today Live first, Open Kiosk last,
- * everything else in between. The Shifts tab is gone - the times live on the
+ * The order of the buttons is the owner's: Today Live first. The "Open Kiosk
+ * /attendance" link that used to sit at the end is GONE (owner, 2026-11-08: "they
+ * are not using that tab"): in its place is the Deduction Report, where the
+ * lateness, absence, early-leave and overtime rows wait for a person to say
+ * Deduct or Do not deduct. The kiosk itself is still at /attendance for the
+ * people who scan at the door. The Shifts tab is gone - the times live on the
  * roles now (Role & Time), which is what decides who is late.
  *
  * The people on this page are the ATTENDANCE list (Staff Members), not the
@@ -64,7 +70,16 @@ import { etDayKeyDaysAgo } from "@/lib/timezone";
  *     saved is the record: there is no approval queue.
  */
 
-type ViewKey = "today" | "roles" | "members" | "sheet" | "leaderboard" | "overtime" | "activity" | "prints";
+type ViewKey =
+  | "today"
+  | "decisions"
+  | "roles"
+  | "members"
+  | "sheet"
+  | "leaderboard"
+  | "overtime"
+  | "activity"
+  | "prints";
 
 interface RoleShift {
   id?: number;
@@ -247,6 +262,13 @@ export default function AttendanceTab() {
   const [activeView, setActiveView] = useState<ViewKey>("today");
   const [msg, setMsg] = useState("");
   const [msgBad, setMsgBad] = useState(false);
+  /**
+   * How many rows are still waiting for a human (owner, 2026-11-08). The badge
+   * on the Deduction Report button is the whole point: the supervisor sees the
+   * number of people whose money is undecided, and nothing is deducted until
+   * that number is worked through.
+   */
+  const [pendingDecisions, setPendingDecisions] = useState(0);
 
   const [roles, setRoles] = useState<Role[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -387,6 +409,25 @@ export default function AttendanceTab() {
       if (r.ok) setTodayLogs(await r.json());
     } catch {
       /* the table simply stays as it was */
+    }
+  }, []);
+
+  /**
+   * The number on the Deduction Report button: how many lateness, absence,
+   * early-leave and overtime rows still have nobody's decision on them. It is
+   * fetched on the tab itself so the number is right before the report is
+   * opened, and the panel reports its own count back after each press.
+   */
+  const loadPendingDecisions = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/attendance/decisions?period=${encodeURIComponent(currentEthiopianPeriod())}`, {
+        cache: "no-store",
+      });
+      if (!r.ok) return;
+      const data = await r.json();
+      setPendingDecisions(Number(data?.pending?.total || 0));
+    } catch {
+      /* the badge keeps its last number */
     }
   }, []);
 
@@ -532,11 +573,17 @@ export default function AttendanceTab() {
         say(d?.error || "Could not save the overtime", true);
         return;
       }
-      say(d.replaced ? `Corrected: ${d.message}` : d.message);
+      // NOTHING IS PAID BY ITSELF (owner, 2026-11-08). A typed overtime row is a
+      // MEASUREMENT: it appears on the Deduction Report as "overtime 2 h" and
+      // waits for Add overtime / Do not add, exactly like a late arrival waits
+      // for Deduct / Do not deduct. So this screen no longer says "saved and
+      // paid"; it says what happens next.
+      say(`${d.replaced ? `Corrected: ${d.message} ` : `${d.message} `}It is waiting for Add overtime on the Deduction Report.`);
       setOtHours("");
       setOtNote("");
       await loadOvertime();
       loadToday();
+      void loadPendingDecisions();
     } catch {
       say("Network error. Try again.", true);
     } finally {
@@ -624,7 +671,8 @@ export default function AttendanceTab() {
     loadRoles();
     loadMembers();
     loadToday();
-  }, [loadRoles, loadMembers, loadToday]);
+    void loadPendingDecisions();
+  }, [loadRoles, loadMembers, loadToday, loadPendingDecisions]);
 
   // Today Live refreshes in real time: the server pushes the moment a scan
   // is clocked in/out (SSE), so there is no polling. Falls back to the old
@@ -1190,6 +1238,7 @@ export default function AttendanceTab() {
         {(
           [
             { key: "today", label: "Today Live", icon: <Clock className="w-4 h-4" /> },
+            { key: "decisions", label: "Deduction Report", icon: <ClipboardCheck className="w-4 h-4" /> },
             { key: "roles", label: "Role & Time", icon: <Timer className="w-4 h-4" /> },
             { key: "members", label: "Staff Members", icon: <Users className="w-4 h-4" /> },
             { key: "sheet", label: "Paper Sheet View", icon: <Calendar className="w-4 h-4" /> },
@@ -1215,13 +1264,29 @@ export default function AttendanceTab() {
             {v.icon} {L(v.label)}
           </button>
         ))}
-        <a
-          href="/attendance"
-          target="_blank"
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-800 hover:bg-emerald-700 text-white whitespace-nowrap"
+        {/*
+          THE KIOSK BUTTON IS GONE (owner, 2026-11-08: "they are not using that
+          tab"). Its place is the report that needs a person: lateness, absence,
+          early leave and overtime, each with Deduct / Do not deduct, and no
+          money moves until one of the two is pressed. The door tablet still
+          lives at /attendance for the people who use it; the admin just does not
+          need a button for it here.
+        */}
+        <button
+          onClick={() => setActiveView("decisions")}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
+            activeView === "decisions"
+              ? "bg-rose-800 text-white"
+              : "bg-rose-900/60 hover:bg-rose-800 text-rose-100"
+          }`}
         >
-          <Clock className="w-4 h-4" /> {L("Open Kiosk /attendance")}
-        </a>
+          <ClipboardCheck className="w-4 h-4" /> {L("Decide deductions")}
+          {pendingDecisions > 0 && (
+            <span className="bg-amber-400 text-[#2C1B17] rounded-full px-1.5 py-0.5 text-[10px] font-black">
+              {pendingDecisions}
+            </span>
+          )}
+        </button>
       </div>
 
       {msg && (
@@ -1234,6 +1299,14 @@ export default function AttendanceTab() {
         >
           {msg}
         </div>
+      )}
+
+      {/* ── THE DEDUCTION REPORT ─────────────────────────────────────────
+          The screen the kiosk button became (owner, 2026-11-08): lateness,
+          absence, early leave and overtime, each with Deduct / Do not deduct,
+          and no money moved until one of the two is pressed. */}
+      {activeView === "decisions" && (
+        <DeductionReportPanel onPendingChange={setPendingDecisions} />
       )}
 
       {/* ── TODAY LIVE ─────────────────────────────────────────────────── */}
@@ -1982,12 +2055,22 @@ export default function AttendanceTab() {
                                       <>
                                         <div>{cell.clockOutTime}</div>
                                         <div className="text-[11px] font-bold">{cell.totalHours}</div>
-                                        {cell.isOvertime && <div className="text-[11px] font-black">Overtime</div>}
-                                        {!cell.isOvertime && cell.stayedNextShift && (
+                                        {/* OWNER, 2026-11-08: on a registered free day the
+                                            box carries the free day wording, never "Absent"
+                                            and never "Early out". Coming in is already said
+                                            in the IN box (blue "Worked free day"), and the
+                                            money question is on the report. */}
+                                        {cell.freeDay && (
+                                          <div className="text-[11px] font-black">Worked free day</div>
+                                        )}
+                                        {!cell.freeDay && !cell.isOvertime && cell.stayedNextShift && (
                                           <div className="text-[11px] font-black">Stayed next shift</div>
                                         )}
-                                        {!cell.isOvertime && !cell.stayedNextShift && cell.earlyOut && (
+                                        {!cell.freeDay && !cell.isOvertime && !cell.stayedNextShift && cell.earlyOut && (
                                           <div className="text-[11px] font-black">Early out</div>
+                                        )}
+                                        {!cell.freeDay && cell.isOvertime && (
+                                          <div className="text-[11px] font-black">Overtime</div>
                                         )}
                                       </>
                                     ) : cell?.freeDay && cell.clockInTime ? (

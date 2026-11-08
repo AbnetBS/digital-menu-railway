@@ -26,9 +26,13 @@ export async function POST(request: Request) {
     const key = keyFrom(body?.idempotencyKey);
     const order = body?.order;
     const items = order?.items;
-    const isGroupRound = order?.groupOrder === true && Number(order?.targetTicketId) > 0;
+    // A group round is valid even with NO target ticket: the FIRST round of a
+    // group creates the bill and the server stamps its number (the same rule the
+    // Group Orders composer has always used). Only a dine-in order needs a real
+    // table. The ticket route still validates everything again when it runs.
+    const isGroupOrder = order?.groupOrder === true && order?.orderType === "outdoor";
     const validTable = Number.isInteger(Number(order?.tableId)) && Number(order?.tableId) > 0;
-    if (!key || !order || !Array.isArray(items) || items.length === 0 || (!validTable && !isGroupRound)) {
+    if (!key || !order || !Array.isArray(items) || items.length === 0 || (!validTable && !isGroupOrder)) {
       return NextResponse.json({ error: "Invalid deferred order" }, { status: 400 });
     }
 

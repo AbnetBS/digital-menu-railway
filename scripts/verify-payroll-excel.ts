@@ -197,6 +197,28 @@ pass("Prepared / Checked / Approved lines are on the paper", payrollTab.includes
 pass("the print CSS hides every dashboard element", payrollTab.includes("#fana-payroll > *:not(.print-sheet) { display: none !important; }") && payrollTab.includes(".no-print"));
 pass("paper is landscape A3 with repeating column headers", payrollTab.includes("size: A3 landscape") && payrollTab.includes("display: table-header-group"));
 pass("the Excel column headers are on the paper", ["Basic", "Transport", "OT", "Gross", "Taxable", "Income", "P.C 7 %", "P.C 18%", "Breakage", "Total", "Net pay"].every((h) => payrollTab.includes(h)));
+// His paper, exactly (owner, 2026-11-08): fifteen columns in the order of his
+// Excel, the three attendance columns only when the supervisor asks for them.
+{
+  const paperTable = payrollTab.slice(payrollTab.indexOf('className="payroll-paper"'), payrollTab.indexOf('<p className="payroll-note">'));
+  const head = paperTable.slice(paperTable.indexOf("<thead>"), paperTable.indexOf("</thead>"));
+  const base = ["No.", "Employee Name", "Basic<br />Salary", "11%", "Transport<br />Allowance", "OT", "Gross<br />Salary", "Taxable<br />salary", "Income<br />tax", "P.C 7 %", "P.C 18%", "Breakage", "Total<br />Deduction", "Net pay", "Signature"];
+  let at = -1;
+  const inOrder = base.every((label) => {
+    const next = head.indexOf(label, at + 1);
+    if (next < 0) return false;
+    at = next;
+    return true;
+  });
+  pass("the paper is his fifteen columns, in his order", inOrder && base.length === 15);
+  pass(
+    "Absence, Late and Early out are off the paper until asked for",
+    payrollTab.includes("const [showAttendanceColumns, setShowAttendanceColumns] = useState(false)") &&
+      (head.match(/\{showAttendanceColumns && <th>/g) || []).length === 3 &&
+      payrollTab.includes('Absence / Late / Early out') &&
+      payrollTab.includes("showAttendanceColumns ? 18 : 15")
+  );
+}
 pass("zeros are blank in optional money cells like the Excel", payrollTab.includes("const paper = (n: number, blankZero = false)"));
 pass("existing databases receive the absence rule once", migrate.includes("payroll_absence_rule_2026_10_27") && migrate.includes('const absenceRule = "BasicSalary / 30 * UnapprovedAbsences"') && (/SCHEMA_VERSION = "(\d{4}-\d{2}-\d{2}-\d+)"/.exec(migrate)?.[1] ?? "") >= "2026-10-27-2");
 pass("today is not counted as an absence before the day is finished", payrollApi.includes("d < today && !presentDates.has(d)"));
@@ -206,6 +228,40 @@ if (failures > 0) {
   console.error(`\n❌ EXCEL PARITY GUARD FAILED (${failures})\n`);
   process.exit(1);
 }
+/* ── the full month is the whole basic salary (owner, 2026-11-08) ─────────
+ * The sheet he sent is a FULL month: 5,342.47 in, 5,000.00 out. The old
+ * proration used the first fingerprint scan as the employment start, so a full
+ * month quietly paid 20% and the paper stopped matching the Excel. The API now
+ * prorates only when the owner typed an employment start inside the month.
+ */
+const routeSource = read("src/app/api/payroll/route.ts");
+pass(
+  "a full month is never prorated by the first scan",
+  // The factor may only exist behind `prorated`, and `prorated` may only come
+  // from a typed employment start or a termination, never from `created`
+  // (the first fingerprint scan).
+  routeSource.includes("const prorationFactor = prorated && periodDates.length") &&
+    routeSource.includes("const prorated = Boolean(employmentStart && employmentStart > bounds.from) || Boolean(terminated)") &&
+    !/employmentDays = periodDates\.filter\([\s\S]{0,200}created/.test(routeSource)
+);
+pass(
+  "proration still exists for a real mid-month start or a termination",
+  routeSource.includes("employmentStart > bounds.from") && routeSource.includes("terminated")
+);
+pass(
+  "the whole month's basic salary is what the Excel row shows",
+  near(
+    computePayrollMoney({
+      basicSalary: 5342.47,
+      transportAllowance: 600,
+      breakageShortage: 0,
+      settings: excelSettings(0),
+      prorationFactor: 1,
+    }).display.netPay,
+    5000
+  )
+);
+
 console.log("✅ Excel parity guard PASSED");
 console.log(`   • ${rows.length} real rows: 11%, Gross, Taxable, Income tax, P.C 7%, P.C 18%, Total Deduction and Net pay`);
 console.log("   • full precision behind the two displayed decimals, one-cent drift documented");

@@ -56,7 +56,17 @@ const pass = (name, ok) => {
 
 /* ── 1. the numbering lib ─────────────────────────────────────────────────── */
 {
-  pass("the GROUP label shape is defined once (GROUP <n>)", /export const GROUP_LABEL_RE = \/\^GROUP \(\\d\+\)\$\/;/.test(lib) && /export const groupLabel = \(n: number\) => `GROUP \$\{n\}`;/.test(lib));
+  // 2026-11-08: the shape moved to the PURE module (lib/group-grid) so the
+  // waiter's phone can import it without dragging the pg driver into the
+  // browser bundle. It is still defined exactly once, and group-orders
+  // re-exports it so every server caller keeps its single import.
+  const grid = read("src/lib/group-grid.ts");
+  pass(
+    "the GROUP label shape is defined once (GROUP <n>)",
+    /export const GROUP_LABEL_RE = \/\^GROUP \(\\d\+\)\$\/;/.test(grid) &&
+      /export const groupLabel = \(n: number\) => `GROUP \$\{n\}`;/.test(grid) &&
+      /export \{ DEFAULT_GROUP_COUNT, GROUP_LABEL_RE, defaultGroupLabels, groupLabel, groupNumbersForGrid \} from "@\/lib\/group-grid";/.test(lib)
+  );
   pass(
     "numbering is daily, keyed to Ethiopian midnight like the Coffee Note seq",
     /gte\(tickets\.createdAt, etStartOfToday\(\)\)/.test(lib),
@@ -91,7 +101,12 @@ const pass = (name, ok) => {
   );
   pass(
     "a NEW group bill is stamped by the server under the advisory lock",
-    /if \(isGroupOrder\) tableName = groupLabel\(await nextGroupNumberInTx\(tx\)\);/.test(route),
+    /if \(isGroupOrder\)\s*tableName = groupLabel\(await groupNumberForNewBillInTx\(tx, Number\(body\?\.groupNumber\) \|\| 0\)\);/.test(route),
+  );
+  pass(
+    "a tapped default slot is honoured only while its number is free today",
+    /export async function groupNumberForNewBillInTx/.test(lib) &&
+      /if \(want > 0 && !taken\.has\(want\)\) return want;/.test(lib),
   );
   pass(
     "the POST reads targetTicketId for another-round merges",
@@ -167,8 +182,8 @@ const pass = (name, ok) => {
     /Select Table[\s\S]{0,2600}setGroupComposerOpen\(true\)[\s\S]{0,400}title=\{L\("Groups"\)\}/.test(waiter),
   );
   pass(
-    "the Groups button never left the screen (it is reachable from the header and from the sport sheet)",
-    (waiter.match(/setGroupComposerOpen\(true\)/g) || []).length >= 2,
+    "the Groups button never left the screen (its composer is still mounted and opened from the header)",
+    /setGroupComposerOpen\(true\)/.test(waiter) && /<GroupComposer/.test(waiter),
   );
   pass(
     "the composer is rendered with the signed-in waiter's name",
@@ -230,9 +245,9 @@ const pass = (name, ok) => {
   );
   pass(
     "Add Items on a group bill rides the group round flow (same bill, server label)",
-    /const groupRound = selectedTable\.isGroup === true && !!selectedTable\.activeTicketId;/.test(waiter) &&
+    /const groupRound = selectedTable\.isGroup === true;/.test(waiter) &&
       /const queued: PendingWaiterSend = \{[\s\S]{0,500}groupRound,[\s\S]{0,100}targetTicketId: selectedTable\.activeTicketId/.test(waiter) &&
-      /send\.groupRound[\s\S]{0,150}\? \{ source: "staff", orderType: "outdoor", groupOrder: true, targetTicketId: send\.targetTicketId \}/.test(waiter),
+      /groupRound\s*\? \{[\s\S]{0,200}?groupOrder: true,[\s\S]{0,200}?\.\.\.\(send\.targetTicketId \? \{ targetTicketId: send\.targetTicketId \} : \{\}\)/.test(waiter),
   );
   pass(
     "a table order is still sent the table way (no group flag leaks into normal tables)",

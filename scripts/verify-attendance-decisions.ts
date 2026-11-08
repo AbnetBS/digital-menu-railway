@@ -232,10 +232,16 @@ pass(
   "the Open Kiosk button is gone from the admin attendance tab",
   !adminTab.includes('href="/attendance"') && !adminTab.includes("Open Kiosk /attendance")
 );
+// The report has exactly ONE door (owner, 2026-11-08: "there is 2 deduction
+// report buttons can you pleasae remove the 1st one and stay the last button").
+// The chip in the switcher list is gone; the rose button at the end of the row,
+// the one that carries the count, is the only way in.
 pass(
-  "its place is the Deduction Report",
-  adminTab.includes('{ key: "decisions"') &&
-    adminTab.includes("Deduction Report") &&
+  "the report has exactly one button, the last one with the count",
+  !adminTab.includes('{ key: "decisions", label: "Deduction Report"') &&
+    (adminTab.match(/setActiveView\("decisions"\)/g) || []).length === 1 &&
+    adminTab.includes('L("Decide deductions")') &&
+    adminTab.includes("pendingDecisions > 0") &&
     adminTab.includes("<DeductionReportPanel")
 );
 pass(
@@ -386,6 +392,46 @@ const monthEventsSrc = read("src/lib/attendance-month-events.ts");
 const payrollApiSrc = read("src/app/api/payroll/route.ts");
 const attendanceTabSrc = read("src/components/rms/AttendanceTab.tsx");
 const decisionsApiSrc = read("src/app/api/attendance/decisions/route.ts");
+const reportSrc = read("src/components/rms/DeductionReportPanel.tsx");
+/* ── EMPTY THE WAITING LIST (owner, 2026-11-08) ────────────────────────────
+ * "can you add delete all button to delet all beacsue as you can see there is
+ * more than 300 req and currently i cant do that"
+ */
+const decisionsRouteSrc = read("src/app/api/attendance/decisions/route.ts");
+pass(
+  "both bulk buttons exist and only while something is waiting",
+  reportSrc.includes('L("Delete all")') &&
+    reportSrc.includes('L("Deduct all")') &&
+    reportSrc.includes("!data?.locked && counts.total > 0")
+);
+pass(
+  "bulk acts on the server's own waiting list, never on a list the client sends",
+  decisionsRouteSrc.includes("export async function PUT") &&
+    decisionsRouteSrc.includes("if (body?.all === true)") &&
+    decisionsRouteSrc.includes("month.events") &&
+    decisionsRouteSrc.includes('e.status === "pending" && e.type !== "shortage"')
+);
+pass(
+  "bulk writes the same tables as a single press, in one transaction",
+  decisionsRouteSrc.includes("await client.query(\"BEGIN\")") &&
+    decisionsRouteSrc.includes("INSERT INTO payroll_deduction_decisions") &&
+    decisionsRouteSrc.includes("INSERT INTO payroll_exceptions") &&
+    decisionsRouteSrc.includes("INSERT INTO attendance_ot_exclusions") &&
+    decisionsRouteSrc.includes("await client.query(\"COMMIT\")")
+);
+pass(
+  "bulk is locked exactly like a single press, and refuses an empty list",
+  decisionsRouteSrc.includes("const periodStatus = String(periodRow.rows[0]?.status || \"draft\")") &&
+    decisionsRouteSrc.includes("There is nothing waiting in this month") &&
+    reportSrc.includes('"{count} waiting rows are cleared. The people keep their money."') &&
+    reportSrc.includes("bulkOpen")
+);
+pass(
+  "delete all is a decision, not an erasure: the history keeps who and when",
+  decisionsRouteSrc.includes("'attendance_decision_bulk'") &&
+    decisionsRouteSrc.includes("dates: Array.from(entry.dates).sort()")
+);
+
 
 pass(
   "a scan on a free day is a row on the report, measured from the scan",
@@ -441,7 +487,6 @@ pass(
  * A visit measured as a free day can be approved at any of the four rates, and
  * that choice is what pays it. It is still ONE visit: never paid twice.
  */
-const reportSrc = read("src/components/rms/DeductionReportPanel.tsx");
 pass(
   "every overtime row carries a rate picker with the four rates",
   reportSrc.includes("OT_RATE_OPTIONS") &&
@@ -474,7 +519,7 @@ pass(
 
 console.log(
   failures === 0
-    ? "\n✅ attendance decisions guard PASSED\n   • pending costs nothing, pays nothing; only Deduct / Add overtime moves money\n   • overtime waits like lateness, absence and early leave\n   • the kiosk button is gone, the report is in its place\n   • 20 groups by default\n   • a free day is never red, and a visit on it waits for the same two buttons\n   • a typed start date is read correctly, so the whole month is a whole month\n   • the overtime rate is his choice per row, and one visit is never paid twice"
+    ? "\n✅ attendance decisions guard PASSED\n   • pending costs nothing, pays nothing; only Deduct / Add overtime moves money\n   • overtime waits like lateness, absence and early leave\n   • the kiosk button is gone, the report is in its place\n   • 20 groups by default\n   • a free day is never red, and a visit on it waits for the same two buttons\n   • a typed start date is read correctly, so the whole month is a whole month\n   • the overtime rate is his choice per row, and one visit is never paid twice\n   • Delete all / Deduct all empty the waiting list in one transaction, never erase history"
     : `\n❌ ${failures} check(s) failed`
 );
 process.exit(failures === 0 ? 0 : 1);

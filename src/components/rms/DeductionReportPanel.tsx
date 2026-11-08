@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, Loader2, RefreshCw, ThumbsDown, X } from "lucide-react";
+import { Check, Layers, Loader2, RefreshCw, ThumbsDown, X } from "lucide-react";
 import { useStaffT } from "@/lib/staff-i18n";
 import type { OvertimeType } from "@/lib/attendance";
 import { phrase } from "@/lib/staff-i18n";
@@ -172,6 +172,57 @@ export default function DeductionReportPanel({
     }
   };
 
+  /**
+   * THE WHOLE WAITING LIST AT ONCE (owner, 2026-11-08).
+   *
+   * "can you add delete all button to delet all beacsue as you can see there is
+   * more than 300 req and currently i cant do that"
+   *
+   * He has 359 rows on Tikimt. Two buttons empty that list: everything waiting
+   * is DEDUCTED (Do not deduct) or CLEARED (Delete all). "Delete all" does not
+   * erase history: what he pressed stays written with his name and the hour,
+   * exactly like 359 single presses, and the row leaves the waiting list.
+   * A month that is approved or paid refuses, as it always did.
+   */
+  const [bulkOpen, setBulkOpen] = useState<"" | "deduct" | "dont_deduct">("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const runBulk = async () => {
+    if (!bulkOpen) return;
+    const decision = bulkOpen;
+    setBulkBusy(true);
+    setMsg("");
+    try {
+      const res = await fetch("/api/attendance/decisions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          period,
+          decision,
+          // The server rebuilds the waiting list itself, so it can never act on
+          // a list older than the screen he is looking at.
+          all: true,
+          reason: decision === "dont_deduct" ? L("Cleared in one go") : "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || "Could not do that");
+      setData((prev) => (prev ? { ...prev, events: body.events || prev.events } : prev));
+      onPendingChange?.(Number(body?.pending?.total || 0));
+      say(
+        decision === "dont_deduct"
+          ? L("{count} waiting rows are cleared. The people keep their money.", { count: Number(body.applied) || 0 })
+          : L("{count} waiting rows are deducted.", { count: Number(body.applied) || 0 }),
+        false
+      );
+      setBulkOpen("");
+    } catch (e) {
+      say(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const today = etDayKeyDaysAgo(0) || "";
   const yesterday = etDayKeyDaysAgo(1) || "";
   const all = data?.events || [];
@@ -226,9 +277,28 @@ export default function DeductionReportPanel({
             {L("All decisions")}
           </button>
         </div>
+        {/* THE TWO BUTTONS THAT EMPTY THE LIST, and only when there is
+            something to empty and the month is not locked. They act on the
+            WAITING rows only: a row already decided is never touched. */}
+        {!data?.locked && counts.total > 0 && (
+          <div className="ml-auto flex items-center gap-1.5">
+            <button
+              onClick={() => setBulkOpen("dont_deduct")}
+              className="flex items-center gap-1.5 bg-emerald-800 hover:bg-emerald-700 text-white text-[11px] font-black px-3 py-2 rounded-xl"
+            >
+              <Layers className="w-3.5 h-3.5" /> {L("Delete all")} ({counts.total})
+            </button>
+            <button
+              onClick={() => setBulkOpen("deduct")}
+              className="flex items-center gap-1.5 bg-rose-800 hover:bg-rose-700 text-white text-[11px] font-black px-3 py-2 rounded-xl"
+            >
+              <Check className="w-3.5 h-3.5" /> {L("Deduct all")} ({counts.total})
+            </button>
+          </div>
+        )}
         <button
           onClick={() => void load()}
-          className="ml-auto p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl"
+          className={`${data?.locked || counts.total === 0 ? "ml-auto " : ""}p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl`}
           aria-label={L("Refresh")}
         >
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
@@ -263,6 +333,38 @@ export default function DeductionReportPanel({
           }`}
         >
           {msg}
+        </div>
+      )}
+
+      {bulkOpen && (
+        <div className="rounded-2xl border border-[#C9A227]/50 bg-[#2C1B17] p-4 space-y-3">
+          <p className="text-sm font-black text-amber-100">
+            {bulkOpen === "dont_deduct"
+              ? L("Clear all {count} waiting rows? The people keep their money.", { count: counts.total })
+              : L("Deduct all {count} waiting rows?", { count: counts.total })}
+          </p>
+          <p className="text-[11px] font-bold text-stone-400">
+            {L("Only the rows still waiting change. What is already decided, and the history, stays as it is.")}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => void runBulk()}
+              disabled={bulkBusy}
+              className={`flex items-center gap-1.5 text-white text-[11px] font-black px-4 py-2.5 rounded-xl disabled:opacity-50 ${
+                bulkOpen === "dont_deduct" ? "bg-emerald-700 hover:bg-emerald-600" : "bg-rose-700 hover:bg-rose-600"
+              }`}
+            >
+              {bulkBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              {bulkOpen === "dont_deduct" ? L("Yes, delete all") : L("Yes, deduct all")}
+            </button>
+            <button
+              onClick={() => setBulkOpen("")}
+              disabled={bulkBusy}
+              className="bg-white/10 hover:bg-white/20 text-stone-200 text-[11px] font-black px-4 py-2.5 rounded-xl disabled:opacity-50"
+            >
+              {L("Cancel")}
+            </button>
+          </div>
         </div>
       )}
 

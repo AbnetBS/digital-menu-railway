@@ -18,7 +18,7 @@
  * fingerprint but never log in to a station, so they must not be forced into
  * the staff_users table to appear on the sheet.
  */
-import { etHour, etMinute } from "@/lib/timezone";
+import { etDayKey, etHour, etMinute } from "@/lib/timezone";
 
 /**
  * FALLBACK only (2026-10-27): the grace that really applies is the Maximum
@@ -947,9 +947,19 @@ export type InStatus = "absent" | "late" | "on_time" | "overtime" | "free" | "fr
  * closer to the NEXT shift's leaving time than to his own: he stayed and
  * covered it. It is a mark only; the money, if any, is entered by hand.
  */
-export type OutStatus = "none" | "still_in" | "completed" | "early_out" | "overtime" | "next_shift" | "free" | "free_worked";
+export type OutStatus =
+  | "none"
+  | "still_in"
+  | "no_out"
+  | "completed"
+  | "early_out"
+  | "overtime"
+  | "next_shift"
+  | "free"
+  | "free_worked";
 
 type SheetLog = {
+  date?: string | null;
   clockIn?: Date | string | null;
   clockOut?: Date | string | null;
   lateMinutes?: number | null;
@@ -966,7 +976,25 @@ export type SheetCellContext = {
   stayedNextShift?: boolean;
   /** He was sent in before his own shift start (marked, never paid). */
   earlyArrival?: boolean;
+  /** "YYYY-MM-DD" of this sheet column when not carried on `log.date`. */
+  date?: string | null;
+  /** Today's "YYYY-MM-DD" on the Addis Ababa clock (midnight = 00:00 / 6:00 LT). */
+  today?: string | null;
 };
+
+const validDayKey = (v: string | null | undefined): string | null =>
+  typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
+
+function isPastAttendanceDay(
+  dateKey: string | null | undefined,
+  clockIn: Date | string | null | undefined,
+  todayKey?: string | null
+): boolean {
+  const today = validDayKey(todayKey) ?? etDayKey(new Date());
+  const day = validDayKey(dateKey) ?? etDayKey(clockIn);
+  if (!today || !day) return false;
+  return day < today;
+}
 
 /**
  * Colour of the IN box for one person on one day.
@@ -990,11 +1018,17 @@ export function inStatusOf(log: SheetLog | null | undefined, context: SheetCellC
  * early out: the person himself pressed the overtime button, so that is the
  * stronger statement about the day. Then comes the "stayed for the next
  * shift" violet mark, then early out.
+ *
+ * Once midnight (00:00 EAT / 6:00 LT) passes, a forgotten OUT on a past day is
+ * "no_out" ("No OUT scanned"), never "still_in".
  */
 export function outStatusOf(log: SheetLog | null | undefined, context: SheetCellContext = {}): OutStatus {
   if (context.freeDay && !(log && log.clockIn)) return "free";
   if (!log || !log.clockIn) return context.freeDay ? "free" : "none";
-  if (!log.clockOut) return context.freeDay ? "free_worked" : "still_in";
+  if (!log.clockOut) {
+    if (context.freeDay) return "free_worked";
+    return isPastAttendanceDay(context.date ?? log.date, log.clockIn, context.today) ? "no_out" : "still_in";
+  }
   if (log.isOvertime) return "overtime";
   if (context.stayedNextShift) return "next_shift";
   if (log.earlyOut || log.status === "early_out") return context.freeDay ? "free_worked" : "early_out";
@@ -1016,6 +1050,7 @@ export function outStatusOf(log: SheetLog | null | undefined, context: SheetCell
 
 export type LeaderLog = {
   memberId?: number | null;
+  date?: string | null;
   clockIn?: Date | string | null;
   clockOut?: Date | string | null;
   totalMinutes?: number | null;
@@ -1062,8 +1097,9 @@ const asTime = (d: Date | string | null | undefined): number | null => {
 
 /**
  * The minutes one log line adds to the board: the OUT total when the day is
- * closed, otherwise the time since the IN (never negative, never in the
- * future).
+ * closed, otherwise the time since the IN for TODAY only (never negative,
+ * never in the future, and never leaking across midnight 00:00 EAT / 6:00 LT
+ * when somebody forgot to scan OUT on an earlier day).
  */
 export function leaderMinutesOf(
   log: LeaderLog | null | undefined,
@@ -1078,6 +1114,12 @@ export function leaderMinutesOf(
     // A row without its total (an old import, a manual fix) still counts: the
     // two stamps are right there.
     return { workedMinutes: stored || Math.max(0, Math.round((outAt - inAt) / 60000)), openMinutes: 0 };
+  }
+  const nowDay = etDayKey(new Date(at));
+  const logDay = validDayKey(log?.date) ?? etDayKey(new Date(inAt));
+  if (nowDay && logDay && logDay < nowDay) {
+    const stored = Math.max(0, Math.round(Number(log?.totalMinutes) || 0));
+    return { workedMinutes: stored, openMinutes: 0 };
   }
   return { workedMinutes: 0, openMinutes: Math.max(0, Math.round((at - inAt) / 60000)) };
 }

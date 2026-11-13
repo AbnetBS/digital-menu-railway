@@ -192,6 +192,7 @@ const IN_STYLE: Record<string, string> = {
 const OUT_STYLE: Record<string, string> = {
   none: "bg-rose-200 text-rose-950",
   still_in: "bg-amber-100 text-amber-950",
+  no_out: "bg-orange-200 text-orange-950",
   completed: "bg-emerald-100 text-emerald-950",
   early_out: "bg-sky-200 text-sky-950",
   overtime: "bg-violet-200 text-violet-950",
@@ -207,6 +208,7 @@ const LEGEND = [
   { label: "Late (30 min+)", className: "bg-amber-200 text-amber-950 border-amber-500" },
   { label: "Absent", className: "bg-rose-200 text-rose-950 border-rose-500" },
   { label: "Still in", className: "bg-amber-100 text-amber-950 border-amber-400" },
+  { label: "No OUT scanned", className: "bg-orange-200 text-orange-950 border-orange-500" },
   { label: "Early out", className: "bg-sky-200 text-sky-950 border-sky-500" },
   { label: "Overtime / stayed next shift", className: "bg-violet-200 text-violet-950 border-violet-500" },
   { label: "Free day", className: "bg-violet-100 text-violet-950 border-violet-400" },
@@ -2034,6 +2036,8 @@ export default function AttendanceTab() {
                             <LogOut className="w-3 h-3 text-stone-400" />
                             <span className="font-mono text-stone-300 font-bold">{log.clockOutTime}</span>
                           </div>
+                        ) : log.outStatus === "no_out" ? (
+                          <span className="text-[10px] bg-orange-900/40 text-orange-300 px-2 py-1 rounded-full">No OUT scanned</span>
                         ) : (
                           <span className="text-[10px] bg-amber-900/30 text-amber-300 px-2 py-1 rounded-full">Still In</span>
                         )}
@@ -2734,9 +2738,17 @@ export default function AttendanceTab() {
                                         )}
                                       </>
                                     ) : cell?.freeDay && cell.clockInTime ? (
-                                      <span className="text-[12px] font-black">Still In</span>
+                                      <span className="text-[12px] font-black">
+                                        {cell.outStatus === "no_out" || (sheetData.today && d < sheetData.today)
+                                          ? "No OUT scanned"
+                                          : "Still In"}
+                                      </span>
                                     ) : attendanceExpected && cell?.clockInTime ? (
-                                      <span className="text-[12px] font-black">Still In</span>
+                                      <span className="text-[12px] font-black">
+                                        {cell.outStatus === "no_out" || (sheetData.today && d < sheetData.today)
+                                          ? "No OUT scanned"
+                                          : "Still In"}
+                                      </span>
                                     ) : cell?.freeDay ? (
                                       <span className="text-[12px] font-black">-</span>
                                     ) : attendanceExpected ? (
@@ -2760,7 +2772,7 @@ export default function AttendanceTab() {
                   </TableScroll>
                   <div className="p-3 bg-stone-100 text-[11px] text-stone-700 text-center font-bold">
                     Digital signature = fingerprint scan • Green = on time • Yellow = late (30 minutes after his role
-                    starts) • Red = absent from registration through today • Violet = overtime, free day, or stayed up
+                    starts) • Orange = no OUT scanned • Red = absent from registration through today • Violet = overtime, free day, or stayed up
                     to the next shift • Blue = early out or worked on his free day • Blank = before registration or
                     future • Total hours = OUT - IN
                   </div>

@@ -65,6 +65,7 @@ interface TodayLog {
   totalHours: string | null;
   lateMinutes: number;
   status: string;
+  outStatus?: string;
   isOvertime: boolean;
   earlyOut: boolean;
   fingerprintId: number | null;
@@ -680,6 +681,10 @@ export default function AttendanceKiosk() {
                         <td className="p-3 border border-stone-800 text-center">
                           {log.clockOutTime ? (
                             <div className="font-mono font-bold text-stone-300">{log.clockOutTime}</div>
+                          ) : log.outStatus === "no_out" ? (
+                            <span className="text-[10px] bg-orange-900/40 text-orange-300 px-2 py-1 rounded-full">
+                              No OUT scanned
+                            </span>
                           ) : (
                             <span className="text-[10px] bg-amber-900/30 text-amber-300 px-2 py-1 rounded-full">
                               Still In

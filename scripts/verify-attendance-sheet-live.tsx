@@ -35,6 +35,7 @@ g.setInterval = (callback: () => void, ms: number) => { const id = ++intervalId;
 g.clearInterval = (id: number) => { intervals.delete(id); };
 
 const dates = Array.from({ length: 8 }, (_, i) => etDayKeyDaysAgo(7 - i)!);
+const yesterday = dates[6];
 const today = dates[7];
 let times = ["", "", ""];
 let sheetCalls = 0;
@@ -45,6 +46,7 @@ const sheet = (values: string[]) => ({
   dates, today, pages: [dates.slice(0, 7), dates.slice(7)],
   staffList: ["Abebe", "Mulu", "Sara"].map((name, i) => ({ id: i + 1, name, role: "Staff", registeredOn: "2020-01-01" })),
   matrix: Object.fromEntries(values.map((time, i) => [i + 1, {
+    ...(i === 0 ? { [yesterday]: { clockInTime: "07:55", clockOutTime: null, inStatus: "on_time", outStatus: "no_out", clockInMethod: "fingerprint" } } : {}),
     [today]: time ? { clockInTime: time, clockOutTime: null, inStatus: "on_time", outStatus: "still_in", clockInMethod: "fingerprint" } : null,
   }])),
 });
@@ -84,8 +86,10 @@ async function main() {
   await flush();
   await click("Paper Sheet View");
   assert.equal(sheetCalls, 1, "opening the sheet loads it");
-  await click("2");
   const activeText = () => host.querySelector(".sheet-page.is-active")?.textContent || "";
+  assert.ok(activeText().includes("No OUT scanned"), "past day with IN and no OUT must render No OUT scanned");
+  assert.ok(!activeText().includes("Still In"), "past day must never keep saying Still In after midnight");
+  await click("2");
   assert.match(activeText(), /Page 2 of 2/);
 
   // Three queued scans arrive while the paper view remains open.
@@ -94,7 +98,8 @@ async function main() {
   await act(async () => { eventSource.onmessage?.(); eventSource.onmessage?.(); eventSource.onmessage?.(); });
   await flush();
   assert.match(activeText(), /Page 2 of 2/, "background refresh must not reset the page");
-  for (const value of ["Abebe", "Mulu", "Sara", "08:01", "08:03", "08:05"]) assert.ok(activeText().includes(value), value);
+  for (const value of ["Abebe", "Mulu", "Sara", "08:01", "08:03", "08:05", "Still In"]) assert.ok(activeText().includes(value), value);
+  assert.ok(!activeText().includes("No OUT scanned"), "today's open scan must still render Still In");
   assert.ok(sheetCalls <= 3, "burst events are coalesced");
 
   // Even if the SSE event was lost, the visible-page timer catches the change.

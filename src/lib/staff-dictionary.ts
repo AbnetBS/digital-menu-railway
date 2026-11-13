@@ -1590,6 +1590,7 @@ export const STAFF_AM = {
     "{count} ጠባቂ ረድፎች ጸድተዋል። ሰዎቹ ገንዘባቸውን ይይዛሉ።",
   "{count} waiting rows are deducted.": "{count} ጠባቂ ረድፎች ተቀንሰዋል።",
   "Cleared in one go": "በአንድ ጊዜ ጸድቷል",
+  "No OUT scanned": "መውጫ አልተመዘገበም",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

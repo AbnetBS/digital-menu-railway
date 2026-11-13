@@ -47,7 +47,7 @@ const NO_STORE_HEADERS = {
  *
  * Every box carries its own status so the admin tab can colour it:
  *   IN   absent (red, from registration through today) | late (yellow) | on_time (green)
- *   OUT  none | still_in | completed | early_out (blue) | overtime (violet)
+ *   OUT  none | still_in | no_out | completed | early_out (blue) | overtime (violet)
  * Dates before a member's registration and after today are blank, not absent.
  */
 
@@ -139,7 +139,7 @@ export async function GET(request: Request) {
         const roleId = log?.roleId ?? r.roleId;
         const shifts = roleId ? shiftsByRole.get(roleId) || [] : [];
         const freeDay = freeRules.length > 0 && isFreeDate(freeRules, d);
-        matrix[r.id][d] = cellOf(log, shifts, freeDay);
+        matrix[r.id][d] = cellOf(log, shifts, freeDay, d, today);
       }
     }
 
@@ -185,10 +185,12 @@ export async function GET(request: Request) {
 function cellOf(
   log: typeof attendanceLogs.$inferSelect | null,
   shifts: RoleShift[] = [],
-  freeDay = false
+  freeDay = false,
+  date?: string,
+  today?: string
 ) {
   if (!log && !freeDay) return null;
-  const context = { freeDay };
+  const context = { freeDay, date, today };
   if (!log) {
     return {
       logId: null,

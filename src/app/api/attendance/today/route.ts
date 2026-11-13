@@ -51,7 +51,8 @@ export async function GET(request: Request) {
 
   try {
     const { searchParams } = new URL(request.url);
-    const date = searchParams.get("date") || getTodayKey();
+    const todayKey = getTodayKey();
+    const date = searchParams.get("date") || todayKey;
 
     const [logs, members, roles, shiftRows, biometrics, reviewRows] = await Promise.all([
       db
@@ -121,7 +122,7 @@ export async function GET(request: Request) {
         clockInMethod: l.clockInMethod,
         clockOutMethod: l.clockOutMethod,
         inStatus: inStatusOf(measured),
-        outStatus: outStatusOf(measured),
+        outStatus: outStatusOf(measured, { date, today: todayKey }),
         updatedAt: l.updatedAt,
       };
     });
@@ -212,7 +213,7 @@ export async function GET(request: Request) {
       stats: {
         present: enriched.length,
         completed: enriched.filter((l) => l.clockOut).length,
-        stillIn: enriched.filter((l) => l.clockIn && !l.clockOut).length,
+        stillIn: date < todayKey ? 0 : enriched.filter((l) => l.clockIn && !l.clockOut).length,
         late: enriched.filter((l) => l.lateMinutes > 0).length,
         overtime: enriched.filter((l) => l.isOvertime).length,
         earlyOut: enriched.filter((l) => l.earlyOut).length,

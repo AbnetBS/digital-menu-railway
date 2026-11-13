@@ -97,7 +97,9 @@ async function main() {
     const { getScannerStatus, onScannerStreamOpen } = await import("../src/lib/scanner-status");
     const { GET: getToday } = await import("../src/app/api/attendance/today/route");
     const { GET: getLogs } = await import("../src/app/api/attendance/logs/route");
+    const { GET: getLeaderboard } = await import("../src/app/api/attendance/leaderboard/route");
     const { POST: postReview, PATCH: patchReview } = await import("../src/app/api/attendance/review/route");
+    const { etDayKeyDaysAgo, etStartOfDaysAgo } = await import("../src/lib/timezone");
 
     const mig = await ensureTablesExist();
     assert.equal(mig.success, true, mig.errors.join("\n"));
@@ -316,6 +318,87 @@ async function main() {
 
     const expiredStatus = await getScannerStatus(Date.now() + 7_000, false);
     assert.equal(expiredStatus.online, false);
+
+    // 7. Forgotten clock-out across midnight (00:00 EAT / 6:00 LT):
+    //    - Ayelech scans IN yesterday at 06:05 EAT and forgets to scan OUT.
+    //    - Today at 06:10 EAT she puts her finger on the scanner again.
+    //    - Today's scan MUST be recorded as a brand-new clock_in on today (NOT
+    //      yesterday's clock_out / ~24h shift), yesterday's Paper Sheet cell MUST
+    //      have outStatus "no_out" (totalHours null), today's cell MUST have
+    //      outStatus "still_in", and Leaderboard MUST NOT count yesterday's open
+    //      hours overnight into today.
+    const yestKey = etDayKeyDaysAgo(1)!;
+    const todayKey = etDayKeyDaysAgo(0)!;
+    const yestInEpoch = Math.floor((etStartOfDaysAgo(1).getTime() + (6 * 60 + 5) * 60_000) / 1000);
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const todayInEpoch = Math.min(
+      nowEpoch,
+      Math.floor((etStartOfDaysAgo(0).getTime() + 5 * 60_000) / 1000)
+    );
+
+    const day1ScanRes = await postClock(
+      new Request("https://fana.test/api/attendance/clock", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-attendance-device": "test-device-token",
+        },
+        body: JSON.stringify({
+          eventId: randomBytes(16).toString("hex"),
+          fingerprintId: 11,
+          scannedAt: yestInEpoch,
+        }),
+      })
+    );
+    assert.equal(day1ScanRes.status, 200);
+    const day1Json = await day1ScanRes.json();
+    assert.equal(day1Json.action, "clock_in");
+    assert.equal(day1Json.date, yestKey);
+
+    const day2ScanRes = await postClock(
+      new Request("https://fana.test/api/attendance/clock", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-attendance-device": "test-device-token",
+        },
+        body: JSON.stringify({
+          eventId: randomBytes(16).toString("hex"),
+          fingerprintId: 11,
+          scannedAt: todayInEpoch,
+        }),
+      })
+    );
+    assert.equal(day2ScanRes.status, 200);
+    const day2Json = await day2ScanRes.json();
+    assert.equal(day2Json.action, "clock_in", "next day's first scan must be a new clock_in, never yesterday's clock_out");
+    assert.equal(day2Json.date, todayKey);
+
+    const twoDaySheet = await (
+      await getLogs(new Request(`https://fana.test/api/attendance/logs?from=${yestKey}&to=${todayKey}`))
+    ).json();
+    const yestCell = twoDaySheet.matrix[1]?.[yestKey];
+    const todayCell = twoDaySheet.matrix[1]?.[todayKey];
+    assert.equal(yestCell?.clockOutTime, null);
+    assert.equal(yestCell?.totalHours, null);
+    assert.equal(yestCell?.outStatus, "no_out", "yesterday without OUT must be no_out after midnight");
+    assert.equal(todayCell?.clockOutTime, null);
+    assert.equal(todayCell?.outStatus, "still_in", "today without OUT must remain still_in");
+
+    const yestLive = await (
+      await getToday(new Request(`https://fana.test/api/attendance/today?date=${yestKey}`))
+    ).json();
+    assert.equal(yestLive.stats.stillIn, 0, "past date must not count forgotten OUTs as stillIn");
+    assert.equal(yestLive.logs[0]?.outStatus, "no_out");
+
+    const yestOnlyBoard = await (
+      await getLeaderboard(new Request(`https://fana.test/api/attendance/leaderboard?from=${yestKey}&to=${yestKey}`))
+    ).json();
+    const chefGroup = yestOnlyBoard.groups.find((g: { roleName: string }) => g.roleName === "Chef");
+    const ayelechYest = chefGroup?.rows.find((r: { memberId: number }) => r.memberId === 1);
+    assert.equal(ayelechYest?.workedMinutes, 0);
+    assert.equal(ayelechYest?.openMinutes, 0, "yesterday's forgotten OUT must add 0 open minutes on Leaderboard");
+    assert.equal(ayelechYest?.stillIn, false);
 
     console.log("✅ Attendance review sync & manual recovery guard PASSED");
   } finally {

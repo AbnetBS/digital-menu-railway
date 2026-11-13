@@ -275,6 +275,17 @@ pass(
   outStatusOf({ clockIn: new Date(), clockOut: new Date(), earlyOut: true, isOvertime: true }) === "overtime"
 );
 pass("overtime before the OUT still shows", outStatusOf({ clockIn: new Date(), isOvertime: true }) === "still_in");
+pass(
+  "a forgotten OUT turns from STILL IN before midnight (5:59 LT) to NO OUT SCANNED right at midnight (00:00 EAT / 6:00 LT)",
+  outStatusOf(
+    { date: "2026-10-29", clockIn: "2026-10-29T05:00:00Z", clockOut: null },
+    { date: "2026-10-29", today: "2026-10-29" }
+  ) === "still_in" &&
+    outStatusOf(
+      { date: "2026-10-29", clockIn: "2026-10-29T05:00:00Z", clockOut: null },
+      { date: "2026-10-29", today: "2026-10-30" }
+    ) === "no_out"
+);
 
 /* ── 4. the attendance list is its own list ──────────────────────────────── */
 
@@ -333,7 +344,11 @@ pass(
 );
 pass(
   "the paper-sheet API provides Ethiopian registration dates and today's date",
-  logsApi.includes("registeredOn: etDayKey(m.createdAt)") && logsApi.includes("today,")
+  logsApi.includes("registeredOn: etDayKey(m.createdAt)") &&
+    logsApi.includes("today,") &&
+    logsApi.includes("cellOf(log, shifts, freeDay, d, today)") &&
+    adminTab.includes("No OUT scanned") &&
+    adminTab.includes("no_out:")
 );
 pass(
   "pre-registration and future sheet cells stay blank, while eligible no-shows remain absent",
@@ -676,6 +691,42 @@ pass("a day that is still open counts the time so far and says so",
     const row = open[0].rows[0];
     return row.totalMinutes === 150 && row.stillIn === true && row.totalHours === "2h 30m" && row.workedMinutes === 0;
   })());
+pass(
+  "a forgotten OUT yesterday stops counting at midnight (00:00 EAT / 6:00 LT) and never merges into today's new IN",
+  (() => {
+    // 2026-10-15 20:59:00Z = 2026-10-15 23:59 EAT (still Day 1 -> open)
+    const beforeMidnight = leaderMinutesOf(
+      { date: "2026-10-15", clockIn: new Date("2026-10-15T05:00:00Z"), clockOut: null, totalMinutes: null },
+      new Date("2026-10-15T20:59:00Z")
+    );
+    // 2026-10-15 21:00:00Z = 2026-10-16 00:00 EAT / 6:00 LT (midnight rollover -> Day 1 closed with 0 open minutes)
+    const atMidnight = buildLeaderboard(
+      [{ memberId: 1, date: "2026-10-15", clockIn: new Date("2026-10-15T05:00:00Z"), clockOut: null, totalMinutes: null }],
+      [{ id: 1, name: "Alem", roleId: 1, roleName: "Waiter" }],
+      new Date("2026-10-15T21:00:00Z")
+    );
+    // Next morning at 10:00 EAT (07:00Z) after scanning IN at 08:00 EAT (05:00Z) on Day 2:
+    // Day 1 adds 0 minutes, Day 2 adds only its own 120 minutes (2h 00m), never 26h.
+    const nextMorning = buildLeaderboard(
+      [
+        { memberId: 1, date: "2026-10-15", clockIn: new Date("2026-10-15T05:00:00Z"), clockOut: null, totalMinutes: null },
+        { memberId: 1, date: "2026-10-16", clockIn: new Date("2026-10-16T05:00:00Z"), clockOut: null, totalMinutes: null },
+      ],
+      [{ id: 1, name: "Alem", roleId: 1, roleName: "Waiter" }],
+      new Date("2026-10-16T07:00:00Z")
+    );
+    return (
+      beforeMidnight.openMinutes === 959 &&
+      atMidnight[0].rows[0].totalMinutes === 0 &&
+      atMidnight[0].rows[0].stillIn === false &&
+      atMidnight[0].rows[0].days === 1 &&
+      nextMorning[0].rows[0].totalMinutes === 120 &&
+      nextMorning[0].rows[0].totalHours === "2h 00m" &&
+      nextMorning[0].rows[0].stillIn === true &&
+      nextMorning[0].rows[0].days === 2
+    );
+  })()
+);
 pass("a closed day counts its OUT total, and a missing total falls back to the two stamps",
   leaderMinutesOf({ clockIn: new Date("2026-10-15T06:00:00Z"), clockOut: new Date("2026-10-15T14:00:00Z"), totalMinutes: 480 }).workedMinutes === 480 &&
     leaderMinutesOf({ clockIn: new Date("2026-10-15T06:00:00Z"), clockOut: new Date("2026-10-15T14:00:00Z"), totalMinutes: null }).workedMinutes === 480);

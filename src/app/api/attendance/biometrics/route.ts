@@ -4,6 +4,7 @@ import { attendanceBiometrics, attendanceEnrollJobs, attendanceMembers } from "@
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { deviceAllowed } from "@/lib/attendance-device";
+import { recordScannerHeartbeat } from "@/lib/scanner-status";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { markRestWakeRequested } from "@/lib/attendance-rest";
 import { and, desc, eq } from "drizzle-orm";
@@ -58,6 +59,8 @@ export async function GET(request: Request) {
 
   try {
     if (pending === "1") {
+      const reportedBeat = Number(request.headers.get("x-scanner-beat-ms") || 0) || undefined;
+      recordScannerHeartbeat("biometrics_poll", Boolean(process.env.DATABASE_URL), reportedBeat);
       const cutoff = new Date(Date.now() - ENROLL_JOB_TTL_MINUTES * 60 * 1000);
       // The door processes one job at a time and has a small JSON buffer.
       // Keep the existing response for other clients unless it opts into one.

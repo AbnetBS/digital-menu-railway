@@ -563,6 +563,26 @@ export const attendanceScanEvents = pgTable("attendance_scan_events", {
   receivedAt: timestamp("received_at").defaultNow().notNull(),
 });
 
+// Scans held on the ESP32 in /queue.review.jsonl (for example power-off before
+// first clock sync, out-of-order arrival, or unmapped template) are uploaded
+// here so no green-lit scan ever stays hidden on device flash.
+export const attendanceReviewQueue = pgTable("attendance_review_queue", {
+  id: serial("id").primaryKey(),
+  eventId: varchar("event_id", { length: 64 }).notNull(),
+  reason: varchar("reason", { length: 40 }).notNull(), // unknown_time | server_conflict | unmapped_finger | invalid_scan_time
+  fingerprintId: integer("fingerprint_id").notNull(),
+  memberId: integer("member_id"),
+  staffName: varchar("staff_name", { length: 120 }),
+  deviceId: varchar("device_id", { length: 50 }).notNull().default("entrance"),
+  bootId: varchar("boot_id", { length: 32 }),
+  uptimeSeconds: integer("uptime_seconds"),
+  scannedAt: timestamp("scanned_at"),
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending | resolved | dismissed
+  resolvedLogId: integer("resolved_log_id"),
+  receivedAt: timestamp("received_at").defaultNow().notNull(),
+  resolvedAt: timestamp("resolved_at"),
+});
+
 export const attendanceLogs = pgTable("attendance_logs", {
   id: serial("id").primaryKey(),
   staffId: integer("staff_id"), // legacy rows only: FK to staff_users.id

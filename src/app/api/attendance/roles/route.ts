@@ -47,6 +47,7 @@ function cleanShifts(raw: unknown): RoleShift[] | null {
 async function notifyScannerScheduleChanged(): Promise<void> {
   await markRestWakeRequested();
   publish(CHANNELS.device);
+  publish(CHANNELS.attendance);
 }
 
 export async function GET() {

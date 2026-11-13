@@ -11,6 +11,7 @@ import {
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { deviceAllowed } from "@/lib/attendance-device";
+import { CHANNELS, publish } from "@/lib/realtime";
 import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
 import {
@@ -371,6 +372,7 @@ export async function POST(request: Request) {
           reason: String(body.reason ?? "").trim().slice(0, 300) || "Given by mistake - do not pay",
         }).onConflictDoNothing();
       }
+      publish(CHANNELS.attendance);
       return NextResponse.json({
         success: true,
         excluded: decision === "dont_give",
@@ -494,6 +496,7 @@ export async function POST(request: Request) {
       moneyHelpers.settings
     );
     const paySuffix = estimatedPay > 0 ? ` (+${estimatedPay.toFixed(2)} ETB added to Payroll)` : " (added to Payroll)";
+    publish(CHANNELS.attendance);
 
     return NextResponse.json({
       success: true,
@@ -551,6 +554,7 @@ export async function DELETE(request: Request) {
         .where(and(eq(attendanceLogs.memberId, row.memberId), eq(attendanceLogs.date, row.date)));
     }
 
+    publish(CHANNELS.attendance);
     return NextResponse.json({ success: true, removedId: id, message: "Overtime removed" });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

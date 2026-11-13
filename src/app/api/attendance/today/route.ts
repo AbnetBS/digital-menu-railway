@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { attendanceLogs, attendanceMembers, attendanceRoleShifts, attendanceRoles } from "@/db/schema";
+import {
+  attendanceBiometrics,
+  attendanceLogs,
+  attendanceMembers,
+  attendanceReviewQueue,
+  attendanceRoleShifts,
+  attendanceRoles,
+} from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
+import { reasonLabelOf } from "@/app/api/attendance/review/route";
 import { asc, desc, eq } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
 import {
@@ -45,18 +53,25 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const date = searchParams.get("date") || getTodayKey();
 
-    const logs = await db
-      .select()
-      .from(attendanceLogs)
-      .where(eq(attendanceLogs.date, date))
-      .orderBy(desc(attendanceLogs.updatedAt));
-
-    const members = await db.select().from(attendanceMembers);
-    const roles = await db.select().from(attendanceRoles);
-    const shiftRows = await db
-      .select()
-      .from(attendanceRoleShifts)
-      .orderBy(asc(attendanceRoleShifts.sortOrder), asc(attendanceRoleShifts.id));
+    const [logs, members, roles, shiftRows, biometrics, reviewRows] = await Promise.all([
+      db
+        .select()
+        .from(attendanceLogs)
+        .where(eq(attendanceLogs.date, date))
+        .orderBy(desc(attendanceLogs.updatedAt)),
+      db.select().from(attendanceMembers),
+      db.select().from(attendanceRoles),
+      db
+        .select()
+        .from(attendanceRoleShifts)
+        .orderBy(asc(attendanceRoleShifts.sortOrder), asc(attendanceRoleShifts.id)),
+      db.select().from(attendanceBiometrics),
+      db
+        .select()
+        .from(attendanceReviewQueue)
+        .where(eq(attendanceReviewQueue.status, "pending"))
+        .orderBy(asc(attendanceReviewQueue.id)),
+    ]);
     const shiftsByRole = new Map<number, RoleShift[]>();
     for (const s of shiftRows) {
       const list = shiftsByRole.get(s.roleId) || [];
@@ -150,10 +165,49 @@ export async function GET(request: Request) {
         date,
       }));
 
+    const memberByFinger = new Map(biometrics.map((b) => [b.fingerprintId, b.memberId]));
+    const pendingReviews = reviewRows.map((r) => {
+      const resolvedMemberId =
+        (r.memberId && memberById.has(r.memberId) ? r.memberId : null) ??
+        memberByFinger.get(r.fingerprintId) ??
+        null;
+      const member = resolvedMemberId ? memberById.get(resolvedMemberId) : undefined;
+      const rRoleId = member?.roleId ?? null;
+      const rShifts = rRoleId ? shiftsByRole.get(rRoleId) || [] : [];
+      const scannedValid =
+        r.scannedAt && new Date(r.scannedAt).getTime() >= Date.UTC(2020, 0, 1)
+          ? new Date(r.scannedAt)
+          : null;
+      const suggestedDate = scannedValid
+        ? etDayKey(scannedValid) || date
+        : etDayKey(new Date(r.receivedAt)) || date;
+      const suggestedInTime =
+        (scannedValid ? clockLabel(scannedValid) : null) ||
+        rShifts[0]?.startTime ||
+        "06:00";
+
+      return {
+        id: r.id,
+        eventId: r.eventId,
+        reason: r.reason,
+        reasonLabel: reasonLabelOf(r.reason),
+        fingerprintId: r.fingerprintId,
+        memberId: resolvedMemberId,
+        memberName: member?.name || r.staffName || `Finger ID ${r.fingerprintId}`,
+        roleName: rRoleId ? roleName.get(rRoleId) || "No role" : "No role",
+        uptimeSeconds: r.uptimeSeconds,
+        scannedAt: scannedValid ? scannedValid.toISOString() : null,
+        receivedAt: r.receivedAt,
+        suggestedDate,
+        suggestedInTime,
+      };
+    });
+
     return NextResponse.json({
       date,
       logs: enriched,
       absent: absentMembers,
+      pendingReviews,
       lastScan,
       stats: {
         present: enriched.length,
@@ -163,6 +217,7 @@ export async function GET(request: Request) {
         overtime: enriched.filter((l) => l.isOvertime).length,
         earlyOut: enriched.filter((l) => l.earlyOut).length,
         absent: absentMembers.length,
+        pendingReview: pendingReviews.length,
         totalMembers: members.filter((m) => m.active !== false).length,
       },
     }, { headers: NO_STORE_HEADERS });

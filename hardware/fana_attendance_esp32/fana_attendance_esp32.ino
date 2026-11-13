@@ -244,7 +244,7 @@ class ScanFeedback {
    * before the final status + 2nd green light & buzzer confirm completion. */
   static const uint32_t FIRST_GREEN_MS = 320U;
   static const uint32_t GREEN_SHOW_MS = 450U;
-  static const uint32_t DONE_GREEN_MS = 550U;
+  static const uint32_t DONE_GREEN_MS = 1200U;
   void verifying(const DeliveryNotice &notice, bool connected, uint32_t now) {
     current_ = notice;
     linkUpAtSave_ = connected;
@@ -252,6 +252,7 @@ class ScanFeedback {
     shownAt_ = now;
     awaitingDoneCue_ = true;
     doneCuePending_ = false;
+    reviewCuePending_ = false;
     deferCurrent_ = !connected;
   }
   void saved(const DeliveryNotice &notice, bool connected, uint32_t now) {
@@ -261,6 +262,7 @@ class ScanFeedback {
     phase_ = SENDING;
     if (!keepStart) shownAt_ = now;
     awaitingDoneCue_ = true;
+    reviewCuePending_ = false;
     deferCurrent_ = !connected;
   }
   void deferIfCurrent(const char *eventId) {
@@ -271,6 +273,11 @@ class ScanFeedback {
   bool consumeDoneCue() {
     if (!doneCuePending_) return false;
     doneCuePending_ = false;
+    return true;
+  }
+  bool consumeReviewCue() {
+    if (!reviewCuePending_) return false;
+    reviewCuePending_ = false;
     return true;
   }
   // True once the initial 1st green flash + gap has finished for the scan on screen.
@@ -302,6 +309,7 @@ class ScanFeedback {
     phase_ = NOTICE;
     awaitingDoneCue_ = false;
     doneCuePending_ = false;
+    reviewCuePending_ = false;
     deferCurrent_ = false;
     shownAt_ = now;
   }
@@ -318,7 +326,11 @@ class ScanFeedback {
       case DELIVERY_BATCH: phase_ = BATCH_SENT; break;
     }
     if (matchesActive) {
-      doneCuePending_ = true;
+      if (notice.kind == DELIVERY_REVIEW) {
+        reviewCuePending_ = true;
+      } else {
+        doneCuePending_ = true;
+      }
       awaitingDoneCue_ = false;
     }
     deferCurrent_ = false;
@@ -336,11 +348,16 @@ class ScanFeedback {
       const uint32_t budget = deferCurrent_ ? GREEN_SHOW_MS : WAIT_FOR_RECEIPT_MS;
       if ((uint32_t)(now - shownAt_) >= budget) {
         // Offline or no reply within the fast live window: show Stored offline
-        // queue right away and trigger the 2nd confirmation light + buzzer.
+        // queue. Only light GREEN when a real scan timestamp is saved; if the
+        // device cold-booted with no clock yet, warn RED + "DO NOT TURN OFF!".
         phase_ = SAVED;
         deferCurrent_ = false;
         if (awaitingDoneCue_) {
-          doneCuePending_ = true;
+          if (current_.scannedAt != 0) {
+            doneCuePending_ = true;
+          } else {
+            reviewCuePending_ = true;
+          }
           awaitingDoneCue_ = false;
         }
         shownAt_ = now;
@@ -378,6 +395,7 @@ class ScanFeedback {
   bool linkUpAtSave_ = false;
   bool awaitingDoneCue_ = false;
   bool doneCuePending_ = false;
+  bool reviewCuePending_ = false;
   bool deferCurrent_ = false;
   Phase phase_ = IDLE;
   uint32_t shownAt_ = 0;
@@ -539,7 +557,7 @@ std::atomic<bool> queueNeedsReview{false};
  * nothing any more", with no way out but a reboot. */
 #define MAPPING_MAX_TRIES       30    // 30 x 10 s = five minutes of a stuck mapping
 #define FAILURE_REPORT_MAX_TRIES 24   // 24 x 5 s = two minutes of a stuck report
-#define PENDING_POLL_FALLBACK_MS 5000
+#define PENDING_POLL_FALLBACK_MS 3000
 /* The stream is one long socket. On a weak link it stalls long before it closes,
  * and a stalled stream is a door that hears about a new fingerprint late. Two
  * minutes was longer than the admin page is willing to wait. */
@@ -854,6 +872,7 @@ bool loadMappingsFromServer(uint32_t timeoutMs = SERVER_TIMEOUT_MS);
 bool saveToQueue(int fingerprintId, const String &staffName, int memberId, unsigned long scannedAt, uint64_t uptimeMs, String &eventId);
 QueueSyncResult syncOfflineQueue();
 void periodicSync();
+bool syncReviewQueueToWebsite();
 void maybeRest();
 void loadRestScheduleFromServer();
 void loadRestCache();
@@ -886,37 +905,69 @@ void setup() {
   digitalWrite(GREEN_LED, LOW);
   digitalWrite(RED_LED, LOW);
 
+  const bool wokeFromRestTimer = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
+
   // 20x4 I2C LCD on GPIO21/22, behind the level shifter (A1/A2 -> B1/B2).
   // The 100 kHz clock is what the backpack and the shifter like.
   Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
   Wire.setClock(100000);
   startLcd();
-  showLines("FANA CAFE", "Attendance", "Starting...", "");
+  if (wokeFromRestTimer && lcdReady) {
+    // Keep screen dark and silent during overnight deep-sleep timer wakes until
+    // the schedule confirms the shift window (1 hour before shift) is now open.
+    lcd.noBacklight();
+  } else {
+    showLines("FANA CAFE", "Attendance", "Starting...", "");
+  }
+  // Start associating with saved Wi-Fi immediately in parallel while R307
+  // powers up, so the clock is ready seconds sooner after power-on.
+  WiFi.mode(WIFI_STA);
+  WiFi.begin();
 
   // Never format automatically on a mount failure: it could erase queued scans.
   if (!LittleFS.begin(false)) {
     Serial.println("LittleFS mount failed; offline scans cannot be saved. Ask admin to inspect storage.");
+  } else if (LittleFS.exists("/rest.off")) {
+    scannerAlwaysOn = true;
   }
 
   // R307: 57600 8N1 is the common factory default.
   mySerial.begin(57600, SERIAL_8N1, SENSOR_RX_PIN, SENSOR_TX_PIN);
-  delay(800);
+  delay(wokeFromRestTimer ? 350 : 800);
 
   // detectSensor also reads the reader's capacity, including after a late boot.
-  sensorReady = detectSensor(5);
+  sensorReady = detectSensor(wokeFromRestTimer ? 3 : 5);
   if (sensorReady) {
     Serial.print("Found R307 fingerprint sensor, templates: ");
     Serial.println(templateCount);
-    showLines("R307 Found!", "Ready to scan", "", "");
-    beepSuccess();
-    delay(1000);
+    if (!wokeFromRestTimer) {
+      showLines("R307 Found!", "Syncing clock...", "Wait before scan", "");
+      beepSuccess();
+    }
   } else {
     Serial.println("Did not find fingerprint sensor. Check wiring: TX->16 RX->17, GND, VCC, baud 57600.");
+    if (lcdReady) lcd.backlight();
     showLines("R307 NOT found", "Check wiring:", "TX->16  RX->17", "GND + VCC");
     beepError();
     delay(3000);
     // checkSensorHealth() keeps looking every 5 s, so a late sensor still works.
   }
+
+  // Lock onto saved Wi-Fi + NTP/website clock BEFORE showing "Place finger - ready"
+  // so an employee who flips power ON, scans, and flips power OFF never scans
+  // against an unset clock when cafe Wi-Fi is available.
+  startTimeSync();
+  const uint32_t bootClockWaitStart = millis();
+  bool syncedFromSiteAtBoot = false;
+  while (!scanEpochNow() && (uint32_t)(millis() - bootClockWaitStart) < 5500UL) {
+    if (WiFi.status() == WL_CONNECTED && !wallClockEpoch() &&
+        !syncedFromSiteAtBoot && (uint32_t)(millis() - bootClockWaitStart) >= 600UL) {
+      syncedFromSiteAtBoot = true;
+      syncTimeFromWebsite();
+    }
+    delay(50);
+  }
+  noteWallClock();
 
   if (deviceToken.length() > 0 && (!serverURL.startsWith("https://") || !serverRootCA || !serverRootCA[0]))
     Serial.println("WARNING: device token configured without verified HTTPS and a trusted root CA");
@@ -933,10 +984,22 @@ void setup() {
   bootId = String(id);
   if (queueMutex) offlineQueue = new OfflineQueue(LittleFS, queueMutex);
   if (offlineQueue && !offlineQueue->hasPending()) offlineQueue->purgeDeliveredStorage(bootId);
-  queueNeedsReview = LittleFS.exists("/queue.review.jsonl");
+  queueNeedsReview = offlineQueue ? offlineQueue->hasPendingReview() : LittleFS.exists("/queue.review.jsonl");
   loadCachedMappings();
   loadRestCache();
-  showIdleScreen();
+  // If waking from a deep-sleep timer into an active shift window (1h before
+  // shift), turn the LCD backlight right back on; if still inside a night rest
+  // gap, keep it dark while networkTask quickly refreshes /api/attendance/activity.
+  if (wokeFromRestTimer && lcdReady) {
+    const unsigned long wakeEpoch = scanEpochNow();
+    if (scannerAlwaysOn || !restScheduleKnown || restKeptAwake ||
+        (wakeEpoch != 0UL && scheduleAwaits(restWindows, restWindowCount, minuteOfAddisDay(wakeEpoch)))) {
+      lcd.backlight();
+      showIdleScreen();
+    }
+  } else {
+    showIdleScreen();
+  }
 
   if (!sensorMutex || !mappingMutex || !queueMutex || !offlineQueue) {
     Serial.println("Could not create scanner locks: network disabled; inspect memory. Scans may not be saved.");
@@ -985,8 +1048,10 @@ void networkTask(void *) {
   if (connected) {
     applyWifiTuning();
     const uint32_t waitStart = millis();
-    while (!wallClockEpoch() && (uint32_t)(millis() - waitStart) < 1200UL) delay(50);
+    while (!wallClockEpoch() && (uint32_t)(millis() - waitStart) < 350UL) delay(25);
     if (!wallClockEpoch()) syncTimeFromWebsite();
+    noteWallClock();
+    ensureClockAnchorSaved();
     wakeDeliveryTask();
     if (!offlineQueue || !offlineQueue->hasPending()) {
       loadMappingsFromServer();
@@ -1146,9 +1211,11 @@ bool restScheduleKnown = false;
 /* The admin's "keep it awake" override and its "for N minutes" form. Both
  * come from the website and are cached across timer wakes. */
 bool restKeptAwake = false;
-// Always-on attendance is the safe default, independent of Wi-Fi and website
-// schedules. A technician may explicitly opt back into sleep with `rest on`.
-std::atomic<bool> scannerAlwaysOn{true};
+// Automatic Role & Time schedule rules by default (opens 1 hour before every
+// shift and closes 1 hour after). A technician may still force always-on via
+// `rest off` on Serial (persisted in `/rest.off` until `rest on`).
+std::atomic<bool> scannerAlwaysOn{false};
+std::atomic<bool> initialRestCheckDone{false};
 unsigned long restWakeUntilEpoch = 0;
 /* The longest sleep the website will allow after the next schedule read, in
  * seconds: about 45 s after an admin changes role hours or opens a "place your
@@ -1333,9 +1400,10 @@ void loadRestCache() {
 }
 
 void loadRestScheduleFromServer() {
-  // The owner asked for a continuously available scanner; website schedules
-  // have no power to put it to sleep unless `rest on` is explicitly selected.
-  if (scannerAlwaysOn) return;
+  if (scannerAlwaysOn) {
+    initialRestCheckDone = true;
+    return;
+  }
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
@@ -1359,6 +1427,7 @@ void loadRestScheduleFromServer() {
     } else {
       Serial.println("Rest schedule answer was not readable; keeping the last one");
     }
+    initialRestCheckDone = true;
     return;
   }
   http.end();
@@ -1368,6 +1437,7 @@ void loadRestScheduleFromServer() {
     if (!restScheduleKnown) loadRestCache();
     if (sensorMutex) xSemaphoreGive(sensorMutex);
   }
+  initialRestCheckDone = true;
 }
 
 /* Deep sleep, and it does not return: the board restarts as if it was just
@@ -1379,9 +1449,27 @@ void goRest(uint32_t sleepMs, uint16_t wakeMinute) {
   Serial.print(sleepMs / 1000UL);
   Serial.print(" s; the door is open again at ");
   Serial.println(minuteLabel(wakeMinute));
-  showLines("RESTING", "Door closed", "Open again at " + minuteLabel(wakeMinute), "");
-  delay(1500);
-  if (lcdReady) lcd.noBacklight();   // a dark screen, not a frozen one
+  const bool timerWake = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
+  if (!timerWake) {
+    showLines("RESTING", "Door closed", "Open again at " + minuteLabel(wakeMinute), "");
+    delay(1200);
+  }
+  // Power down R307 lamp, LEDs, buzzer, LCD backlight, and Wi-Fi stream cleanly
+  // so deep sleep draws minimal current and notifies the server immediately.
+  if (sensorReady) {
+    finger.requestLightOff(120);
+  }
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
+  stopEventStream();
+  WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+  if (lcdReady) {
+    lcd.clear();
+    lcd.noDisplay();
+    lcd.noBacklight();   // a dark screen, not a frozen one
+  }
   esp_sleep_enable_timer_wakeup((uint64_t)sleepMs * 1000ULL);
   esp_deep_sleep_start();
 }
@@ -1391,6 +1479,11 @@ void maybeRest() {
   if (scannerAlwaysOn) return;
   if (!restScheduleKnown) return;
   if (enrollmentActive || enrollingFromServer) return;   // never sleep mid-job
+  // Never sleep while offline scans are waiting/uploading or a scan card is up.
+  if ((offlineQueue && offlineQueue->hasPending()) || deliveryUsingNetwork.load() || scanFeedback.active()) return;
+  // Give networkTask up to 4.5s after wake to fetch any fresh Role & Time edits
+  // or pending Add Fingerprint job before going back to sleep.
+  if (!initialRestCheckDone.load() && WiFi.status() == WL_CONNECTED && millis() < 4500UL) return;
   if (millis() - lastLcdMessageMs < REST_AFTER_MESSAGE_MS) return;  // let it be read
   const unsigned long epoch = scanEpochNow();
   if (epoch == 0UL) return;    // no trusted clock since boot: a wrong clock must not close a door
@@ -1400,7 +1493,35 @@ void maybeRest() {
   const uint16_t minute = minuteOfAddisDay(epoch);
   uint32_t sleepMs = 0;
   uint16_t wakeMinute = 0;
-  if (!restShouldSleep(restWindows, restWindowCount, minute, restSliceMs(), &sleepMs, &wakeMinute)) return;
+  if (!restShouldSleep(restWindows, restWindowCount, minute, restSliceMs(), &sleepMs, &wakeMinute)) {
+    if (lcdReady) {
+      lcd.display();
+      lcd.backlight();
+    }
+    return;
+  }
+
+  // Exact sub-minute + 20-second pre-wake warm-up so the scanner finishes
+  // booting, connecting Wi-Fi, and syncing clock BEFORE (shiftStart - 1 hour).
+  const uint32_t secIntoMinuteMs = (uint32_t)(epoch % 60UL) * 1000UL;
+  const uint16_t waitMin = minutesUntilScheduleChange(restWindows, restWindowCount, minute);
+  const uint32_t exactWaitToOpenMs =
+      (uint32_t)waitMin * 60000UL > secIntoMinuteMs
+          ? (uint32_t)waitMin * 60000UL - secIntoMinuteMs
+          : 0UL;
+  // If the 1-hour-before-shift window opens in under 45 seconds, stay awake now
+  // so the door is already warm, lit, and Online right on the minute.
+  if (exactWaitToOpenMs <= 45000UL) {
+    if (lcdReady) {
+      lcd.display();
+      lcd.backlight();
+    }
+    return;
+  }
+  const uint32_t targetWakeMs = exactWaitToOpenMs - 20000UL; // wake 20s before window opens
+  if (targetWakeMs < sleepMs) {
+    sleepMs = targetWakeMs;
+  }
   goRest(sleepMs, wakeMinute);
 }
 
@@ -1435,6 +1556,8 @@ void restCommand(const String &argIn) {
     scannerAlwaysOn = true;
     restKeptAwake = true;
     restWakeUntilEpoch = 0UL;
+    File f = LittleFS.open("/rest.off", "w");
+    if (f) { f.print("1"); f.close(); }
     Serial.println("Rest is OFF: the scanner stays awake. Type `rest on` to let the hours rule again.");
     showLines("Rest OFF", "Scanner stays awake", "", "");
     return;
@@ -1443,6 +1566,7 @@ void restCommand(const String &argIn) {
     scannerAlwaysOn = false;
     restKeptAwake = false;
     restWakeUntilEpoch = 0UL;
+    if (LittleFS.exists("/rest.off")) LittleFS.remove("/rest.off");
     Serial.println("Rest explicitly enabled; the scanner can sleep outside the website schedule.");
     networkRestReloadRequested = true;
     return;
@@ -1537,6 +1661,7 @@ void showEnrollScreen(const String &who, int id, uint8_t done, const String &pro
 /* The line that matters when something needs a human: a scan kept for review,
  * a damaged queue, or a website that keeps refusing. Empty when all is well. */
 String idleAlertLine() {
+  if (pendingUnknownTime.load()) return String("DO NOT TURN OFF!");
   if (queueNeedsReview) return String("Scans need review");
   const uint8_t status = queueStatus.load();
   if (status == QUEUE_STORAGE_ERROR) return String("Queue needs help");
@@ -1620,6 +1745,7 @@ void renderScanFeedback() {
      * uploads it by itself the moment Wi-Fi returns - nobody has to rescan. */
     case ScanFeedback::SAVED:
       showLines(name, when, "Stored offline queue",
+                !notice.scannedAt ? String("DO NOT TURN OFF!") :
                 scanFeedback.linkWasUp() ? String("Site not replying") : String("No Wi-Fi now"));
       break;
     case ScanFeedback::SENT_IN: showLines(name, when, "Sent to website", "Attendance IN"); break;
@@ -1683,6 +1809,16 @@ void updateScanFeedback() {
     doneGreenOn = true;
     doneGreenSince = now;
     beepSuccess();
+  }
+  if (scanFeedback.consumeReviewCue()) {
+    if (scanGreenOn) {
+      digitalWrite(GREEN_LED, LOW);
+      scanGreenOn = false;
+    }
+    digitalWrite(RED_LED, HIGH);
+    warningLedOn = true;
+    warningLedSince = now;
+    beepError();
   }
 }
 
@@ -1934,9 +2070,21 @@ void noteWallClock() {
  * 64-bit uptime survives millis() wrap and allows a just-before-sync capture. */
 unsigned long scanEpochAtUptime(uint64_t uptimeMs) {
   portENTER_CRITICAL(&clockMux);
-  const unsigned long epoch = epochAtSync;
-  const uint64_t anchor = uptimeAtSyncSeconds;
+  unsigned long epoch = epochAtSync;
+  uint64_t anchor = uptimeAtSyncSeconds;
   portEXIT_CRITICAL(&clockMux);
+  if (!epoch) {
+    const unsigned long liveEpoch = wallClockEpoch();
+    if (liveEpoch) {
+      const uint64_t liveUptime = (uint64_t)esp_timer_get_time() / 1000000ULL;
+      portENTER_CRITICAL(&clockMux);
+      epochAtSync = liveEpoch;
+      uptimeAtSyncSeconds = liveUptime;
+      portEXIT_CRITICAL(&clockMux);
+      epoch = liveEpoch;
+      anchor = liveUptime;
+    }
+  }
   if (!epoch) return 0;
   const uint64_t captured = uptimeMs / 1000ULL;
   if (captured >= anchor) return epoch + (unsigned long)(captured - anchor);
@@ -2470,8 +2618,6 @@ void showSensorWarning(const String &title, const String &line2, const String &l
 // Every scan is durably queued FIRST, including while Wi-Fi looks connected.
 // The network task delivers it in order without blocking the reader.
 void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
-  const unsigned long scannedAt = scanEpochAtUptime(capturedUptimeMs);
-  const uint64_t uptimeMs = capturedUptimeMs;
   String name;
   int memberId = 0;
   if (!mappedPersonForId(fingerprintId, name, memberId)) name = "ID " + String(fingerprintId);
@@ -2479,6 +2625,26 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   Serial.print(fingerprintId);
   Serial.print(" - ");
   Serial.println(name);
+
+  // If someone placed a finger before Wi-Fi finished setting the boot clock,
+  // hold GREEN OFF and wait briefly for Wi-Fi/NTP/website time so the scan gets
+  // a real timestamp before any green confirmation light can appear.
+  if (!scanEpochAtUptime(capturedUptimeMs)) {
+    showLines(name, "Syncing clock...", "Hold - DO NOT OFF", "Waiting for Wi-Fi");
+    const uint32_t waitStart = millis();
+    bool triedSiteClock = false;
+    while (!scanEpochAtUptime(capturedUptimeMs) && (uint32_t)(millis() - waitStart) < 5500UL) {
+      if (WiFi.status() == WL_CONNECTED && !wallClockEpoch() && !triedSiteClock) {
+        triedSiteClock = true;
+        syncTimeFromWebsite();
+      }
+      noteWallClock();
+      delay(50);
+    }
+  }
+
+  const unsigned long scannedAt = scanEpochAtUptime(capturedUptimeMs);
+  const uint64_t uptimeMs = capturedUptimeMs;
 
   /* ── THE CARD COMES FIRST (owner, Oct 2026) ────────────────────────────────
    * "Recognise it locally and immediately show the employee's name, scan time
@@ -2502,16 +2668,17 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   if (!scannedAt) pendingUnknownTime = true;
   /* Now the scan is durable and has its event id: the card moves to its real
    * state - "Sending to site" while a receipt is awaited, "Stored offline
-   * queue" when there is no link - and the delivery task takes it from here. */
+   * queue" when there is no link - and the delivery task takes it from here.
+   *
+   * IMPORTANT: GREEN_LED stays OFF until the website confirms receipt (online)
+   * OR until a timestamped offline entry (`scannedAt > 0`) transitions to
+   * Stored offline queue. That guarantees anybody who turns power OFF after
+   * seeing GREEN_LED never cuts power before the timestamp/upload is safe. */
   snprintf(notice.eventId, sizeof(notice.eventId), "%s", eventId.c_str());
   scanFeedback.saved(notice, linkUp, millis());
   renderScanFeedback();
-  // A green light confirms a safe local write. Only a validated server reply
-  // changes the LCD to SENT. The delivery task starts immediately and never
-  // holds the scanner while the website is slow.
-  digitalWrite(GREEN_LED, HIGH);
-  scanGreenOn = true;
-  scanGreenSince = millis();
+  digitalWrite(GREEN_LED, LOW);
+  scanGreenOn = false;
   // A good scan replaces whatever warning was on the glass, so its red light
   // goes with it instead of burning until its own timer ends.
   if (warningLedOn) {
@@ -2525,11 +2692,9 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
   // Light the glass again for the next person before the buzzer is even done.
   // Forced: the reader has just taken an image and may have killed its own LED.
   keepReaderLampOn(READER_LAMP_BURST_MS, true);
-  beepSuccess();
+  beep(35, 2000); // short capture tick; full beepSuccess() + GREEN_LED fires on confirmation
   /* The number the owner asked for: how long this person waited between the
-   * image being taken and the green light. Under four seconds is the target;
-   * this line is how a slow reader, a big template database or a busy flash is
-   * recognised without guessing. */
+   * image being taken and the local save. */
   const uint64_t doneUptimeMs = (uint64_t)esp_timer_get_time() / 1000ULL;
   if (doneUptimeMs >= capturedUptimeMs) {
     Serial.print("Scan saved and shown in ");
@@ -2640,6 +2805,7 @@ bool checkPendingEnroll() {
   // One job is enough for this single reader; keep the response small even
   // if many older pending jobs are still on the server.
   beginServerRequest(http, "/api/attendance/biometrics?pending=1&limit=1");
+  http.addHeader("x-scanner-beat-ms", String(PENDING_POLL_FALLBACK_MS));
   if (deviceToken.length() > 0) http.addHeader("x-attendance-device", deviceToken);
   const int httpCode = http.GET();
   String payload = "";
@@ -3650,6 +3816,7 @@ void keepServerLinkAlive() {
     // The WiFi is back: the old sockets are dead, and NTP has to be asked
     // again or the clock on the LCD would stay where the drop found it.
     if (eventStreamActive) stopEventStream();
+    lastEventStreamTry = 0; // connect SSE stream immediately without retry delay
     startTimeSync();
   }
   wifiWasConnected = wifiConnected;
@@ -3669,7 +3836,7 @@ void keepServerLinkAlive() {
       Serial.println("Event stream stalled, reconnecting");
       startEventStream();
     }
-  } else if (millis() - lastEventStreamTry > eventStreamRetryMs) {
+  } else if (lastEventStreamTry == 0 || millis() - lastEventStreamTry > eventStreamRetryMs) {
     startEventStream();
   }
 
@@ -3706,6 +3873,7 @@ void startEventStream() {
   Serial.println("Connecting real-time event stream...");
   beginServerRequest(eventHttp, "/api/attendance/events?channel=device");
   eventHttp.addHeader("Accept", "text/event-stream");
+  eventHttp.addHeader("x-scanner-beat-ms", String(PENDING_POLL_FALLBACK_MS));
   if (deviceToken.length() > 0) eventHttp.addHeader("x-attendance-device", deviceToken);
   eventHttp.setTimeout(5000);
   const int code = eventHttp.GET();
@@ -4448,14 +4616,84 @@ void deliveryTask(void *) {
 
 void periodicSync() {
   static unsigned long lastNames = 0;
+  static unsigned long lastReviewSync = 0;
   static bool mappingsLoaded = false;
   if (WiFi.status() != WL_CONNECTED || queueActivelyDraining()) return;
   const unsigned long now = millis();
+  if (queueNeedsReview.load() && (lastReviewSync == 0 || (uint32_t)(now - lastReviewSync) >= 5000UL)) {
+    lastReviewSync = now;
+    syncReviewQueueToWebsite();
+  }
   const uint32_t namesDelay = mappingsLoaded ? 900000UL : 10000UL;
   if ((uint32_t)(now - lastNames) >= namesDelay) {
     lastNames = now;
     mappingsLoaded = loadMappingsFromServer();
   }
+}
+
+bool syncReviewQueueToWebsite() {
+  if (!offlineQueue || WiFi.status() != WL_CONNECTED) return false;
+  std::vector<OfflineQueue::Head> batch;
+  const OfflineQueue::Peek state = offlineQueue->peekReviewBatch(batch, 15);
+  if (state == OfflineQueue::EMPTY) {
+    queueNeedsReview = false;
+    return true;
+  }
+  if (state != OfflineQueue::READY || batch.empty()) return false;
+
+  String bodyJson;
+  std::vector<String> expectedIds;
+  {
+    DynamicJsonDocument reqDoc(12288);
+    reqDoc["deviceId"] = deviceId;
+    JsonArray items = reqDoc.createNestedArray("items");
+    for (size_t i = 0; i < batch.size(); ++i) {
+      DynamicJsonDocument lineDoc(1536);
+      if (deserializeJson(lineDoc, batch[i].line)) break;
+      JsonObject rec = lineDoc["record"].as<JsonObject>();
+      const char *rawEid = rec["eventId"] | "";
+      if (!rawEid[0]) break;
+      expectedIds.push_back(String(rawEid));
+      items.add(lineDoc.as<JsonVariantConst>());
+    }
+    if (expectedIds.empty() || reqDoc.overflowed()) return false;
+    serializeJson(reqDoc, bodyJson);
+  }
+
+  HTTPClient http;
+  http.setTimeout(SERVER_TIMEOUT_MS);
+  beginServerRequest(http, "/api/attendance/review");
+  addDeviceHeaders(http);
+  const int code = http.POST(bodyJson);
+  const String reply = code == 200 ? http.getString() : String("");
+  http.end();
+  if (code != 200) return false;
+
+  DynamicJsonDocument resDoc(4096);
+  if (deserializeJson(resDoc, reply) || !(resDoc["ok"] | false) || !resDoc["acceptedEventIds"].is<JsonArray>()) {
+    return false;
+  }
+  JsonArray accepted = resDoc["acceptedEventIds"].as<JsonArray>();
+  size_t ackCount = 0;
+  for (size_t i = 0; i < expectedIds.size(); ++i) {
+    bool found = false;
+    for (JsonVariantConst v : accepted) {
+      const char *s = v.as<const char *>();
+      if (s && expectedIds[i].equalsIgnoreCase(s)) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) break;
+    ackCount = i + 1;
+  }
+  if (ackCount == 0) return false;
+  if (!offlineQueue->acknowledgeReviewBatch(batch[0], batch[ackCount - 1])) return false;
+  queueNeedsReview = offlineQueue->hasPendingReview();
+  Serial.print("Uploaded ");
+  Serial.print((unsigned)ackCount);
+  Serial.println(" retained review scan(s) to website admin panel");
+  return true;
 }
 
 bool queueActivelyDraining() {
@@ -4732,6 +4970,7 @@ void handleSerialCommand() {
     }
   } else if (cmd == "queue review clear CONFIRM") {
     if (queueMutex && xSemaphoreTake(queueMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      if (LittleFS.exists("/queue.review.cursor")) LittleFS.remove("/queue.review.cursor");
       if (!LittleFS.exists("/queue.review.jsonl") || LittleFS.remove("/queue.review.jsonl")) {
         queueNeedsReview = false;
         Serial.println("Review records cleared; only do this after reconciliation");

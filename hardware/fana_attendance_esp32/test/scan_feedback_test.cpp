@@ -140,6 +140,29 @@ int main() {
   assert(feedback.tick(2600U) && feedback.phase() == ScanFeedback::SAVED);
   assert(feedback.consumeDoneCue());
 
+  // Active scan that ends in DELIVERY_REVIEW must NEVER fire the 2nd green cue;
+  // it fires consumeReviewCue() instead so the red LED + error beep warn honestly.
+  ScanFeedback revCard;
+  revCard.verifying(pending, true, 3000);
+  revCard.saved(review, true, 3005);
+  assert(revCard.mayShow(review, 3500));
+  revCard.delivered(review, 3500);
+  assert(revCard.phase() == ScanFeedback::REVIEW);
+  assert(!revCard.consumeDoneCue());
+  assert(revCard.consumeReviewCue());
+  assert(!revCard.consumeReviewCue());
+
+  // Cold-boot offline scan with scannedAt == 0 must NEVER light GREEN LED
+  // (consumeDoneCue == false); it warns RED (consumeReviewCue == true) so the
+  // employee does not switch power off before Wi-Fi anchors the clock.
+  ScanFeedback unanchoredOffline;
+  const auto noClock = notice("u", "Bontu", 0, DELIVERY_IN);
+  unanchoredOffline.saved(noClock, false, 4000);
+  assert(unanchoredOffline.tick(4450) && unanchoredOffline.phase() == ScanFeedback::SAVED);
+  assert(!unanchoredOffline.consumeDoneCue());
+  assert(unanchoredOffline.consumeReviewCue());
+  assert(!unanchoredOffline.consumeReviewCue());
+
   const char *id = "0123456789abcdef0123456789abcdef";
   assert(receiptMatches(id, 1790000000U, 55, 7, id, 1790000000U, 55, 7, "clock_in", true));
   assert(receiptMatches(id, 1790000000U, 55, 7, id, 1790000000U, 55, 7, "already_registered", false));

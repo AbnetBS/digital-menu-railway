@@ -357,6 +357,25 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    "attendance_review_queue",
+    `CREATE TABLE IF NOT EXISTS attendance_review_queue (
+      id serial PRIMARY KEY,
+      event_id varchar(64) NOT NULL UNIQUE,
+      reason varchar(40) NOT NULL,
+      fingerprint_id integer NOT NULL,
+      member_id integer,
+      staff_name varchar(120),
+      device_id varchar(50) NOT NULL DEFAULT 'entrance',
+      boot_id varchar(32),
+      uptime_seconds integer,
+      scanned_at timestamp,
+      status varchar(20) NOT NULL DEFAULT 'pending',
+      resolved_log_id integer,
+      received_at timestamp NOT NULL DEFAULT now(),
+      resolved_at timestamp
+    )`,
+  ],
+  [
     // Attendance logs - one row per staff per day with IN/OUT like paper sheet
     "attendance_logs",
     `CREATE TABLE IF NOT EXISTS attendance_logs (

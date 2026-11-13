@@ -11,6 +11,7 @@ import {
 import { ensureTablesExist } from "@/db/migrate";
 import { verifySecret } from "@/lib/auth";
 import { deviceAllowed } from "@/lib/attendance-device";
+import { recordScannerHeartbeat } from "@/lib/scanner-status";
 import { requireSupervisor } from "@/lib/session";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { and, eq, sql } from "drizzle-orm";
@@ -140,6 +141,9 @@ async function processClockItem(request: Request, body: Record<string, unknown>)
     }
     if (method === "fingerprint" && !deviceAllowed(request)) {
       return NextResponse.json({ error: "Attendance device authorization required" }, { status: 401 });
+    }
+    if (method === "fingerprint") {
+      recordScannerHeartbeat("clock_scan");
     }
     if (rawEventId !== undefined && (method !== "fingerprint" || typeof rawEventId !== "string" || !/^[a-f0-9]{32}$/i.test(rawEventId))) {
       return NextResponse.json({ error: "Invalid scan eventId" }, { status: 400 });

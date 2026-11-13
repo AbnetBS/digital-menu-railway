@@ -206,9 +206,11 @@ pass("a 200 is not accepted without the exact website receipt", firmware.include
 pass("new scans and a recovered clock wake an independent delivery task", firmware.includes("void deliveryTask(void *)") &&
   firmware.includes("xTaskNotifyGive(deliveryTaskHandle)") && firmware.includes("QUEUE_OFFLINE_POLL_MS") &&
   firmware.includes("QUEUE_RETRY_MS"));
-pass("the LCD distinguishes local storage from website confirmation", firmware.includes('"SAVED OFFLINE"') &&
-  firmware.includes('"Queued - will send"') && firmware.includes('"SENT TO WEBSITE"') && firmware.includes('"ALREADY REGISTERED"') &&
-  firmware.includes('"SENDING TO WEBSITE"') && firmware.includes("SAVED ON DEVICE") === false);
+pass("the LCD distinguishes local storage from website confirmation", firmware.includes('"Stored offline queue"') &&
+  firmware.includes('"Sent to website"') && firmware.includes('"Already registered"') &&
+  firmware.includes('"Verifying...."') && firmware.includes("SAVED ON DEVICE") === false);
+pass("retained review scans are automatically synced to the website admin panel", firmware.includes("syncReviewQueueToWebsite()") &&
+  firmware.includes('"/api/attendance/review"') && queue.includes("peekReviewBatch"));
 pass("changed mappings or out-of-order scans are retained for review", firmware.includes('copyToReview(head, "server_conflict")') &&
   clockApi.includes('status: "mapping_changed"') && clockApi.includes('status: "out_of_order"'));
 pass("the route rejects invalid recorded times instead of substituting arrival", clockApi.includes("if (exactTime && !scan.trusted)") &&

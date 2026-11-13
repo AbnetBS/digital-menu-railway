@@ -1463,6 +1463,8 @@ export const STAFF_AM = {
   "Day": "ቀን",
   "Revenue": "ገቢ",
   "Total (7 days)": "ጠቅላላ (7 ቀናት)",
+  "Online": "በመስመር ላይ",
+  "Offline": "ከመስመር ውጪ",
 } as const satisfies Record<string, string>;
 
 export type StaffPhrase = keyof typeof STAFF_AM;

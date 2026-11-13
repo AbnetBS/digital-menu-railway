@@ -104,7 +104,17 @@ const i18n = read("src/lib/i18n.ts");
 
 /* ── 3. duplicate lines merge in the DATABASE, not just on screen ─────────── */
 {
-  pass("the order route uses the single shared merge rule", /import \{ canMergeLines \} from "@\/lib\/order-lines"/.test(tickets) && /canMergeLines\(row, incoming\)/.test(tickets));
+  pass(
+    "the order route uses the single shared merge rule",
+    // Nov 2026: the import also pulls the sport-menu marker helpers, so the
+    // check accepts the named import list rather than one exact specifier.
+    /import \{[^}]*canMergeLines[^}]*\} from "@\/lib\/order-lines"/.test(tickets) &&
+      /canMergeLines\(row, incoming\)/.test(tickets),
+  );
+  pass(
+    "a match-day line keeps its own row (a sport Cola never folds into an ordinary one)",
+    /isSportNote\(row\.notes\) !== \(it\.sportLine === true\)/.test(tickets) && /!sportFlagDiffers\(row\) &&/.test(tickets),
+  );
   pass("a merge folds into the existing row instead of inserting", /mergeCandidates\.find\(/.test(tickets));
   pass("a merged line cannot grow without bound", /MAX_MERGED_LINE_QUANTITY/.test(tickets));
   pass("every accepted submission is recorded for idempotency", /insert\(orderSubmissions\)/.test(tickets));

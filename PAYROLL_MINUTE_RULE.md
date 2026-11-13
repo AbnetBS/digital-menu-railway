@@ -99,12 +99,17 @@ The owner's rules (2026-10-28), now in one place:
 * **Free Week OT (x2):** anyone who works on a free day or free period from
   their own file is paid the free-week formula on the same measured hours.
 * **Shift OT (x1.5):** the time worked **beyond the length of the person's own
-  shift** (IN to OUT) is Shift OT once it passes the 1:15 buffer. That is how a
-  double shift is found: one IN and one OUT covering two shifts has more worked
-  time than one shift, so the extra is paid. If a person works on their free day
-  but their IN fits another role's shift and no shift of their own, it is
-  treated as covering that shift and paid as Shift OT instead of Free Week OT.
-  A day is only ever one kind of overtime, so nothing is paid twice.
+  shift** (IN to OUT) is Shift OT once it passes the 1:15 buffer. If a person
+  works on their free day but their IN fits another role's shift and no shift
+  of their own, it is treated as covering that shift and paid as Shift OT
+  instead of Free Week OT. A day is only ever one kind of overtime, so nothing
+  is paid twice.
+* **NO automatic overtime money (2026-11-07).** The clock-out scan no longer
+  writes a paid Shift OT row by itself (`AUTO_SHIFT_OT_ENABLED = false` in
+  `src/lib/attendance-overtime.ts`). Staying past the shift, or being sent in
+  early, only turns the paper sheet's box **violet** so you can see it. Money
+  is paid only for the overtime you enter by hand (Attendance → Overtime, or the
+  OT cell of a payroll row).
 * **Weekday names** appear beside every overtime date (Monday, Tuesday, ...).
 * **Category history:** the three kind buttons filter the Overtime page, which
   lists everyone (including those with zero), so you can see who got which OT
@@ -118,6 +123,25 @@ The owner's rules (2026-10-28), now in one place:
   cannot quietly come back under another kind. **Give again** restores it.
   Only an admin can make that decision, and it is stored in
   `attendance_ot_exclusions` keyed by person + day + kind.
+
+### 3b. Which shift a scan belongs to (2026-11-07)
+
+The **closest shift start** decides, on the 24 hour dial. Shifts 12:00 and
+20:00: a scan at 06:00 is 6 h from 12:00 and 2 h from 20:00, so it is the 20:00
+shift and on time. The old 30/60/120 minute windows are gone, so a waiter sent
+in two hours early is no longer written down as hours late on the morning
+shift. A night shift is measured around midnight too (a 02:00 scan is 4 h from
+a 22:00 start and 10 h from a 12:00 start). The extra hours are marked, never
+paid automatically:
+
+* **Sent in early** (more than 1:15 before his own start): the IN box is violet
+  and says **Early 2h**.
+* **Stayed up to the next shift** (his OUT is nearer the next shift's leaving
+  time than his own): the OUT box is violet and says **Stayed next shift**.
+  A 12:00-18:00 person who leaves at 21:30 with an 18:00-23:00 shift after him
+  is marked, not called an early out.
+* **A free day** from the person's own file is never the red Absent box: it is
+  violet **Free day**. If he comes in anyway the box is blue **Worked free day**.
 
 ## 4. The formal printed sheet
 
@@ -142,6 +166,28 @@ like your Excel:
 * Landscape A3, black on white, repeating column headers, rows never split
   across pages.
 
+## 4b. The cash payroll (2026-11-07)
+
+A second table sits under the TIN payroll, for the people paid in cash who have
+no TIN number. It is the owner's own Excel: a title **CASH ON HAND FOR THE MONTH
+OF <month>**, then **No. / Employee Name / Net pay / Signature**, a TOTAL line
+and Prepared by / Checked by / Approved by blanks. No basic salary, no pension,
+no income tax and no transport: those columns exist because the government needs
+them, and a cash employee has no TIN, so the money is one number the owner types.
+
+* **Who is in it.** An attendance member (he keeps his fingerprint and stays on
+  the paper attendance sheet) or a name typed straight into the table for people
+  who do not work regularly and never scan a finger. **New person** types a name
+  and a net pay; **From attendance** picks an existing member and pre-fills his
+  own monthly take-home as a suggestion. The bin at the end of a row removes him
+  again. Clicking a name or a net pay makes that cell editable; renaming a member
+  row renames the attendance member too, so both lists always agree.
+* **It takes the person OFF the TIN sheet of the same month**, because he is paid
+  from the cash box. Next month he is back unless he is added again.
+* **Print cash sheet** prints this four column A4 sheet on its own, with its own
+  Prepared / Checked / Approved names. It never prints the 18 column TIN sheet.
+  The normal Print button never prints the cash sheet.
+
 ## 5. Where it lives
 
 | What | Where |
@@ -151,11 +197,14 @@ like your Excel:
 | Chargeable minutes, the three OT kinds, covered shifts, exclusions, letterhead date/month, row snapshot | `src/app/api/payroll/route.ts` |
 | Same money chain in the live preview, formal print sheet, header editor, OT decision | `src/components/rms/PayrollTab.tsx` |
 | Overtime category history, weekday dates, "Don't give" / "Give again" | `src/components/rms/AttendanceTab.tsx` |
-| Auto Shift OT at clock-out, from IN + OUT | `src/app/api/attendance/clock/route.ts`, `src/lib/attendance-overtime.ts` |
+| Cash payroll rules, title and total | `src/lib/cash-payroll.ts` |
+| Cash rows, rename, delete, paid tick, sign-off, printed cash sheet | `src/app/api/payroll/cash/route.ts`, `src/components/rms/CashPayrollPanel.tsx` |
+| Auto Shift OT at clock-out (turned OFF on 2026-11-07: the violet mark costs nothing) | `src/lib/attendance-overtime.ts` (`AUTO_SHIFT_OT_ENABLED`) |
 | `dont_give` / `give_again` API and `attendance_ot_exclusions` table | `src/app/api/attendance/overtime/route.ts`, `src/db/schema.ts` |
 | Formula validation, empty box = off | `src/app/api/payroll/settings/route.ts` |
 | One-time seeding of existing databases | `src/db/migrate.ts` (schema `2026-10-28-1`) |
 | Minute-rule, payroll, overtime and Excel-parity guards | `scripts/verify-minute-deductions.ts`, `scripts/verify-payroll.ts`, `scripts/verify-attendance-overtime.ts`, `scripts/verify-payroll-excel.ts` |
+| Cash payroll rules and its mounted screen | `scripts/verify-cash-payroll.ts`, `scripts/verify-cash-payroll-ui.tsx` |
 
 **Off switch / reset:** emptying any of the three deduction boxes switches that
 deduction off permanently; "Reset to the rates the owner gave" restores all

@@ -33,7 +33,15 @@ pass("order route rejects quantity < 1", /qty\s*<\s*1/.test(src));
 pass("order route caps quantity (<= 100)", /qty\s*>\s*100/.test(src));
 pass("order route rejects non-integer quantity", /Number\.isInteger\(qty\)/.test(src));
 pass("order route rejects unknown menu item", /Unknown menu item/.test(src));
-pass("order route overwrites client price with resolved price", /it\.price\s*=\s*priceById\.get/.test(src));
+pass(
+  "order route overwrites client price with the SERVER's price",
+  // Nov 2026: the resolved price is the ordinary (or sale) price from the
+  // server's own menu read, EXCEPT for a line the waiter added in sport mode,
+  // which takes the server-resolved sport price. Either way the client's number
+  // is always overwritten: there is no path that keeps it.
+  /it\.price\s*=\s*sportUnitPrice\s*!==\s*undefined\s*\?\s*sportUnitPrice\s*:\s*regularPriceById\.get\(menuId\)/.test(src) &&
+    !/it\.price\s*=\s*Number\(it\.price\)/.test(src)
+);
 pass("daily promotion is re-read from announcements server-side", /import\s*\{[^}]*announcements[^}]*\}\s*from\s*"@\/db\/schema"/.test(src) && src.includes("parseDailyPromotion"));
 pass("daily promotion must still be active and exactly match configured items", src.includes("isDailyPromotionOrderable") && src.includes("configuredItem.menuItemId") && src.includes("configuredItem.quantity"));
 pass("promotion prices are calculated from trusted server configuration", src.includes("calculateDailyPromotionLinePrices") && src.includes("promotionLine.unitPrices"));

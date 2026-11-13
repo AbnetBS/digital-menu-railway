@@ -3,8 +3,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Calculator,
   CalendarDays,
+  UserPlus,
   Check,
   CheckCircle2,
+  Columns3,
   Loader2,
   Pencil,
   Plus,
@@ -25,10 +27,14 @@ import {
   computePayrollMoney,
   currentEthiopianPeriod,
   gregorianDateToEthiopian,
+  payrollPeriodLabel,
   type PayrollSettings,
 } from "@/lib/payroll";
 import { OVERTIME_TYPE_LABELS, weekdayName, type OvertimeType } from "@/lib/attendance";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
+import NewPersonDialog from "@/components/rms/NewPersonDialog";
+import TableScroll from "@/components/rms/TableScroll";
+import CashPayrollPanel from "@/components/rms/CashPayrollPanel";
 
 const birr = (n: number) => new Intl.NumberFormat("en-ET", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
 /** The Excel leaves optional money cells blank when they are zero. */
@@ -98,7 +104,20 @@ export default function PayrollTab() {
   const [pending, setPending] = useState<null | { row: any; field: string; value: number; previous: number }>(null);
   const [payTarget, setPayTarget] = useState<any>(null);
   const [otMemberId, setOtMemberId] = useState<number | null>(null);
+  // Which sheet the printer shows. The cash button flips this for one print,
+  // so the two print buttons never print each other's table.
+  const [printMode, setPrintMode] = useState<"tin" | "cash">("tin");
+  // THE PAPER MUST BE HIS PAPER (owner, 2026-11-08, pointing at row 556 of his
+  // October 2019 E.C. sheet: "in the picture i send you my system colomn also
+  // need to be worked like that"). His sheet has fifteen columns; Absence,
+  // Late and Early out are NOT on it. They are already inside Total Deduction,
+  // so printing them as extra columns made the paper wider than his file and
+  // put three zeros in the middle of it. Off by default, his fifteen only.
+  // The supervisor still sees them when he wants the proof of a deduction.
+  const [showAttendanceColumns, setShowAttendanceColumns] = useState(false);
   const [holidayOpen, setHolidayOpen] = useState(false);
+  // The new name added from this screen: name, role and the month he counts from.
+  const [newPersonOpen, setNewPersonOpen] = useState(false);
   // The company name and TIN printed on the government sheet. Stored in
   // site_settings, edited here, read by the payroll API for the letterhead.
   const [headerDraft, setHeaderDraft] = useState({ ...DEFAULT_PAYROLL_LETTERHEAD });
@@ -135,6 +154,14 @@ export default function PayrollTab() {
     const timer = setTimeout(() => load(), 0);
     return () => clearTimeout(timer);
   }, [load]);
+
+  // The cash print is for ONE print. When the dialog closes (afterprint) the
+  // page goes back to the TIN sheet, so a normal Print never repeats it.
+  useEffect(() => {
+    const back = () => setPrintMode("tin");
+    window.addEventListener("afterprint", back);
+    return () => window.removeEventListener("afterprint", back);
+  }, []);
 
   const act = async (body: any, success: string) => {
     setBusy(true);
@@ -255,7 +282,7 @@ export default function PayrollTab() {
   }, settings) : 0;
 
   return (
-    <div id="fana-payroll" className="space-y-5 text-white">
+    <div id="fana-payroll" className={`space-y-5 text-white ${printMode === "cash" ? "cash-print-mode" : ""}`}>
       {/*
         GOVERNMENT PRINT SHEET (owner, 2026-10-27): "the current 1 have so
         many unnecessary thing like my dashboard ... since it send to
@@ -265,6 +292,9 @@ export default function PayrollTab() {
         company name, Payroll Sheet, month, TIN, the same columns, a Signature
         column and Prepared / Checked / Approved lines.
       */}
+      {/* The cash sheet is four columns: it prints on a portrait A4, not on
+          the wide landscape page the 18 column government sheet needs. */}
+      {printMode === "cash" && <style>{`@media print { @page { size: A4 portrait; margin: 12mm; } }`}</style>}
       <style>{`
         #fana-payroll .print-sheet { display: none; }
         @media print {
@@ -335,6 +365,31 @@ export default function PayrollTab() {
           </button>
         </div>
       </div>
+
+      {/* NOTHING IS DEDUCTED BY ITSELF (owner, 2026-11-08). The month totals are
+          already correct without a decision, because a pending row is charged
+          nothing. This band is the reminder that some rows are still waiting,
+          with a button to the report, so the owner is never surprised. */}
+      {(() => {
+        const pending = Number(
+          (data?.rows || []).reduce((sum: number, r: any) => sum + Number(r?.pendingDecisions?.total || 0), 0)
+        );
+        if (!pending) return null;
+        return (
+          <div className="p-3 rounded-xl bg-amber-950/60 border border-amber-600 text-amber-100 text-sm flex gap-2 items-start no-print">
+            <TriangleAlert className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              <b>{pending}</b>{" "}
+              {pending === 1
+                ? "attendance row is waiting for a decision. It is not deducted and no overtime is paid until you press Deduct or Do not deduct on the Deduction Report."
+                : "attendance rows are waiting for a decision. They are not deducted and no overtime is paid until you press Deduct or Do not deduct on the Deduction Report."}
+            </span>
+            <a href="/admin?tab=attendance" className="ml-auto underline font-bold shrink-0">
+              Open the report
+            </a>
+          </div>
+        );
+      })()}
 
       {message && (
         <div className="p-3 rounded-xl bg-emerald-950 border border-emerald-600 text-emerald-100 text-sm flex gap-2 items-start">
@@ -462,7 +517,10 @@ export default function PayrollTab() {
               <div className="company">{data?.letterhead?.companyName || headerDraft.companyName}</div>
               <div className="sheet-name">Payroll Sheet</div>
               <div className="month-row">
-                <div>For The Month of <b>{data?.letterhead?.monthLabel || period}</b></div>
+                {/* The Ethiopian month, always: Tikimt 2019 E.C, not October
+                    2019 (owner, 2026-11-08). The fallback is the same label,
+                    so the paper never prints a raw 2019-02 on a slow load. */}
+                <div>For The Month of <b>{data?.letterhead?.monthLabel || payrollPeriodLabel(period)}</b></div>
                 <div>TIN NO&nbsp; <b>{data?.letterhead?.tin || headerDraft.tin}</b></div>
               </div>
               <div className="gregorian-range">
@@ -471,6 +529,14 @@ export default function PayrollTab() {
               </div>
             </div>
             <table className="payroll-paper">
+              {/*
+                Fifteen columns, in this order, because that is the order of
+                the owner's Excel: No., Employee Name, Basic Salary, 11%,
+                Transport Allowance, OT, Gross Salary, Taxable salary, Income
+                tax, P.C 7%, P.C 18%, Breakage & shortage, Total Deduction,
+                Net pay, Signature. The supervisor can add the three
+                attendance columns between Breakage and Total Deduction.
+              */}
               <thead>
                 <tr>
                   <th>No.</th>
@@ -485,9 +551,9 @@ export default function PayrollTab() {
                   <th>P.C 7 %</th>
                   <th>P.C 18%</th>
                   <th>Breakage<br />&amp;<br />shortage</th>
-                  <th>Absence</th>
-                  <th>Late</th>
-                  <th>Early<br />out</th>
+                  {showAttendanceColumns && <th>Absence</th>}
+                  {showAttendanceColumns && <th>Late</th>}
+                  {showAttendanceColumns && <th>Early<br />out</th>}
                   <th>Total<br />Deduction</th>
                   <th>Net pay</th>
                   <th>Signature</th>
@@ -508,9 +574,9 @@ export default function PayrollTab() {
                     <td className="num">{paper(r.employeePension)}</td>
                     <td className="num">{paper(r.totalPension)}</td>
                     <td className="num">{paper(r.breakageShortage, true)}</td>
-                    <td className="num">{paper(r.absenceDeduction, true)}</td>
-                    <td className="num">{paper(r.latenessDeduction, true)}</td>
-                    <td className="num">{paper(r.earlyOutDeduction, true)}</td>
+                    {showAttendanceColumns && <td className="num">{paper(r.absenceDeduction, true)}</td>}
+                    {showAttendanceColumns && <td className="num">{paper(r.latenessDeduction, true)}</td>}
+                    {showAttendanceColumns && <td className="num">{paper(r.earlyOutDeduction, true)}</td>}
                     <td className="num">{paper(r.totalDeduction)}</td>
                     <td className="num">{paper(r.netPay)}</td>
                     <td className="signature-cell" />
@@ -518,7 +584,11 @@ export default function PayrollTab() {
                 ))}
                 {data && data.rows?.length === 0 && (
                   <tr>
-                    <td colSpan={18} className="center">No staff in the attendance list yet.</td>
+                    <td colSpan={showAttendanceColumns ? 18 : 15} className="center">
+                      {data?.cash?.rows?.length > 0
+                        ? "Every employee is paid in cash this month. See the cash payroll sheet."
+                        : "No staff in the attendance list yet."}
+                    </td>
                   </tr>
                 )}
               </tbody>
@@ -536,9 +606,15 @@ export default function PayrollTab() {
                     <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.employeePension, 0))}</td>
                     <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.totalPension, 0))}</td>
                     <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.breakageShortage, 0))}</td>
-                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.absenceDeduction, 0))}</td>
-                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.latenessDeduction, 0))}</td>
-                    <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.earlyOutDeduction, 0))}</td>
+                    {showAttendanceColumns && (
+                      <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.absenceDeduction, 0))}</td>
+                    )}
+                    {showAttendanceColumns && (
+                      <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.latenessDeduction, 0))}</td>
+                    )}
+                    {showAttendanceColumns && (
+                      <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.earlyOutDeduction, 0))}</td>
+                    )}
                     <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.totalDeduction, 0))}</td>
                     <td className="num">{birr(data.rows.reduce((t: number, r: any) => t + r.netPay, 0))}</td>
                     <td />
@@ -547,8 +623,10 @@ export default function PayrollTab() {
               )}
             </table>
             <p className="payroll-note">
-              Absence: one day of Basic Salary / 30 per unapproved absent day. Late and Early out: BasicSalary / 30 / 8 / 60 per
-              chargeable minute after the role grace. Free days and approved exceptions are not deducted.
+              Total Deduction = Income tax + P.C 7% + Breakage &amp; shortage, plus whatever the supervisor approved
+              for Absence (Basic Salary / 30 a day), Late and Early out (BasicSalary / 30 / 8 / 60 a minute after the
+              role grace). Nothing is deducted until he presses Deduct on the Deduction Report; overtime is paid only
+              when he presses Add overtime. Free days and approved exceptions are not deducted.
             </p>
             <div className="payroll-signoff">
               {[
@@ -600,8 +678,35 @@ export default function PayrollTab() {
             >
               <CalendarDays className="w-4 h-4 inline" /> Holiday dates ({data?.holidays?.length || 0})
             </button>
-            <button onClick={() => window.print()} className="px-4 py-2.5 rounded-xl bg-white/10 text-xs font-bold">
+            {/* OWNER, 2026-11-08: "also add these button for the New person From
+                attendance main payroll too okay so they can add when they
+                want". Same list as Attendance - Staff Members, added from the
+                sheet he is looking at, so a new name is on the payroll without
+                changing tab. */}
+            <button
+              onClick={() => setNewPersonOpen(true)}
+              className="px-4 py-2.5 rounded-xl bg-emerald-800/70 border border-emerald-500/40 text-xs font-bold"
+            >
+              <UserPlus className="w-4 h-4 inline" /> New person
+            </button>
+            <button
+              onClick={() => {
+                setPrintMode("tin");
+                // The state has to be on the page before the browser builds
+                // the print preview, so the print waits one frame.
+                requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
+              }}
+              className="px-4 py-2.5 rounded-xl bg-white/10 text-xs font-bold"
+            >
               <Printer className="w-4 h-4 inline" /> Print
+            </button>
+            {/* His paper or the supervisor's proof. Off = his fifteen columns. */}
+            <button
+              onClick={() => setShowAttendanceColumns((v) => !v)}
+              aria-pressed={showAttendanceColumns}
+              className={`no-print px-4 py-2.5 rounded-xl text-xs font-bold ${showAttendanceColumns ? "bg-[#C9A227] text-[#21130f]" : "bg-white/10"}`}
+            >
+              <Columns3 className="w-4 h-4 inline" /> {showAttendanceColumns ? "Hide" : "Show"} Absence / Late / Early out
             </button>
             <span className="ml-auto text-xs flex flex-wrap items-center gap-3">
               <span>
@@ -619,7 +724,7 @@ export default function PayrollTab() {
             </div>
           )}
 
-          <div className="overflow-x-auto bg-white text-black rounded-xl">
+          <TableScroll label="Monthly payroll table" maxHeight="72vh" className="bg-white text-black rounded-xl">
             <table className="w-full text-[11px] border-collapse whitespace-nowrap">
               <thead className="bg-stone-200">
                 <tr>
@@ -643,7 +748,13 @@ export default function PayrollTab() {
                     "Net Pay",
                     "Paid",
                   ].map((h) => (
-                    <th key={h} className="border p-2">
+                    <th
+                      key={h}
+                      // The EMPLOYEE NAME is the one pinned column (owner,
+                      // 2026-11-07): scrolled to the far right he still knows
+                      // whose Net Pay he is reading.
+                      className={`border p-2 bg-stone-200 ${h === "Employee Name" ? "fana-freeze-cell fana-freeze-head" : ""}`}
+                    >
                       {h}
                       {["Basic Salary", "Transport"].includes(h) && <Pencil className="w-3 h-3 inline ml-1 text-stone-600" />}
                     </th>
@@ -654,7 +765,9 @@ export default function PayrollTab() {
                 {data?.rows?.map((r: any) => (
                   <tr key={r.memberId} className={`hover:bg-amber-50 ${r.paid ? "bg-emerald-50/60" : ""}`}>
                     <td className="border p-2 text-center font-black text-stone-700">{r.employeeNumber}</td>
-                    <td className="border p-2 font-bold">
+                    <td
+                      className={`fana-freeze-cell border p-2 font-bold ${r.paid ? "bg-emerald-50" : "bg-white"}`}
+                    >
                       {r.employeeName}
                       <div className="text-[9px] font-normal text-stone-500">
                         Present {r.attendance.daysPresent}/{r.attendance.scheduledDays} • Late {r.attendance.lateMinutes}m
@@ -735,7 +848,9 @@ export default function PayrollTab() {
                 {data && data.rows?.length === 0 && (
                   <tr>
                     <td colSpan={18} className="border p-8 text-center text-stone-500">
-                      No staff in the attendance list yet. Add them in Attendance • Staff Members.
+                      {data?.cash?.rows?.length > 0
+                        ? "Every employee is paid in cash this month. The cash payroll table is below."
+                        : "No staff in the attendance list yet. Add them in Attendance • Staff Members."}
                     </td>
                   </tr>
                 )}
@@ -766,7 +881,24 @@ export default function PayrollTab() {
                 </tfoot>
               )}
             </table>
-          </div>
+          </TableScroll>
+
+          {/* THE CASH PAYROLL (owner, 2026-11-07), under the TIN payroll. */}
+          <CashPayrollPanel
+            period={period}
+            monthLabel={data?.letterhead?.periodLabel || period}
+            dateEc={data?.letterhead?.dateEc || ""}
+            dateLabel={data?.letterhead?.dateLabel || ""}
+            companyName={data?.letterhead?.companyName || headerDraft.companyName}
+            tin={data?.letterhead?.tin || headerDraft.tin}
+            onChanged={() => load(true)}
+            onSaved={setMessage}
+            onFailed={setError}
+            onPrint={() => {
+              setPrintMode("cash");
+              requestAnimationFrame(() => requestAnimationFrame(() => window.print()));
+            }}
+          />
 
           <div className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4 grid md:grid-cols-3 gap-3">
             {[
@@ -845,6 +977,17 @@ export default function PayrollTab() {
           period={period}
           onClose={() => setHolidayOpen(false)}
           onChanged={() => load(true)}
+        />
+      )}
+
+      {newPersonOpen && (
+        <NewPersonDialog
+          period={period}
+          onClose={() => setNewPersonOpen(false)}
+          onAdded={async (name) => {
+            setMessage(`${name} is on the attendance list. Type the Basic Salary in his row.`);
+            await load(true);
+          }}
         />
       )}
 

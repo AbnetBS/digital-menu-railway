@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-export const SCHEMA_VERSION = "2026-10-29-1";
+export const SCHEMA_VERSION = "2026-11-08-3";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -526,6 +526,23 @@ const RMS_CREATES: Array<[string, string]> = [
     )`,
   ],
   [
+    "payroll_deduction_decisions",
+    `CREATE TABLE IF NOT EXISTS payroll_deduction_decisions (
+      id serial PRIMARY KEY,
+      period_key varchar(10) NOT NULL,
+      member_id integer NOT NULL,
+      attendance_date varchar(10) NOT NULL,
+      event_type varchar(20) NOT NULL,
+      decision varchar(12) NOT NULL,
+      decided_by varchar(100) NOT NULL,
+      reason text,
+      minutes integer NOT NULL DEFAULT 0,
+      overtime_type varchar(20),
+      decided_at timestamp DEFAULT now(),
+      UNIQUE(period_key, member_id, attendance_date, event_type)
+    )`,
+  ],
+  [
     "payroll_overtime_entries",
     `CREATE TABLE IF NOT EXISTS payroll_overtime_entries (
       id serial PRIMARY KEY,
@@ -582,6 +599,52 @@ const RMS_CREATES: Array<[string, string]> = [
       holiday_date varchar(10) NOT NULL,
       name varchar(120) NOT NULL,
       created_at timestamp DEFAULT now()
+    )`,
+  ],
+  // CASH PAYROLL (owner, 2026-11-07). A second table on the Payroll page for
+  // the people who are paid in cash and have no TIN, so no tax, pension or
+  // transport column applies to them. A row is either an attendance member
+  // (member_id) or a name typed straight into the table (no member_id, no
+  // attendance needed). The name lives here so it follows a rename.
+  [
+    "cash_payroll_entries",
+    `CREATE TABLE IF NOT EXISTS cash_payroll_entries (
+      id serial PRIMARY KEY,
+      period_key varchar(10) NOT NULL,
+      member_id integer,
+      name varchar(120) NOT NULL,
+      net_pay numeric(14,2) NOT NULL DEFAULT 0,
+      note text,
+      sort_order integer DEFAULT 0,
+      paid_at timestamp,
+      created_at timestamp DEFAULT now(),
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  [
+    "cash_payroll_signoff",
+    `CREATE TABLE IF NOT EXISTS cash_payroll_signoff (
+      period_key varchar(10) PRIMARY KEY,
+      prepared_by varchar(100),
+      checked_by varchar(100),
+      approved_by varchar(100),
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
+  // THE SPORT MENU (owner, 2026-11-07): a second price list for match days.
+  // `categories` is the slugs the owner added, `prices` the typed match-day
+  // price per menu item. Nothing here touches the ordinary menu or the
+  // customer QR page: the waiters read it, the guests never do.
+  [
+    "sport_menus",
+    `CREATE TABLE IF NOT EXISTS sport_menus (
+      id serial PRIMARY KEY,
+      name varchar(80) NOT NULL DEFAULT 'Sport',
+      active boolean NOT NULL DEFAULT true,
+      categories jsonb NOT NULL DEFAULT '[]'::jsonb,
+      prices jsonb NOT NULL DEFAULT '[]'::jsonb,
+      created_at timestamp DEFAULT now(),
+      updated_at timestamp DEFAULT now()
     )`,
   ],
   [
@@ -890,6 +953,31 @@ const RMS_COLUMNS: Record<string, Record<string, ColSpec>> = {
     end_time: { type: "text", def: "'23:59'" },
     note: { type: "text" },
   },
+  cash_payroll_entries: {
+    period_key: { type: "text", def: "'2019-01'" },
+    member_id: { type: "integer", castText: true },
+    name: { type: "text", def: "'Employee'" },
+    net_pay: { type: "numeric(14,2)", def: "0" },
+    note: { type: "text" },
+    sort_order: { type: "integer", def: "0", castText: true },
+    paid_at: { type: "timestamp", dropNotNull: true },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    updated_at: { type: "timestamp", def: "now()", dropNotNull: true },
+  },
+  sport_menus: {
+    name: { type: "text", def: "'Sport'" },
+    active: { type: "boolean", def: "true" },
+    categories: { type: "jsonb", def: "'[]'::jsonb" },
+    prices: { type: "jsonb", def: "'[]'::jsonb" },
+    created_at: { type: "timestamp", def: "now()", dropNotNull: true },
+    updated_at: { type: "timestamp", def: "now()", dropNotNull: true },
+  },
+  cash_payroll_signoff: {
+    prepared_by: { type: "text" },
+    checked_by: { type: "text" },
+    approved_by: { type: "text" },
+    updated_at: { type: "timestamp", def: "now()", dropNotNull: true },
+  },
   attendance_members: {
     name: { type: "text", def: "'Member'" },
     role_id: { type: "integer", castText: true },
@@ -1053,6 +1141,17 @@ async function runFullMigrate(force: boolean) {
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_holidays_date_key ON payroll_holidays (holiday_date)`);
   await run(`CREATE UNIQUE INDEX IF NOT EXISTS payroll_payments_period_member_key ON payroll_payments (period_key, member_id)`);
   await run(`ALTER TABLE payroll_payments ADD COLUMN IF NOT EXISTS snapshot jsonb`);
+  // The decision ledger gained the number the supervisor approved and which
+  // kind of overtime it was (see payroll_deduction_decisions).
+  await run(`ALTER TABLE payroll_deduction_decisions ADD COLUMN IF NOT EXISTS minutes integer DEFAULT 0`);
+  await run(`ALTER TABLE payroll_deduction_decisions ADD COLUMN IF NOT EXISTS overtime_type varchar(20)`);
+  // CASH PAYROLL (owner, 2026-11-07): the people paid in cash have no TIN, so
+  // the main sheet's tax, pension and transport columns never apply to them.
+  // One row per person per month, either an attendance member or a typed name.
+  await run(`CREATE INDEX IF NOT EXISTS cash_payroll_entries_period_idx ON cash_payroll_entries (period_key)`);
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS cash_payroll_entries_period_member_key ON cash_payroll_entries (period_key, member_id) WHERE member_id IS NOT NULL`
+  );
 
   // MONEY COLUMNS: an earlier build created the payroll amounts as integers, and
   // saving 3080.13 failed with "invalid input syntax for type integer". Convert

@@ -1,0 +1,469 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { Check, Layers, Loader2, RefreshCw, ThumbsDown, X } from "lucide-react";
+import { useStaffT } from "@/lib/staff-i18n";
+import type { OvertimeType } from "@/lib/attendance";
+import { phrase } from "@/lib/staff-i18n";
+import {
+  decisionButtonLabels,
+  decisionHeadline,
+  pendingCounts,
+  type DecisionEvent,
+  type DecisionKind,
+} from "@/lib/attendance-decisions";
+import { currentEthiopianPeriod, payrollPeriodLabel } from "@/lib/payroll";
+import { etDayKeyDaysAgo } from "@/lib/timezone";
+
+/**
+ * THE DEDUCTION REPORT (owner, 2026-11-08).
+ *
+ * This is the screen that grew where the "Open Kiosk /attendance" button used
+ * to be. The owner does not use the kiosk tab; what he needs every evening is
+ * the list of things a person did, each with two buttons:
+ *
+ *   abnet - late 30 min            [ Deduct ]  [ Do not deduct ]
+ *   abnet - absent today           [ Deduct ]  [ Do not deduct ]
+ *   abnet - left early 20 min      [ Deduct ]  [ Do not deduct ]
+ *   abnet - overtime 2.5 h         [ Add overtime ] [ Do not add ]
+ *
+ * NOTHING is deducted until one of those buttons is pressed, and "Do not
+ * deduct" (the reasonable excuse) is remembered with a reason. Overtime waits
+ * the same way: the system never pays extra hours on its own.
+ *
+ * The decisions are recorded by /api/attendance/decisions into the same tables
+ * payroll reads, so this screen and the salary sheet cannot disagree.
+ */
+
+type MonthEvent = DecisionEvent & { measuredMinutes?: number };
+
+type MonthPayload = {
+  period: string;
+  from: string;
+  to: string;
+  events: MonthEvent[];
+  members: Array<{ id: number; name: string }>;
+  pending?: Record<string, number>;
+  /** "approved" | "paid" once the owner has finalised the month. */
+  locked?: string | null;
+};
+
+type RowDecision = "deduct" | "dont_deduct";
+
+/** The four rates the owner can pick from, on every overtime row. */
+const OT_RATE_OPTIONS: Array<{ kind: OvertimeType; label: ReturnType<typeof phrase> }> = [
+  { kind: "holiday", label: phrase("Holiday OT") },
+  { kind: "free_week", label: phrase("Free week OT") },
+  { kind: "shift", label: phrase("Shift OT") },
+  { kind: "night_shift", label: phrase("Night shift OT") },
+];
+
+const TYPE_LABEL = {
+  lateness: "Late",
+  early_out: "Left early",
+  absence: "Absent",
+  overtime: "Overtime",
+  shortage: "Breakage and shortage",
+} as const satisfies Record<DecisionKind, string>;
+
+export default function DeductionReportPanel({
+  onPendingChange,
+  onClose,
+}: {
+  /** Told how many rows are still waiting, so the tab can show the count. */
+  onPendingChange?: (pending: number) => void;
+  onClose?: () => void;
+}) {
+  const { t: L } = useStaffT();
+  const [period, setPeriod] = useState(() => currentEthiopianPeriod());
+  const [data, setData] = useState<MonthPayload | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busyKey, setBusyKey] = useState("");
+  const [msg, setMsg] = useState("");
+  const [msgBad, setMsgBad] = useState(false);
+  const [filter, setFilter] = useState<"pending" | "all">("pending");
+  const [memberId, setMemberId] = useState<number | "">("");
+  /**
+   * WHICH RATE PAYS (owner, 2026-11-08). "Let me choose per row". A visit on a
+   * free day, a holiday and an extra shift are not the same money, and only he
+   * knows which one he is looking at, so every overtime row carries a rate
+   * picker. The default is the kind the scan measured; changing it re-prices
+   * the row with the formula of that kind in Formula Settings.
+   */
+  const [otKind, setOtKind] = useState<Record<string, OvertimeType>>({});
+
+  /**
+   * Every press answers on the screen itself, in its own strip: the button
+   * feedback rule (scripts/verify-button-feedback.ts) and the owner's habit of
+   * reading the line under the buttons.
+   */
+  const say = (text: string, bad = false) => {
+    setMsg(text);
+    setMsgBad(bad);
+  };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/attendance/decisions?period=${encodeURIComponent(period)}`, { cache: "no-store" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || "Could not load the report");
+      setData(body);
+      onPendingChange?.(Number(body?.pending?.total || 0));
+    } catch (e) {
+      say(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      setLoading(false);
+    }
+  }, [period, onPendingChange]);
+
+  useEffect(() => {
+    // Deferred by a tick so the first paint is not a cascade of state writes,
+    // exactly like the payroll tab does it.
+    const timer = setTimeout(() => void load(), 0);
+    return () => clearTimeout(timer);
+  }, [load]);
+
+  const decide = async (event: MonthEvent, decision: RowDecision) => {
+    const key = `${event.type}|${event.memberId}|${event.date}`;
+    setBusyKey(key);
+    try {
+      const res = await fetch("/api/attendance/decisions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          period,
+          memberId: event.memberId,
+          date: event.date,
+          type: event.type,
+          decision,
+          // The measured number, never the decided one: the server stores what
+          // was approved, and an overtime row needs its hours to be paid.
+          minutes: event.measuredMinutes || event.minutes,
+          overtimeType:
+            event.type === "overtime"
+              ? otKind[key] || (event.overtimeType as OvertimeType) || "shift"
+              : undefined,
+          // What the clock measured, so the server can retire that row when the
+          // owner prices the visit at a different rate.
+          measuredType: event.type === "overtime" ? event.overtimeType || null : undefined,
+          shiftLabel: event.type === "overtime" ? event.label : undefined,
+          reason: decision === "dont_deduct" ? L("Reasonable excuse") : "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || "Could not save the decision");
+      setData((prev) => (prev ? { ...prev, events: body.events || prev.events } : prev));
+      onPendingChange?.(Number(body?.pending?.total || 0));
+      const words = decisionButtonLabels(event.type);
+      say(
+        decision === "deduct"
+          ? event.type === "overtime"
+            ? L("Overtime added. It is paid this month.")
+            : L("Deduction confirmed for {name}.", { name: event.memberName })
+          : L("{name} is not charged this time.", { name: event.memberName }),
+        false
+      );
+      void words;
+    } catch (e) {
+      say(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  /**
+   * THE WHOLE WAITING LIST AT ONCE (owner, 2026-11-08).
+   *
+   * "can you add delete all button to delet all beacsue as you can see there is
+   * more than 300 req and currently i cant do that"
+   *
+   * He has 359 rows on Tikimt. Two buttons empty that list: everything waiting
+   * is DEDUCTED (Do not deduct) or CLEARED (Delete all). "Delete all" does not
+   * erase history: what he pressed stays written with his name and the hour,
+   * exactly like 359 single presses, and the row leaves the waiting list.
+   * A month that is approved or paid refuses, as it always did.
+   */
+  const [bulkOpen, setBulkOpen] = useState<"" | "deduct" | "dont_deduct">("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const runBulk = async () => {
+    if (!bulkOpen) return;
+    const decision = bulkOpen;
+    setBulkBusy(true);
+    setMsg("");
+    try {
+      const res = await fetch("/api/attendance/decisions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          period,
+          decision,
+          // The server rebuilds the waiting list itself, so it can never act on
+          // a list older than the screen he is looking at.
+          all: true,
+          reason: decision === "dont_deduct" ? L("Cleared in one go") : "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || "Could not do that");
+      setData((prev) => (prev ? { ...prev, events: body.events || prev.events } : prev));
+      onPendingChange?.(Number(body?.pending?.total || 0));
+      say(
+        decision === "dont_deduct"
+          ? L("{count} waiting rows are cleared. The people keep their money.", { count: Number(body.applied) || 0 })
+          : L("{count} waiting rows are deducted.", { count: Number(body.applied) || 0 }),
+        false
+      );
+      setBulkOpen("");
+    } catch (e) {
+      say(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const today = etDayKeyDaysAgo(0) || "";
+  const yesterday = etDayKeyDaysAgo(1) || "";
+  const all = data?.events || [];
+  const visible = all
+    .filter((e) => e.type !== "shortage")
+    .filter((e) => (filter === "pending" ? e.status === "pending" : true))
+    .filter((e) => (memberId === "" ? true : e.memberId === memberId));
+  const counts = pendingCounts(all);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2">
+          <label className="text-[11px] font-black uppercase tracking-wider text-stone-400">{L("Month")}</label>
+          <input
+            value={period}
+            onChange={(e) => setPeriod(e.target.value)}
+            placeholder="2019-10"
+            className="bg-[#1C120F] border border-stone-700 rounded-xl px-3 py-2 text-sm text-white w-28"
+            aria-label={L("Payroll month")}
+          />
+          <span className="text-[11px] font-bold text-stone-500">{payrollPeriodLabel(period)}</span>
+        </div>
+        <select
+          value={memberId}
+          onChange={(e) => setMemberId(e.target.value === "" ? "" : Number(e.target.value))}
+          className="bg-[#1C120F] border border-stone-700 rounded-xl px-3 py-2 text-sm text-white"
+          aria-label={L("Employee")}
+        >
+          <option value="">{L("All employees")}</option>
+          {(data?.members || []).map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+        <div className="flex gap-1 bg-[#2C1B17] rounded-xl p-1">
+          <button
+            onClick={() => setFilter("pending")}
+            className={`px-3 py-1.5 rounded-lg text-[11px] font-black ${
+              filter === "pending" ? "bg-[#C9A227] text-[#2C1B17]" : "text-stone-300"
+            }`}
+          >
+            {L("Waiting for me")} ({counts.total})
+          </button>
+          <button
+            onClick={() => setFilter("all")}
+            className={`px-3 py-1.5 rounded-lg text-[11px] font-black ${
+              filter === "all" ? "bg-[#C9A227] text-[#2C1B17]" : "text-stone-300"
+            }`}
+          >
+            {L("All decisions")}
+          </button>
+        </div>
+        {/* THE TWO BUTTONS THAT EMPTY THE LIST, and only when there is
+            something to empty and the month is not locked. They act on the
+            WAITING rows only: a row already decided is never touched. */}
+        {!data?.locked && counts.total > 0 && (
+          <div className="ml-auto flex items-center gap-1.5">
+            <button
+              onClick={() => setBulkOpen("dont_deduct")}
+              className="flex items-center gap-1.5 bg-emerald-800 hover:bg-emerald-700 text-white text-[11px] font-black px-3 py-2 rounded-xl"
+            >
+              <Layers className="w-3.5 h-3.5" /> {L("Delete all")} ({counts.total})
+            </button>
+            <button
+              onClick={() => setBulkOpen("deduct")}
+              className="flex items-center gap-1.5 bg-rose-800 hover:bg-rose-700 text-white text-[11px] font-black px-3 py-2 rounded-xl"
+            >
+              <Check className="w-3.5 h-3.5" /> {L("Deduct all")} ({counts.total})
+            </button>
+          </div>
+        )}
+        <button
+          onClick={() => void load()}
+          className={`${data?.locked || counts.total === 0 ? "ml-auto " : ""}p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl`}
+          aria-label={L("Refresh")}
+        >
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+        </button>
+        {onClose && (
+          <button onClick={onClose} className="p-2 bg-white/10 hover:bg-white/20 text-stone-200 rounded-xl" aria-label={L("Close")}>
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      <div className="bg-[#2C1B17] border border-[#C9A227]/30 rounded-2xl p-4">
+        <p className="text-[11px] font-black uppercase tracking-wider text-amber-200">
+          {L("Nothing is deducted until you decide")}
+        </p>
+        <p className="text-[11px] font-bold text-stone-400 mt-1">
+          {L("Every absence, lateness, early leave and overtime waits here. Do not deduct when the reason is good: the person keeps the money and the reason is saved.")}
+        </p>
+        {data?.locked && (
+          <p className="text-[11px] font-black text-amber-300 mt-2">
+            {data.locked === "paid"
+              ? L("This month's payroll is paid, so these decisions are locked.")
+              : L("This month's payroll is approved, so these decisions are locked.")}
+          </p>
+        )}
+      </div>
+
+      {msg && (
+        <div
+          className={`text-xs font-bold px-4 py-3 rounded-xl border ${
+            msgBad ? "bg-rose-950/40 text-rose-200 border-rose-800" : "bg-emerald-950/40 text-emerald-200 border-emerald-800"
+          }`}
+        >
+          {msg}
+        </div>
+      )}
+
+      {bulkOpen && (
+        <div className="rounded-2xl border border-[#C9A227]/50 bg-[#2C1B17] p-4 space-y-3">
+          <p className="text-sm font-black text-amber-100">
+            {bulkOpen === "dont_deduct"
+              ? L("Clear all {count} waiting rows? The people keep their money.", { count: counts.total })
+              : L("Deduct all {count} waiting rows?", { count: counts.total })}
+          </p>
+          <p className="text-[11px] font-bold text-stone-400">
+            {L("Only the rows still waiting change. What is already decided, and the history, stays as it is.")}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => void runBulk()}
+              disabled={bulkBusy}
+              className={`flex items-center gap-1.5 text-white text-[11px] font-black px-4 py-2.5 rounded-xl disabled:opacity-50 ${
+                bulkOpen === "dont_deduct" ? "bg-emerald-700 hover:bg-emerald-600" : "bg-rose-700 hover:bg-rose-600"
+              }`}
+            >
+              {bulkBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+              {bulkOpen === "dont_deduct" ? L("Yes, delete all") : L("Yes, deduct all")}
+            </button>
+            <button
+              onClick={() => setBulkOpen("")}
+              disabled={bulkBusy}
+              className="bg-white/10 hover:bg-white/20 text-stone-200 text-[11px] font-black px-4 py-2.5 rounded-xl disabled:opacity-50"
+            >
+              {L("Cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {visible.length === 0 ? (
+        <p className="text-center text-sm font-bold text-stone-400 py-8">
+          {filter === "pending"
+            ? L("Nothing is waiting for a decision this month.")
+            : L("No attendance events in this month.")}
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {visible.map((e) => {
+            const key = `${e.type}|${e.memberId}|${e.date}`;
+            const busy = busyKey === key;
+            const labels = decisionButtonLabels(e.type);
+            const settled = e.status !== "pending";
+            return (
+              <div
+                key={key}
+                className={`flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2.5 ${
+                  settled
+                    ? e.status === "approved"
+                      ? "border-rose-900/60 bg-rose-950/20"
+                      : "border-emerald-900/60 bg-emerald-950/20"
+                    : "border-stone-700 bg-[#241714]"
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-black text-amber-100 truncate">
+                    {decisionHeadline({ ...e, memberName: e.memberName }, today, yesterday)}
+                  </p>
+                  <p className="text-[11px] font-bold text-stone-400">
+                    {e.dateEc} E.C. · {L(TYPE_LABEL[e.type])}
+                    {e.label ? ` · ${e.label}` : ""}
+                    {settled
+                      ? ` · ${e.status === "approved" ? L("Deducted") : L("Not deducted")}`
+                      : ` · ${L("waiting")}`}
+                    {e.reason ? ` · ${e.reason}` : ""}
+                  </p>
+                </div>
+                {data?.locked ? (
+                  <span
+                    className={`text-[10px] font-black uppercase px-2.5 py-1 rounded-full ${
+                      e.status === "approved" ? "bg-rose-900/60 text-rose-200" : e.status === "denied" ? "bg-emerald-900/60 text-emerald-200" : "bg-stone-800 text-stone-400"
+                    }`}
+                  >
+                    {e.status === "approved"
+                      ? L("Deducted")
+                      : e.status === "denied"
+                        ? L("Not deducted")
+                        : L("waiting")}
+                  </span>
+                ) : settled ? (
+                  <span
+                    className={`text-[10px] font-black uppercase px-2.5 py-1 rounded-full ${
+                      e.status === "approved" ? "bg-rose-900/60 text-rose-200" : "bg-emerald-900/60 text-emerald-200"
+                    }`}
+                  >
+                    {e.status === "approved" ? L("Deducted") : L("Not deducted")}
+                  </span>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {e.type === "overtime" && (
+                      <select
+                        value={otKind[key] || (e.overtimeType as OvertimeType) || "shift"}
+                        onChange={(ev) =>
+                          setOtKind((prev) => ({ ...prev, [key]: ev.target.value as OvertimeType }))
+                        }
+                        aria-label={L("Which rate pays")}
+                        className="bg-[#1C120F] border border-stone-700 rounded-lg px-2 py-2 text-[11px] font-bold text-amber-100"
+                      >
+                        {OT_RATE_OPTIONS.map((o) => (
+                          <option key={o.kind} value={o.kind}>
+                            {L(o.label)}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <button
+                      onClick={() => void decide(e, "deduct")}
+                      disabled={busy}
+                      className="flex items-center gap-1 bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-white text-[11px] font-black px-3 py-2 rounded-lg"
+                    >
+                      <Check className="w-3.5 h-3.5" /> {L(labels.confirm)}
+                    </button>
+                    <button
+                      onClick={() => void decide(e, "dont_deduct")}
+                      disabled={busy}
+                      className="flex items-center gap-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-[11px] font-black px-3 py-2 rounded-lg"
+                    >
+                      <ThumbsDown className="w-3.5 h-3.5" /> {L(labels.deny)}
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}

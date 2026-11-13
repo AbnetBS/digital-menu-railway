@@ -606,3 +606,31 @@ export const attendanceLogs = pgTable("attendance_logs", {
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
+
+/**
+ * THE SUPERVISOR'S DECISION ON ONE ATTENDANCE EVENT (owner, 2026-11-08).
+ *
+ * "for overtime and absent and late and early out it waits for the supervisor
+ * confirmation" and "dont deduct if they come with reasonable way". One row per
+ * (month, person, day, kind). A MISSING row is `pending`: the event costs
+ * nothing and pays nothing. `deduct` charges it, `dont_deduct` (the reasonable
+ * excuse) keeps it in the history and takes no money.
+ *
+ * Payroll reads this table to decide what to charge, so a decision taken on the
+ * report screen is the only way money moves.
+ */
+export const payrollDeductionDecisions = pgTable("payroll_deduction_decisions", {
+  id: serial("id").primaryKey(),
+  periodKey: varchar("period_key", { length: 10 }).notNull(),
+  memberId: integer("member_id").notNull(),
+  attendanceDate: varchar("attendance_date", { length: 10 }).notNull(),
+  eventType: varchar("event_type", { length: 20 }).notNull(), // lateness | early_out | absence
+  decision: varchar("decision", { length: 12 }).notNull(), // deduct | dont_deduct
+  decidedBy: varchar("decided_by", { length: 100 }).notNull(),
+  reason: text("reason"),
+  /** For an ADDED overtime row: the exact minutes that were approved. */
+  minutes: integer("minutes").default(0),
+  /** holiday | free_week | shift | night_shift, for an overtime decision. */
+  overtimeType: varchar("overtime_type", { length: 20 }),
+  decidedAt: timestamp("decided_at").defaultNow(),
+});

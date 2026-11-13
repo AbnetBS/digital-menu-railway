@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } fr
 import {
   Calendar,
   CalendarDays,
+  ClipboardCheck,
   Clock,
   Fingerprint,
   LogOut,
@@ -33,15 +34,21 @@ import {
 } from "@/lib/attendance";
 import { useStaffT } from "@/lib/staff-i18n";
 import FreeScheduleDialog from "@/components/rms/FreeScheduleDialog";
+import TableScroll from "@/components/rms/TableScroll";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
 import { currentEthiopianPeriod } from "@/lib/payroll";
+import DeductionReportPanel from "@/components/rms/DeductionReportPanel";
 import { etDayKeyDaysAgo } from "@/lib/timezone";
 
 /**
  * ADMIN -> ATTENDANCE (owner, Oct 2026).
  *
- * The order of the buttons is the owner's: Today Live first, Open Kiosk last,
- * everything else in between. The Shifts tab is gone - the times live on the
+ * The order of the buttons is the owner's: Today Live first. The "Open Kiosk
+ * /attendance" link that used to sit at the end is GONE (owner, 2026-11-08: "they
+ * are not using that tab"): in its place is the Deduction Report, where the
+ * lateness, absence, early-leave and overtime rows wait for a person to say
+ * Deduct or Do not deduct. The kiosk itself is still at /attendance for the
+ * people who scan at the door. The Shifts tab is gone - the times live on the
  * roles now (Role & Time), which is what decides who is late.
  *
  * The people on this page are the ATTENDANCE list (Staff Members), not the
@@ -63,7 +70,16 @@ import { etDayKeyDaysAgo } from "@/lib/timezone";
  *     saved is the record: there is no approval queue.
  */
 
-type ViewKey = "today" | "roles" | "members" | "sheet" | "leaderboard" | "overtime" | "activity" | "prints";
+type ViewKey =
+  | "today"
+  | "decisions"
+  | "roles"
+  | "members"
+  | "sheet"
+  | "leaderboard"
+  | "overtime"
+  | "activity"
+  | "prints";
 
 interface RoleShift {
   id?: number;
@@ -168,6 +184,10 @@ const IN_STYLE: Record<string, string> = {
   on_time: "bg-emerald-200 text-emerald-950",
   late: "bg-amber-200 text-amber-950",
   absent: "bg-rose-200 text-rose-950",
+  // FREE DAYS (owner, 2026-11-07): a registered free day is never the red
+  // absent box, and coming in on it is marked blue "Worked".
+  free: "bg-violet-200 text-violet-950",
+  free_worked: "bg-sky-200 text-sky-950",
 };
 const OUT_STYLE: Record<string, string> = {
   none: "bg-rose-200 text-rose-950",
@@ -175,6 +195,11 @@ const OUT_STYLE: Record<string, string> = {
   completed: "bg-emerald-100 text-emerald-950",
   early_out: "bg-sky-200 text-sky-950",
   overtime: "bg-violet-200 text-violet-950",
+  // Stayed up to the next shift's leaving time: the same violet as overtime,
+  // because it says the same thing. It carries no money by itself.
+  next_shift: "bg-violet-200 text-violet-950",
+  free: "bg-violet-100 text-violet-950",
+  free_worked: "bg-sky-100 text-sky-950",
 };
 
 const LEGEND = [
@@ -183,7 +208,9 @@ const LEGEND = [
   { label: "Absent", className: "bg-rose-200 text-rose-950 border-rose-500" },
   { label: "Still in", className: "bg-amber-100 text-amber-950 border-amber-400" },
   { label: "Early out", className: "bg-sky-200 text-sky-950 border-sky-500" },
-  { label: "Overtime", className: "bg-violet-200 text-violet-950 border-violet-500" },
+  { label: "Overtime / stayed next shift", className: "bg-violet-200 text-violet-950 border-violet-500" },
+  { label: "Free day", className: "bg-violet-100 text-violet-950 border-violet-400" },
+  { label: "Worked his free day", className: "bg-sky-100 text-sky-950 border-sky-400" },
 ];
 
 /** One ranked person of the leaderboard, as the API returns him. */
@@ -237,6 +264,13 @@ export default function AttendanceTab() {
   const [msgBad, setMsgBad] = useState(false);
   const [scannerOnline, setScannerOnline] = useState(false);
   const [scannerLastSeen, setScannerLastSeen] = useState<string | null>(null);
+  /**
+   * How many rows are still waiting for a human (owner, 2026-11-08). The badge
+   * on the Deduction Report button is the whole point: the supervisor sees the
+   * number of people whose money is undecided, and nothing is deducted until
+   * that number is worked through.
+   */
+  const [pendingDecisions, setPendingDecisions] = useState(0);
 
   const [roles, setRoles] = useState<Role[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -409,6 +443,25 @@ export default function AttendanceTab() {
     }
   }, []);
 
+  /**
+   * The number on the Deduction Report button: how many lateness, absence,
+   * early-leave and overtime rows still have nobody's decision on them. It is
+   * fetched on the tab itself so the number is right before the report is
+   * opened, and the panel reports its own count back after each press.
+   */
+  const loadPendingDecisions = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/attendance/decisions?period=${encodeURIComponent(currentEthiopianPeriod())}`, {
+        cache: "no-store",
+      });
+      if (!r.ok) return;
+      const data = await r.json();
+      setPendingDecisions(Number(data?.pending?.total || 0));
+    } catch {
+      /* the badge keeps its last number */
+    }
+  }, []);
+
   // The live effect below owns the request and coalesces events; a manual
   // reload uses the same path so two responses cannot overwrite each other.
   const loadSheet = useCallback(() => {
@@ -553,11 +606,17 @@ export default function AttendanceTab() {
         say(d?.error || "Could not save the overtime", true);
         return;
       }
-      say(d.replaced ? `Corrected: ${d.message}` : d.message);
+      // NOTHING IS PAID BY ITSELF (owner, 2026-11-08). A typed overtime row is a
+      // MEASUREMENT: it appears on the Deduction Report as "overtime 2 h" and
+      // waits for Add overtime / Do not add, exactly like a late arrival waits
+      // for Deduct / Do not deduct. So this screen no longer says "saved and
+      // paid"; it says what happens next.
+      say(`${d.replaced ? `Corrected: ${d.message} ` : `${d.message} `}It is waiting for Add overtime on the Deduction Report.`);
       setOtHours("");
       setOtNote("");
       await loadOvertime();
       loadToday();
+      void loadPendingDecisions();
     } catch {
       say("Network error. Try again.", true);
     } finally {
@@ -646,7 +705,8 @@ export default function AttendanceTab() {
     loadRoles();
     loadMembers();
     loadToday();
-  }, [loadRoles, loadMembers, loadToday]);
+    void loadPendingDecisions();
+  }, [loadRoles, loadMembers, loadToday, loadPendingDecisions]);
 
   const loadScannerStatus = useCallback(async () => {
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
@@ -1505,6 +1565,11 @@ export default function AttendanceTab() {
         {(
           [
             { key: "today", label: "Today Live", icon: <Clock className="w-4 h-4" /> },
+            // ONE DOOR TO THE REPORT (owner, 2026-11-08: "there is 2 deduction
+            // report buttons can you pleasae remove the 1st one and stay the
+            // last button"). The chip that used to sit here was a second way in;
+            // the rose button at the end of this row is the one that also carries
+            // the count of people still waiting, so that is the one that stays.
             { key: "roles", label: "Role & Time", icon: <Timer className="w-4 h-4" /> },
             { key: "members", label: "Staff Members", icon: <Users className="w-4 h-4" /> },
             { key: "sheet", label: "Paper Sheet View", icon: <Calendar className="w-4 h-4" /> },
@@ -1530,13 +1595,29 @@ export default function AttendanceTab() {
             {v.icon} {L(v.label)}
           </button>
         ))}
-        <a
-          href="/attendance"
-          target="_blank"
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-800 hover:bg-emerald-700 text-white whitespace-nowrap"
+        {/*
+          THE KIOSK BUTTON IS GONE (owner, 2026-11-08: "they are not using that
+          tab"). Its place is the report that needs a person: lateness, absence,
+          early leave and overtime, each with Deduct / Do not deduct, and no
+          money moves until one of the two is pressed. The door tablet still
+          lives at /attendance for the people who use it; the admin just does not
+          need a button for it here.
+        */}
+        <button
+          onClick={() => setActiveView("decisions")}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
+            activeView === "decisions"
+              ? "bg-rose-800 text-white"
+              : "bg-rose-900/60 hover:bg-rose-800 text-rose-100"
+          }`}
         >
-          <Clock className="w-4 h-4" /> {L("Open Kiosk /attendance")}
-        </a>
+          <ClipboardCheck className="w-4 h-4" /> {L("Decide deductions")}
+          {pendingDecisions > 0 && (
+            <span className="bg-amber-400 text-[#2C1B17] rounded-full px-1.5 py-0.5 text-[10px] font-black">
+              {pendingDecisions}
+            </span>
+          )}
+        </button>
       </div>
 
       {msg && (
@@ -1862,6 +1943,14 @@ export default function AttendanceTab() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* ── THE DEDUCTION REPORT ─────────────────────────────────────────
+          The screen the kiosk button became (owner, 2026-11-08): lateness,
+          absence, early leave and overtime, each with Deduct / Do not deduct,
+          and no money moved until one of the two is pressed. */}
+      {activeView === "decisions" && (
+        <DeductionReportPanel onPendingChange={setPendingDecisions} />
       )}
 
       {/* ── TODAY LIVE ─────────────────────────────────────────────────── */}
@@ -2537,11 +2626,11 @@ export default function AttendanceTab() {
                       </p>
                     )}
                   </div>
-                  <div className="overflow-x-auto">
+                  <TableScroll label="Attendance paper sheet" maxHeight="70vh">
                     <table className="w-full text-left border-collapse text-sm">
                       <thead>
                         <tr className="bg-stone-100 border-b-2 border-black">
-                          <th className="p-2 border border-black font-black text-[15px]">Employee Name</th>
+                          <th className="fana-freeze-cell fana-freeze-head p-2 border border-black font-black text-[15px] bg-stone-100">Employee Name</th>
                           {pageDates.map((d: string) => (
                             <th
                               key={d}
@@ -2557,7 +2646,7 @@ export default function AttendanceTab() {
                           ))}
                         </tr>
                         <tr className="bg-stone-50 border-b border-black">
-                          <th className="p-2 border border-black" />
+                          <th className="fana-freeze-cell fana-freeze-head p-2 border border-black bg-stone-50" />
                           {pageDates.map((d: string) => (
                             <Fragment key={`${d}-sub`}>
                               <th className="p-1 border border-black text-[12px] font-black text-center">
@@ -2573,7 +2662,7 @@ export default function AttendanceTab() {
                       <tbody>
                         {sheetData.staffList.map((s: any) => (
                           <tr key={s.id} className="border-b border-black">
-                            <td className="p-2 border border-black font-black text-[15px] whitespace-nowrap">
+                            <td className="fana-freeze-cell p-2 border border-black font-black text-[15px] whitespace-nowrap bg-white">
                               {s.name}
                               <span className="block text-[11px] font-bold text-stone-600">{s.role}</span>
                             </td>
@@ -2604,7 +2693,17 @@ export default function AttendanceTab() {
                                         {cell.lateMinutes > 0 && (
                                           <div className="text-[11px] font-black">Late {cell.lateMinutes}m</div>
                                         )}
+                                        {cell.earlyArrivalMinutes > 0 && (
+                                          <div className="text-[11px] font-black">
+                                            Early {Math.round(cell.earlyArrivalMinutes / 60 * 10) / 10}h
+                                          </div>
+                                        )}
+                                        {cell.freeDay && cell.clockInTime && (
+                                          <div className="text-[11px] font-black">Worked free day</div>
+                                        )}
                                       </>
+                                    ) : cell?.freeDay ? (
+                                      <span className="text-[12px] font-black">Free day</span>
                                     ) : attendanceExpected ? (
                                       <span className="text-[12px] font-black">Absent</span>
                                     ) : null}
@@ -2616,13 +2715,30 @@ export default function AttendanceTab() {
                                       <>
                                         <div>{cell.clockOutTime}</div>
                                         <div className="text-[11px] font-bold">{cell.totalHours}</div>
-                                        {cell.isOvertime && <div className="text-[11px] font-black">Overtime</div>}
-                                        {!cell.isOvertime && cell.earlyOut && (
+                                        {/* OWNER, 2026-11-08: on a registered free day the
+                                            box carries the free day wording, never "Absent"
+                                            and never "Early out". Coming in is already said
+                                            in the IN box (blue "Worked free day"), and the
+                                            money question is on the report. */}
+                                        {cell.freeDay && (
+                                          <div className="text-[11px] font-black">Worked free day</div>
+                                        )}
+                                        {!cell.freeDay && !cell.isOvertime && cell.stayedNextShift && (
+                                          <div className="text-[11px] font-black">Stayed next shift</div>
+                                        )}
+                                        {!cell.freeDay && !cell.isOvertime && !cell.stayedNextShift && cell.earlyOut && (
                                           <div className="text-[11px] font-black">Early out</div>
                                         )}
+                                        {!cell.freeDay && cell.isOvertime && (
+                                          <div className="text-[11px] font-black">Overtime</div>
+                                        )}
                                       </>
+                                    ) : cell?.freeDay && cell.clockInTime ? (
+                                      <span className="text-[12px] font-black">Still In</span>
                                     ) : attendanceExpected && cell?.clockInTime ? (
                                       <span className="text-[12px] font-black">Still In</span>
+                                    ) : cell?.freeDay ? (
+                                      <span className="text-[12px] font-black">-</span>
                                     ) : attendanceExpected ? (
                                       <span className="text-[12px] font-black">-</span>
                                     ) : null}
@@ -2641,11 +2757,12 @@ export default function AttendanceTab() {
                         )}
                       </tbody>
                     </table>
-                  </div>
+                  </TableScroll>
                   <div className="p-3 bg-stone-100 text-[11px] text-stone-700 text-center font-bold">
                     Digital signature = fingerprint scan • Green = on time • Yellow = late (30 minutes after his role
-                    starts) • Red = absent from registration through today • Blank = before registration or future •
-                    Blue = early out • Violet = overtime • Total hours = OUT - IN
+                    starts) • Red = absent from registration through today • Violet = overtime, free day, or stayed up
+                    to the next shift • Blue = early out or worked on his free day • Blank = before registration or
+                    future • Total hours = OUT - IN
                   </div>
                 </section>
               ))}

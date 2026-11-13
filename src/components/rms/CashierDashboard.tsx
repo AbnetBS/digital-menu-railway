@@ -19,6 +19,14 @@ import { useStaffT, tNow } from "@/lib/staff-i18n";
 import StaffLangToggle from "@/components/rms/StaffLangToggle";
 import DayCloseButton from "@/components/rms/DayCloseButton";
 import { closeTopBackLayer, installStaffBackNavigation } from "@/lib/staff-back-navigation";
+import { stripSportMarker } from "@/lib/order-lines";
+
+/**
+ * A line note as a person should read it: the sport-menu marker (written by
+ * the ticket API on match-day lines) is stripped so nobody sees a machine tag.
+ */
+const cleanNote = (notes?: string | null) => stripSportMarker(notes);
+
 
 interface StaffLite {
   id: number;
@@ -1274,7 +1282,7 @@ export default function CashierDashboard() {
                             <p className="font-bold text-amber-100 truncate">
                               {i.name} <span className="text-stone-300 font-bold">({i.price} ETB)</span>
                             </p>
-                            {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {i.notes}</p>}
+                            {cleanNote(i.notes) && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {cleanNote(i.notes)}</p>}
                             <p className="text-[10px] font-bold text-stone-400 mt-0.5">
                               × {i.quantity}
                               {i.stationStatus === "done"
@@ -1530,7 +1538,7 @@ export default function CashierDashboard() {
                                   <p className="font-bold text-amber-100 truncate">
                                     {i.name} <span className="text-stone-300 font-bold">({i.price} ETB)</span>
                                   </p>
-                                  {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {i.notes}</p>}
+                                  {cleanNote(i.notes) && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {cleanNote(i.notes)}</p>}
                                 </div>
                                 <span className="font-extrabold text-amber-100 shrink-0">× {i.quantity}</span>
                                 {!isItemLocked(i, t) && (
@@ -1649,7 +1657,7 @@ export default function CashierDashboard() {
                                 <p className="font-bold text-amber-100 truncate">
                                   {line.name} <span className="text-stone-300 font-bold">({line.price} ETB)</span>
                                 </p>
-                                {line.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {line.notes}</p>}
+                                {cleanNote(line.notes) && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {cleanNote(line.notes)}</p>}
                                 {line.ids.length > 1 && (
                                   <p className="text-[10px] font-black text-sky-300 mt-0.5">
                                     {L("Combined on cashier side • same item added again")}
@@ -1854,7 +1862,7 @@ export default function CashierDashboard() {
                                         {line.wholeLineIsNew ? L("NEW line") : L("NEW on existing line • +{addedQuantity}", { addedQuantity: line.addedQuantity })}
                                       </p>
                                     )}
-                                    {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {i.notes}</p>}
+                                    {cleanNote(i.notes) && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {cleanNote(i.notes)}</p>}
                                   </div>
                                   <span className="font-extrabold text-amber-100 shrink-0">
                                     × {showFullBill ? i.quantity : line.addedQuantity}
@@ -1889,7 +1897,7 @@ export default function CashierDashboard() {
                                   <p className="font-bold text-amber-100 truncate">
                                     {line.name} <span className="text-stone-300 font-bold">({line.price} ETB)</span>
                                   </p>
-                                  {line.notes && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {line.notes}</p>}
+                                  {cleanNote(line.notes) && <p className="text-[11px] font-semibold text-amber-300 italic">📝 {cleanNote(line.notes)}</p>}
                                   {line.ids.length > 1 && (
                                     <p className="text-[10px] font-black text-sky-300 mt-0.5">
                                       {L("Combined on cashier side • same item added again")}
@@ -2067,7 +2075,7 @@ export default function CashierDashboard() {
                         <div key={i.id} className={`p-2.5 text-xs flex items-center justify-between gap-2 ${i.removed ? "opacity-40 line-through" : ""}`}>
                           <div className="flex-1 min-w-0">
                             <p className="font-bold text-amber-100 truncate">{i.name}</p>
-                            {i.notes && <p className="text-[10px] text-amber-300 italic">📝 {i.notes}</p>}
+                            {cleanNote(i.notes) && <p className="text-[10px] text-amber-300 italic">📝 {cleanNote(i.notes)}</p>}
                           </div>
                           {!i.removed && !isItemLocked(i, t) ? (
                             <div className="flex items-center gap-1.5 shrink-0">
@@ -2335,7 +2343,7 @@ export default function CashierDashboard() {
                           {i.name}
                         </p>
                         <p className="text-xs font-semibold text-stone-300">{i.quantity} × {i.price} ETB</p>
-                        {i.notes && <p className="text-[11px] font-semibold text-amber-300 italic mt-0.5">📝 {i.notes}</p>}
+                        {cleanNote(i.notes) && <p className="text-[11px] font-semibold text-amber-300 italic mt-0.5">📝 {cleanNote(i.notes)}</p>}
                       </div>
                       <span className="text-sm font-black text-[#C9A227] shrink-0">{i.price * i.quantity} ETB</span>
                     </div>

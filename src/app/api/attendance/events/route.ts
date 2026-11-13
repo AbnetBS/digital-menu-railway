@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { subscribe, CHANNELS } from "@/lib/realtime";
 import { deviceAllowed } from "@/lib/attendance-device";
+import { onScannerStreamOpen } from "@/lib/scanner-status";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,6 +24,8 @@ export async function GET(request: Request) {
   if (!deviceAllowed(request)) {
     return NextResponse.json({ error: "Device not allowed" }, { status: 401 });
   }
+  const reportedBeat = Number(request.headers.get("x-scanner-beat-ms") || 0) || undefined;
+  const markStreamClosed = onScannerStreamOpen(reportedBeat);
 
   const channel = CHANNELS.device;
   const encoder = new TextEncoder();
@@ -34,7 +37,12 @@ export async function GET(request: Request) {
     if (unsub) unsub();
     keepalive = null;
     unsub = null;
+    markStreamClosed();
   };
+
+  if (request.signal) {
+    request.signal.addEventListener("abort", cleanup, { once: true });
+  }
 
   const stream = new ReadableStream({
     start(controller) {
@@ -42,12 +50,12 @@ export async function GET(request: Request) {
         try {
           controller.enqueue(encoder.encode(chunk));
         } catch {
-          // stream closed
+          cleanup();
         }
       };
       unsub = subscribe(channel, enqueue);
       enqueue(": connected\n\n");
-      keepalive = setInterval(() => enqueue(": ping\n\n"), 25000);
+      keepalive = setInterval(() => enqueue(": ping\n\n"), 5000);
     },
     cancel() {
       cleanup();

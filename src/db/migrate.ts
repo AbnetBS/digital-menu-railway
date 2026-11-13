@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-export const SCHEMA_VERSION = "2026-11-08-2";
+export const SCHEMA_VERSION = "2026-11-08-3";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -354,6 +354,25 @@ const RMS_CREATES: Array<[string, string]> = [
       scanned_at timestamp NOT NULL,
       response jsonb NOT NULL,
       received_at timestamp NOT NULL DEFAULT now()
+    )`,
+  ],
+  [
+    "attendance_review_queue",
+    `CREATE TABLE IF NOT EXISTS attendance_review_queue (
+      id serial PRIMARY KEY,
+      event_id varchar(64) NOT NULL UNIQUE,
+      reason varchar(40) NOT NULL,
+      fingerprint_id integer NOT NULL,
+      member_id integer,
+      staff_name varchar(120),
+      device_id varchar(50) NOT NULL DEFAULT 'entrance',
+      boot_id varchar(32),
+      uptime_seconds integer,
+      scanned_at timestamp,
+      status varchar(20) NOT NULL DEFAULT 'pending',
+      resolved_log_id integer,
+      received_at timestamp NOT NULL DEFAULT now(),
+      resolved_at timestamp
     )`,
   ],
   [

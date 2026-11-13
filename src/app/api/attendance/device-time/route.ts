@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deviceAllowed } from "@/lib/attendance-device";
+import { recordScannerHeartbeat } from "@/lib/scanner-status";
 
 export const dynamic = "force-dynamic";
 
@@ -10,6 +11,7 @@ export async function GET(request: Request) {
   if (!deviceAllowed(request)) {
     return NextResponse.json({ error: "Attendance device authorization required" }, { status: 401 });
   }
+  recordScannerHeartbeat("device_time");
   const now = Date.now();
   return NextResponse.json(
     { service: "fana-attendance-time-v1", epochSeconds: Math.floor(now / 1000), millisecond: now % 1000 },

@@ -80,14 +80,16 @@ class OfflineQueue {
     if (!guard.locked || !reason) return false;
     size_t cursor = 0;
     if (!readCursor(cursor) || cursor != head.start || !head.line.length()) return false;
-    if (fs_.exists("/queue.review.jsonl")) {
-      File check = fs_.open("/queue.review.jsonl", "r");
+    if (!fs_.exists(reviewPath_)) {
+      if (fs_.exists(reviewCursor_) && !fs_.remove(reviewCursor_)) return false;
+    } else {
+      File check = fs_.open(reviewPath_, "r");
       if (!check) return false;
       const size_t size = check.size();
       if (size && (!check.seek(size - 1) || check.read() != '\n')) { check.close(); return false; }
       check.close();
     }
-    File out = fs_.open("/queue.review.jsonl", "a");
+    File out = fs_.open(reviewPath_, "a");
     if (!out) return false;
     // Reason is one of the firmware's fixed literals; record is the original
     // JSON object, retained exactly for the administrator to reconcile.
@@ -96,6 +98,80 @@ class OfflineQueue {
     out.flush();
     out.close();
     return written == line.length();
+  }
+
+  bool hasPendingReview() {
+    Guard guard(mutex_);
+    if (!guard.locked || !fs_.exists(reviewPath_)) return false;
+    size_t cursor = 0;
+    if (!readCursorPath(reviewCursor_, cursor)) return true;
+    File in = fs_.open(reviewPath_, "r");
+    if (!in) return false;
+    const size_t size = in.size();
+    in.close();
+    return cursor < size;
+  }
+
+  Peek peekReviewBatch(std::vector<Head> &items, size_t maxItems) {
+    items.clear();
+    if (maxItems == 0) return EMPTY;
+    Guard guard(mutex_);
+    if (!guard.locked) return BLOCKED;
+    if (!fs_.exists(reviewPath_)) return EMPTY;
+    size_t cursor = 0;
+    if (!readCursorPath(reviewCursor_, cursor)) return BLOCKED;
+    File in = fs_.open(reviewPath_, "r");
+    if (!in) return BLOCKED;
+    const size_t size = in.size();
+    if (cursor > size) { in.close(); return BLOCKED; }
+    if (cursor == size) { in.close(); return EMPTY; }
+    size_t pos = cursor;
+    while (pos < size && items.size() < maxItems) {
+      if (!in.seek(pos)) {
+        in.close();
+        return items.empty() ? BLOCKED : READY;
+      }
+      String line = in.readStringUntil('\n');
+      const size_t end = in.position();
+      if (end <= pos || !in.seek(end - 1) || in.read() != '\n') {
+        in.close();
+        return items.empty() ? BLOCKED : READY;
+      }
+      line.trim();
+      if (!line.length()) {
+        in.close();
+        return items.empty() ? BLOCKED : READY;
+      }
+      Head h;
+      h.line = line;
+      h.start = pos;
+      h.end = end;
+      items.push_back(h);
+      pos = end;
+    }
+    in.close();
+    return items.empty() ? BLOCKED : READY;
+  }
+
+  bool acknowledgeReviewBatch(const Head &first, const Head &last) {
+    Guard guard(mutex_);
+    if (!guard.locked || !fs_.exists(reviewPath_)) return false;
+    size_t cursor = 0;
+    if (!readCursorPath(reviewCursor_, cursor) || cursor != first.start) return false;
+    File in = fs_.open(reviewPath_, "r");
+    if (!in || last.end > in.size() || last.end <= first.start) { if (in) in.close(); return false; }
+    in.close();
+    File temp = fs_.open(reviewTemp_, "w");
+    if (!temp) return false;
+    const String value = String((unsigned long)last.end);
+    const size_t written = temp.print(value);
+    temp.flush();
+    temp.close();
+    if (written != value.length() || !fs_.rename(reviewTemp_, reviewCursor_)) {
+      fs_.remove(reviewTemp_);
+      return false;
+    }
+    return true;
   }
 
   Peek peek(Head &head) {
@@ -326,10 +402,10 @@ class OfflineQueue {
     uptime = (uint32_t)seconds;
     return true;
   }
-  bool readCursor(size_t &out) {
+  bool readCursorPath(const char *cursorPath, size_t &out) {
     out = 0;
-    if (!fs_.exists(cursor_)) return true;
-    File file = fs_.open(cursor_, "r");
+    if (!fs_.exists(cursorPath)) return true;
+    File file = fs_.open(cursorPath, "r");
     if (!file) return false;
     String text = file.readString();
     file.close();
@@ -342,6 +418,9 @@ class OfflineQueue {
     }
     out = (size_t)value;
     return true;
+  }
+  bool readCursor(size_t &out) {
+    return readCursorPath(cursor_, out);
   }
   void compactRemainingLocked(size_t cursor, size_t size) {
     if (cursor == 0 || cursor >= size) return;
@@ -369,4 +448,7 @@ class OfflineQueue {
   const char *path_ = "/queue.json";
   const char *cursor_ = "/queue.cursor";
   const char *temp_ = "/queue.cursor.tmp";
+  const char *reviewPath_ = "/queue.review.jsonl";
+  const char *reviewCursor_ = "/queue.review.cursor";
+  const char *reviewTemp_ = "/queue.review.cursor.tmp";
 };

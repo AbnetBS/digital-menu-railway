@@ -1514,6 +1514,8 @@ export const STAFF_AM = {
   "Day": "ቀን",
   "Revenue": "ገቢ",
   "Total (7 days)": "ጠቅላላ (7 ቀናት)",
+  "Online": "በመስመር ላይ",
+  "Offline": "ከመስመር ውጪ",
 
   /* ── the deduction report: nothing charged without a decision (8 Nov 2026) ──
      The owner's own words: "abnet late 30 min, deduct / dont deduct", "dont

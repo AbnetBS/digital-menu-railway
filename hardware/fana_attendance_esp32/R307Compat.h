@@ -82,6 +82,23 @@ class R307Compat {
     return false;
   }
 
+  // Turn the optical/aura lamp OFF cleanly before deep sleep so the sensor LED
+  // does not burn power while the scanner is resting between shifts.
+  bool requestLightOff(uint32_t timeoutMs = 150) {
+    if (stream_.available() > 0) return false;
+    uint8_t reply[32];
+    const uint8_t offCmd[] = {FINGERPRINT_LEDOFF};
+    bool ok = command(offCmd, sizeof(offCmd), 1, timeoutMs, false, reply, false) && lastStatus_ == 0;
+#ifdef FINGERPRINT_AURALEDCONFIG
+    const uint8_t auraOff[] = {FINGERPRINT_AURALEDCONFIG, FINGERPRINT_LED_OFF,
+                               FINGERPRINT_LED_BLUE, FINGERPRINT_LED_BLUE, 0x00};
+    if (command(auraOff, sizeof(auraOff), 1, timeoutMs, false, reply, false) && lastStatus_ == 0) {
+      ok = true;
+    }
+#endif
+    return ok;
+  }
+
   // Which layout is known to work (0xFF = none confirmed yet). Serial and the
   // status page report it, so a dark glass can be diagnosed without guessing.
   uint8_t lightLayout() const { return lightMisses_ == 0 ? lightLayout_ : 0xFF; }

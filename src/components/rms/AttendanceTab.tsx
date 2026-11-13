@@ -262,6 +262,8 @@ export default function AttendanceTab() {
   const [activeView, setActiveView] = useState<ViewKey>("today");
   const [msg, setMsg] = useState("");
   const [msgBad, setMsgBad] = useState(false);
+  const [scannerOnline, setScannerOnline] = useState(false);
+  const [scannerLastSeen, setScannerLastSeen] = useState<string | null>(null);
   /**
    * How many rows are still waiting for a human (owner, 2026-11-08). The badge
    * on the Deduction Report button is the whole point: the supervisor sees the
@@ -373,6 +375,21 @@ export default function AttendanceTab() {
   const [manualFingerId, setManualFingerId] = useState("");
   const [manualFingerName, setManualFingerName] = useState("Right Index");
 
+  // Record Attendance (admin recovery for missed/unanchored scans) & Scanner Review edits
+  const [recordOpen, setRecordOpen] = useState(false);
+  const [recordMemberIds, setRecordMemberIds] = useState<number[]>([]);
+  const [recordDate, setRecordDate] = useState(() => etDayKeyDaysAgo(0) || new Date().toISOString().slice(0, 10));
+  const [recordUseRoleStart, setRecordUseRoleStart] = useState(true);
+  const [recordUseRoleEnd, setRecordUseRoleEnd] = useState(false);
+  const [recordKeepExistingIn, setRecordKeepExistingIn] = useState(true);
+  const [recordInTime, setRecordInTime] = useState("06:00");
+  const [recordOutTime, setRecordOutTime] = useState("");
+  const [recordSaving, setRecordSaving] = useState(false);
+  const [reviewDrafts, setReviewDrafts] = useState<
+    Record<number, { memberId: number | ""; date: string; clockInTime: string }>
+  >({});
+  const [reviewSaving, setReviewSaving] = useState(false);
+
   const say = (text: string, bad = false) => {
     setMsg(text);
     setMsgBad(bad);
@@ -403,12 +420,26 @@ export default function AttendanceTab() {
     }
   }, []);
 
+  const todayInFlightRef = useRef(false);
+  const todayPendingRef = useRef(false);
+
   const loadToday = useCallback(async () => {
+    if (todayInFlightRef.current) {
+      todayPendingRef.current = true;
+      return;
+    }
+    todayInFlightRef.current = true;
     try {
       const r = await fetch("/api/attendance/today", { cache: "no-store" });
       if (r.ok) setTodayLogs(await r.json());
     } catch {
       /* the table simply stays as it was */
+    } finally {
+      todayInFlightRef.current = false;
+      if (todayPendingRef.current) {
+        todayPendingRef.current = false;
+        void loadToday();
+      }
     }
   }, []);
 
@@ -437,30 +468,32 @@ export default function AttendanceTab() {
     sheetRefreshRef.current?.(true);
   }, []);
 
-  const loadLeaderboard = useCallback(async () => {
-    setLeaderLoading(true);
+  const loadLeaderboard = useCallback(async (silent?: unknown) => {
+    const isSilent = silent === true;
+    if (!isSilent) setLeaderLoading(true);
     try {
-      const r = await fetch(`/api/attendance/leaderboard?from=${leaderFrom}&to=${leaderTo}`);
+      const r = await fetch(`/api/attendance/leaderboard?from=${leaderFrom}&to=${leaderTo}`, { cache: "no-store" });
       const d = await r.json().catch(() => null);
       if (!r.ok) {
-        say(d?.error || "Could not load the leaderboard", true);
+        if (!isSilent) say(d?.error || "Could not load the leaderboard", true);
         return;
       }
       setLeaderboard(d as Leaderboard);
     } catch {
-      say("Network error. Try again.", true);
+      if (!isSilent) say("Network error. Try again.", true);
     } finally {
-      setLeaderLoading(false);
+      if (!isSilent) setLeaderLoading(false);
     }
   }, [leaderFrom, leaderTo]);
 
-  const loadOvertime = useCallback(async () => {
-    setOtLoading(true);
+  const loadOvertime = useCallback(async (silent?: unknown) => {
+    const isSilent = silent === true;
+    if (!isSilent) setOtLoading(true);
     try {
       const r = await fetch(`/api/attendance/overtime?from=${otFrom}&to=${otTo}`, { cache: "no-store" });
       const d = await r.json().catch(() => null);
       if (!r.ok) {
-        say(d?.error || "Could not load the overtime", true);
+        if (!isSilent) say(d?.error || "Could not load the overtime", true);
         return;
       }
       setOtRows(Array.isArray(d?.rows) ? (d.rows as OvertimeRow[]) : []);
@@ -468,9 +501,9 @@ export default function AttendanceTab() {
       setOtTotalMinutes(Number(d?.totalMinutes) || 0);
       setOtTotalPay(Number(d?.totalPay) || 0);
     } catch {
-      say("Network error. Try again.", true);
+      if (!isSilent) say("Network error. Try again.", true);
     } finally {
-      setOtLoading(false);
+      if (!isSilent) setOtLoading(false);
     }
   }, [otFrom, otTo]);
 
@@ -591,20 +624,21 @@ export default function AttendanceTab() {
     }
   };
 
-  const loadActivity = useCallback(async () => {
-    setActLoading(true);
+  const loadActivity = useCallback(async (silent?: unknown) => {
+    const isSilent = silent === true;
+    if (!isSilent) setActLoading(true);
     try {
       const r = await fetch("/api/attendance/activity", { cache: "no-store" });
       const d = await r.json().catch(() => null);
       if (!r.ok) {
-        say(d?.error || "Could not load the activity hours", true);
+        if (!isSilent) say(d?.error || "Could not load the activity hours", true);
         return;
       }
       setActivity(d as ActivityState);
     } catch {
-      say("Network error. Try again.", true);
+      if (!isSilent) say("Network error. Try again.", true);
     } finally {
-      setActLoading(false);
+      if (!isSilent) setActLoading(false);
     }
   }, []);
 
@@ -674,32 +708,225 @@ export default function AttendanceTab() {
     void loadPendingDecisions();
   }, [loadRoles, loadMembers, loadToday, loadPendingDecisions]);
 
-  // Today Live refreshes in real time: the server pushes the moment a scan
-  // is clocked in/out (SSE), so there is no polling. Falls back to the old
-  // 8-second refresh if the stream cannot be opened.
-  useEffect(() => {
-    if (activeView !== "today") return;
-    let es: EventSource | null = null;
-    let t: ReturnType<typeof setInterval> | null = null;
-    if (typeof EventSource !== "undefined") {
-      es = new EventSource("/api/realtime?channel=attendance");
-      es.onmessage = () => loadToday();
-      es.onerror = () => {
-        if (es && es.readyState === EventSource.CLOSED) {
-          es.close();
-          es = null;
-          t = setInterval(loadToday, 8000);
-        }
-        // otherwise EventSource reconnects by itself
-      };
-    } else {
-      t = setInterval(loadToday, 8000);
+  const loadScannerStatus = useCallback(async () => {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setScannerOnline(false);
+      return;
     }
+    try {
+      const r = await fetch("/api/attendance/device-status", { cache: "no-store" });
+      if (!r.ok) {
+        setScannerOnline(false);
+        return;
+      }
+      const d = await r.json().catch(() => null);
+      setScannerOnline(Boolean(d?.online));
+      if (typeof d?.lastSeenAt === "string") setScannerLastSeen(d.lastSeenAt);
+    } catch {
+      setScannerOnline(false);
+    }
+  }, []);
+
+  // Real-time scanner connection status beside the Refresh button: applies
+  // structured SSE frames immediately (`0 ms` when the ESP32 connects or
+  // disconnects) AND verifies every 2.5 seconds + on browser network/focus.
+  useEffect(() => {
+    void loadScannerStatus();
+    let es: EventSource | null = null;
+    if (typeof EventSource !== "undefined") {
+      es = new EventSource("/api/realtime?channel=scanner");
+      es.onmessage = (ev?: MessageEvent) => {
+        if (typeof navigator !== "undefined" && navigator.onLine === false) {
+          setScannerOnline(false);
+          return;
+        }
+        const raw = typeof ev?.data === "string" ? ev.data.trim() : "";
+        if (raw.startsWith("{")) {
+          try {
+            const parsed = JSON.parse(raw) as { online?: unknown; lastSeenAt?: unknown };
+            setScannerOnline(Boolean(parsed.online));
+            if (typeof parsed.lastSeenAt === "string") setScannerLastSeen(parsed.lastSeenAt);
+            return;
+          } catch {
+            // Fall through to HTTP status check
+          }
+        }
+        void loadScannerStatus();
+      };
+      es.onopen = () => void loadScannerStatus();
+    }
+    const timer = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadScannerStatus();
+      }
+    }, 2500);
+    const onOffline = () => setScannerOnline(false);
+    const onOnlineOrVisible = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadScannerStatus();
+      }
+    };
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("online", onOnlineOrVisible);
+    window.addEventListener("focus", onOnlineOrVisible);
+    document.addEventListener("visibilitychange", onOnlineOrVisible);
     return () => {
       if (es) es.close();
-      if (t) clearInterval(t);
+      clearInterval(timer);
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("online", onOnlineOrVisible);
+      window.removeEventListener("focus", onOnlineOrVisible);
+      document.removeEventListener("visibilitychange", onOnlineOrVisible);
+    };
+  }, [loadScannerStatus]);
+
+  // Today Live refreshes automatically in real time on SSE events AND every 3.5s
+  // plus tab focus, coalescing overlapping requests just like Paper Sheet View.
+  useEffect(() => {
+    if (activeView !== "today") return;
+    void loadToday();
+    let es: EventSource | null = null;
+    if (typeof EventSource !== "undefined") {
+      es = new EventSource("/api/realtime?channel=attendance");
+      es.onmessage = () => void loadToday();
+      es.onopen = () => void loadToday();
+    }
+    const timer = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadToday();
+      }
+    }, 3500);
+    const onVisible = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadToday();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      if (es) es.close();
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     };
   }, [activeView, loadToday]);
+
+  const pendingReviews: Array<{
+    id: number;
+    eventId: string;
+    reason: string;
+    reasonLabel: string;
+    fingerprintId: number;
+    memberId: number | null;
+    memberName: string;
+    roleName: string;
+    suggestedDate: string;
+    suggestedInTime: string;
+  }> = Array.isArray(todayLogs?.pendingReviews) ? todayLogs.pendingReviews : [];
+
+  const getReviewDraft = (item: {
+    id: number;
+    memberId: number | null;
+    suggestedDate: string;
+    suggestedInTime: string;
+  }) =>
+    reviewDrafts[item.id] ?? {
+      memberId: item.memberId ?? "",
+      date: item.suggestedDate,
+      clockInTime: item.suggestedInTime,
+    };
+
+  const confirmReviewItems = async (itemsToConfirm: typeof pendingReviews) => {
+    if (itemsToConfirm.length === 0 || reviewSaving) return;
+    const entries = itemsToConfirm.map((item) => {
+      const draft = getReviewDraft(item);
+      return {
+        id: item.id,
+        memberId: draft.memberId === "" ? undefined : Number(draft.memberId),
+        date: draft.date,
+        clockInTime: draft.clockInTime,
+      };
+    });
+    const missingMember = entries.find((e) => !e.memberId);
+    if (missingMember) {
+      say("Select the staff member for every unmapped fingerprint before confirming.", true);
+      return;
+    }
+    setReviewSaving(true);
+    try {
+      const r = await fetch("/api/attendance/review", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entries }),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {
+        say(d?.error || "Could not confirm scanner scan", true);
+        return;
+      }
+      say(d?.message || "Added to attendance sheet");
+      await loadToday();
+      if (activeView === "sheet") loadSheet();
+    } catch {
+      say("Network error. Try again.", true);
+    } finally {
+      setReviewSaving(false);
+    }
+  };
+
+  const dismissReviewItem = async (id: number) => {
+    if (reviewSaving) return;
+    setReviewSaving(true);
+    try {
+      const r = await fetch(`/api/attendance/review?id=${id}`, { method: "DELETE" });
+      if (r.ok) {
+        await loadToday();
+      }
+    } catch {
+      say("Network error. Try again.", true);
+    } finally {
+      setReviewSaving(false);
+    }
+  };
+
+  const submitManualAttendance = async () => {
+    if (recordMemberIds.length === 0) {
+      say("Select at least one employee to record attendance.", true);
+      return;
+    }
+    setRecordSaving(true);
+    try {
+      const r = await fetch("/api/attendance/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "manual_record",
+          memberIds: recordMemberIds,
+          date: recordDate,
+          useRoleStart: recordUseRoleStart,
+          useRoleEnd: recordUseRoleEnd,
+          keepExistingIn: recordKeepExistingIn,
+          clockInTime: recordInTime,
+          clockOutTime: recordOutTime,
+        }),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {
+        say(d?.error || "Could not record attendance", true);
+        return;
+      }
+      say(d?.message || "Attendance recorded");
+      setRecordMemberIds([]);
+      setRecordOutTime("");
+      setRecordOpen(false);
+      await loadToday();
+      if (activeView === "sheet") loadSheet();
+    } catch {
+      say("Network error. Try again.", true);
+    } finally {
+      setRecordSaving(false);
+    }
+  };
 
   // The paper sheet used to load only when opened or when Load Sheet was
   // pressed. A scan could reach the database while the visible sheet stayed
@@ -766,9 +993,83 @@ export default function AttendanceTab() {
     };
   }, [activeView, fromDate, toDate]);
 
+  // Leaderboard, Overtime, and Activity also stay live automatically without
+  // needing to press Refresh.
   useEffect(() => {
-    if (activeView === "leaderboard") loadLeaderboard();
+    if (activeView !== "leaderboard") return;
+    void loadLeaderboard();
+    const es = typeof EventSource !== "undefined" ? new EventSource("/api/realtime?channel=attendance") : null;
+    if (es) {
+      es.onmessage = () => void loadLeaderboard(true);
+      es.onopen = () => void loadLeaderboard(true);
+    }
+    const timer = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadLeaderboard(true);
+      }
+    }, 5000);
+    const onVisible = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadLeaderboard(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      es?.close();
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
   }, [activeView, loadLeaderboard]);
+
+  useEffect(() => {
+    if (activeView !== "overtime") return;
+    const es = typeof EventSource !== "undefined" ? new EventSource("/api/realtime?channel=attendance") : null;
+    if (es) {
+      es.onmessage = () => void loadOvertime(true);
+      es.onopen = () => void loadOvertime(true);
+    }
+    const timer = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadOvertime(true);
+      }
+    }, 5000);
+    const onVisible = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadOvertime(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      es?.close();
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [activeView, loadOvertime]);
+
+  useEffect(() => {
+    if (activeView !== "activity") return;
+    const timer = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadActivity(true);
+      }
+    }, 10000);
+    const onVisible = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        void loadActivity(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [activeView, loadActivity]);
 
   // Refresh members whenever Staff Fingerprints is opened so the list and
   // dropdown reflect the latest server mappings, including manual additions.
@@ -1214,23 +1515,49 @@ export default function AttendanceTab() {
       {freeMember && <FreeScheduleDialog member={freeMember} onClose={()=>setFreeMember(null)} />}
       {holidayOpen && <HolidayManagerDialog period={currentEthiopianPeriod()} onClose={()=>setHolidayOpen(false)} />}
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <h2 className="text-xl font-serif font-bold text-amber-100 flex items-center gap-2">
           <Fingerprint className="w-5 h-5 text-[#C9A227]" /> {L("Attendance System")}
         </h2>
-        <button
-          onClick={() => {
-            loadToday();
-            loadRoles();
-            loadMembers();
-            if (activeView === "leaderboard") loadLeaderboard();
-            say("");
-          }}
-          className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl"
-          aria-label={L("Refresh")}
-        >
-          <RefreshCw className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          <span
+            role="status"
+            aria-live="polite"
+            title={
+              scannerOnline
+                ? "Scanner has live connection to this page - scanned fingerprints arrive immediately"
+                : scannerLastSeen
+                  ? "Scanner is offline right now - scanned fingerprints wait on the device until connection returns"
+                  : "Waiting for scanner connection - scanned fingerprints will arrive once Online"
+            }
+            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-black border transition select-none ${
+              scannerOnline
+                ? "bg-emerald-950/70 text-emerald-300 border-emerald-500/50"
+                : "bg-rose-950/70 text-rose-300 border-rose-500/50"
+            }`}
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                scannerOnline ? "bg-emerald-400 animate-pulse" : "bg-rose-400"
+              }`}
+            />
+            {scannerOnline ? L("Online") : L("Offline")}
+          </span>
+          <button
+            onClick={() => {
+              void loadScannerStatus();
+              loadToday();
+              loadRoles();
+              loadMembers();
+              if (activeView === "leaderboard") loadLeaderboard();
+              say("");
+            }}
+            className="p-2 bg-white/10 hover:bg-white/20 text-amber-200 rounded-xl"
+            aria-label={L("Refresh")}
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* View switcher: Today Live first, Open Kiosk last */}
@@ -1305,6 +1632,319 @@ export default function AttendanceTab() {
         </div>
       )}
 
+      {(activeView === "today" || activeView === "sheet") && pendingReviews.length > 0 && (
+        <div className="bg-amber-950/40 rounded-2xl border border-amber-500/50 p-4 space-y-3 print:hidden">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-black text-amber-200">
+                Scanner Scans Waiting for Confirmation ({pendingReviews.length})
+              </h3>
+              <p className="text-[11px] text-stone-300 mt-0.5">
+                These fingerprints were scanned on the device (for example before the device clock synced prior to power-off) and uploaded safely so no employee misses payroll. Confirm the IN time to add them to Today Live and the Paper Sheet.
+              </p>
+            </div>
+            {pendingReviews.length > 1 && (
+              <button
+                type="button"
+                disabled={reviewSaving}
+                onClick={() => void confirmReviewItems(pendingReviews)}
+                className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs px-4 py-2 rounded-xl disabled:opacity-50"
+              >
+                Confirm All ({pendingReviews.length}) on Sheet
+              </button>
+            )}
+          </div>
+          <div className="space-y-2">
+            {pendingReviews.map((item) => {
+              const draft = getReviewDraft(item);
+              return (
+                <div
+                  key={item.id}
+                  className="bg-[#2C1B17] rounded-xl border border-stone-700 p-3 flex flex-wrap items-center justify-between gap-3"
+                >
+                  <div className="min-w-[200px]">
+                    <p className="text-sm font-bold text-white">
+                      {item.memberName}{" "}
+                      <span className="text-[11px] text-stone-400">
+                        ({item.roleName} · Finger ID {item.fingerprintId})
+                      </span>
+                    </p>
+                    <p className="text-[11px] text-amber-300">{item.reasonLabel}</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {!item.memberId && (
+                      <select
+                        value={draft.memberId}
+                        onChange={(e) =>
+                          setReviewDrafts((prev) => ({
+                            ...prev,
+                            [item.id]: {
+                              ...draft,
+                              memberId: e.target.value ? Number(e.target.value) : "",
+                            },
+                          }))
+                        }
+                        className="bg-[#3D2314] border border-stone-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                      >
+                        <option value="">Select employee...</option>
+                        {members
+                          .filter((m) => m.active !== false)
+                          .map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name} ({m.roleName})
+                            </option>
+                          ))}
+                      </select>
+                    )}
+                    <input
+                      type="date"
+                      value={draft.date}
+                      onChange={(e) =>
+                        setReviewDrafts((prev) => ({
+                          ...prev,
+                          [item.id]: { ...draft, date: e.target.value },
+                        }))
+                      }
+                      className="bg-[#3D2314] border border-stone-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                    />
+                    <input
+                      type="time"
+                      value={draft.clockInTime}
+                      onChange={(e) =>
+                        setReviewDrafts((prev) => ({
+                          ...prev,
+                          [item.id]: { ...draft, clockInTime: e.target.value },
+                        }))
+                      }
+                      className="bg-[#3D2314] border border-stone-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                    />
+                    <button
+                      type="button"
+                      disabled={reviewSaving}
+                      onClick={() => void confirmReviewItems([item])}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs px-3.5 py-1.5 rounded-lg disabled:opacity-50"
+                    >
+                      Confirm on Sheet
+                    </button>
+                    <button
+                      type="button"
+                      disabled={reviewSaving}
+                      onClick={() => void dismissReviewItem(item.id)}
+                      className="bg-stone-800 hover:bg-rose-900/60 text-stone-300 text-xs px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {(activeView === "today" || activeView === "sheet") && recordOpen && (
+        <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/40 p-4 space-y-4 print:hidden">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-bold text-amber-200">Record Employee Attendance</h3>
+              <p className="text-[11px] text-stone-400">
+                Select one or more employees to record directly onto Today Live, the Paper Sheet, and Payroll.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRecordOpen(false)}
+              className="p-1.5 text-stone-400 hover:text-white rounded-lg"
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="block text-[11px] font-bold text-amber-200 mb-1">Date</label>
+              <input
+                type="date"
+                value={recordDate}
+                onChange={(e) => setRecordDate(e.target.value)}
+                className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+              />
+            </div>
+            <label className="flex items-center gap-2 bg-[#3D2314] border border-stone-700 rounded-xl px-3 py-2.5 text-xs text-amber-100 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={recordUseRoleStart}
+                onChange={(e) => setRecordUseRoleStart(e.target.checked)}
+                className="accent-[#C9A227]"
+              />
+              Use each employee&apos;s role entrance time (On Time)
+            </label>
+            {!recordUseRoleStart && (
+              <div>
+                <label className="block text-[11px] font-bold text-amber-200 mb-1">IN Time</label>
+                <input
+                  type="time"
+                  value={recordInTime}
+                  onChange={(e) => setRecordInTime(e.target.value)}
+                  className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                />
+              </div>
+            )}
+            <label className="flex items-center gap-2 bg-[#3D2314] border border-stone-700 rounded-xl px-3 py-2.5 text-xs text-amber-100 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={recordUseRoleEnd}
+                onChange={(e) => setRecordUseRoleEnd(e.target.checked)}
+                className="accent-[#C9A227]"
+              />
+              Use each employee&apos;s role time out (Close day)
+            </label>
+            {!recordUseRoleEnd && (
+              <div>
+                <label className="block text-[11px] font-bold text-amber-200 mb-1">OUT Time (optional)</label>
+                <input
+                  type="time"
+                  value={recordOutTime}
+                  onChange={(e) => setRecordOutTime(e.target.value)}
+                  className="bg-[#3D2314] border border-stone-700 rounded-xl p-2.5 text-xs text-white"
+                />
+              </div>
+            )}
+            <label className="flex items-center gap-2 bg-[#3D2314] border border-stone-700 rounded-xl px-3 py-2.5 text-xs text-stone-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={recordKeepExistingIn}
+                onChange={(e) => setRecordKeepExistingIn(e.target.checked)}
+                className="accent-[#C9A227]"
+              />
+              Keep existing IN if already clocked in
+            </label>
+          </div>
+
+          <div>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <label className="text-[11px] font-bold text-amber-200">
+                Select Employees ({recordMemberIds.length} selected)
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setRecordMemberIds(members.filter((m) => m.active !== false).map((m) => m.id))
+                  }
+                  className="text-[11px] bg-[#3D2314] border border-stone-700 px-2.5 py-1 rounded-lg text-amber-200 hover:bg-white/10"
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setRecordMemberIds(
+                      members
+                        .filter(
+                          (m) =>
+                            m.active !== false &&
+                            !todayLogs?.logs?.some((l: { memberId: number | null }) => l.memberId === m.id)
+                        )
+                        .map((m) => m.id)
+                    )
+                  }
+                  className="text-[11px] bg-[#3D2314] border border-stone-700 px-2.5 py-1 rounded-lg text-amber-200 hover:bg-white/10"
+                >
+                  Select Not Yet In
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setRecordMemberIds(
+                      members
+                        .filter((m) =>
+                          todayLogs?.logs?.some(
+                            (l: { memberId: number | null; clockOutTime?: string | null }) =>
+                              l.memberId === m.id && !l.clockOutTime
+                          )
+                        )
+                        .map((m) => m.id)
+                    )
+                  }
+                  className="text-[11px] bg-[#3D2314] border border-stone-700 px-2.5 py-1 rounded-lg text-amber-200 hover:bg-white/10"
+                >
+                  Select Still In Today
+                </button>
+                {recordMemberIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setRecordMemberIds([])}
+                    className="text-[11px] text-stone-400 hover:text-white"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
+              {members
+                .filter((m) => m.active !== false)
+                .map((m) => {
+                  const alreadyToday = Boolean(
+                    todayLogs?.logs?.some((l: { memberId: number | null }) => l.memberId === m.id)
+                  );
+                  const checked = recordMemberIds.includes(m.id);
+                  return (
+                    <label
+                      key={m.id}
+                      className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs cursor-pointer transition ${
+                        checked
+                          ? "bg-[#C9A227]/20 border-[#C9A227] text-white"
+                          : "bg-[#3D2314] border-stone-700 text-stone-200 hover:border-stone-500"
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 truncate">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() =>
+                            setRecordMemberIds((prev) =>
+                              prev.includes(m.id) ? prev.filter((x) => x !== m.id) : [...prev, m.id]
+                            )
+                          }
+                          className="accent-[#C9A227]"
+                        />
+                        <span className="font-bold truncate">{m.name}</span>
+                        <span className="text-[10px] text-stone-400">({m.roleName})</span>
+                      </span>
+                      {!alreadyToday && (
+                        <span className="text-[10px] bg-amber-900/50 text-amber-200 px-1.5 py-0.5 rounded shrink-0">
+                          Not in today
+                        </span>
+                      )}
+                    </label>
+                  );
+                })}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={recordSaving || recordMemberIds.length === 0}
+              onClick={() => void submitManualAttendance()}
+              className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs uppercase rounded-xl px-5 py-2.5 disabled:opacity-50"
+            >
+              {recordSaving ? "Saving..." : "Save to Sheet"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setRecordOpen(false)}
+              className="bg-[#3D2314] hover:bg-white/10 text-stone-300 font-bold text-xs uppercase rounded-xl px-5 py-2.5"
+            >
+              {L("Cancel")}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── THE DEDUCTION REPORT ─────────────────────────────────────────
           The screen the kiosk button became (owner, 2026-11-08): lateness,
           absence, early leave and overtime, each with Deduct / Do not deduct,
@@ -1342,11 +1982,20 @@ export default function AttendanceTab() {
           )}
 
           <div className="bg-[#2C1B17] rounded-2xl border border-[#C9A227]/30 overflow-hidden">
-            <div className="p-4 border-b border-stone-800 flex items-center justify-between">
+            <div className="p-4 border-b border-stone-800 flex flex-wrap items-center justify-between gap-2">
               <h3 className="font-bold text-amber-100">Today {todayLogs ? `- ${todayLogs.date} -` : ""} Live</h3>
-              <span className="text-[10px] bg-emerald-900/50 text-emerald-300 px-2 py-1 rounded-full border border-emerald-700">
-                Auto refresh every 8 sec
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRecordOpen((prev) => !prev)}
+                  className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-[11px] px-3 py-1.5 rounded-xl flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Record Attendance
+                </button>
+                <span className="text-[10px] bg-emerald-900/50 text-emerald-300 px-2 py-1 rounded-full border border-emerald-700">
+                  Auto refresh every 8 sec
+                </span>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
@@ -1906,6 +2555,13 @@ export default function AttendanceTab() {
                 <Printer className="w-4 h-4" /> Print Hard Copy
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => setRecordOpen((prev) => !prev)}
+              className="bg-[#3D2314] hover:bg-white/10 border border-[#C9A227]/40 text-amber-200 font-black text-xs px-4 py-2.5 rounded-xl flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" /> Record Attendance
+            </button>
             <div className="flex flex-wrap gap-2">
               {[
                 { label: "Last 7 days", days: 7 },

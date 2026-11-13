@@ -4,6 +4,7 @@ import { attendanceBiometrics, attendanceEnrollJobs, attendanceMembers } from "@
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
 import { deviceAllowed } from "@/lib/attendance-device";
+import { recordScannerHeartbeat } from "@/lib/scanner-status";
 import { publish, CHANNELS } from "@/lib/realtime";
 import { and, eq, sql } from "drizzle-orm";
 import { MAX_FINGERS_PER_MEMBER } from "@/lib/attendance";
@@ -75,6 +76,7 @@ export async function POST(request: Request) {
 
     // The device picked the job up or updated its live LCD step prompt.
     if (body.action === "job_started" || body.action === "job_progress") {
+      recordScannerHeartbeat("enroll_progress");
       const jobId = Number(body.jobId);
       if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400, headers: NO_STORE_HEADERS });
       const detail = String(body.detail ?? "Scanner received the job; follow the scanner screen").slice(0, 160);
@@ -92,6 +94,7 @@ export async function POST(request: Request) {
     // Close the job as failed so the admin sees it at once instead of waiting
     // for the job to expire. Only a pending job can be closed this way.
     if (body.action === "job_failed") {
+      recordScannerHeartbeat("enroll_failed");
       const jobId = Number(body.jobId);
       if (!jobId) return NextResponse.json({ error: "jobId required" }, { status: 400, headers: NO_STORE_HEADERS });
       const reason = String(body.reason ?? "Device could not finish the job").slice(0, 160);
@@ -190,6 +193,9 @@ export async function POST(request: Request) {
 
     // The device stored a finger: push the device channel so the admin page
     // watching the job prints "Fingerprint Added ✓" instantly.
+    if (!auth.ok) {
+      recordScannerHeartbeat("enroll_done");
+    }
     publish(CHANNELS.device);
 
     return NextResponse.json(

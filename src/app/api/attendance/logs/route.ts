@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { attendanceFreeSchedules, attendanceLogs, attendanceMembers, attendanceRoleShifts, attendanceRoles } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
 import { requireAdmin } from "@/lib/session";
+import { CHANNELS, publish } from "@/lib/realtime";
 import { etDayKey } from "@/lib/timezone";
 import { and, asc, eq, gte, lte } from "drizzle-orm";
 import {
@@ -255,6 +256,7 @@ export async function DELETE(request: Request) {
 
     const removed = await db.delete(attendanceLogs).where(eq(attendanceLogs.id, id)).returning({ id: attendanceLogs.id });
     if (removed.length === 0) return NextResponse.json({ error: "Line not found" }, { status: 404 });
+    publish(CHANNELS.attendance);
     return NextResponse.json({ success: true, message: "Line deleted" });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

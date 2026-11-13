@@ -148,5 +148,15 @@ int main() {
   assert(!fs.exists("/anchor-1111111111111111"));
   assert(fs.exists("/anchor-2222222222222222")); // current boot anchor kept
   assert(fs.exists("/queue.review.jsonl"));      // admin review records kept
+
+  // Review records are peeked and acknowledged via their own durable cursor so
+  // retained scans upload automatically to the website without losing local audit.
+  assert(q.hasPendingReview());
+  std::vector<OfflineQueue::Head> revBatch;
+  assert(q.peekReviewBatch(revBatch, 10) == OfflineQueue::READY && revBatch.size() == 1);
+  assert(q.acknowledgeReviewBatch(revBatch[0], revBatch[0]));
+  assert(!q.hasPendingReview());
+  assert(q.peekReviewBatch(revBatch, 10) == OfflineQueue::EMPTY);
+  assert(fs.exists("/queue.review.jsonl"));
   std::cout << "Offline queue tests passed: FIFO, stalled send, reboot, torn writes, durable anchors and manual review\n";
 }

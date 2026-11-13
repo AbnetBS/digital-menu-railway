@@ -32,6 +32,8 @@ export const CHANNELS = {
   attendance: "attendance",
   /** Door device (ESP32) + admin enroll wait: an enrollment was queued or a fingerprint mapping changed. */
   device: "device",
+  /** Admin Attendance header: real-time Online / Offline reachability of the ESP32 scanner. */
+  scanner: "scanner",
 } as const;
 
 /** Register a stream sink for a channel. Returns an unsubscribe function. */
@@ -50,13 +52,19 @@ export function subscribe(channel: string, enqueue: Enqueue): () => void {
 
 /** Notify every subscriber of a channel that something changed. */
 export function publish(channel: string): void {
+  publishData(channel, "refresh");
+}
+
+/** Push a structured string/JSON payload to every subscriber of a channel. */
+export function publishData(channel: string, data: string): void {
   const set = subscribers.get(channel);
   if (!set) return;
+  const frame = `data: ${data}\n\n`;
   for (const enqueue of set) {
     try {
-      enqueue("data: refresh\n\n");
+      enqueue(frame);
     } catch {
-      // subscriber stream already closed — ignore
+      // subscriber stream already closed - ignore
     }
   }
 }

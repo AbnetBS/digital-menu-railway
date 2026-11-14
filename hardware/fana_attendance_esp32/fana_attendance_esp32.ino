@@ -893,6 +893,34 @@ void addDeviceHeaders(HTTPClient &http);
 void beginServerRequest(HTTPClient &http, const String &path);
 const char *fingerStatusText(uint8_t s);
 
+/* Schedule and rest state, declared before any use in setup()/loop(). */
+RestWindow restWindows[REST_MAX_ROWS];
+uint8_t restWindowCount = 0;
+/* True once a schedule has been read, from the server or from the flash cache.
+ * Until then the device never sleeps: guessing with nothing to go on is how a
+ * door ends up closed. */
+bool restScheduleKnown = false;
+/* The admin's "keep it awake" override and its "for N minutes" form. Both
+ * come from the website and are cached across timer wakes. */
+bool restKeptAwake = false;
+// Automatic Role & Time schedule rules by default (opens 1 hour before every
+// shift and closes 1 hour after). A technician may still force always-on via
+// `rest off` on Serial (persisted in `/rest.off` until `rest on`).
+std::atomic<bool> scannerAlwaysOn{false};
+std::atomic<bool> initialRestCheckDone{false};
+unsigned long restWakeUntilEpoch = 0;
+/* The longest sleep the website will allow after the next schedule read, in
+ * seconds: about 45 s after an admin changes role hours or opens a "place your
+ * finger" job, 600 s on a quiet night. A timer already running in deep sleep
+ * cannot be shortened remotely. 0 means "use the default". */
+uint16_t restSliceSeconds = 0;
+/* The last moment the LCD showed something, so a rest never cuts a result off
+ * while the person is still reading it. */
+unsigned long lastLcdMessageMs = 0;
+/* What the last decision was, for Serial and the status page. */
+uint32_t restLastSleepMs = 0;
+uint16_t restLastWakeMinute = 0;
+
 /* ── Setup and loop ───────────────────────────────────────────────────────── */
 void setup() {
   Serial.begin(115200);
@@ -1202,32 +1230,6 @@ void checkLcdHealth() {
  * during a scan, enrollment, queue flush, or an LCD result message.
  */
 
-RestWindow restWindows[REST_MAX_ROWS];
-uint8_t restWindowCount = 0;
-/* True once a schedule has been read, from the server or from the flash cache.
- * Until then the device never sleeps: guessing with nothing to go on is how a
- * door ends up closed. */
-bool restScheduleKnown = false;
-/* The admin's "keep it awake" override and its "for N minutes" form. Both
- * come from the website and are cached across timer wakes. */
-bool restKeptAwake = false;
-// Automatic Role & Time schedule rules by default (opens 1 hour before every
-// shift and closes 1 hour after). A technician may still force always-on via
-// `rest off` on Serial (persisted in `/rest.off` until `rest on`).
-std::atomic<bool> scannerAlwaysOn{false};
-std::atomic<bool> initialRestCheckDone{false};
-unsigned long restWakeUntilEpoch = 0;
-/* The longest sleep the website will allow after the next schedule read, in
- * seconds: about 45 s after an admin changes role hours or opens a "place your
- * finger" job, 600 s on a quiet night. A timer already running in deep sleep
- * cannot be shortened remotely. 0 means "use the default". */
-uint16_t restSliceSeconds = 0;
-/* The last moment the LCD showed something, so a rest never cuts a result off
- * while the person is still reading it. */
-unsigned long lastLcdMessageMs = 0;
-/* What the last decision was, for Serial and the status page. */
-uint32_t restLastSleepMs = 0;
-uint16_t restLastWakeMinute = 0;
 
 /* Minutes since midnight on the Addis clock. The device carries no timezone
  * database: UTC+3, no daylight saving, is the whole rule - the same one the

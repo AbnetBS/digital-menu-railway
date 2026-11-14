@@ -231,9 +231,24 @@ async function buildRows(periodKey: string) {
       .filter((r) => r.member_id !== null && r.member_id !== undefined)
       .map((r) => Number(r.member_id))
   );
+  // TIN PAYROLL REMOVALS: deleted from the TIN sheet for every month.
+  const removedQ = await pool.query("SELECT member_id FROM payroll_removed_members");
+  const removedIds = new Set((removedQ.rows as Array<{ member_id: number }>).map((r) => Number(r.member_id)));
+  const roleNameById = new Map((rolesQ.rows as Array<{ id: number; name: string }>).map((r) => [Number(r.id), String(r.name)]));
+  // "From attendance" on the TIN payroll lists the people who are not on this
+  // month's TIN sheet: the cash table this month, or removed from the TIN sheet.
+  const tinAddable = (membersQ.rows as Array<{ id: number; name: string; role_id: number | null }>)
+    .filter((m) => cashMemberIds.has(Number(m.id)) || removedIds.has(Number(m.id)))
+    .map((m) => ({
+      id: Number(m.id),
+      name: String(m.name),
+      role: m.role_id ? roleNameById.get(Number(m.role_id)) || "No role" : "No role",
+      inCash: cashMemberIds.has(Number(m.id)),
+      removed: removedIds.has(Number(m.id)),
+    }));
 
   const rows = membersQ.rows
-    .filter((member) => !cashMemberIds.has(Number(member.id)))
+    .filter((member) => !cashMemberIds.has(Number(member.id)) && !removedIds.has(Number(member.id)))
     .map((member, index) => {
     const memberId = Number(member.id);
     const memberLogs = logsQ.rows.filter((l) => Number(l.member_id) === memberId);
@@ -757,6 +772,7 @@ async function buildRows(periodKey: string) {
     otExclusions: excludedQ.rows,
     history: historyQ.rows,
     paidCount: rows.filter((r) => r.paid).length,
+    tinAddable,
     rows,
     // THE CASH SHEET under the TIN sheet. The Payroll page prints it on its own
     // with its own button and its own Prepared / Checked / Approved lines, and
@@ -821,7 +837,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Approved or paid payroll is locked." }, { status: 409 });
 
   try {
-    if (action === "save_compensation") {
+    if (action === "remove_member") {
+      // Deleted from the TIN payroll for every month. Attendance is untouched.
+      const id = Number(body.memberId);
+      if (!id) throw new Error("Employee required");
+      if (await isPaid(period, id)) throw new Error("This person is already paid for this month. Take the paid tick back first.");
+      await pool.query("INSERT INTO payroll_removed_members(member_id) VALUES($1) ON CONFLICT (member_id) DO NOTHING", [id]);
+      await pool.query("INSERT INTO payroll_audit(period_key,action,detail) VALUES($1,'tin_payroll_member_removed',$2::jsonb)", [
+        period,
+        JSON.stringify({ memberId: id }),
+      ]);
+    } else if (action === "restore_member") {
+      // Back on the TIN sheet. If he is in this month's cash table, that row is
+      // taken out so he is paid on the TIN sheet, not twice.
+      const id = Number(body.memberId);
+      if (!id) throw new Error("Employee required");
+      await pool.query("DELETE FROM payroll_removed_members WHERE member_id=$1", [id]);
+      await pool.query("DELETE FROM cash_payroll_entries WHERE member_id=$1 AND period_key=$2", [id, period]);
+      await pool.query("INSERT INTO payroll_audit(period_key,action,detail) VALUES($1,'tin_payroll_member_restored',$2::jsonb)", [
+        period,
+        JSON.stringify({ memberId: id }),
+      ]);
+    } else if (action === "save_compensation") {
       // The three numbers the owner types with his own hand. Everything else
       // on the row is the system's answer to them.
       const id = Number(body.memberId);

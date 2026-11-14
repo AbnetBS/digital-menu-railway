@@ -621,6 +621,16 @@ const RMS_CREATES: Array<[string, string]> = [
       updated_at timestamp DEFAULT now()
     )`,
   ],
+  // TIN PAYROLL REMOVALS (owner, 2026-11-14): deleting a person on the main
+  // payroll takes him off the TIN sheet for every month. The attendance record
+  // is kept. "From attendance" on the payroll brings him back.
+  [
+    "payroll_removed_members",
+    `CREATE TABLE IF NOT EXISTS payroll_removed_members (
+      member_id integer PRIMARY KEY,
+      removed_at timestamp DEFAULT now()
+    )`,
+  ],
   [
     "cash_payroll_signoff",
     `CREATE TABLE IF NOT EXISTS cash_payroll_signoff (

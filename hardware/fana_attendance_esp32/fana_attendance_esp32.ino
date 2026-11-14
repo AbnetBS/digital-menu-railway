@@ -326,7 +326,10 @@ class ScanFeedback {
       case DELIVERY_BATCH: phase_ = BATCH_SENT; break;
     }
     if (matchesActive) {
-      if (notice.kind == DELIVERY_REVIEW) {
+      // A scan kept for review WITH a time (conflict, unmapped finger, bad
+      // time) warns RED. A scan stored with no time is kept safely and gets
+      // the 2nd GREEN, like any other stored scan.
+      if (notice.kind == DELIVERY_REVIEW && notice.scannedAt != 0) {
         reviewCuePending_ = true;
       } else {
         doneCuePending_ = true;
@@ -348,16 +351,12 @@ class ScanFeedback {
       const uint32_t budget = deferCurrent_ ? GREEN_SHOW_MS : WAIT_FOR_RECEIPT_MS;
       if ((uint32_t)(now - shownAt_) >= budget) {
         // Offline or no reply within the fast live window: show Stored offline
-        // queue. Only light GREEN when a real scan timestamp is saved; if the
-        // device cold-booted with no clock yet, warn RED + "DO NOT TURN OFF!".
+        // queue. A stored scan always gets the 2nd GREEN: it is safe in flash
+        // and it is kept, with or without a clock time.
         phase_ = SAVED;
         deferCurrent_ = false;
         if (awaitingDoneCue_) {
-          if (current_.scannedAt != 0) {
-            doneCuePending_ = true;
-          } else {
-            reviewCuePending_ = true;
-          }
+          doneCuePending_ = true;
           awaitingDoneCue_ = false;
         }
         shownAt_ = now;
@@ -1753,7 +1752,10 @@ void renderScanFeedback() {
     case ScanFeedback::SENT_IN: showLines(name, when, "Sent to website", "Attendance IN"); break;
     case ScanFeedback::SENT_OUT: showLines(name, when, "Sent to website", "Attendance OUT"); break;
     case ScanFeedback::ALREADY: showLines(name, when, "Sent to website", "Already registered"); break;
-    case ScanFeedback::REVIEW: showLines(name, when, "Needs review", "Ask the admin"); break;
+    case ScanFeedback::REVIEW:
+      if (!notice.scannedAt) showLines(name, "Stored - no time", "Saved on the door", "Sends when online");
+      else showLines(name, when, "Needs review", "Ask the admin");
+      break;
     case ScanFeedback::BATCH_SENT: showLines("Offline Queue Synced", name, "Sent to website", "Paper sheet updated"); break;
     /* A warning about the placement that just happened (Not registered / Image
      * unclear / Sensor not answering). The last row says the door is still live,

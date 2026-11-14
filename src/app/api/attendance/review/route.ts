@@ -14,7 +14,7 @@ import { requireAdmin } from "@/lib/session";
 import { deviceAllowed } from "@/lib/attendance-device";
 import { recordScannerHeartbeat } from "@/lib/scanner-status";
 import { publish, CHANNELS } from "@/lib/realtime";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
 import { recognizedOtMinutes } from "@/lib/payroll";
 import {
@@ -312,21 +312,71 @@ async function applyVerifiedAttendanceRow(params: {
   });
 }
 
+const VALID_SCAN_MIN_MS = Date.UTC(2020, 0, 1);
+
+function hasValidScanTime(r: { scannedAt: Date | string | null }): boolean {
+  return Boolean(r.scannedAt) && new Date(r.scannedAt as Date | string).getTime() >= VALID_SCAN_MIN_MS;
+}
+
+/**
+ * Estimated time for scans that have no device clock time. The device sends
+ * its uptime with every scan, so the real gap between scans from one boot is
+ * known:
+ * - if any scan from the same boot has a real time, that gives the exact
+ *   clock offset and every no-time scan of that boot is placed from it;
+ * - otherwise the last scan of the boot is placed at the moment the server
+ *   received it, and the others keep their real gap before it.
+ * Scans without a boot id or uptime use the moment the server received them.
+ */
+function estimateNoTimeScans(
+  rows: (typeof attendanceReviewQueue.$inferSelect)[],
+  timedRows: (typeof attendanceReviewQueue.$inferSelect)[]
+): Map<number, Date> {
+  const estimates = new Map<number, Date>();
+  const byBoot = new Map<string, (typeof rows)[number][]>();
+  for (const r of rows) {
+    if (!r.bootId || r.uptimeSeconds == null) {
+      estimates.set(r.id, new Date(r.receivedAt));
+      continue;
+    }
+    const list = byBoot.get(r.bootId) ?? [];
+    list.push(r);
+    byBoot.set(r.bootId, list);
+  }
+  for (const [bootId, list] of byBoot) {
+    const anchor = timedRows.find(
+      (t) => t.bootId === bootId && t.uptimeSeconds != null && hasValidScanTime(t)
+    );
+    let baseMs: number;
+    if (anchor && anchor.scannedAt) {
+      baseMs = new Date(anchor.scannedAt).getTime() - (anchor.uptimeSeconds as number) * 1000;
+    } else {
+      const last = list.reduce((a, b) => ((b.uptimeSeconds as number) > (a.uptimeSeconds as number) ? b : a));
+      baseMs = new Date(last.receivedAt).getTime() - (last.uptimeSeconds as number) * 1000;
+    }
+    for (const r of list) {
+      estimates.set(r.id, new Date(baseMs + (r.uptimeSeconds as number) * 1000));
+    }
+  }
+  return estimates;
+}
+
 /**
  * A registered employee's scanner scan goes straight onto Today Live and the
- * Paper Sheet, with no supervisor step. The date and IN time are the same
- * suggestions the review list shows: the scan's own time when the device had
- * a valid clock, otherwise the upload day and the role's first shift start.
- * Only items with a known staff member are applied. Unmapped fingers stay
- * pending for an admin to link. Safe to run repeatedly: applied rows leave
- * the pending state.
+ * Paper Sheet, with no supervisor step.
+ * - Scans with a device time: the date and IN time are that scan's own time.
+ * - Scans with no device time: the time is estimated (see estimateNoTimeScans).
+ *   The employee's first no-time scan of the day is IN, the next one is OUT.
+ *   Any further scan that day is kept but not applied.
+ * Unmapped fingers stay pending for an admin to link. Safe to run repeatedly:
+ * applied rows leave the pending state.
  */
 export async function autoApplyReviewItems(): Promise<number> {
   const [rows, biometrics, members] = await Promise.all([
     db
       .select()
       .from(attendanceReviewQueue)
-      .where(eq(attendanceReviewQueue.status, "pending"))
+      .where(inArray(attendanceReviewQueue.status, ["pending", "no_time"]))
       .orderBy(asc(attendanceReviewQueue.id)),
     db.select().from(attendanceBiometrics),
     db.select().from(attendanceMembers),
@@ -334,29 +384,19 @@ export async function autoApplyReviewItems(): Promise<number> {
   if (rows.length === 0) return 0;
   const memberByFinger = new Map(biometrics.map((b) => [b.fingerprintId, b.memberId]));
   const memberById = new Map(members.map((m) => [m.id, m]));
+  const memberFor = (r: (typeof rows)[number]) =>
+    (r.memberId && memberById.has(r.memberId) ? r.memberId : null) ??
+    memberByFinger.get(r.fingerprintId) ??
+    null;
 
   let applied = 0;
+
+  // 1. Scans with a device time.
   for (const r of rows) {
-    // No device time at all: stored as no_time (no date, no IN/OUT, not listed).
-    const hasTime =
-      r.scannedAt && new Date(r.scannedAt).getTime() >= Date.UTC(2020, 0, 1);
-    if (!hasTime) {
-      await db
-        .update(attendanceReviewQueue)
-        .set({ status: "no_time" })
-        .where(eq(attendanceReviewQueue.id, r.id));
-      continue;
-    }
-    const memberId =
-      (r.memberId && memberById.has(r.memberId) ? r.memberId : null) ??
-      memberByFinger.get(r.fingerprintId) ??
-      null;
+    if (!hasValidScanTime(r) || r.status !== "pending") continue;
+    const memberId = memberFor(r);
     if (!memberId) continue;
-    const scannedValid =
-      r.scannedAt && new Date(r.scannedAt).getTime() >= Date.UTC(2020, 0, 1)
-        ? new Date(r.scannedAt)
-        : null;
-    if (!scannedValid) continue;
+    const scannedValid = new Date(r.scannedAt as Date);
     const date = etDayKey(scannedValid);
     const time = clockLabel(scannedValid);
     if (!date || !time) continue;
@@ -379,6 +419,89 @@ export async function autoApplyReviewItems(): Promise<number> {
     } catch (error) {
       // Leave it pending; the admin list still shows it.
       console.error("Attendance auto-apply failed for review item", r.id, error);
+    }
+  }
+
+  // 2. Scans with no device time: estimated time, first = IN, next = OUT.
+  const noTimeRows = rows.filter((r) => !hasValidScanTime(r));
+  if (noTimeRows.length === 0) return applied;
+  const unregistered = noTimeRows.filter((r) => !memberFor(r));
+  for (const r of unregistered) {
+    if (r.status === "pending") {
+      await db
+        .update(attendanceReviewQueue)
+        .set({ status: "no_time" })
+        .where(eq(attendanceReviewQueue.id, r.id));
+    }
+  }
+  const registered = noTimeRows.filter((r) => memberFor(r));
+  if (registered.length === 0) return applied;
+
+  const bootIds = Array.from(new Set(registered.map((r) => r.bootId).filter((b): b is string => Boolean(b))));
+  const timedRows = bootIds.length
+    ? await db
+        .select()
+        .from(attendanceReviewQueue)
+        .where(inArray(attendanceReviewQueue.bootId, bootIds))
+    : [];
+  const estimates = estimateNoTimeScans(registered, timedRows);
+  const ordered = registered
+    .map((r) => ({ r, at: estimates.get(r.id) as Date }))
+    .sort((a, b) => a.at.getTime() - b.at.getTime() || a.r.id - b.r.id);
+
+  for (const { r, at } of ordered) {
+    const memberId = memberFor(r) as number;
+    const date = etDayKey(at);
+    const time = clockLabel(at);
+    if (!date || !time) continue;
+    const [existing] = await db
+      .select()
+      .from(attendanceLogs)
+      .where(and(eq(attendanceLogs.memberId, memberId), eq(attendanceLogs.date, date)))
+      .limit(1);
+    const estimateNote = "Scan had no device time: time estimated";
+    try {
+      let logId: number | null = null;
+      if (!existing?.clockIn) {
+        const { log } = await applyVerifiedAttendanceRow({
+          memberId,
+          date,
+          clockInTime: time,
+          clockOutTime: null,
+          fingerprintId: r.fingerprintId,
+          method: "fingerprint",
+          auditNote: `Scanner scan added automatically (${r.reason}); ${estimateNote} (IN)`,
+        });
+        logId = log.id;
+      } else if (!existing.clockOut && at.getTime() > new Date(existing.clockIn).getTime()) {
+        const { log } = await applyVerifiedAttendanceRow({
+          memberId,
+          date,
+          clockInTime: clockLabel(existing.clockIn) ?? time,
+          clockOutTime: time,
+          keepExistingIn: true,
+          fingerprintId: r.fingerprintId,
+          method: "fingerprint",
+          auditNote: `Scanner scan added automatically (${r.reason}); ${estimateNote} (OUT)`,
+        });
+        logId = log.id;
+      } else {
+        // Already IN and OUT today, or earlier than the IN: kept, not applied.
+        if (r.status === "pending") {
+          await db
+            .update(attendanceReviewQueue)
+            .set({ memberId, status: "no_time" })
+            .where(eq(attendanceReviewQueue.id, r.id));
+        }
+        continue;
+      }
+      await db
+        .update(attendanceReviewQueue)
+        .set({ memberId, status: "resolved", resolvedLogId: logId, resolvedAt: new Date() })
+        .where(eq(attendanceReviewQueue.id, r.id));
+      applied++;
+    } catch (error) {
+      console.error("Attendance auto-apply failed for no-time scan", r.id, error);
     }
   }
   return applied;

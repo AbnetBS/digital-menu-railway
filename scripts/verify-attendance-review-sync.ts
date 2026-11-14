@@ -197,18 +197,48 @@ async function main() {
     );
     assert.equal(ownerClock.status, 200);
 
-    // 2. Scans with NO time are stored as no_time: never guessed, never shown,
-    //    never put on the sheet. The three chefs stay off the sheet until an
-    //    admin records them (step 3).
+    // 2. A registered person's scan with NO device time goes on the sheet with
+    //    an estimated time: their first no-time scan of the day is IN.
     const todayBefore = await (
       await getToday(new Request(`https://fana.test/api/attendance/today?date=${targetDate}`))
     ).json();
-    assert.equal(todayBefore.logs.length, 1, "only the Owner is on the sheet before the admin records anyone");
     assert.equal(todayBefore.pendingReviews.length, 0, "no-time scans are not listed for anyone to confirm");
-    const noTimeRows = await pglite.query<{ n: number }>(
+    assert.equal(todayBefore.logs.length, 4, "Owner plus the three chefs (estimated IN) are on the sheet");
+    const chefsIn = todayBefore.logs.filter((l: { memberId: number }) => [1, 2, 3].includes(l.memberId));
+    assert.equal(chefsIn.length, 3);
+    assert.ok(
+      chefsIn.every((l: { clockInTime: string | null; clockOutTime: string | null }) => l.clockInTime && !l.clockOutTime),
+      "first no-time scan of each person is IN"
+    );
+    const resolvedNoTime = await pglite.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM attendance_review_queue WHERE status = 'resolved' AND scanned_at IS NULL"
+    );
+    assert.equal(resolvedNoTime.rows[0]?.n, 3, "the three no-time scans are applied");
+    const leftNoTime = await pglite.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM attendance_review_queue WHERE status = 'no_time'"
     );
-    assert.equal(noTimeRows.rows[0]?.n, 3, "the three no-time scans are stored with status no_time");
+    assert.equal(leftNoTime.rows[0]?.n, 0, "no registered no-time scan is left unapplied");
+
+    // The same person's next no-time scan from the same boot (later uptime) is OUT.
+    const ev4 = randomBytes(16).toString("hex");
+    const secondScan = await postReview(
+      new Request("https://fana.test/api/attendance/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-attendance-device": "test-device-token" },
+        body: JSON.stringify({
+          deviceId: "entrance",
+          items: [
+            { reason: "unknown_time", record: { eventId: ev4, fingerprintId: 11, memberId: 1, staffName: "Ayelech", bootId: "boot111111111111", uptimeSeconds: 300 } },
+          ],
+        }),
+      })
+    );
+    assert.equal(secondScan.status, 200);
+    const todayPair = await (
+      await getToday(new Request(`https://fana.test/api/attendance/today?date=${targetDate}`))
+    ).json();
+    const ayelech = todayPair.logs.find((l: { memberId: number }) => l.memberId === 1);
+    assert.ok(ayelech?.clockInTime && ayelech?.clockOutTime, "second no-time scan closes the day as OUT");
 
     // Device token WITHOUT admin session cannot invoke manual_record.
     const blockedManual = await postReview(
@@ -229,7 +259,7 @@ async function main() {
       process.env.SESSION_SECRET!
     );
 
-    // 3. Manual Record Attendance for the three chefs and Meskerem using the role entrance time ("06:00").
+    // 3. Manual Record Attendance for the three chefs and Meskerem. The chefs keep their estimated IN.
     const manualRes = await postReview(
       new Request("https://fana.test/api/attendance/review", {
         method: "POST",
@@ -250,7 +280,8 @@ async function main() {
     ).json();
     assert.equal(todayAfter.pendingReviews.length, 0);
     assert.equal(todayAfter.logs.length, 5);
-    assert.ok(todayAfter.logs.every((l: { lateMinutes: number }) => l.lateMinutes === 0));
+    const ownerLate = todayAfter.logs.find((l: { memberId: number }) => l.memberId === 4);
+    assert.equal(ownerLate?.lateMinutes, 0);
 
     const sheetRes = await (
       await getLogs(new Request(`https://fana.test/api/attendance/logs?from=${targetDate}&to=${targetDate}`))

@@ -1639,22 +1639,12 @@ export default function AttendanceTab() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-sm font-black text-amber-200">
-                Scanner Scans Waiting for Confirmation ({pendingReviews.length})
+                Scanner Scans Needing Attention ({pendingReviews.length})
               </h3>
               <p className="text-[11px] text-stone-300 mt-0.5">
-                These fingerprints were scanned on the device (for example before the device clock synced prior to power-off) and uploaded safely so no employee misses payroll. Confirm the IN time to add them to Today Live and the Paper Sheet.
+                Registered employees are added to Today Live and the Paper Sheet automatically. Only fingerprints not yet linked to a staff member are listed here: pick the employee to add them.
               </p>
             </div>
-            {pendingReviews.length > 1 && (
-              <button
-                type="button"
-                disabled={reviewSaving}
-                onClick={() => void confirmReviewItems(pendingReviews)}
-                className="bg-[#C9A227] hover:bg-amber-400 text-[#2C1B17] font-black text-xs px-4 py-2 rounded-xl disabled:opacity-50"
-              >
-                Confirm All ({pendingReviews.length}) on Sheet
-              </button>
-            )}
           </div>
           <div className="space-y-2">
             {pendingReviews.map((item) => {

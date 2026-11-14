@@ -312,6 +312,74 @@ async function applyVerifiedAttendanceRow(params: {
   });
 }
 
+/**
+ * A registered employee's scanner scan goes straight onto Today Live and the
+ * Paper Sheet, with no supervisor step. The date and IN time are the same
+ * suggestions the review list shows: the scan's own time when the device had
+ * a valid clock, otherwise the upload day and the role's first shift start.
+ * Only items with a known staff member are applied. Unmapped fingers stay
+ * pending for an admin to link. Safe to run repeatedly: applied rows leave
+ * the pending state.
+ */
+export async function autoApplyReviewItems(): Promise<number> {
+  const [rows, biometrics, members, shiftsByRole] = await Promise.all([
+    db
+      .select()
+      .from(attendanceReviewQueue)
+      .where(eq(attendanceReviewQueue.status, "pending"))
+      .orderBy(asc(attendanceReviewQueue.id)),
+    db.select().from(attendanceBiometrics),
+    db.select().from(attendanceMembers),
+    roleShiftsMap(),
+  ]);
+  if (rows.length === 0) return 0;
+  const memberByFinger = new Map(biometrics.map((b) => [b.fingerprintId, b.memberId]));
+  const memberById = new Map(members.map((m) => [m.id, m]));
+
+  let applied = 0;
+  for (const r of rows) {
+    const memberId =
+      (r.memberId && memberById.has(r.memberId) ? r.memberId : null) ??
+      memberByFinger.get(r.fingerprintId) ??
+      null;
+    if (!memberId) continue;
+    const member = memberById.get(memberId);
+    const shifts = member?.roleId ? shiftsByRole.get(member.roleId) || [] : [];
+    const scannedValid =
+      r.scannedAt && new Date(r.scannedAt).getTime() >= Date.UTC(2020, 0, 1)
+        ? new Date(r.scannedAt)
+        : null;
+    const date = scannedValid
+      ? etDayKey(scannedValid)
+      : etDayKey(new Date(r.receivedAt));
+    const time = scannedValid
+      ? clockLabel(scannedValid)
+      : shifts[0]?.startTime || "06:00";
+    if (!date || !time) continue;
+    try {
+      const { log } = await applyVerifiedAttendanceRow({
+        memberId,
+        date,
+        clockInTime: time,
+        clockOutTime: null,
+        fingerprintId: r.fingerprintId,
+        method: "fingerprint",
+        auditNote: `Scanner scan added automatically (${r.reason})`,
+        smartMergeScan: true,
+      });
+      await db
+        .update(attendanceReviewQueue)
+        .set({ memberId, status: "resolved", resolvedLogId: log.id, resolvedAt: new Date() })
+        .where(eq(attendanceReviewQueue.id, r.id));
+      applied++;
+    } catch (error) {
+      // Leave it pending; the admin list still shows it.
+      console.error("Attendance auto-apply failed for review item", r.id, error);
+    }
+  }
+  return applied;
+}
+
 export async function GET() {
   const auth = await requireAdmin();
   if (!auth.ok) return auth.response;
@@ -319,6 +387,7 @@ export async function GET() {
   await ensureTablesExist();
 
   try {
+    await autoApplyReviewItems();
     const items = await loadPendingReviewItems();
     return NextResponse.json({ count: items.length, items }, { headers: NO_STORE_HEADERS });
   } catch (error) {
@@ -489,7 +558,8 @@ export async function POST(request: Request) {
       acceptedEventIds.push(rawEventId);
     }
 
-    if (anyInserted) publish(CHANNELS.attendance);
+    const autoApplied = await autoApplyReviewItems();
+    if (anyInserted || autoApplied > 0) publish(CHANNELS.attendance);
     return NextResponse.json(
       { ok: true, count: acceptedEventIds.length, acceptedEventIds },
       { headers: NO_STORE_HEADERS }

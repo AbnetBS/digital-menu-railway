@@ -99,7 +99,7 @@ async function main() {
     const { GET: getToday } = await import("../src/app/api/attendance/today/route");
     const { GET: getLogs } = await import("../src/app/api/attendance/logs/route");
     const { GET: getLeaderboard } = await import("../src/app/api/attendance/leaderboard/route");
-    const { POST: postReview } = await import("../src/app/api/attendance/review/route");
+    const { POST: postReview, PATCH: patchReview } = await import("../src/app/api/attendance/review/route");
     const { etDayKey, etDayKeyDaysAgo, etStartOfDaysAgo } = await import("../src/lib/timezone");
 
     const mig = await ensureTablesExist();
@@ -197,29 +197,14 @@ async function main() {
     );
     assert.equal(ownerClock.status, 200);
 
-    // 2. Registered chefs are listed on Today Live with no confirmation: the
-    //    retained scans carry no scan time, so the upload day and the role's
-    //    first shift start (06:00) are used, the same suggestion the review list
-    //    showed. Nothing waits in pendingReviews.
+    // 2. Scans with NO time are never guessed. The three chefs stay pending
+    //    with their finger mapping; the owner-typed arrival time places them.
     const todayBefore = await (
       await getToday(new Request(`https://fana.test/api/attendance/today?date=${targetDate}`))
     ).json();
-    assert.equal(todayBefore.logs.length, 4, "Owner plus the 3 registered chefs");
-    assert.ok(todayBefore.logs.some((l: { memberName: string }) => l.memberName === "Owner"));
-    const chefRows = todayBefore.logs.filter((l: { memberName: string }) =>
-      ["Ayelech", "Bontu", "Emawayesh"].includes(l.memberName)
-    );
-    assert.equal(chefRows.length, 3, "all 3 retained chefs must be listed automatically");
-    assert.ok(chefRows.every((l: { clockInTime: string }) => l.clockInTime === "06:00"));
-    assert.equal(todayBefore.pendingReviews.length, 0, "registered staff need no confirmation");
-    const estimatedNotes = await pglite.query<{ notes: string | null }>(
-      "SELECT notes FROM attendance_logs WHERE member_id = 1 AND date = $1",
-      [targetDate]
-    );
-    assert.ok(
-      (estimatedNotes.rows[0]?.notes || "").includes("Estimated time"),
-      "no-clock scans must be marked as estimated in the audit note"
-    );
+    assert.equal(todayBefore.logs.length, 1, "only the Owner is on the sheet before a time is typed");
+    assert.equal(todayBefore.pendingReviews.length, 3, "the three no-time scans wait for a time");
+    assert.ok(todayBefore.pendingReviews.every((r: { memberId: number | null }) => r.memberId));
 
     // Device token WITHOUT admin session cannot invoke manual_record.
     const blockedManual = await postReview(
@@ -234,11 +219,27 @@ async function main() {
     );
     assert.equal(blockedManual.status, 401);
 
-    // Sign in as Admin for the manual recovery step below.
+    // Sign in as Admin; the typed arrival time places the three chefs.
     currentAdminCookie = signToken(
       { kind: "admin", iat: Date.now() },
       process.env.SESSION_SECRET!
     );
+    const confirmRes = await patchReview(
+      new Request("https://fana.test/api/attendance/review", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entries: todayBefore.pendingReviews.map((r: { id: number; memberId: number }) => ({
+            id: r.id,
+            memberId: r.memberId,
+            date: targetDate,
+            clockInTime: "06:05",
+          })),
+        }),
+      })
+    );
+    assert.equal(confirmRes.status, 200);
+    assert.equal((await confirmRes.json()).resolvedCount, 3);
 
     // 3. Manual Record Attendance for Meskerem using role entrance time ("06:00").
     const manualRes = await postReview(

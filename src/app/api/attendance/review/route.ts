@@ -322,7 +322,7 @@ async function applyVerifiedAttendanceRow(params: {
  * the pending state.
  */
 export async function autoApplyReviewItems(): Promise<number> {
-  const [rows, biometrics, members, shiftsByRole] = await Promise.all([
+  const [rows, biometrics, members] = await Promise.all([
     db
       .select()
       .from(attendanceReviewQueue)
@@ -330,7 +330,6 @@ export async function autoApplyReviewItems(): Promise<number> {
       .orderBy(asc(attendanceReviewQueue.id)),
     db.select().from(attendanceBiometrics),
     db.select().from(attendanceMembers),
-    roleShiftsMap(),
   ]);
   if (rows.length === 0) return 0;
   const memberByFinger = new Map(biometrics.map((b) => [b.fingerprintId, b.memberId]));
@@ -343,18 +342,15 @@ export async function autoApplyReviewItems(): Promise<number> {
       memberByFinger.get(r.fingerprintId) ??
       null;
     if (!memberId) continue;
-    const member = memberById.get(memberId);
-    const shifts = member?.roleId ? shiftsByRole.get(member.roleId) || [] : [];
     const scannedValid =
       r.scannedAt && new Date(r.scannedAt).getTime() >= Date.UTC(2020, 0, 1)
         ? new Date(r.scannedAt)
         : null;
-    const date = scannedValid
-      ? etDayKey(scannedValid)
-      : etDayKey(new Date(r.receivedAt));
-    const time = scannedValid
-      ? clockLabel(scannedValid)
-      : shifts[0]?.startTime || "06:00";
+    // A scan with no time is never guessed. It stays pending until someone
+    // types its arrival time (guessing paired the wrong IN and OUT).
+    if (!scannedValid) continue;
+    const date = etDayKey(scannedValid);
+    const time = clockLabel(scannedValid);
     if (!date || !time) continue;
     try {
       const { log } = await applyVerifiedAttendanceRow({
@@ -364,9 +360,7 @@ export async function autoApplyReviewItems(): Promise<number> {
         clockOutTime: null,
         fingerprintId: r.fingerprintId,
         method: "fingerprint",
-        auditNote: scannedValid
-          ? `Scanner scan added automatically (${r.reason})`
-          : `Estimated time: scanner clock not set, role shift start on upload day (${r.reason})`,
+        auditNote: `Scanner scan added automatically (${r.reason})`,
         smartMergeScan: true,
       });
       await db

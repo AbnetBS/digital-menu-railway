@@ -1482,7 +1482,7 @@ void maybeRest() {
   if (!restScheduleKnown) return;
   if (enrollmentActive || enrollingFromServer) return;   // never sleep mid-job
   // Never sleep while offline scans are waiting/uploading or a scan card is up.
-  if ((offlineQueue && offlineQueue->hasPending()) || deliveryUsingNetwork.load() || scanFeedback.active()) return;
+  if ((offlineQueue && offlineQueue->hasPending()) || deliveryUsingNetwork.load() || scanFeedback.phase() != ScanFeedback::IDLE) return;
   // Give networkTask up to 4.5s after wake to fetch any fresh Role & Time edits
   // or pending Add Fingerprint job before going back to sleep.
   if (!initialRestCheckDone.load() && WiFi.status() == WL_CONNECTED && millis() < 4500UL) return;

@@ -9,7 +9,7 @@ import {
   attendanceRoles,
 } from "@/db/schema";
 import { ensureTablesExist } from "@/db/migrate";
-import { reasonLabelOf } from "@/app/api/attendance/review/route";
+import { autoApplyReviewItems, reasonLabelOf } from "@/app/api/attendance/review/route";
 import { asc, desc, eq } from "drizzle-orm";
 import { etDayKey } from "@/lib/timezone";
 import {
@@ -54,6 +54,8 @@ export async function GET(request: Request) {
     const todayKey = getTodayKey();
     const date = searchParams.get("date") || todayKey;
 
+    // Scanner scans of registered staff with a known time go onto the sheet now.
+    await autoApplyReviewItems();
     const [logs, members, roles, shiftRows, biometrics, reviewRows] = await Promise.all([
       db
         .select()

@@ -12,6 +12,8 @@
  *      clears `pendingReviews` to 0.
  *   4. POST /api/attendance/review (`action: "manual_record"`) requires admin
  *      session and records multiple employees onto Today Live & Paper Sheet.
+ *   5. A timed scanner scan of a registered employee is applied automatically
+ *      (no confirmation); an unmapped finger stays pending.
  */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -399,6 +401,36 @@ async function main() {
     assert.equal(ayelechYest?.workedMinutes, 0);
     assert.equal(ayelechYest?.openMinutes, 0, "yesterday's forgotten OUT must add 0 open minutes on Leaderboard");
     assert.equal(ayelechYest?.stillIn, false);
+
+    // 5. A timestamped scanner scan of a REGISTERED employee goes onto Today
+    //    Live and the Paper Sheet automatically: no PATCH confirmation needed.
+    //    An unmapped finger with a time stays pending for an admin.
+    const autoDate = "2026-11-04";
+    const autoEv = randomBytes(16).toString("hex");
+    const unmappedEv = randomBytes(16).toString("hex");
+    const autoEpoch = Math.floor(new Date("2026-11-04T07:15:00+03:00").getTime() / 1000);
+    const autoUpload = await postReview(
+      new Request("https://fana.test/api/attendance/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-attendance-device": "test-device-token" },
+        body: JSON.stringify({
+          deviceId: "entrance",
+          items: [
+            { reason: "server_conflict", record: { eventId: autoEv, fingerprintId: 12, memberId: 2, staffName: "Bontu", scannedAt: autoEpoch, bootId: "boot222222222222", uptimeSeconds: 40 } },
+            { reason: "unmapped_finger", record: { eventId: unmappedEv, fingerprintId: 99, scannedAt: autoEpoch, bootId: "boot222222222222", uptimeSeconds: 41 } },
+          ],
+        }),
+      })
+    );
+    assert.equal(autoUpload.status, 200);
+    const autoLive = await (
+      await getToday(new Request(`https://fana.test/api/attendance/today?date=${autoDate}`))
+    ).json();
+    const bontuAuto = autoLive.logs.find((l: { memberName: string }) => l.memberName === "Bontu");
+    assert.ok(bontuAuto, "registered employee's timed scan must appear on Today Live without confirmation");
+    assert.equal(bontuAuto.clockInTime, "07:15");
+    assert.equal(autoLive.pendingReviews.length, 1, "only the unmapped finger may remain pending");
+    assert.equal(autoLive.pendingReviews[0].fingerprintId, 99);
 
     console.log("✅ Attendance review sync & manual recovery guard PASSED");
   } finally {

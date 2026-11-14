@@ -1639,10 +1639,10 @@ export default function AttendanceTab() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-sm font-black text-amber-200">
-                Scanner Scans Waiting for Confirmation ({pendingReviews.length})
+                Scanner Scans Needing Attention ({pendingReviews.length})
               </h3>
               <p className="text-[11px] text-stone-300 mt-0.5">
-                These fingerprints were scanned on the device (for example before the device clock synced prior to power-off) and uploaded safely so no employee misses payroll. Confirm the IN time to add them to Today Live and the Paper Sheet.
+                Registered employees are added to Today Live and the Paper Sheet automatically. These are only scans that could not be placed on their own (no usable time or an unmapped fingerprint). Confirm them here if you want them on the sheet.
               </p>
             </div>
             {pendingReviews.length > 1 && (

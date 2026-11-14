@@ -364,7 +364,9 @@ export async function autoApplyReviewItems(): Promise<number> {
         clockOutTime: null,
         fingerprintId: r.fingerprintId,
         method: "fingerprint",
-        auditNote: `Scanner scan added automatically (${r.reason})`,
+        auditNote: scannedValid
+          ? `Scanner scan added automatically (${r.reason})`
+          : `Estimated time: scanner clock not set, role shift start on upload day (${r.reason})`,
         smartMergeScan: true,
       });
       await db

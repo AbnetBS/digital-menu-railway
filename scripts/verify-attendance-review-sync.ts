@@ -212,6 +212,14 @@ async function main() {
     assert.equal(chefRows.length, 3, "all 3 retained chefs must be listed automatically");
     assert.ok(chefRows.every((l: { clockInTime: string }) => l.clockInTime === "06:00"));
     assert.equal(todayBefore.pendingReviews.length, 0, "registered staff need no confirmation");
+    const estimatedNotes = await pglite.query<{ notes: string | null }>(
+      "SELECT notes FROM attendance_logs WHERE member_id = 1 AND date = $1",
+      [targetDate]
+    );
+    assert.ok(
+      (estimatedNotes.rows[0]?.notes || "").includes("Estimated time"),
+      "no-clock scans must be marked as estimated in the audit note"
+    );
 
     // Device token WITHOUT admin session cannot invoke manual_record.
     const blockedManual = await postReview(

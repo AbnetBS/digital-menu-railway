@@ -39,7 +39,6 @@ import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
 import { currentEthiopianPeriod } from "@/lib/payroll";
 import DeductionReportPanel from "@/components/rms/DeductionReportPanel";
 import { etDayKeyDaysAgo } from "@/lib/timezone";
-import PendingScanTimes from "@/components/rms/PendingScanTimes";
 
 /**
  * ADMIN -> ATTENDANCE (owner, Oct 2026).
@@ -1772,9 +1771,6 @@ export default function AttendanceTab() {
       {/* ── TODAY LIVE ─────────────────────────────────────────────────── */}
       {activeView === "today" && (
         <div className="space-y-4">
-          {todayLogs?.pendingReviews?.length > 0 && (
-            <PendingScanTimes items={todayLogs.pendingReviews} onChanged={() => void loadToday()} />
-          )}
           {todayLogs && (
             <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
               <div className="bg-[#2C1B17] p-4 rounded-2xl border border-[#C9A227]/30">

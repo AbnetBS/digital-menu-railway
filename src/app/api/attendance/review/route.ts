@@ -337,6 +337,16 @@ export async function autoApplyReviewItems(): Promise<number> {
 
   let applied = 0;
   for (const r of rows) {
+    // No device time at all: stored as no_time (no date, no IN/OUT, not listed).
+    const hasTime =
+      r.scannedAt && new Date(r.scannedAt).getTime() >= Date.UTC(2020, 0, 1);
+    if (!hasTime) {
+      await db
+        .update(attendanceReviewQueue)
+        .set({ status: "no_time" })
+        .where(eq(attendanceReviewQueue.id, r.id));
+      continue;
+    }
     const memberId =
       (r.memberId && memberById.has(r.memberId) ? r.memberId : null) ??
       memberByFinger.get(r.fingerprintId) ??
@@ -346,8 +356,6 @@ export async function autoApplyReviewItems(): Promise<number> {
       r.scannedAt && new Date(r.scannedAt).getTime() >= Date.UTC(2020, 0, 1)
         ? new Date(r.scannedAt)
         : null;
-    // A scan with no time is never guessed. It stays pending until someone
-    // types its arrival time (guessing paired the wrong IN and OUT).
     if (!scannedValid) continue;
     const date = etDayKey(scannedValid);
     const time = clockLabel(scannedValid);
@@ -545,7 +553,7 @@ export async function POST(request: Request) {
           bootId,
           uptimeSeconds,
           scannedAt,
-          status: "pending",
+          status: scannedAt ? "pending" : "no_time",
         })
         .onConflictDoNothing({ target: attendanceReviewQueue.eventId })
         .returning({ id: attendanceReviewQueue.id });

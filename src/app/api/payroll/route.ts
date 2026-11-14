@@ -235,16 +235,17 @@ async function buildRows(periodKey: string) {
   const removedQ = await pool.query("SELECT member_id FROM payroll_removed_members");
   const removedIds = new Set((removedQ.rows as Array<{ member_id: number }>).map((r) => Number(r.member_id)));
   const roleNameById = new Map((rolesQ.rows as Array<{ id: number; name: string }>).map((r) => [Number(r.id), String(r.name)]));
-  // "From attendance" on the TIN payroll lists the people who are not on this
-  // month's TIN sheet: the cash table this month, or removed from the TIN sheet.
+  // "From attendance" on the TIN payroll, like the cash list: every attendance
+  // staff member, with whether he is already on this month's TIN sheet. Anyone
+  // not on it (cash table this month, or removed) can be added.
   const tinAddable = (membersQ.rows as Array<{ id: number; name: string; role_id: number | null }>)
-    .filter((m) => cashMemberIds.has(Number(m.id)) || removedIds.has(Number(m.id)))
     .map((m) => ({
       id: Number(m.id),
       name: String(m.name),
       role: m.role_id ? roleNameById.get(Number(m.role_id)) || "No role" : "No role",
       inCash: cashMemberIds.has(Number(m.id)),
       removed: removedIds.has(Number(m.id)),
+      onTin: !cashMemberIds.has(Number(m.id)) && !removedIds.has(Number(m.id)),
     }));
 
   const rows = membersQ.rows

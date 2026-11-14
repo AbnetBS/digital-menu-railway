@@ -365,9 +365,9 @@ function estimateNoTimeScans(
  * A registered employee's scanner scan goes straight onto Today Live and the
  * Paper Sheet, with no supervisor step.
  * - Scans with a device time: the date and IN time are that scan's own time.
- * - Scans with no device time: the time is estimated (see estimateNoTimeScans).
- *   The employee's first no-time scan of the day is IN, the next one is OUT.
- *   Any further scan that day is kept but not applied.
+ * - Scans with no device time: a single one stays hidden. When the person's
+ *   second no-time scan of the day arrives, both go on the sheet: first = IN,
+ *   second = OUT, with estimated times (see estimateNoTimeScans).
  * Unmapped fingers stay pending for an admin to link. Safe to run repeatedly:
  * applied rows leave the pending state.
  */
@@ -445,63 +445,68 @@ export async function autoApplyReviewItems(): Promise<number> {
         .where(inArray(attendanceReviewQueue.bootId, bootIds))
     : [];
   const estimates = estimateNoTimeScans(registered, timedRows);
-  const ordered = registered
-    .map((r) => ({ r, at: estimates.get(r.id) as Date }))
-    .sort((a, b) => a.at.getTime() - b.at.getTime() || a.r.id - b.r.id);
 
-  for (const { r, at } of ordered) {
+  // Group by person and estimated day. A single no-time scan stays hidden
+  // (held as no_time). When the person's second no-time scan of that day
+  // arrives, the pair goes on the sheet: first = IN, second = OUT, both with
+  // estimated times. A day that already has a real log is never changed.
+  const byPersonDay = new Map<string, { r: (typeof registered)[number]; at: Date }[]>();
+  for (const r of registered) {
     const memberId = memberFor(r) as number;
-    const date = etDayKey(at);
-    const time = clockLabel(at);
-    if (!date || !time) continue;
+    const at = estimates.get(r.id) as Date;
+    const day = etDayKey(at);
+    if (!day) continue;
+    const key = `${memberId}|${day}`;
+    const list = byPersonDay.get(key) ?? [];
+    list.push({ r, at });
+    byPersonDay.set(key, list);
+  }
+
+  for (const [key, list] of byPersonDay) {
+    const [memberPart, date] = key.split("|");
+    const memberId = Number(memberPart);
+    list.sort((x, y) => x.at.getTime() - y.at.getTime() || x.r.id - y.r.id);
+    if (list.length < 2) continue; // held: not shown until a second scan arrives
     const [existing] = await db
       .select()
       .from(attendanceLogs)
       .where(and(eq(attendanceLogs.memberId, memberId), eq(attendanceLogs.date, date)))
       .limit(1);
-    const estimateNote = "Scan had no device time: time estimated";
+    if (existing?.clockIn) continue;
+    const [first, second] = list;
+    if (second.at.getTime() <= first.at.getTime()) continue;
+    const firstTime = clockLabel(first.at);
+    const secondTime = clockLabel(second.at);
+    if (!firstTime || !secondTime) continue;
     try {
-      let logId: number | null = null;
-      if (!existing?.clockIn) {
-        const { log } = await applyVerifiedAttendanceRow({
-          memberId,
-          date,
-          clockInTime: time,
-          clockOutTime: null,
-          fingerprintId: r.fingerprintId,
-          method: "fingerprint",
-          auditNote: `Scanner scan added automatically (${r.reason}); ${estimateNote} (IN)`,
-        });
-        logId = log.id;
-      } else if (!existing.clockOut && at.getTime() > new Date(existing.clockIn).getTime()) {
-        const { log } = await applyVerifiedAttendanceRow({
-          memberId,
-          date,
-          clockInTime: clockLabel(existing.clockIn) ?? time,
-          clockOutTime: time,
-          keepExistingIn: true,
-          fingerprintId: r.fingerprintId,
-          method: "fingerprint",
-          auditNote: `Scanner scan added automatically (${r.reason}); ${estimateNote} (OUT)`,
-        });
-        logId = log.id;
-      } else {
-        // Already IN and OUT today, or earlier than the IN: kept, not applied.
-        if (r.status === "pending") {
-          await db
-            .update(attendanceReviewQueue)
-            .set({ memberId, status: "no_time" })
-            .where(eq(attendanceReviewQueue.id, r.id));
-        }
-        continue;
+      await applyVerifiedAttendanceRow({
+        memberId,
+        date,
+        clockInTime: firstTime,
+        clockOutTime: null,
+        fingerprintId: first.r.fingerprintId,
+        method: "fingerprint",
+        auditNote: `Scanner scan added automatically (${first.r.reason}); no device time: IN time estimated`,
+      });
+      const { log } = await applyVerifiedAttendanceRow({
+        memberId,
+        date,
+        clockInTime: firstTime,
+        clockOutTime: secondTime,
+        keepExistingIn: true,
+        fingerprintId: second.r.fingerprintId,
+        method: "fingerprint",
+        auditNote: `Scanner scan added automatically (${second.r.reason}); no device time: time estimated`,
+      });
+      for (const item of [first, second]) {
+        await db
+          .update(attendanceReviewQueue)
+          .set({ memberId, status: "resolved", resolvedLogId: log.id, resolvedAt: new Date() })
+          .where(eq(attendanceReviewQueue.id, item.r.id));
+        applied++;
       }
-      await db
-        .update(attendanceReviewQueue)
-        .set({ memberId, status: "resolved", resolvedLogId: logId, resolvedAt: new Date() })
-        .where(eq(attendanceReviewQueue.id, r.id));
-      applied++;
     } catch (error) {
-      console.error("Attendance auto-apply failed for no-time scan", r.id, error);
+      console.error("Attendance auto-apply failed for no-time pair", key, error);
     }
   }
   return applied;

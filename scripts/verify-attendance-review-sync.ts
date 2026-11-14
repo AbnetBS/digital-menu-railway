@@ -197,29 +197,19 @@ async function main() {
     );
     assert.equal(ownerClock.status, 200);
 
-    // 2. A registered person's scan with NO device time goes on the sheet with
-    //    an estimated time: their first no-time scan of the day is IN.
+    // 2. A registered person's single scan with NO device time stays hidden
+    //    (no pending list, no sheet row) until their second scan arrives.
     const todayBefore = await (
       await getToday(new Request(`https://fana.test/api/attendance/today?date=${targetDate}`))
     ).json();
     assert.equal(todayBefore.pendingReviews.length, 0, "no-time scans are not listed for anyone to confirm");
-    assert.equal(todayBefore.logs.length, 4, "Owner plus the three chefs (estimated IN) are on the sheet");
-    const chefsIn = todayBefore.logs.filter((l: { memberId: number }) => [1, 2, 3].includes(l.memberId));
-    assert.equal(chefsIn.length, 3);
-    assert.ok(
-      chefsIn.every((l: { clockInTime: string | null; clockOutTime: string | null }) => l.clockInTime && !l.clockOutTime),
-      "first no-time scan of each person is IN"
-    );
-    const resolvedNoTime = await pglite.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM attendance_review_queue WHERE status = 'resolved' AND scanned_at IS NULL"
-    );
-    assert.equal(resolvedNoTime.rows[0]?.n, 3, "the three no-time scans are applied");
-    const leftNoTime = await pglite.query<{ n: number }>(
+    assert.equal(todayBefore.logs.length, 1, "only the Owner is on the sheet: single no-time scans are hidden");
+    const heldRows = await pglite.query<{ n: number }>(
       "SELECT count(*)::int AS n FROM attendance_review_queue WHERE status = 'no_time'"
     );
-    assert.equal(leftNoTime.rows[0]?.n, 0, "no registered no-time scan is left unapplied");
+    assert.equal(heldRows.rows[0]?.n, 3, "the three single no-time scans are held");
 
-    // The same person's next no-time scan from the same boot (later uptime) is OUT.
+    // Ayelech's second no-time scan from the same boot (later uptime) completes the pair.
     const ev4 = randomBytes(16).toString("hex");
     const secondScan = await postReview(
       new Request("https://fana.test/api/attendance/review", {
@@ -238,7 +228,12 @@ async function main() {
       await getToday(new Request(`https://fana.test/api/attendance/today?date=${targetDate}`))
     ).json();
     const ayelech = todayPair.logs.find((l: { memberId: number }) => l.memberId === 1);
-    assert.ok(ayelech?.clockInTime && ayelech?.clockOutTime, "second no-time scan closes the day as OUT");
+    assert.ok(ayelech?.clockInTime && ayelech?.clockOutTime, "second no-time scan completes the pair: IN then OUT");
+    assert.equal(todayPair.logs.length, 2, "Ayelech and the Owner are on the sheet; the chefs stay held");
+    const appliedRows = await pglite.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM attendance_review_queue WHERE status = 'resolved' AND scanned_at IS NULL"
+    );
+    assert.equal(appliedRows.rows[0]?.n, 2, "exactly the two Ayelech scans are applied");
 
     // Device token WITHOUT admin session cannot invoke manual_record.
     const blockedManual = await postReview(

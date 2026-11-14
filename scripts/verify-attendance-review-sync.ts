@@ -5,13 +5,14 @@
  *      boot with Wi-Fi: the 3 retained `unknown_time` scans upload to
  *      POST /api/attendance/review while the 4th scan (with clock) posts to
  *      POST /api/attendance/clock.
- *   2. GET /api/attendance/today returns the 4th scan in `logs` AND surfaces
- *      all 3 retained scans in `pendingReviews` with each role's entrance time.
- *   3. PATCH /api/attendance/review ("Confirm All on Sheet") writes all 3
- *      employees onto `attendance_logs`, updates Today Live & Paper Sheet, and
- *      clears `pendingReviews` to 0.
+ *   2. GET /api/attendance/today lists the 4th scan AND all 3 retained scans
+ *      from registered employees with each role's entrance time, with no
+ *      confirmation step; `pendingReviews` stays 0.
+ *   3. (Confirmation is no longer needed for registered employees.)
  *   4. POST /api/attendance/review (`action: "manual_record"`) requires admin
  *      session and records multiple employees onto Today Live & Paper Sheet.
+ *   5. A timed scanner scan of a registered employee is applied automatically
+ *      (no confirmation); an unmapped finger stays pending.
  */
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -98,8 +99,8 @@ async function main() {
     const { GET: getToday } = await import("../src/app/api/attendance/today/route");
     const { GET: getLogs } = await import("../src/app/api/attendance/logs/route");
     const { GET: getLeaderboard } = await import("../src/app/api/attendance/leaderboard/route");
-    const { POST: postReview, PATCH: patchReview } = await import("../src/app/api/attendance/review/route");
-    const { etDayKeyDaysAgo, etStartOfDaysAgo } = await import("../src/lib/timezone");
+    const { POST: postReview } = await import("../src/app/api/attendance/review/route");
+    const { etDayKey, etDayKeyDaysAgo, etStartOfDaysAgo } = await import("../src/lib/timezone");
 
     const mig = await ensureTablesExist();
     assert.equal(mig.success, true, mig.errors.join("\n"));
@@ -113,17 +114,21 @@ async function main() {
         (2, 'Bontu', 1, true),
         (3, 'Emawayesh', 1, true),
         (4, 'Owner', 2, true),
-        (5, 'Meskerem', 1, true);
+        (5, 'Meskerem', 1, true),
+        (6, 'Tewodros', 1, true);
       INSERT INTO attendance_biometrics(member_id, fingerprint_id, finger_name) VALUES
         (1, 11, 'Right Index'),
         (2, 12, 'Right Index'),
         (3, 13, 'Right Index'),
         (4, 14, 'Right Index'),
-        (5, 15, 'Right Index');
+        (5, 15, 'Right Index'),
+        (6, 16, 'Right Index');
     `);
 
-    const targetDate = "2026-11-03";
-    const ownerEpoch = Math.floor(new Date("2026-11-03T08:10:00+03:00").getTime() / 1000);
+    // Uploads without a scan time are dated by the day they reach the server,
+    // so the scenario runs on today (Addis Ababa day).
+    const targetDate = etDayKey(new Date()) as string;
+    const ownerEpoch = Math.floor(new Date(`${targetDate}T08:10:00+03:00`).getTime() / 1000);
 
     // 1. Three employees scanned on boot1 without clock; device uploads their
     //    retained /queue.review.jsonl records to POST /api/attendance/review.
@@ -192,17 +197,31 @@ async function main() {
     );
     assert.equal(ownerClock.status, 200);
 
-    // 2. Today Live shows Owner in `logs` AND surfaces all 3 chefs in `pendingReviews`
-    //    with suggestedInTime = "06:00" (from Chef Morning shift).
+    // 2. Registered chefs are listed on Today Live with no confirmation: the
+    //    retained scans carry no scan time, so the upload day and the role's
+    //    first shift start (06:00) are used, the same suggestion the review list
+    //    showed. Nothing waits in pendingReviews.
     const todayBefore = await (
       await getToday(new Request(`https://fana.test/api/attendance/today?date=${targetDate}`))
     ).json();
-    assert.equal(todayBefore.logs.length, 1);
-    assert.equal(todayBefore.logs[0].memberName, "Owner");
-    assert.equal(todayBefore.pendingReviews.length, 3);
-    assert.equal(todayBefore.pendingReviews[0].suggestedInTime, "06:00");
+    assert.equal(todayBefore.logs.length, 4, "Owner plus the 3 registered chefs");
+    assert.ok(todayBefore.logs.some((l: { memberName: string }) => l.memberName === "Owner"));
+    const chefRows = todayBefore.logs.filter((l: { memberName: string }) =>
+      ["Ayelech", "Bontu", "Emawayesh"].includes(l.memberName)
+    );
+    assert.equal(chefRows.length, 3, "all 3 retained chefs must be listed automatically");
+    assert.ok(chefRows.every((l: { clockInTime: string }) => l.clockInTime === "06:00"));
+    assert.equal(todayBefore.pendingReviews.length, 0, "registered staff need no confirmation");
+    const estimatedNotes = await pglite.query<{ notes: string | null }>(
+      "SELECT notes FROM attendance_logs WHERE member_id = 1 AND date = $1",
+      [targetDate]
+    );
+    assert.ok(
+      (estimatedNotes.rows[0]?.notes || "").includes("Estimated time"),
+      "no-clock scans must be marked as estimated in the audit note"
+    );
 
-    // Device token WITHOUT admin session cannot invoke manual_record or PATCH.
+    // Device token WITHOUT admin session cannot invoke manual_record.
     const blockedManual = await postReview(
       new Request("https://fana.test/api/attendance/review", {
         method: "POST",
@@ -215,29 +234,11 @@ async function main() {
     );
     assert.equal(blockedManual.status, 401);
 
-    // Sign in as Admin and confirm all 3 pending scanner scans onto the sheet.
+    // Sign in as Admin for the manual recovery step below.
     currentAdminCookie = signToken(
       { kind: "admin", iat: Date.now() },
       process.env.SESSION_SECRET!
     );
-
-    const confirmRes = await patchReview(
-      new Request("https://fana.test/api/attendance/review", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          entries: todayBefore.pendingReviews.map((r: { id: number; memberId: number }) => ({
-            id: r.id,
-            memberId: r.memberId,
-            date: targetDate,
-            clockInTime: "06:05",
-          })),
-        }),
-      })
-    );
-    assert.equal(confirmRes.status, 200);
-    const confirmData = await confirmRes.json();
-    assert.equal(confirmData.resolvedCount, 3);
 
     // 3. Manual Record Attendance for Meskerem using role entrance time ("06:00").
     const manualRes = await postReview(
@@ -254,7 +255,7 @@ async function main() {
     );
     assert.equal(manualRes.status, 200);
 
-    // 4. Verify Today Live AND Paper Sheet now list all 5 employees On Time with 0 pending reviews.
+    // 4. Verify Today Live AND Paper Sheet now list all 5 employees with 0 pending reviews.
     const todayAfter = await (
       await getToday(new Request(`https://fana.test/api/attendance/today?date=${targetDate}`))
     ).json();
@@ -320,7 +321,7 @@ async function main() {
     assert.equal(expiredStatus.online, false);
 
     // 7. Forgotten clock-out across midnight (00:00 EAT / 6:00 LT):
-    //    - Ayelech scans IN yesterday at 06:05 EAT and forgets to scan OUT.
+    //    - Tewodros scans IN yesterday at 06:05 EAT and forgets to scan OUT.
     //    - Today at 06:10 EAT she puts her finger on the scanner again.
     //    - Today's scan MUST be recorded as a brand-new clock_in on today (NOT
     //      yesterday's clock_out / ~24h shift), yesterday's Paper Sheet cell MUST
@@ -345,7 +346,7 @@ async function main() {
         },
         body: JSON.stringify({
           eventId: randomBytes(16).toString("hex"),
-          fingerprintId: 11,
+          fingerprintId: 16,
           scannedAt: yestInEpoch,
         }),
       })
@@ -364,7 +365,7 @@ async function main() {
         },
         body: JSON.stringify({
           eventId: randomBytes(16).toString("hex"),
-          fingerprintId: 11,
+          fingerprintId: 16,
           scannedAt: todayInEpoch,
         }),
       })
@@ -377,8 +378,8 @@ async function main() {
     const twoDaySheet = await (
       await getLogs(new Request(`https://fana.test/api/attendance/logs?from=${yestKey}&to=${todayKey}`))
     ).json();
-    const yestCell = twoDaySheet.matrix[1]?.[yestKey];
-    const todayCell = twoDaySheet.matrix[1]?.[todayKey];
+    const yestCell = twoDaySheet.matrix[6]?.[yestKey];
+    const todayCell = twoDaySheet.matrix[6]?.[todayKey];
     assert.equal(yestCell?.clockOutTime, null);
     assert.equal(yestCell?.totalHours, null);
     assert.equal(yestCell?.outStatus, "no_out", "yesterday without OUT must be no_out after midnight");
@@ -395,10 +396,40 @@ async function main() {
       await getLeaderboard(new Request(`https://fana.test/api/attendance/leaderboard?from=${yestKey}&to=${yestKey}`))
     ).json();
     const chefGroup = yestOnlyBoard.groups.find((g: { roleName: string }) => g.roleName === "Chef");
-    const ayelechYest = chefGroup?.rows.find((r: { memberId: number }) => r.memberId === 1);
-    assert.equal(ayelechYest?.workedMinutes, 0);
-    assert.equal(ayelechYest?.openMinutes, 0, "yesterday's forgotten OUT must add 0 open minutes on Leaderboard");
-    assert.equal(ayelechYest?.stillIn, false);
+    const tewodrosYest = chefGroup?.rows.find((r: { memberId: number }) => r.memberId === 6);
+    assert.equal(tewodrosYest?.workedMinutes, 0);
+    assert.equal(tewodrosYest?.openMinutes, 0, "yesterday's forgotten OUT must add 0 open minutes on Leaderboard");
+    assert.equal(tewodrosYest?.stillIn, false);
+
+    // 5. A timestamped scanner scan of a REGISTERED employee goes onto Today
+    //    Live and the Paper Sheet automatically: no PATCH confirmation needed.
+    //    An unmapped finger with a time stays pending for an admin.
+    const autoDate = etDayKeyDaysAgo(6) as string;
+    const autoEv = randomBytes(16).toString("hex");
+    const unmappedEv = randomBytes(16).toString("hex");
+    const autoEpoch = Math.floor(new Date(`${autoDate}T07:15:00+03:00`).getTime() / 1000);
+    const autoUpload = await postReview(
+      new Request("https://fana.test/api/attendance/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-attendance-device": "test-device-token" },
+        body: JSON.stringify({
+          deviceId: "entrance",
+          items: [
+            { reason: "server_conflict", record: { eventId: autoEv, fingerprintId: 12, memberId: 2, staffName: "Bontu", scannedAt: autoEpoch, bootId: "boot222222222222", uptimeSeconds: 40 } },
+            { reason: "unmapped_finger", record: { eventId: unmappedEv, fingerprintId: 99, scannedAt: autoEpoch, bootId: "boot222222222222", uptimeSeconds: 41 } },
+          ],
+        }),
+      })
+    );
+    assert.equal(autoUpload.status, 200);
+    const autoLive = await (
+      await getToday(new Request(`https://fana.test/api/attendance/today?date=${autoDate}`))
+    ).json();
+    const bontuAuto = autoLive.logs.find((l: { memberName: string }) => l.memberName === "Bontu");
+    assert.ok(bontuAuto, "registered employee's timed scan must appear on Today Live without confirmation");
+    assert.equal(bontuAuto.clockInTime, "07:15");
+    assert.equal(autoLive.pendingReviews.length, 1, "only the unmapped finger may remain pending");
+    assert.equal(autoLive.pendingReviews[0].fingerprintId, 99);
 
     console.log("✅ Attendance review sync & manual recovery guard PASSED");
   } finally {

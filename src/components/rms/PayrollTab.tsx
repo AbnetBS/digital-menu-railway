@@ -118,6 +118,11 @@ export default function PayrollTab() {
   const [holidayOpen, setHolidayOpen] = useState(false);
   // The new name added from this screen: name, role and the month he counts from.
   const [newPersonOpen, setNewPersonOpen] = useState(false);
+  // TIN payroll: From attendance (bring a person back) and Delete (remove him
+  // from the TIN sheet for every month; attendance is kept).
+  const [fromAttendanceOpen, setFromAttendanceOpen] = useState(false);
+  const [pickRestoreId, setPickRestoreId] = useState("");
+  const [removeTarget, setRemoveTarget] = useState<any>(null);
   // The company name and TIN printed on the government sheet. Stored in
   // site_settings, edited here, read by the payroll API for the letterhead.
   const [headerDraft, setHeaderDraft] = useState({ ...DEFAULT_PAYROLL_LETTERHEAD });
@@ -691,6 +696,15 @@ export default function PayrollTab() {
             </button>
             <button
               onClick={() => {
+                setPickRestoreId("");
+                setFromAttendanceOpen(true);
+              }}
+              className="px-4 py-2.5 rounded-xl bg-emerald-800/70 border border-emerald-500/40 text-xs font-bold"
+            >
+              <UserPlus className="w-4 h-4 inline" /> From attendance
+            </button>
+            <button
+              onClick={() => {
                 setPrintMode("tin");
                 // The state has to be on the page before the browser builds
                 // the print preview, so the print waits one frame.
@@ -717,6 +731,63 @@ export default function PayrollTab() {
               </span>
             </span>
           </div>
+
+          {fromAttendanceOpen && (
+            <div className="rounded-xl border border-emerald-400 bg-white text-black p-3 space-y-3 no-print">
+              <div className="flex items-center gap-2">
+                <h3 className="font-black">From attendance</h3>
+                <button onClick={() => setFromAttendanceOpen(false)} className="ml-auto text-xs font-bold text-stone-600">
+                  Close
+                </button>
+              </div>
+              <p className="text-xs text-stone-600">
+                Choose a staff member who is not on this month&apos;s TIN payroll and add him. Staff already on it are listed below the box.
+              </p>
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="flex-1 min-w-[220px] text-[11px] font-bold">
+                  Staff member
+                  <select
+                    value={pickRestoreId}
+                    onChange={(e) => setPickRestoreId(e.target.value)}
+                    className="block mt-1 w-full border rounded-lg p-2 text-sm"
+                  >
+                    <option value="">Choose the person</option>
+                    {(data?.tinAddable || [])
+                      .filter((m: any) => !m.onTin)
+                      .map((m: any) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} ({m.role}){m.inCash ? " • in cash table this month" : ""}{m.removed ? " • removed from payroll" : ""}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <button
+                  disabled={busy || !pickRestoreId}
+                  onClick={async () => {
+                    const ok = await act(
+                      { action: "restore_member", memberId: Number(pickRestoreId) },
+                      "Added to the TIN payroll."
+                    );
+                    if (ok) {
+                      setPickRestoreId("");
+                      setFromAttendanceOpen(false);
+                    }
+                  }}
+                  className="px-4 py-2.5 rounded-lg bg-emerald-700 text-white text-xs font-black disabled:opacity-40"
+                >
+                  <UserPlus className="w-4 h-4 inline" /> Add
+                </button>
+              </div>
+              {(data?.tinAddable || []).filter((m: any) => m.onTin).length > 0 && (
+                <p className="text-[11px] text-stone-600">
+                  Already on the TIN payroll: {(data?.tinAddable || []).filter((m: any) => m.onTin).map((m: any) => m.name).join(", ")}
+                </p>
+              )}
+              {(data?.tinAddable || []).filter((m: any) => !m.onTin).length === 0 && (
+                <p className="text-[11px] text-stone-600">Nobody is waiting to be added.</p>
+              )}
+            </div>
+          )}
 
           {data?.missingSettings?.length > 0 && (
             <div className="rounded-xl border border-rose-600 bg-rose-950/50 p-3 text-sm">
@@ -818,6 +889,7 @@ export default function PayrollTab() {
                     <td className="border p-2 text-right">{birr(r.totalDeduction)}</td>
                     <td className="border p-2 text-right font-black">{birr(r.netPay)}</td>
                     <td className="border p-2 text-center no-print">
+                      <div className="inline-flex items-center gap-1">
                       {r.paid ? (
                         <button
                           onClick={() => askPay(r)}
@@ -835,6 +907,15 @@ export default function PayrollTab() {
                           <Wallet className="w-4 h-4" /> Pay
                         </button>
                       )}
+                      <button
+                        onClick={() => setRemoveTarget(r)}
+                        disabled={busy || r.paid}
+                        title={r.paid ? "Take the paid tick back first" : "Remove from the TIN payroll for every month"}
+                        className="inline-flex items-center gap-1 bg-red-700 hover:bg-red-600 text-white rounded-full pl-2 pr-3 py-1.5 font-black disabled:opacity-40"
+                      >
+                        <Trash2 className="w-4 h-4" /> Delete
+                      </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -977,6 +1058,32 @@ export default function PayrollTab() {
           period={period}
           onClose={() => setHolidayOpen(false)}
           onChanged={() => load(true)}
+        />
+      )}
+
+      {removeTarget && (
+        <ConfirmDialog
+          title={`Delete ${removeTarget.employeeName} from the payroll?`}
+          confirmLabel="Yes, delete from payroll"
+          cancelLabel="Don't"
+          busy={busy}
+          error={error}
+          onCancel={() => {
+            setRemoveTarget(null);
+            setError("");
+          }}
+          onConfirm={async () => {
+            const ok = await act(
+              { action: "remove_member", memberId: removeTarget.memberId },
+              `${removeTarget.employeeName} is removed from the TIN payroll for every month. The attendance record is kept.`
+            );
+            if (ok) setRemoveTarget(null);
+          }}
+          lines={[
+            "This person will not appear on the TIN payroll in any month.",
+            "The attendance list and attendance records are not changed.",
+            "Bring him back with From attendance.",
+          ]}
         />
       )}
 

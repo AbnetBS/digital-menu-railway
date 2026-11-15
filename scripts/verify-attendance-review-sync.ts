@@ -197,29 +197,43 @@ async function main() {
     );
     assert.equal(ownerClock.status, 200);
 
-    // 2. Registered chefs are listed on Today Live with no confirmation: the
-    //    retained scans carry no scan time, so the upload day and the role's
-    //    first shift start (06:00) are used, the same suggestion the review list
-    //    showed. Nothing waits in pendingReviews.
+    // 2. A registered person's single scan with NO device time stays hidden
+    //    (no pending list, no sheet row) until their second scan arrives.
     const todayBefore = await (
       await getToday(new Request(`https://fana.test/api/attendance/today?date=${targetDate}`))
     ).json();
-    assert.equal(todayBefore.logs.length, 4, "Owner plus the 3 registered chefs");
-    assert.ok(todayBefore.logs.some((l: { memberName: string }) => l.memberName === "Owner"));
-    const chefRows = todayBefore.logs.filter((l: { memberName: string }) =>
-      ["Ayelech", "Bontu", "Emawayesh"].includes(l.memberName)
+    assert.equal(todayBefore.pendingReviews.length, 0, "no-time scans are not listed for anyone to confirm");
+    assert.equal(todayBefore.logs.length, 1, "only the Owner is on the sheet: single no-time scans are hidden");
+    const heldRows = await pglite.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM attendance_review_queue WHERE status = 'no_time'"
     );
-    assert.equal(chefRows.length, 3, "all 3 retained chefs must be listed automatically");
-    assert.ok(chefRows.every((l: { clockInTime: string }) => l.clockInTime === "06:00"));
-    assert.equal(todayBefore.pendingReviews.length, 0, "registered staff need no confirmation");
-    const estimatedNotes = await pglite.query<{ notes: string | null }>(
-      "SELECT notes FROM attendance_logs WHERE member_id = 1 AND date = $1",
-      [targetDate]
+    assert.equal(heldRows.rows[0]?.n, 3, "the three single no-time scans are held");
+
+    // Ayelech's second no-time scan from the same boot (later uptime) completes the pair.
+    const ev4 = randomBytes(16).toString("hex");
+    const secondScan = await postReview(
+      new Request("https://fana.test/api/attendance/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-attendance-device": "test-device-token" },
+        body: JSON.stringify({
+          deviceId: "entrance",
+          items: [
+            { reason: "unknown_time", record: { eventId: ev4, fingerprintId: 11, memberId: 1, staffName: "Ayelech", bootId: "boot111111111111", uptimeSeconds: 300 } },
+          ],
+        }),
+      })
     );
-    assert.ok(
-      (estimatedNotes.rows[0]?.notes || "").includes("Estimated time"),
-      "no-clock scans must be marked as estimated in the audit note"
+    assert.equal(secondScan.status, 200);
+    const todayPair = await (
+      await getToday(new Request(`https://fana.test/api/attendance/today?date=${targetDate}`))
+    ).json();
+    const ayelech = todayPair.logs.find((l: { memberId: number }) => l.memberId === 1);
+    assert.ok(ayelech?.clockInTime && ayelech?.clockOutTime, "second no-time scan completes the pair: IN then OUT");
+    assert.equal(todayPair.logs.length, 2, "Ayelech and the Owner are on the sheet; the chefs stay held");
+    const appliedRows = await pglite.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM attendance_review_queue WHERE status = 'resolved' AND scanned_at IS NULL"
     );
+    assert.equal(appliedRows.rows[0]?.n, 2, "exactly the two Ayelech scans are applied");
 
     // Device token WITHOUT admin session cannot invoke manual_record.
     const blockedManual = await postReview(
@@ -234,20 +248,20 @@ async function main() {
     );
     assert.equal(blockedManual.status, 401);
 
-    // Sign in as Admin for the manual recovery step below.
+    // Sign in as Admin.
     currentAdminCookie = signToken(
       { kind: "admin", iat: Date.now() },
       process.env.SESSION_SECRET!
     );
 
-    // 3. Manual Record Attendance for Meskerem using role entrance time ("06:00").
+    // 3. Manual Record Attendance for the three chefs and Meskerem. The chefs keep their estimated IN.
     const manualRes = await postReview(
       new Request("https://fana.test/api/attendance/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "manual_record",
-          memberIds: [5],
+          memberIds: [1, 2, 3, 5],
           date: targetDate,
           useRoleStart: true,
         }),
@@ -261,7 +275,8 @@ async function main() {
     ).json();
     assert.equal(todayAfter.pendingReviews.length, 0);
     assert.equal(todayAfter.logs.length, 5);
-    assert.ok(todayAfter.logs.every((l: { lateMinutes: number }) => l.lateMinutes === 0));
+    const ownerLate = todayAfter.logs.find((l: { memberId: number }) => l.memberId === 4);
+    assert.equal(ownerLate?.lateMinutes, 0);
 
     const sheetRes = await (
       await getLogs(new Request(`https://fana.test/api/attendance/logs?from=${targetDate}&to=${targetDate}`))

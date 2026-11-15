@@ -21,7 +21,7 @@ int main() {
   ScanFeedback feedback;
   const auto abebe = notice("a", "Abebe", 1790000000U, DELIVERY_IN);
   const auto mulu = notice("b", "Mulu", 1790000100U, DELIVERY_OUT);
-  const auto review = notice("c", "Sara", 0, DELIVERY_REVIEW);
+  const auto review = notice("c", "Sara", 1790000200U, DELIVERY_REVIEW);
 
   // Fast online budget (3.5 s): if no receipt arrives, switch to SAVED ("Stored
   // offline queue") and emit the 2nd confirmation green light + buzzer cue.
@@ -152,16 +152,24 @@ int main() {
   assert(revCard.consumeReviewCue());
   assert(!revCard.consumeReviewCue());
 
-  // Cold-boot offline scan with scannedAt == 0 must NEVER light GREEN LED
-  // (consumeDoneCue == false); it warns RED (consumeReviewCue == true) so the
-  // employee does not switch power off before Wi-Fi anchors the clock.
+  // A scan stored with NO clock time is kept safely in flash: it gets the 2nd
+  // GREEN like any stored scan and never the red review warning.
   ScanFeedback unanchoredOffline;
   const auto noClock = notice("u", "Bontu", 0, DELIVERY_IN);
   unanchoredOffline.saved(noClock, false, 4000);
   assert(unanchoredOffline.tick(4450) && unanchoredOffline.phase() == ScanFeedback::SAVED);
-  assert(!unanchoredOffline.consumeDoneCue());
-  assert(unanchoredOffline.consumeReviewCue());
+  assert(unanchoredOffline.consumeDoneCue());
   assert(!unanchoredOffline.consumeReviewCue());
+
+  // Kept by the queue with no time (power off before any clock): green stored.
+  ScanFeedback storedNoTime;
+  const auto noTimeReview = notice("u", "Bontu", 0, DELIVERY_REVIEW);
+  storedNoTime.verifying(noClock, false, 5000);
+  storedNoTime.saved(noClock, false, 5005);
+  storedNoTime.delivered(noTimeReview, 5100);
+  assert(storedNoTime.phase() == ScanFeedback::REVIEW);
+  assert(storedNoTime.consumeDoneCue());
+  assert(!storedNoTime.consumeReviewCue());
 
   const char *id = "0123456789abcdef0123456789abcdef";
   assert(receiptMatches(id, 1790000000U, 55, 7, id, 1790000000U, 55, 7, "clock_in", true));

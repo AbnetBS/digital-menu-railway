@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-export const SCHEMA_VERSION = "2026-11-08-3";
+export const SCHEMA_VERSION = "2026-11-15-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database

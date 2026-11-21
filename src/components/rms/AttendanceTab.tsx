@@ -38,6 +38,7 @@ import TableScroll from "@/components/rms/TableScroll";
 import HolidayManagerDialog from "@/components/rms/HolidayManagerDialog";
 import { currentEthiopianPeriod } from "@/lib/payroll";
 import DeductionReportPanel from "@/components/rms/DeductionReportPanel";
+import DecideNotificationSetting from "@/components/rms/DecideNotificationSetting";
 import { etDayKeyDaysAgo } from "@/lib/timezone";
 
 /**
@@ -261,7 +262,15 @@ export default function AttendanceTab() {
     }
   };
 
-  const [activeView, setActiveView] = useState<ViewKey>("today");
+  // The Decide notification opens /admin?tab=attendance&view=decisions.
+  const [activeView, setActiveView] = useState<ViewKey>(() => {
+    if (typeof window === "undefined") return "today";
+    try {
+      return new URLSearchParams(window.location.search).get("view") === "decisions" ? "decisions" : "today";
+    } catch {
+      return "today";
+    }
+  });
   const [msg, setMsg] = useState("");
   const [msgBad, setMsgBad] = useState(false);
   const [scannerOnline, setScannerOnline] = useState(false);
@@ -1542,6 +1551,7 @@ export default function AttendanceTab() {
             </span>
           )}
         </button>
+        <DecideNotificationSetting />
       </div>
 
       {msg && (

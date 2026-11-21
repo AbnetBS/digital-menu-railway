@@ -237,7 +237,8 @@ export default function PayrollTab() {
 
   const askSave = (row: any, field: string, value: number) => {
     setError("");
-    setPending({ row, field, value, previous: Number(row[field] || 0) });
+    // Breakage: the box is the TYPED part only; the Store part is not re-typed.
+    setPending({ row, field, value, previous: Number(field === "breakageShortage" ? row.breakageTyped || 0 : row[field] || 0) });
   };
   const askPay = (row: any) => {
     setError("");
@@ -250,7 +251,7 @@ export default function PayrollTab() {
     const values = {
       basicSalary: row.basicSalary,
       transportAllowance: row.transportAllowance,
-      breakageShortage: row.breakageShortage,
+      breakageShortage: row.breakageTyped,
       [field]: value,
     };
     const label = EDITABLE[field]?.label || field;
@@ -285,7 +286,8 @@ export default function PayrollTab() {
   const pendingPreview = pending && data ? previewNet(pending.row, {
     basicSalary: pending.field === "basicSalary" ? pending.value : pending.row.basicSalary,
     transportAllowance: pending.field === "transportAllowance" ? pending.value : pending.row.transportAllowance,
-    breakageShortage: pending.field === "breakageShortage" ? pending.value : pending.row.breakageShortage,
+    // The Store part stays on top of what is typed here.
+    breakageShortage: pending.field === "breakageShortage" ? pending.value + Number(pending.row.breakageFromStore || 0) : pending.row.breakageShortage,
   }, settings) : 0;
 
   return (
@@ -879,10 +881,15 @@ export default function PayrollTab() {
                     <td className="border p-2 text-right">{birr(r.employeePension)}</td>
                     <td className="border p-2 text-right">{birr(r.totalPension)}</td>
                     <EditableMoneyCell
-                      value={r.breakageShortage}
+                      value={r.breakageTyped ?? r.breakageShortage}
                       label="Breakage & shortage"
                       disabled={busy || locked || r.paid}
                       onAsk={(value) => askSave(r, "breakageShortage", value)}
+                      hint={
+                        Number(r.breakageFromStore || 0) > 0
+                          ? `+ Store ${birr(r.breakageFromStore)} = ${birr(r.breakageShortage)}`
+                          : undefined
+                      }
                     />
                     <td className="border p-2 text-right">{birr(r.absenceDeduction)}</td>
                     <td className="border p-2 text-right" title="Chargeable minutes past the role's Maximum Late Time, at BasicSalary / 30 / 8 / 60 per minute">
@@ -1167,11 +1174,14 @@ function EditableMoneyCell({
   label,
   disabled,
   onAsk,
+  hint,
 }: {
   value: number;
   label: string;
   disabled: boolean;
   onAsk: (value: number) => void;
+  /** Small line under the number, e.g. what Store added on top. */
+  hint?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -1223,6 +1233,7 @@ function EditableMoneyCell({
           className="w-full px-1.5 py-1 rounded-md text-right disabled:cursor-not-allowed"
         >
           <span className={value ? "font-bold" : "text-stone-400"}>{value ? birr(value) : "Set"}</span>
+          {hint && <div className="text-[9px] font-normal text-stone-500">{hint}</div>}
         </button>
       )}
     </td>

@@ -188,9 +188,11 @@ async function buildRows(periodKey: string) {
     tin: headerValues.get("payroll_tin") || DEFAULT_PAYROLL_LETTERHEAD.tin,
   };
   const comp = new Map(compQ.rows.map((r) => [Number(r.member_id), r]));
-  // Breakage & shortage is typed in Payroll for the month (like basic salary).
-  // Store no longer feeds payroll; its own records stay on the Store page only.
+  // Breakage & shortage has TWO sources, added together (owner, 2026-11-22):
+  //  - typed in Payroll for the month, like basic salary (payroll_monthly_inputs);
+  //  - recorded on the Store page (payroll_breakages, not voided).
   const monthlyBreakage = new Map(inputQ.rows.map((r) => [Number(r.member_id), r.breakage_shortage]));
+  const storeBreakage = new Map(breakageQ.rows.map((r) => [Number(r.member_id), r.amount]));
   const saved = new Map(savedQ.rows.map((r) => [Number(r.member_id), r.snapshot]));
   const payments = new Map(paymentsQ.rows.map((r) => [Number(r.member_id), r]));
   const holidays = holidaysQ.rows.map((h) => ({
@@ -565,7 +567,9 @@ async function buildRows(periodKey: string) {
 
     const basic = positive(c.basic_salary);
     const transport = positive(c.transport_allowance);
-    const breakage = positive(monthlyBreakage.get(memberId));
+    const breakageTyped = positive(monthlyBreakage.get(memberId));
+    const breakageFromStore = positive(storeBreakage.get(memberId));
+    const breakage = breakageTyped + breakageFromStore;
     /* ── A FULL MONTH IS A FULL MONTH (owner, 2026-11-08) ──────────────────
      * Proration exists for ONE honest case: somebody started or left in the
      * middle of the month, so he is paid for the part he worked. It used to be
@@ -703,6 +707,8 @@ async function buildRows(periodKey: string) {
       employeePension: pay.employeePension,
       totalPension: pay.totalPension,
       breakageShortage: breakage,
+      breakageTyped,
+      breakageFromStore,
       absenceDeduction: pay.absenceDeduction,
       latenessDeduction: pay.latenessDeduction,
       earlyOutDeduction: pay.earlyOutDeduction,
@@ -1039,8 +1045,9 @@ export async function POST(request: Request) {
           await client.query("BEGIN");
           await client.query("INSERT INTO payroll_periods(period_key,status,updated_at) VALUES($1,'draft',now()) ON CONFLICT(period_key) DO NOTHING", [period]);
           await client.query("SELECT status FROM payroll_periods WHERE period_key=$1 FOR UPDATE", [period]);
+          // The guard compares the TYPED amount (the Store part is not typed here).
           const current = await client.query("SELECT COALESCE(breakage_shortage,0) AS amount FROM payroll_monthly_inputs WHERE period_key=$1 AND member_id=$2", [period,id]);
-          if (Math.abs(Number(current.rows[0]?.amount ?? 0) - Number(row.breakageShortage)) > 0.001) throw new Error("Breakage changed while paying. Refresh payroll and confirm again.");
+          if (Math.abs(Number(current.rows[0]?.amount ?? 0) - Number(row.breakageTyped)) > 0.001) throw new Error("Breakage changed while paying. Refresh payroll and confirm again.");
           await client.query(
             `INSERT INTO payroll_payments(period_key,member_id,paid_at,method,note,snapshot) VALUES($1,$2,now(),$3,$4,$5::jsonb)
              ON CONFLICT(period_key,member_id) DO UPDATE SET paid_at=now(),method=$3,note=$4,snapshot=$5::jsonb`,

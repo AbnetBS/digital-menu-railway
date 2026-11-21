@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
  * once and stamps the new version. Existing DBs self-heal on the first
  * request after a deploy — no manual action needed.
  */
-export const SCHEMA_VERSION = "2026-11-15-1";
+export const SCHEMA_VERSION = "2026-11-22-1";
 
 /**
  * UNIVERSAL self-healing schema manager — works on ANY Postgres database
@@ -624,6 +624,19 @@ const RMS_CREATES: Array<[string, string]> = [
   // TIN PAYROLL REMOVALS (owner, 2026-11-14): deleting a person on the main
   // payroll takes him off the TIN sheet for every month. The attendance record
   // is kept. "From attendance" on the payroll brings him back.
+  // DECIDE NOTIFICATION (owner, Nov 2026): the admin's phone gets one message at
+  // the time he chose, saying how many yesterday items still need a decision.
+  [
+    "attendance_decision_reminders",
+    `CREATE TABLE IF NOT EXISTS attendance_decision_reminders (
+      endpoint text PRIMARY KEY,
+      staff_name varchar(100),
+      time_hhmm varchar(5) NOT NULL DEFAULT '09:00',
+      enabled boolean NOT NULL DEFAULT true,
+      last_sent_on varchar(10),
+      updated_at timestamp DEFAULT now()
+    )`,
+  ],
   [
     "payroll_removed_members",
     `CREATE TABLE IF NOT EXISTS payroll_removed_members (

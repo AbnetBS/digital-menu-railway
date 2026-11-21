@@ -325,3 +325,15 @@ export async function sendPushToNamedStaff(
     return await sendPushToRoles([role], payload).catch(() => ({ ...EMPTY_SEND }));
   }
 }
+
+/** Send to ONE device, by its push endpoint (one phone, not a whole role). */
+export async function sendPushToEndpoint(endpoint: string, payload: PushPayload): Promise<PushSendResult> {
+  if (!endpoint) return { ...EMPTY_SEND };
+  try {
+    const subs = await db.select().from(pushSubscriptions).where(eq(pushSubscriptions.endpoint, endpoint));
+    if (subs.length === 0) return { ...EMPTY_SEND };
+    return await deliverToSubs(subs, payload);
+  } catch {
+    return { ...EMPTY_SEND };
+  }
+}

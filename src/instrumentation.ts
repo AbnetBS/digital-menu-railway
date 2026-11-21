@@ -20,5 +20,8 @@ export async function register() {
     startDeferredTicketWorker();
     const { startDayCloseWorker } = await import("@/lib/day-close");
     startDayCloseWorker();
+    // Decide-deductions notification: the admin's chosen time, every day.
+    const { startAttendanceReminderWorker } = await import("@/lib/attendance-reminder-worker");
+    startAttendanceReminderWorker();
   }
 }

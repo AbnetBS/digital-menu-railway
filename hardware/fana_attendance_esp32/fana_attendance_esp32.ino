@@ -2674,15 +2674,17 @@ void handleVerifiedFinger(int fingerprintId, uint64_t capturedUptimeMs) {
    * state - "Sending to site" while a receipt is awaited, "Stored offline
    * queue" when there is no link - and the delivery task takes it from here.
    *
-   * IMPORTANT: GREEN_LED stays OFF until the website confirms receipt (online)
-   * OR until a timestamped offline entry (`scannedAt > 0`) transitions to
-   * Stored offline queue. That guarantees anybody who turns power OFF after
-   * seeing GREEN_LED never cuts power before the timestamp/upload is safe. */
+   * FIRST GREEN (owner, Nov 2026): the light comes on as soon as the scan is
+   * verified AND saved to flash, so the employee can go. The 2nd green comes
+   * later, when the website receives it or the device stores it. The save is
+   * milliseconds after the match, and the light waits for it, so a power cut
+   * right after the first green cannot lose the scan. */
   snprintf(notice.eventId, sizeof(notice.eventId), "%s", eventId.c_str());
   scanFeedback.saved(notice, linkUp, millis());
   renderScanFeedback();
-  digitalWrite(GREEN_LED, LOW);
-  scanGreenOn = false;
+  digitalWrite(GREEN_LED, HIGH);
+  scanGreenOn = true;
+  scanGreenSince = millis();
   // A good scan replaces whatever warning was on the glass, so its red light
   // goes with it instead of burning until its own timer ends.
   if (warningLedOn) {

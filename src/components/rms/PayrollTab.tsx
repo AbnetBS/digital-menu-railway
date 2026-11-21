@@ -60,6 +60,7 @@ const FORMULAS: Array<[keyof PayrollSettings, string, string]> = [
 const EDITABLE: Record<string, { label: string; hint: string }> = {
   basicSalary: { label: "Basic salary", hint: "" },
   transportAllowance: { label: "Transport allowance", hint: "" },
+  breakageShortage: { label: "Breakage & shortage", hint: "" },
 };
 
 /** What the row would pay if one of the two editable cells changed.
@@ -259,6 +260,7 @@ export default function PayrollTab() {
         memberId: row.memberId,
         basicSalary: values.basicSalary,
         transportAllowance: values.transportAllowance,
+        breakageShortage: values.breakageShortage,
       },
       `${label} saved. Gross, tax, pension, deductions and net pay were recalculated.`
     );
@@ -283,7 +285,7 @@ export default function PayrollTab() {
   const pendingPreview = pending && data ? previewNet(pending.row, {
     basicSalary: pending.field === "basicSalary" ? pending.value : pending.row.basicSalary,
     transportAllowance: pending.field === "transportAllowance" ? pending.value : pending.row.transportAllowance,
-    breakageShortage: pending.row.breakageShortage,
+    breakageShortage: pending.field === "breakageShortage" ? pending.value : pending.row.breakageShortage,
   }, settings) : 0;
 
   return (
@@ -876,7 +878,12 @@ export default function PayrollTab() {
                     <td className="border p-2 text-right">{birr(r.incomeTax)}</td>
                     <td className="border p-2 text-right">{birr(r.employeePension)}</td>
                     <td className="border p-2 text-right">{birr(r.totalPension)}</td>
-                    <td className="border p-2 text-right" title="Recorded in Store">{birr(r.breakageShortage)}</td>
+                    <EditableMoneyCell
+                      value={r.breakageShortage}
+                      label="Breakage & shortage"
+                      disabled={busy || locked || r.paid}
+                      onAsk={(value) => askSave(r, "breakageShortage", value)}
+                    />
                     <td className="border p-2 text-right">{birr(r.absenceDeduction)}</td>
                     <td className="border p-2 text-right" title="Chargeable minutes past the role's Maximum Late Time, at BasicSalary / 30 / 8 / 60 per minute">
                       {birr(r.latenessDeduction)}

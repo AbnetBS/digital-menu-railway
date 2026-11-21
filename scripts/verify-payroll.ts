@@ -267,7 +267,7 @@ pass(
 );
 pass("manual holiday OT overrides auto holiday scan on the same day, and free days are never absences", payrollApi.includes("manualHolidayDates.has(date)") && payrollApi.includes("holidayByDate.get(date)") && payrollApi.includes("!isFree(d)"));
 pass("the No. column is the position in this list, never the database id", payrollApi.includes("employeeNumber: index + 1") && !payrollApi.includes("employeeNumber: memberId"));
-pass("breakage comes from Store records while salary and transport are typed", payrollApi.includes("payroll_breakages") && payrollApi.includes("Breakage is recorded in Store"));
+pass("breakage is typed in Payroll like salary and transport", payrollApi.includes("payroll_monthly_inputs") && payrollApi.includes("breakage_saved") && !payrollApi.includes("Breakage is recorded in Store"));
 pass("a paid person is locked against edits", payrollApi.includes("already paid for this month"));
 pass("one paid row per person per month", payrollApi.includes("INSERT INTO payroll_payments") && payrollApi.includes("DELETE FROM payroll_payments"));
 pass("the holiday API stores an Ethiopian date and its name", holidayApi.includes("ethiopianDateToGregorian") && holidayApi.includes("payroll_holidays"));
@@ -318,7 +318,7 @@ pass(
 
 /* ── 4. the screen ───────────────────────────────────────────────────────── */
 
-pass("salary and transport are typed; breakage comes only from Store", ["basicSalary", "transportAllowance"].every((f) => payrollTab.includes(`askSave(r, "${f}"`)) && !payrollTab.includes('askSave(r, "breakageShortage"') && payrollTab.includes("Recorded in Store"));
+pass("salary, transport and breakage are typed in Payroll", ["basicSalary", "transportAllowance", "breakageShortage"].every((f) => payrollTab.includes(`askSave(r, "${f}"`)) && !payrollTab.includes("Recorded in Store"));
 pass("Enter asks before anything is saved", payrollTab.includes("if (e.key === \"Enter\") submit();") && payrollTab.includes("Save and recalculate") && payrollTab.includes("Don't save"));
 pass("the confirm shows the net pay before and after", payrollTab.includes("previewNet(") && payrollTab.includes("Net pay:"));
 pass("the rows recalculate after a save", payrollTab.includes("recalculated") && payrollApi.includes("incomeTax"));
@@ -389,7 +389,7 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log("✅ Payroll guard PASSED");
-console.log("   • owner-typed salary and transport; Store breakage and other deductions calculated");
+console.log("   • owner-typed salary, transport and breakage; other deductions calculated");
 console.log("   • holiday dates, free week and extra-shift OT measured with the 1:15 buffer");
 console.log("   • a mistaken OT stays in history: 'Don't give' excludes it from pay, 'Give again' restores it");
 console.log("   • 1, 2, 3 numbering and one green Paid button per person");

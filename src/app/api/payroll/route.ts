@@ -188,7 +188,9 @@ async function buildRows(periodKey: string) {
     tin: headerValues.get("payroll_tin") || DEFAULT_PAYROLL_LETTERHEAD.tin,
   };
   const comp = new Map(compQ.rows.map((r) => [Number(r.member_id), r]));
-  void inputQ; // retained for existing installations; manual breakage is now read-only
+  // Breakage & shortage is typed in Payroll for the month (like basic salary).
+  // Store no longer feeds payroll; its own records stay on the Store page only.
+  const monthlyBreakage = new Map(inputQ.rows.map((r) => [Number(r.member_id), r.breakage_shortage]));
   const saved = new Map(savedQ.rows.map((r) => [Number(r.member_id), r.snapshot]));
   const payments = new Map(paymentsQ.rows.map((r) => [Number(r.member_id), r]));
   const holidays = holidaysQ.rows.map((h) => ({
@@ -563,7 +565,7 @@ async function buildRows(periodKey: string) {
 
     const basic = positive(c.basic_salary);
     const transport = positive(c.transport_allowance);
-    const breakage = positive(breakageQ.rows.find((r) => Number(r.member_id) === memberId)?.amount);
+    const breakage = positive(monthlyBreakage.get(memberId));
     /* ── A FULL MONTH IS A FULL MONTH (owner, 2026-11-08) ──────────────────
      * Proration exists for ONE honest case: somebody started or left in the
      * middle of the month, so he is paid for the part he worked. It used to be
@@ -869,7 +871,8 @@ export async function POST(request: Request) {
       // or a partial request must never wipe a salary to zero.
       const basicSalary = asNumber(body.basicSalary);
       const transportAllowance = asNumber(body.transportAllowance);
-      if (body.breakageShortage !== undefined) throw new Error("Breakage is recorded in Store, not entered manually in Payroll.");
+      // Missing box = keep what is stored (same rule as the salary boxes).
+      const breakageShortage = body.breakageShortage === undefined ? undefined : asNumber(body.breakageShortage);
       const writeCompensation = async () => {
         // $2 and $3 are cast to numeric ON PURPOSE. Inside COALESCE($2,0) the
         // untyped parameter takes the type of the literal 0, which is integer,
@@ -917,6 +920,18 @@ export async function POST(request: Request) {
               }`
           );
         }
+      }
+      if (breakageShortage !== undefined && breakageShortage !== null) {
+        await pool.query(
+          `INSERT INTO payroll_monthly_inputs(period_key,member_id,breakage_shortage) VALUES($1,$2,$3::numeric)
+           ON CONFLICT(period_key,member_id) DO UPDATE SET breakage_shortage=$3::numeric`,
+          [period, id, breakageShortage]
+        );
+        await pool.query("INSERT INTO payroll_audit(period_key,member_id,action,detail) VALUES($1,$2,'breakage_saved',$3::jsonb)", [
+          period,
+          id,
+          JSON.stringify({ breakageShortage }),
+        ]);
       }
     } else if (action === "add_overtime") {
       const id = Number(body.memberId);
@@ -1024,8 +1039,8 @@ export async function POST(request: Request) {
           await client.query("BEGIN");
           await client.query("INSERT INTO payroll_periods(period_key,status,updated_at) VALUES($1,'draft',now()) ON CONFLICT(period_key) DO NOTHING", [period]);
           await client.query("SELECT status FROM payroll_periods WHERE period_key=$1 FOR UPDATE", [period]);
-          const current = await client.query("SELECT COALESCE(sum(amount),0) AS amount FROM payroll_breakages WHERE period_key=$1 AND member_id=$2 AND voided_at IS NULL", [period,id]);
-          if (Math.abs(Number(current.rows[0].amount) - Number(row.breakageShortage)) > 0.001) throw new Error("Breakage changed while paying. Refresh payroll and confirm again.");
+          const current = await client.query("SELECT COALESCE(breakage_shortage,0) AS amount FROM payroll_monthly_inputs WHERE period_key=$1 AND member_id=$2", [period,id]);
+          if (Math.abs(Number(current.rows[0]?.amount ?? 0) - Number(row.breakageShortage)) > 0.001) throw new Error("Breakage changed while paying. Refresh payroll and confirm again.");
           await client.query(
             `INSERT INTO payroll_payments(period_key,member_id,paid_at,method,note,snapshot) VALUES($1,$2,now(),$3,$4,$5::jsonb)
              ON CONFLICT(period_key,member_id) DO UPDATE SET paid_at=now(),method=$3,note=$4,snapshot=$5::jsonb`,

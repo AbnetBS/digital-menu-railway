@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { pool } from "@/db";
 import { ensureTablesExist } from "@/db/migrate";
-import { readAdminSession } from "@/lib/session";
+import { requireAdmin } from "@/lib/session";
 import { REMINDER_TIME_RE } from "@/lib/attendance-reminders";
 
 /**
@@ -15,7 +15,8 @@ import { REMINDER_TIME_RE } from "@/lib/attendance-reminders";
 const NO_STORE = { "Cache-Control": "no-store" };
 
 export async function GET(request: Request) {
-  if (!(await readAdminSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: NO_STORE });
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth.response;
   await ensureTablesExist();
   const endpoint = new URL(request.url).searchParams.get("endpoint") || "";
   const row = await pool.query<{ time_hhmm: string; enabled: boolean }>(
@@ -27,7 +28,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!(await readAdminSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: NO_STORE });
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth.response;
   await ensureTablesExist();
   const body = (await request.json().catch(() => ({}))) as { endpoint?: unknown; time?: unknown };
   const endpoint = String(body.endpoint || "");
@@ -48,7 +50,8 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
-  if (!(await readAdminSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: NO_STORE });
+  const auth = await requireAdmin();
+  if (!auth.ok) return auth.response;
   await ensureTablesExist();
   const endpoint = new URL(request.url).searchParams.get("endpoint") || "";
   await pool.query("UPDATE attendance_decision_reminders SET enabled=false, updated_at=now() WHERE endpoint=$1", [endpoint]);

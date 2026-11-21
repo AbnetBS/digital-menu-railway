@@ -93,10 +93,15 @@ export default function DecideNotificationSetting() {
   const turnOff = async () => {
     setBusy(true);
     setMsg("");
+    setBad(false);
     try {
-      await fetch(`/api/attendance/decision-reminder?endpoint=${encodeURIComponent(endpoint)}`, { method: "DELETE" });
+      const res = await fetch(`/api/attendance/decision-reminder?endpoint=${encodeURIComponent(endpoint)}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(L("Could not turn off. Try again."));
       setEnabled(false);
       setMsg(L("Notification off"));
+    } catch (e) {
+      setBad(true);
+      setMsg(e instanceof Error ? e.message : L("Could not turn off. Try again."));
     } finally {
       setBusy(false);
     }
